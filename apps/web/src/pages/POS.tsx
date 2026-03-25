@@ -165,50 +165,99 @@ function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (nam
 
 /* ── Payment Modal ─────────────────────────────────────── */
 
-function PaymentModal({ total, method, onClose }: { total: number; method: string; onClose: () => void }) {
+function PaymentModal({
+  total, method, onClose, onComplete,
+}: {
+  total: number;
+  method: string;
+  onClose: () => void;
+  onComplete: (method: string, tendered: number) => void;
+}) {
   const [tendered, setTendered] = useState(method === 'Cash' ? '' : total.toFixed(2));
+  const [slip, setSlip] = useState('');
+  const [done, setDone] = useState(false);
   const change = method === 'Cash' ? Math.max(0, (parseFloat(tendered) || 0) - total) : 0;
+
+  const handleComplete = () => {
+    if (method === 'Cash' && parseFloat(tendered) < total) return;
+    setDone(true);
+    onComplete(method, parseFloat(tendered) || total);
+    setTimeout(() => onClose(), 1200);
+  };
+
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={done ? undefined : onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Payment — {method}</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
-          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-            <div style={{ fontSize: '14px', color: '#64748B', marginBottom: '4px' }}>Total Due</div>
-            <div style={{ fontSize: '36px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
-          </div>
-          {method === 'Cash' && (
+          {done ? (
+            <div style={{ textAlign: 'center', padding: '32px 0' }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>✓</div>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#03543F' }}>Payment Complete</div>
+              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${total.toFixed(2)} charged via {method}</div>
+              {method === 'Cash' && change > 0 && (
+                <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', marginTop: '12px' }}>Change: ${change.toFixed(2)}</div>
+              )}
+            </div>
+          ) : (
             <>
-              <div style={st.field}>
-                <label style={st.label}>Amount Tendered</label>
-                <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: '"JetBrains Mono", monospace' }} type="number" value={tendered} onChange={(e) => setTendered(e.target.value)} />
+              <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+                <div style={{ fontSize: '14px', color: '#64748B', marginBottom: '4px' }}>Total Due</div>
+                <div style={{ fontSize: '36px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
               </div>
-              <div style={{ textAlign: 'center', padding: '12px', background: '#DEF7EC', borderRadius: '8px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '13px', color: '#03543F' }}>Change Due</div>
-                <div style={{ fontSize: '24px', fontWeight: 700, color: '#03543F', fontFamily: '"JetBrains Mono", monospace' }}>${change.toFixed(2)}</div>
-              </div>
+              {method === 'Cash' && (
+                <>
+                  <div style={st.field}>
+                    <label style={st.label}>Amount Tendered</label>
+                    <input
+                      style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: '"JetBrains Mono", monospace' }}
+                      type="number"
+                      value={tendered}
+                      onChange={(e) => setTendered(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div style={{ textAlign: 'center', padding: '12px', background: '#DEF7EC', borderRadius: '8px', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '13px', color: '#03543F' }}>Change Due</div>
+                    <div style={{ fontSize: '24px', fontWeight: 700, color: '#03543F', fontFamily: '"JetBrains Mono", monospace' }}>${change.toFixed(2)}</div>
+                  </div>
+                </>
+              )}
+              {method === 'Card' && (
+                <div style={{ textAlign: 'center', padding: '24px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                  <CreditCard size={32} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
+                  <div style={{ color: '#64748B', fontSize: '14px' }}>Tap, insert, or swipe card to proceed</div>
+                </div>
+              )}
+              {method === 'ACH' && (
+                <div style={{ textAlign: 'center', padding: '24px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                  <div style={{ color: '#64748B', fontSize: '14px' }}>ACH payment will be initiated on confirmation</div>
+                </div>
+              )}
+              {method === 'Charge to Slip' && (
+                <div style={st.field}>
+                  <label style={st.label}>Slip Number</label>
+                  <input style={st.input} placeholder="e.g. A-01" value={slip} onChange={(e) => setSlip(e.target.value)} autoFocus />
+                </div>
+              )}
             </>
           )}
-          {method === 'Card' && (
-            <div style={{ textAlign: 'center', padding: '24px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
-              <CreditCard size={32} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
-              <div style={{ color: '#64748B', fontSize: '14px' }}>Waiting for card tap or insert...</div>
-            </div>
-          )}
-          {method === 'Charge to Slip' && (
-            <div style={st.field}>
-              <label style={st.label}>Slip Number</label>
-              <input style={st.input} placeholder="e.g. A-01" />
-            </div>
-          )}
         </div>
-        <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Complete Payment</button>
-        </div>
+        {!done && (
+          <div style={st.modalFooter}>
+            <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+            <button
+              style={{ ...st.saveBtn, opacity: (method === 'Cash' && parseFloat(tendered) < total) ? 0.5 : 1 }}
+              onClick={handleComplete}
+              disabled={method === 'Cash' && parseFloat(tendered) < total}
+            >
+              Complete Payment
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -236,8 +285,34 @@ export default function POS() {
   const createTransaction = useApi<Transaction>('post', '/api/pos/transactions');
   const openShift = useApi<{ cashier: string; float: number }>('post', '/api/pos/shifts');
 
+  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
   const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
-  const transactions = useMemo(() => apiTransactions ?? TRANSACTIONS, [apiTransactions]);
+  const transactions = useMemo(
+    () => localTransactions.length > 0 ? localTransactions : (apiTransactions ?? TRANSACTIONS),
+    [localTransactions, apiTransactions]
+  );
+
+  const handlePaymentComplete = (method: string) => {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${timeStr}`;
+    const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
+    const tax = cart.reduce((s, i) => s + (i.product.price * i.product.taxRate / 100) * i.quantity, 0);
+    const nextNum = `TXN-${3042 + (localTransactions.length + 1)}`;
+    const txn: Transaction = {
+      id: `txn-${Date.now()}`,
+      number: nextNum,
+      date: dateStr,
+      items: cart.reduce((s, i) => s + i.quantity, 0),
+      subtotal: Math.round(subtotal * 100) / 100,
+      tax: Math.round(tax * 100) / 100,
+      total: Math.round((subtotal + tax) * 100) / 100,
+      method,
+      cashier: shiftCashier,
+    };
+    setLocalTransactions((prev) => [txn, ...(prev.length > 0 ? prev : (apiTransactions ?? TRANSACTIONS))]);
+    setCart([]);
+  };
 
   const loading = loadingProducts || loadingTxns;
 
@@ -601,7 +676,14 @@ export default function POS() {
       )}
 
       {showShiftModal && <OpenShiftModal onClose={() => setShowShiftModal(false)} onOpen={() => { setShiftOpen(true); }} />}
-      {paymentModal && <PaymentModal total={total} method={paymentModal.method} onClose={() => { setPaymentModal(null); setCart([]); }} />}
+      {paymentModal && (
+        <PaymentModal
+          total={total}
+          method={paymentModal.method}
+          onClose={() => setPaymentModal(null)}
+          onComplete={(method) => handlePaymentComplete(method)}
+        />
+      )}
     </div>
   );
 }

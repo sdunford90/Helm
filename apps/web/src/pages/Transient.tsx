@@ -126,18 +126,68 @@ const s: Record<string, React.CSSProperties> = {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function Transient() {
-  const { data: apiBookings, loading, error } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
-  const createBooking = useApi<Booking>('post', '/api/transient');
+const SLIP_OPTIONS = ['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'];
 
-  const [bookings, setBookings] = useState<Booking[]>(MOCK_BOOKINGS);
+export default function Transient() {
+  const { data: apiBookings, loading } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
+
+  const [localBookings, setLocalBookings] = useState<Booking[]>([]);
   const [tab, setTab] = useState<TabKey>('current');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [dateFilter, setDateFilter] = useState('');
   const [showModal, setShowModal] = useState(false);
 
-  const allBookings = apiBookings || bookings;
+  /* New booking form state */
+  const [nbName, setNbName] = useState('');
+  const [nbEmail, setNbEmail] = useState('');
+  const [nbPhone, setNbPhone] = useState('');
+  const [nbBoat, setNbBoat] = useState('');
+  const [nbLength, setNbLength] = useState('');
+  const [nbSlip, setNbSlip] = useState('');
+  const [nbCheckIn, setNbCheckIn] = useState('');
+  const [nbCheckOut, setNbCheckOut] = useState('');
+  const [nbRate, setNbRate] = useState('');
+  const [nbPayment, setNbPayment] = useState('');
+  const [nbSaving, setNbSaving] = useState(false);
+
+  const resetBookingForm = () => {
+    setNbName(''); setNbEmail(''); setNbPhone(''); setNbBoat('');
+    setNbLength(''); setNbSlip(''); setNbCheckIn(''); setNbCheckOut('');
+    setNbRate(''); setNbPayment('');
+  };
+
+  const handleCreateBooking = () => {
+    if (!nbName || !nbSlip || !nbCheckIn) return;
+    setNbSaving(true);
+    const nights = nbCheckIn && nbCheckOut
+      ? Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))
+      : 1;
+    const rate = parseFloat(nbRate) || 85;
+    const newBooking: Booking = {
+      id: `trans-${Date.now()}`,
+      bookingNumber: `TG-${2100 + (allBookings.length + 1)}`,
+      guestName: nbName,
+      boatName: nbBoat || '—',
+      boatLength: parseFloat(nbLength) || 0,
+      slip: nbSlip,
+      checkIn: nbCheckIn,
+      checkOut: nbCheckOut || '',
+      nights,
+      rate,
+      total: nights * rate,
+      status: 'Booked',
+      phone: nbPhone,
+      email: nbEmail,
+      paymentMethod: nbPayment || 'Credit Card',
+    };
+    setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || MOCK_BOOKINGS)]);
+    resetBookingForm();
+    setNbSaving(false);
+    setShowModal(false);
+  };
+
+  const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || MOCK_BOOKINGS);
 
   /* Derived */
   const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
@@ -374,62 +424,69 @@ export default function Transient() {
             <div style={s.modalBody}>
               <div style={s.fieldGrid}>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Guest Name</span>
-                  <input style={s.input} placeholder="Full name" />
+                  <span style={s.fieldLabel}>Guest Name *</span>
+                  <input style={s.input} placeholder="Full name" value={nbName} onChange={(e) => setNbName(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Email</span>
-                  <input style={s.input} placeholder="email@example.com" type="email" />
+                  <input style={s.input} placeholder="email@example.com" type="email" value={nbEmail} onChange={(e) => setNbEmail(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Phone</span>
-                  <input style={s.input} placeholder="(555) 000-0000" />
+                  <input style={s.input} placeholder="(555) 000-0000" value={nbPhone} onChange={(e) => setNbPhone(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Boat Name</span>
-                  <input style={s.input} placeholder="Vessel name" />
+                  <input style={s.input} placeholder="Vessel name" value={nbBoat} onChange={(e) => setNbBoat(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Boat Length (ft)</span>
-                  <input style={s.input} placeholder="e.g. 32" type="number" />
+                  <input style={s.input} placeholder="e.g. 32" type="number" value={nbLength} onChange={(e) => setNbLength(e.target.value)} />
                 </div>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Slip</span>
-                  <select style={{ ...s.input, ...s.select }}>
+                  <span style={s.fieldLabel}>Slip *</span>
+                  <select style={{ ...s.input, ...s.select }} value={nbSlip} onChange={(e) => setNbSlip(e.target.value)}>
                     <option value="">Select slip...</option>
-                    {['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'].map((sl) => (
+                    {SLIP_OPTIONS.map((sl) => (
                       <option key={sl} value={sl}>{sl}</option>
                     ))}
                   </select>
                 </div>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Check-In Date</span>
-                  <input style={s.input} type="date" />
+                  <span style={s.fieldLabel}>Check-In Date *</span>
+                  <input style={s.input} type="date" value={nbCheckIn} onChange={(e) => setNbCheckIn(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Check-Out Date</span>
-                  <input style={s.input} type="date" />
+                  <input style={s.input} type="date" value={nbCheckOut} onChange={(e) => setNbCheckOut(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Nightly Rate ($)</span>
-                  <input style={s.input} placeholder="85.00" type="number" step="0.01" />
+                  <input style={s.input} placeholder="85.00" type="number" step="0.01" value={nbRate} onChange={(e) => setNbRate(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Payment Method</span>
-                  <select style={{ ...s.input, ...s.select }}>
+                  <select style={{ ...s.input, ...s.select }} value={nbPayment} onChange={(e) => setNbPayment(e.target.value)}>
                     <option value="">Select...</option>
-                    <option value="credit">Credit Card</option>
-                    <option value="cash">Cash</option>
-                    <option value="check">Check</option>
-                    <option value="ach">ACH Transfer</option>
+                    <option value="Credit Card">Credit Card</option>
+                    <option value="Cash">Cash</option>
+                    <option value="Check">Check</option>
+                    <option value="ACH Transfer">ACH Transfer</option>
                   </select>
                 </div>
               </div>
+              {(!nbName || !nbSlip || !nbCheckIn) && (
+                <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Guest name, slip, and check-in date are required</div>
+              )}
             </div>
             <div style={s.modalFooter}>
-              <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} onClick={() => { createBooking.execute({}); setShowModal(false); }}>
-                <CreditCard size={16} /> Create Booking
+              <button style={s.cancelBtn} onClick={() => { setShowModal(false); resetBookingForm(); }}>Cancel</button>
+              <button
+                style={{ ...s.primaryBtn, opacity: (!nbName || !nbSlip || !nbCheckIn) ? 0.5 : 1 }}
+                onClick={handleCreateBooking}
+                disabled={nbSaving || !nbName || !nbSlip || !nbCheckIn}
+              >
+                <CreditCard size={16} /> {nbSaving ? 'Creating…' : 'Create Booking'}
               </button>
             </div>
           </div>

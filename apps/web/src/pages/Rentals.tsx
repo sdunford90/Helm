@@ -562,7 +562,36 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Add Product Modal ─────────────────────────────────── */
 
-function AddProductModal({ onClose }: { onClose: () => void }) {
+function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p: RentalProduct) => void }) {
+  const [name, setName] = useState('');
+  const [type, setType] = useState('');
+  const [capacity, setCapacity] = useState('');
+  const [hourlyRate, setHourlyRate] = useState('');
+  const [halfDayRate, setHalfDayRate] = useState('');
+  const [dailyRate, setDailyRate] = useState('');
+  const [status, setStatus] = useState<ProductStatus>('Available');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = () => {
+    if (!name || !type) return;
+    setSaving(true);
+    const product: RentalProduct = {
+      id: `prod-${Date.now()}`,
+      name,
+      type,
+      capacity: parseInt(capacity) || 0,
+      hourlyRate: parseFloat(hourlyRate) || 0,
+      halfDayRate: parseFloat(halfDayRate) || 0,
+      dailyRate: parseFloat(dailyRate) || 0,
+      status,
+      rating: 0,
+      totalBookings: 0,
+    };
+    onSave(product);
+    setSaving(false);
+    onClose();
+  };
+
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
@@ -573,12 +602,12 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
         <div style={st.modalBody}>
           <div style={st.field}>
             <label style={st.label}>Product Name *</label>
-            <input style={st.input} placeholder="e.g. Bay Cruiser 24" />
+            <input style={st.input} placeholder="e.g. Bay Cruiser 24" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </div>
           <div style={st.twoCol}>
             <div style={st.field}>
               <label style={st.label}>Type *</label>
-              <select style={{ ...st.input, cursor: 'pointer' }}>
+              <select style={{ ...st.input, cursor: 'pointer' }} value={type} onChange={(e) => setType(e.target.value)}>
                 <option value="">Select type...</option>
                 <option>Pontoon</option>
                 <option>Jet Ski</option>
@@ -590,37 +619,40 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
             </div>
             <div style={st.field}>
               <label style={st.label}>Capacity</label>
-              <input style={st.input} type="number" placeholder="e.g. 10" />
+              <input style={st.input} type="number" placeholder="e.g. 10" value={capacity} onChange={(e) => setCapacity(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Hourly Rate ($)</label>
-              <input style={st.input} type="number" placeholder="85.00" />
+              <input style={st.input} type="number" placeholder="85.00" value={hourlyRate} onChange={(e) => setHourlyRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Half-Day Rate ($)</label>
-              <input style={st.input} type="number" placeholder="280.00" />
+              <input style={st.input} type="number" placeholder="280.00" value={halfDayRate} onChange={(e) => setHalfDayRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Daily Rate ($)</label>
-              <input style={st.input} type="number" placeholder="450.00" />
+              <input style={st.input} type="number" placeholder="450.00" value={dailyRate} onChange={(e) => setDailyRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Status</label>
-              <select style={{ ...st.input, cursor: 'pointer' }}>
+              <select style={{ ...st.input, cursor: 'pointer' }} value={status} onChange={(e) => setStatus(e.target.value as ProductStatus)}>
                 <option>Available</option>
                 <option>Maintenance</option>
                 <option>Retired</option>
               </select>
             </div>
           </div>
-          <div style={st.field}>
-            <label style={st.label}>Description</label>
-            <textarea style={{ ...st.input, minHeight: '80px', resize: 'vertical' as const }} placeholder="Brief description of the rental product..." />
-          </div>
+          {(!name || !type) && <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Name and Type are required</div>}
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Save Product</button>
+          <button
+            style={{ ...st.saveBtn, opacity: (!name || !type) ? 0.5 : 1 }}
+            onClick={handleSave}
+            disabled={saving || !name || !type}
+          >
+            {saving ? 'Saving…' : 'Save Product'}
+          </button>
         </div>
       </div>
     </div>
@@ -681,6 +713,7 @@ export default function Rentals() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
+  const [localProducts, setLocalProducts] = useState<RentalProduct[]>([]);
 
   // API calls with fallback to mock data
   const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/api/rentals/products', { immediate: true });
@@ -689,7 +722,15 @@ export default function Rentals() {
   const { data: apiPromoCodes } = useApi<PromoCode[]>('get', '/api/rentals/promo-codes', { immediate: true });
   const createProduct = useApi<RentalProduct>('post', '/api/rentals/products');
 
-  const products = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
+  const handleAddProduct = (p: RentalProduct) => {
+    setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : (apiProducts ?? PRODUCTS))]);
+    createProduct.execute({ body: p }).catch(() => {});
+  };
+
+  const products = useMemo(
+    () => localProducts.length > 0 ? localProducts : (apiProducts ?? PRODUCTS),
+    [localProducts, apiProducts]
+  );
   const reservations = useMemo(() => apiReservations ?? RESERVATIONS, [apiReservations]);
   const pricingRules = useMemo(() => apiPricingRules ?? PRICING_RULES, [apiPricingRules]);
   const promoCodes = useMemo(() => apiPromoCodes ?? PROMO_CODES, [apiPromoCodes]);
@@ -1019,7 +1060,7 @@ export default function Rentals() {
       {/* Availability Grid Tab */}
       {tab === 'availability' && <AvailabilityGrid products={products} />}
 
-      {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
+      {showAdd && <AddProductModal onClose={() => setShowAdd(false)} onSave={handleAddProduct} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}
     </div>
   );

@@ -180,12 +180,51 @@ export default function Concierge() {
   const [showModal, setShowModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null);
 
-  const { data: apiRequests, loading: requestsLoading, error: requestsError } = useApi<ServiceRequest[]>('get', '/api/concierge', { immediate: true });
-  const { data: apiVendors, loading: vendorsLoading, error: vendorsError } = useApi<Vendor[]>('get', '/api/concierge/vendors', { immediate: true });
-  const createRequest = useApi<ServiceRequest>('post', '/api/concierge');
+  const { data: apiRequests, loading: requestsLoading } = useApi<ServiceRequest[]>('get', '/api/concierge', { immediate: true });
+  const { data: apiVendors, loading: vendorsLoading } = useApi<Vendor[]>('get', '/api/concierge/vendors', { immediate: true });
 
-  const requests = apiRequests || MOCK_REQUESTS;
+  const [localRequests, setLocalRequests] = useState<ServiceRequest[]>([]);
+  const requests = localRequests.length > 0 ? localRequests : (apiRequests || MOCK_REQUESTS);
   const vendors = apiVendors || MOCK_VENDORS;
+
+  /* New request form state */
+  const [nrCustomer, setNrCustomer] = useState('');
+  const [nrService, setNrService] = useState<ServiceType | ''>('');
+  const [nrBoat, setNrBoat] = useState('');
+  const [nrDate, setNrDate] = useState('');
+  const [nrUrgency, setNrUrgency] = useState<'Normal' | 'Urgent'>('Normal');
+  const [nrNotes, setNrNotes] = useState('');
+  const [nrSaving, setNrSaving] = useState(false);
+
+  const resetNewRequestForm = () => {
+    setNrCustomer(''); setNrService(''); setNrBoat('');
+    setNrDate(''); setNrUrgency('Normal'); setNrNotes('');
+  };
+
+  const handleSubmitRequest = async () => {
+    if (!nrCustomer || !nrService) return;
+    setNrSaving(true);
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const newReq: ServiceRequest = {
+      id: `sr-${Date.now()}`,
+      requestNumber: `SR-${3000 + (requests.length + 1)}`,
+      customer: nrCustomer,
+      serviceType: nrService as ServiceType,
+      boat: nrBoat || '—',
+      preferredDate: nrDate || today,
+      vendor: 'Unassigned',
+      quote: null,
+      status: 'Submitted',
+      urgency: nrUrgency,
+      notes: nrNotes,
+      createdAt: new Date().toISOString().slice(0, 10),
+      timeline: [{ date: today, status: 'Submitted', note: 'Request created' }],
+    };
+    setLocalRequests((prev) => [newReq, ...(prev.length > 0 ? prev : apiRequests || MOCK_REQUESTS)]);
+    resetNewRequestForm();
+    setNrSaving(false);
+    setShowModal(false);
+  };
 
   /* Derived stats */
   const openRequests = requests.filter((r) => !['Completed', 'Invoiced'].includes(r.status)).length;
@@ -434,58 +473,63 @@ export default function Concierge() {
 
       {/* ── New Request Modal ── */}
       {showModal && (
-        <div style={s.overlay} onClick={() => setShowModal(false)}>
+        <div style={s.overlay} onClick={() => { setShowModal(false); resetNewRequestForm(); }}>
           <div style={s.modal} onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>New Service Request</h2>
-              <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>
+              <button style={s.closeBtn} onClick={() => { setShowModal(false); resetNewRequestForm(); }}><X size={20} /></button>
             </div>
             <div style={s.modalBody}>
               <div style={s.fieldGrid}>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Customer</span>
-                  <select style={{ ...s.input, ...s.select }}>
+                  <span style={s.fieldLabel}>Customer *</span>
+                  <select style={{ ...s.input, ...s.select }} value={nrCustomer} onChange={(e) => setNrCustomer(e.target.value)}>
                     <option value="">Select customer...</option>
-                    {Array.from(new Set(requests.map((r) => r.customer))).map((c) => (
+                    {Array.from(new Set((apiRequests || MOCK_REQUESTS).map((r) => r.customer))).map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
                 </div>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Service Type</span>
-                  <select style={{ ...s.input, ...s.select }}>
+                  <span style={s.fieldLabel}>Service Type *</span>
+                  <select style={{ ...s.input, ...s.select }} value={nrService} onChange={(e) => setNrService(e.target.value as ServiceType)}>
                     <option value="">Select service...</option>
                     {SERVICE_TYPES.map((st) => <option key={st} value={st}>{st}</option>)}
                   </select>
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Boat</span>
-                  <input style={s.input} placeholder="Boat name (length)" />
+                  <input style={s.input} placeholder="Boat name (length)" value={nrBoat} onChange={(e) => setNrBoat(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Preferred Date</span>
-                  <input style={s.input} type="date" />
+                  <input style={s.input} type="date" value={nrDate} onChange={(e) => setNrDate(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Urgency</span>
-                  <select style={{ ...s.input, ...s.select }}>
+                  <select style={{ ...s.input, ...s.select }} value={nrUrgency} onChange={(e) => setNrUrgency(e.target.value as 'Normal' | 'Urgent')}>
                     <option value="Normal">Normal</option>
                     <option value="Urgent">Urgent</option>
                   </select>
                 </div>
-                <div style={s.field}>
-                  {/* spacer for alignment */}
-                </div>
+                <div style={s.field} />
                 <div style={s.fieldFull}>
                   <span style={s.fieldLabel}>Notes</span>
-                  <textarea style={s.textarea} placeholder="Describe the service needed..." />
+                  <textarea style={s.textarea} placeholder="Describe the service needed..." value={nrNotes} onChange={(e) => setNrNotes(e.target.value)} />
                 </div>
               </div>
+              {(!nrCustomer || !nrService) && (
+                <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Customer and Service Type are required</div>
+              )}
             </div>
             <div style={s.modalFooter}>
-              <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} onClick={() => { createRequest.execute({}); setShowModal(false); }}>
-                <FileText size={16} /> Submit Request
+              <button style={s.cancelBtn} onClick={() => { setShowModal(false); resetNewRequestForm(); }}>Cancel</button>
+              <button
+                style={{ ...s.primaryBtn, opacity: (!nrCustomer || !nrService) ? 0.5 : 1 }}
+                onClick={handleSubmitRequest}
+                disabled={nrSaving || !nrCustomer || !nrService}
+              >
+                <FileText size={16} /> {nrSaving ? 'Submitting…' : 'Submit Request'}
               </button>
             </div>
           </div>

@@ -29,6 +29,7 @@ interface FormField {
 
 interface LeadFormBuilderProps {
   onClose: () => void;
+  onSave?: (name: string, type: FormType, fields: FormField[]) => void;
 }
 
 const FIELD_TYPE_LABELS: Record<FieldType, string> = {
@@ -236,12 +237,13 @@ const s: Record<string, React.CSSProperties> = {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function LeadFormBuilder({ onClose }: LeadFormBuilderProps) {
+export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProps) {
   const [formName, setFormName] = useState('');
   const [formType, setFormType] = useState<FormType>('Slip Inquiry');
   const [fields, setFields] = useState<FormField[]>(DEFAULT_FIELDS);
   const [previewTab, setPreviewTab] = useState<'preview' | 'embed'>('preview');
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const updateField = (key: string, changes: Partial<FormField>) => {
     setFields((prev) => prev.map((f) => f.key === key ? { ...f, ...changes } : f));
@@ -502,9 +504,17 @@ export default function LeadFormBuilder({ onClose }: LeadFormBuilderProps) {
         {/* Footer */}
         <div style={s.footer}>
           <button style={s.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={s.saveBtn} onClick={onClose}>
-            <Save size={16} />
-            Save Form
+          <button
+            style={{ ...s.saveBtn, backgroundColor: saved ? '#16A34A' : undefined }}
+            onClick={() => {
+              if (saved) return;
+              onSave?.(formName, formType, fields);
+              setSaved(true);
+              setTimeout(() => onClose(), 1000);
+            }}
+          >
+            {saved ? <Check size={16} /> : <Save size={16} />}
+            {saved ? 'Saved!' : 'Save Form'}
           </button>
         </div>
       </div>

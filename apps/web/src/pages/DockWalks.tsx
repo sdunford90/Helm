@@ -136,7 +136,54 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Start Walk Modal ──────────────────────────────────── */
 
-function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
+const INSPECTORS = [
+  { id: 'staff-jake', name: 'Jake Martinez' },
+  { id: 'staff-maria', name: 'Maria Santos' },
+  { id: 'staff-tom', name: 'Tom Bradley' },
+];
+
+const DOCKS = ['A', 'B', 'C', 'D', 'Fuel'];
+
+function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (walk: DockWalk) => void }) {
+  const [inspector, setInspector] = useState(INSPECTORS[0].id);
+  const [selectedDocks, setSelectedDocks] = useState<string[]>(['A', 'B', 'C']);
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const toggleDock = (d: string) =>
+    setSelectedDocks((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+
+  const handleStart = async () => {
+    if (!inspector || selectedDocks.length === 0) return;
+    setSaving(true);
+    try {
+      const res = await fetch('/api/dock-walks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inspectorId: inspector, dockId: selectedDocks[0], notes }),
+      });
+      const inspectorName = INSPECTORS.find((i) => i.id === inspector)?.name ?? inspector;
+      const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const newWalk: DockWalk = res.ok
+        ? await res.json()
+        : {
+            id: `walk-${Date.now()}`,
+            number: `DW-${String(Date.now()).slice(-4)}`,
+            date: today,
+            inspector: inspectorName,
+            docks: selectedDocks,
+            slipsChecked: 0,
+            violations: 0,
+            status: 'In Progress',
+            duration: '—',
+          };
+      onSave?.(newWalk);
+    } finally {
+      setSaving(false);
+      onClose();
+    }
+  };
+
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
@@ -147,31 +194,30 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (da
         <div style={st.modalBody}>
           <div style={st.field}>
             <label style={st.label}>Inspector *</label>
-            <select style={st.input}>
-              <option>Jake Martinez</option>
-              <option>Maria Santos</option>
+            <select style={st.input} value={inspector} onChange={(e) => setInspector(e.target.value)}>
+              {INSPECTORS.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
             </select>
           </div>
           <div style={st.field}>
             <label style={st.label}>Dock(s) *</label>
-            <div style={{ display: 'flex', gap: '16px', marginTop: '4px' }}>
-              {['A', 'B', 'C'].map((d) => (
+            <div style={{ display: 'flex', gap: '16px', marginTop: '4px', flexWrap: 'wrap' as const }}>
+              {DOCKS.map((d) => (
                 <label key={d} style={st.checkboxLabel}>
-                  <input type="checkbox" defaultChecked /> Dock {d}
+                  <input type="checkbox" checked={selectedDocks.includes(d)} onChange={() => toggleDock(d)} /> Dock {d}
                 </label>
               ))}
             </div>
           </div>
           <div style={st.field}>
             <label style={st.label}>Notes</label>
-            <textarea style={{ ...st.input, minHeight: '60px', resize: 'vertical' as const }} placeholder="Any pre-walk notes..." />
+            <textarea style={{ ...st.input, minHeight: '60px', resize: 'vertical' as const }} placeholder="Any pre-walk notes..." value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>
+          <button style={st.saveBtn} onClick={handleStart} disabled={saving || selectedDocks.length === 0}>
             <ClipboardCheck size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-            Start Walk
+            {saving ? 'Starting…' : 'Start Walk'}
           </button>
         </div>
       </div>
@@ -181,8 +227,32 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (da
 
 /* ── Violation Detail Panel ────────────────────────────── */
 
-function ViolationDetail({ violation, onClose }: { violation: Violation; onClose: () => void }) {
+function ViolationDetail({ violation, onClose, onResolved }: {
+  violation: Violation;
+  onClose: () => void;
+  onResolved?: (id: string) => void;
+}) {
   const sc = severityColors[violation.severity];
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [resolving, setResolving] = useState(false);
+  const [resolved, setResolved] = useState(violation.status === 'Resolved');
+
+  const handleResolve = async () => {
+    if (resolving) return;
+    setResolving(true);
+    try {
+      await fetch(`/api/dock-walks/violations/${violation.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'RESOLVED', resolutionNotes }),
+      });
+      setResolved(true);
+      onResolved?.(violation.id);
+    } finally {
+      setResolving(false);
+    }
+  };
+
   return (
     <div style={st.detailPanel}>
       <div style={st.detailHeader}>
@@ -192,7 +262,9 @@ function ViolationDetail({ violation, onClose }: { violation: Violation; onClose
       <div style={st.detailSection}>
         <div style={{ display: 'flex', gap: '8px' }}>
           <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{violation.severity}</span>
-          <span style={{ ...st.badge, backgroundColor: violation.status === 'Open' ? '#FFF3CD' : '#DEF7EC', color: violation.status === 'Open' ? '#856404' : '#03543F' }}>{violation.status}</span>
+          <span style={{ ...st.badge, backgroundColor: resolved ? '#DEF7EC' : '#FFF3CD', color: resolved ? '#03543F' : '#856404' }}>
+            {resolved ? 'Resolved' : 'Open'}
+          </span>
         </div>
       </div>
       <div style={st.detailSection}>
@@ -217,16 +289,26 @@ function ViolationDetail({ violation, onClose }: { violation: Violation; onClose
           </div>
         </div>
       </div>
-      {violation.status === 'Open' && (
+      {!resolved && (
         <div style={{ padding: '20px 24px' }}>
           <div style={st.field}>
             <label style={st.label}>Resolution Notes</label>
-            <textarea style={{ ...st.input, minHeight: '60px', resize: 'vertical' as const }} placeholder="Describe how the violation was resolved..." />
+            <textarea
+              style={{ ...st.input, minHeight: '60px', resize: 'vertical' as const }}
+              placeholder="Describe how the violation was resolved..."
+              value={resolutionNotes}
+              onChange={(e) => setResolutionNotes(e.target.value)}
+            />
           </div>
-          <button style={st.saveBtn}>
+          <button style={st.saveBtn} onClick={handleResolve} disabled={resolving}>
             <CheckCircle2 size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-            Mark Resolved
+            {resolving ? 'Saving…' : 'Mark Resolved'}
           </button>
+        </div>
+      )}
+      {resolved && (
+        <div style={{ padding: '20px 24px', background: '#DEF7EC', borderRadius: '8px', margin: '16px 24px', textAlign: 'center', color: '#03543F', fontWeight: 600 }}>
+          ✓ Violation resolved
         </div>
       )}
     </div>
@@ -243,12 +325,14 @@ export default function DockWalks() {
   const [showStartWalk, setShowStartWalk] = useState(false);
   const [selectedViolation, setSelectedViolation] = useState<Violation | null>(null);
 
-  const { data: apiWalks, loading: walksLoading, error: walksError } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
-  const { data: apiViolations, loading: violationsLoading, error: violationsError } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
-  const startWalk = useApi<DockWalk>('post', '/api/dock-walks');
+  const { data: apiWalks, loading: walksLoading } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
+  const { data: apiViolations, loading: violationsLoading } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
 
-  const walks = apiWalks || WALKS;
-  const violations = apiViolations || VIOLATIONS;
+  const [localWalks, setLocalWalks] = useState<DockWalk[]>([]);
+  const [localViolations, setLocalViolations] = useState<Violation[] | null>(null);
+
+  const walks = localWalks.length > 0 ? localWalks : (apiWalks || WALKS);
+  const violations = localViolations ?? (apiViolations || VIOLATIONS);
 
   const openViolations = violations.filter((v) => v.status === 'Open').length;
   const avgItems = walks.length > 0 ? Math.round(walks.reduce((s, w) => s + w.slipsChecked, 0) / walks.length) : 0;
@@ -469,8 +553,25 @@ export default function DockWalks() {
         </>
       )}
 
-      {showStartWalk && <StartWalkModal onClose={() => setShowStartWalk(false)} onSave={(data) => startWalk.execute(data)} />}
-      {selectedViolation && <ViolationDetail violation={selectedViolation} onClose={() => setSelectedViolation(null)} />}
+      {showStartWalk && (
+        <StartWalkModal
+          onClose={() => setShowStartWalk(false)}
+          onSave={(newWalk) => {
+            setLocalWalks((prev) => [newWalk, ...(prev.length > 0 ? prev : apiWalks || WALKS)]);
+            setShowStartWalk(false);
+          }}
+        />
+      )}
+      {selectedViolation && (
+        <ViolationDetail
+          violation={selectedViolation}
+          onClose={() => setSelectedViolation(null)}
+          onResolved={(id) => {
+            const base = localViolations ?? (apiViolations || VIOLATIONS);
+            setLocalViolations(base.map((v) => v.id === id ? { ...v, status: 'Resolved' } : v));
+          }}
+        />
+      )}
     </div>
   );
 }
