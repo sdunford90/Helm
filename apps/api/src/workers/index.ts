@@ -89,6 +89,25 @@ smsWorker.on("failed", (job, err) => {
 const automationWorker = new Worker(
   "automation",
   async (job) => {
+    // Handle algorithmic pricing job (recurring)
+    if (job.name === "algorithmic-pricing") {
+      const tenantId = job.data.tenantId;
+      if (tenantId) {
+        const result = await runAlgorithmicPricing(tenantId);
+        console.log(`[automation-worker] Algorithmic pricing complete: ${result.suggestionsCreated} suggestions created`);
+      } else {
+        // If no specific tenant, run for all active tenants
+        const tenants = await prisma.tenant.findMany({ where: { active: true }, select: { id: true } });
+        let totalSuggestions = 0;
+        for (const tenant of tenants) {
+          const result = await runAlgorithmicPricing(tenant.id);
+          totalSuggestions += result.suggestionsCreated;
+        }
+        console.log(`[automation-worker] Algorithmic pricing complete for ${tenants.length} tenants: ${totalSuggestions} total suggestions`);
+      }
+      return;
+    }
+
     const { type, reservationId, customerId, tenantId } = job.data;
 
     // Look up customer contact info

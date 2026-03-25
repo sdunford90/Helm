@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
   AlertTriangle, Trash2,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -225,6 +226,18 @@ export default function POS() {
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [paymentModal, setPaymentModal] = useState<{ method: string } | null>(null);
 
+  // API calls with fallback to mock data
+  const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });
+  const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/api/pos/transactions', { immediate: true });
+  const { data: apiShift } = useApi<{ cashier: string; float: number; openedAt: string } | null>('get', '/api/pos/shifts/current', { immediate: true });
+  const createTransaction = useApi<Transaction>('post', '/api/pos/transactions');
+  const openShift = useApi<{ cashier: string; float: number }>('post', '/api/pos/shifts');
+
+  const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
+  const transactions = useMemo(() => apiTransactions ?? TRANSACTIONS, [apiTransactions]);
+
+  const loading = loadingProducts || loadingTxns;
+
   const addToCart = (product: Product) => {
     setCart((prev) => {
       const existing = prev.find((i) => i.product.id === product.id);
@@ -240,7 +253,7 @@ export default function POS() {
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
   const tax = cart.reduce((s, i) => s + i.product.price * i.quantity * (i.product.taxRate / 100), 0);
   const total = subtotal + tax;
-  const runningTotal = TRANSACTIONS.filter((t) => t.date.includes('2026-03-25')).reduce((s, t) => s + t.total, 0) + total;
+  const runningTotal = transactions.filter((t) => t.date.includes('2026-03-25')).reduce((s, t) => s + t.total, 0) + total;
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sale', label: 'New Sale' },
@@ -253,6 +266,8 @@ export default function POS() {
     <div style={st.page}>
       <h1 style={st.title}>Point of Sale</h1>
       <hr style={st.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading POS data...</div>}
 
       {/* Shift Banner */}
       {shiftOpen ? (
@@ -291,7 +306,7 @@ export default function POS() {
               <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <div style={st.prodGrid}>
-              {PRODUCTS.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
+              {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
                 <div key={p.id} style={st.prodCard} onClick={() => addToCart(p)}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}>
@@ -372,7 +387,7 @@ export default function POS() {
                 </tr>
               </thead>
               <tbody>
-                {TRANSACTIONS.map((t, idx) => {
+                {transactions.map((t, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={t.id}>
@@ -429,7 +444,7 @@ export default function POS() {
                 </tr>
               </thead>
               <tbody>
-                {PRODUCTS.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())).map((p, idx) => {
+                {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())).map((p, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   const ss = stockStatus(p);
                   return (
@@ -476,7 +491,7 @@ export default function POS() {
                 </tr>
               </thead>
               <tbody>
-                {PRODUCTS.sort((a, b) => {
+                {[...posProducts].sort((a, b) => {
                   const aRatio = a.inStock / a.reorderPoint;
                   const bRatio = b.inStock / b.reorderPoint;
                   return aRatio - bRatio;

@@ -321,17 +321,19 @@ export default function Rentals() {
       <h1 style={st.title}>Rentals</h1>
       <hr style={st.divider} />
 
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading rentals...</div>}
+
       {/* Stats */}
       <div style={st.statsRow}>
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Products</div>
-          <div style={st.statValue}>{PRODUCTS.length}</div>
+          <div style={st.statValue}>{products.length}</div>
           <div style={st.statSub}>{activeProducts} available</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Active Reservations</div>
           <div style={st.statValue}>{activeRes}</div>
-          <div style={st.statSub}>{RESERVATIONS.filter((r) => r.status === 'Checked In').length} checked in today</div>
+          <div style={st.statSub}>{reservations.filter((r) => r.status === 'Checked In').length} checked in today</div>
         </div>
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Revenue This Month</div>
@@ -341,7 +343,7 @@ export default function Rentals() {
         <div style={st.statCard}>
           <div style={st.statLabel}>Avg Rating</div>
           <div style={st.statValue}>{avgRating}</div>
-          <div style={st.statSub}>{PRODUCTS.reduce((s, p) => s + p.totalBookings, 0)} total bookings</div>
+          <div style={st.statSub}>{products.reduce((s, p) => s + p.totalBookings, 0)} total bookings</div>
         </div>
       </div>
 
@@ -381,7 +383,7 @@ export default function Rentals() {
                 </tr>
               </thead>
               <tbody>
-                {PRODUCTS.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.type.toLowerCase().includes(search.toLowerCase())).map((p, idx) => {
+                {products.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.type.toLowerCase().includes(search.toLowerCase())).map((p, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   const sc = productStatusColors[p.status];
                   return (
@@ -447,7 +449,7 @@ export default function Rentals() {
                 </tr>
               </thead>
               <tbody>
-                {RESERVATIONS.filter((r) => {
+                {reservations.filter((r) => {
                   if (statusFilter !== 'All' && r.status !== statusFilter) return false;
                   if (!search) return true;
                   const q = search.toLowerCase();
@@ -502,7 +504,7 @@ export default function Rentals() {
                 </tr>
               </thead>
               <tbody>
-                {PRICING_RULES.map((rule, idx) => {
+                {pricingRules.map((rule, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={rule.id}>
@@ -553,7 +555,7 @@ export default function Rentals() {
                 </tr>
               </thead>
               <tbody>
-                {PROMO_CODES.map((pc, idx) => {
+                {promoCodes.map((pc, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={pc.id}>
