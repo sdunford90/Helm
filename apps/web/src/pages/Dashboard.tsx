@@ -612,9 +612,10 @@ const Dashboard: React.FC = () => {
               {tasks.map((task, i) => (
                 <div
                   key={i}
+                  onClick={() => navigate(task.route)}
                   style={{
                     display: 'flex',
-                    alignItems: 'center',
+                    alignItems: 'flex-start',
                     gap: '10px',
                     padding: '10px 12px',
                     borderRadius: '8px',
@@ -624,20 +625,42 @@ const Dashboard: React.FC = () => {
                     border: task.urgent
                       ? '1px solid rgba(245, 158, 11, 0.2)'
                       : `1px solid ${colors.border}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = task.urgent
+                      ? 'rgba(245, 158, 11, 0.12)'
+                      : 'rgba(0, 212, 255, 0.06)';
+                    e.currentTarget.style.borderColor = task.urgent
+                      ? 'rgba(245, 158, 11, 0.4)'
+                      : colors.cyan;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = task.urgent
+                      ? 'rgba(245, 158, 11, 0.06)'
+                      : colors.lightGray;
+                    e.currentTarget.style.borderColor = task.urgent
+                      ? 'rgba(245, 158, 11, 0.2)'
+                      : colors.border;
                   }}
                 >
-                  {task.icon}
-                  <span
-                    style={{
-                      fontSize: '14px',
-                      color: colors.navy,
-                      fontWeight: 500,
-                      flex: 1,
-                    }}
-                  >
-                    {task.text}
-                  </span>
-                  <ChevronRight size={16} color={colors.gray} />
+                  <div style={{ paddingTop: '2px' }}>{task.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <span
+                      style={{
+                        fontSize: '14px',
+                        color: colors.navy,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {task.text}
+                    </span>
+                    <div style={{ fontSize: '12px', color: colors.gray, marginTop: '3px', lineHeight: 1.4 }}>
+                      {task.detail}
+                    </div>
+                  </div>
+                  <ChevronRight size={16} color={colors.gray} style={{ marginTop: '2px' }} />
                 </div>
               ))}
             </div>
@@ -747,6 +770,7 @@ const Dashboard: React.FC = () => {
                     (e.currentTarget as HTMLButtonElement).style.borderColor = colors.border;
                     (e.currentTarget as HTMLButtonElement).style.backgroundColor = colors.white;
                   }}
+                  onClick={() => navigate(action.route)}
                 >
                   <span style={{ color: colors.cyan }}>{action.icon}</span>
                   {action.label}

@@ -369,6 +369,12 @@ const st: Record<string, React.CSSProperties> = {
 /* ── Add Slip Modal ─────────────────────────────────────── */
 
 function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
+  const [saved, setSaved] = useState(false);
+  const handleSave = () => {
+    if (onSave) onSave({});
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose(); }, 1500);
+  };
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
@@ -376,6 +382,7 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
           <h2 style={st.modalTitle}>Add Slip</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
+        {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Slip saved successfully!</div>}
         <div style={st.modalBody}>
           <div style={st.twoCol}>
             <div style={st.field}>
@@ -435,7 +442,7 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Save Slip</button>
+          <button style={st.saveBtn} onClick={handleSave}>Save Slip</button>
         </div>
       </div>
     </div>
@@ -609,6 +616,8 @@ export default function Slips() {
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [selectedSlip, setSelectedSlip] = useState<Slip | null>(null);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const showAction = (msg: string) => { setActionMsg(msg); setTimeout(() => setActionMsg(null), 2000); };
   const [showAssignModal, setShowAssignModal] = useState(false);
 
   const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
@@ -635,6 +644,8 @@ export default function Slips() {
     <div style={st.page}>
       <h1 style={st.title}>Slips</h1>
       <hr style={st.divider} />
+
+      {actionMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{actionMsg}</div>}
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading slips...</div>}
 

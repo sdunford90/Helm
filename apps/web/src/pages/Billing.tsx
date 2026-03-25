@@ -186,6 +186,7 @@ export default function Billing() {
               <th style={styles.thRight}>Tax</th>
               <th style={styles.thRight}>Total</th>
               <th style={styles.thRight}>Balance</th>
+              <th style={{ ...styles.th, textAlign: 'center', width: '80px' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -206,11 +207,23 @@ export default function Billing() {
                 <td style={styles.tdRight}>{formatCents(inv.tax)}</td>
                 <td style={{ ...styles.tdRight, fontWeight: 600 }}>{formatCents(inv.total)}</td>
                 <td style={{ ...styles.tdRight, fontWeight: 600, color: inv.balance > 0 ? '#B71C1C' : '#1B5E20' }}>{formatCents(inv.balance)}</td>
+                <td style={{ ...styles.td, textAlign: 'center' }}>
+                  {inv.balance > 0 && inv.status !== 'Void' ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate(`/billing/invoices/${inv.id}?action=pay`); }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 12px', fontSize: '12px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#1B5E20', border: 'none', borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                    >
+                      <CreditCard size={12} /> Pay
+                    </button>
+                  ) : (
+                    <span style={{ color: '#94A3B8', fontSize: '12px' }}>&mdash;</span>
+                  )}
+                </td>
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ ...styles.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                <td colSpan={10} style={{ ...styles.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
                   No invoices match the current filters.
                 </td>
               </tr>

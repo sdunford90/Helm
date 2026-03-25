@@ -314,6 +314,26 @@ const st: Record<string, React.CSSProperties> = {
   },
 };
 
+/* ── Mock Catalog Products ─────────────────────────────── */
+
+const DOCKAGE_PRODUCTS = [
+  { id: 'prod-1', name: '40ft Covered', rate: 2450, label: '40ft Covered - $2,450/mo' },
+  { id: 'prod-2', name: '30ft Open', rate: 1200, label: '30ft Open - $1,200/mo' },
+  { id: 'prod-3', name: '25ft Open', rate: 850, label: '25ft Open - $850/mo' },
+  { id: 'prod-4', name: '35ft Covered', rate: 1800, label: '35ft Covered - $1,800/mo' },
+  { id: 'prod-5', name: '50ft End Slip', rate: 3200, label: '50ft End Slip - $3,200/mo' },
+  { id: 'prod-6', name: '45ft Covered Premium', rate: 3000, label: '45ft Covered Premium - $3,000/mo' },
+];
+
+const CUSTOMER_BOATS: Record<string, { id: string; name: string }[]> = {
+  'james-harborview': [{ id: 'b1', name: "Sea Spirit (38' Sailboat)" }],
+  'maria-seabreeze': [{ id: 'b2', name: "Coastal Dream (32' Powerboat)" }],
+  'robert-dockside': [{ id: 'b3', name: "Dock Runner (25' Runabout)" }],
+  'susan-baywatch': [{ id: 'b4', name: "Bay Cruiser (30' Cabin Cruiser)" }],
+  'david-tidewater': [{ id: 'b5', name: "Tidewater Express (42' Trawler)" }],
+  'elena-windward': [{ id: 'b6', name: "Windward (45' Sailboat)" }],
+};
+
 /* ── Contract Form Modal ─────────────────────────────────── */
 
 function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
@@ -321,6 +341,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const [customer, setCustomer] = useState('');
   const [slip, setSlip] = useState('');
   const [boat, setBoat] = useState('');
+  const [product, setProduct] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -329,8 +350,23 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const availableBoats = customer ? (CUSTOMER_BOATS[customer] || []) : [];
+
+  const handleProductChange = (productId: string) => {
+    setProduct(productId);
+    const prod = DOCKAGE_PRODUCTS.find((p) => p.id === productId);
+    if (prod) {
+      setRate(String(prod.rate));
+    }
+  };
+
+  const handleCustomerChange = (val: string) => {
+    setCustomer(val);
+    setBoat('');
+  };
+
   const handleSave = async () => {
-    if (!customer || !slip || !startDate || !endDate || !rate) {
+    if (!customer || !slip || !boat || !startDate || !endDate || !rate) {
       setError('Please fill in all required fields.');
       return;
     }
@@ -340,6 +376,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
       customerId: customer,
       slipNumber: slip,
       boatId: boat,
+      productId: product || undefined,
       billingCycle,
       startDate,
       endDate,
@@ -363,7 +400,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
           <div style={st.twoCol}>
             <div style={st.field}>
               <label style={st.label}>Customer *</label>
-              <select style={st.formSelect} value={customer} onChange={(e) => setCustomer(e.target.value)}>
+              <select style={st.formSelect} value={customer} onChange={(e) => handleCustomerChange(e.target.value)}>
                 <option value="">Select customer...</option>
                 <option value="james-harborview">James Harborview</option>
                 <option value="maria-seabreeze">Maria Seabreeze</option>
@@ -390,13 +427,22 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               </select>
             </div>
             <div style={st.field}>
-              <label style={st.label}>Boat</label>
-              <select style={st.formSelect} value={boat} onChange={(e) => setBoat(e.target.value)}>
+              <label style={st.label}>Boat *</label>
+              <select style={st.formSelect} value={boat} onChange={(e) => setBoat(e.target.value)} disabled={!customer}>
                 <option value="">Select boat...</option>
-                <option value="1">Sea Spirit (38' Sailboat)</option>
-                <option value="2">Wave Runner III (28' Powerboat)</option>
-                <option value="3">Coastal Dream (32' Powerboat)</option>
-                <option value="4">Dock Runner (25' Runabout)</option>
+                {availableBoats.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+              {customer && availableBoats.length === 0 && <span style={{ fontSize: '12px', color: '#64748B' }}>No boats on file for this customer</span>}
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Product (Dockage Rate)</label>
+              <select style={st.formSelect} value={product} onChange={(e) => handleProductChange(e.target.value)}>
+                <option value="">Select product...</option>
+                {DOCKAGE_PRODUCTS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
               </select>
             </div>
             <div style={st.field}>
@@ -418,7 +464,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               <input style={st.input} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Rate ($/period) *</label>
+              <label style={st.label}>Rate ($/period) *{product ? ' (from product)' : ''}</label>
               <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={st.field}>
