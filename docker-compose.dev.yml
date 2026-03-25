@@ -1,0 +1,42 @@
+version: "3.8"
+
+# Development override: only infrastructure services
+# Usage: docker compose -f docker-compose.dev.yml up -d
+# Run api and web locally with `npm run dev`
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: helm-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helm
+      POSTGRES_PASSWORD: helmpassword
+      POSTGRES_DB: helm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helm -d helm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: helm-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data-dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data-dev:
+  redis-data-dev:

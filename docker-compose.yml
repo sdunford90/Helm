@@ -1,0 +1,100 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: helm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helm
+      POSTGRES_PASSWORD: helmpassword
+      POSTGRES_DB: helm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - helm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helm -d helm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: helm-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - helm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: helm-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://helm:helmpassword@postgres:5432/helm?schema=public
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    networks:
+      - helm-network
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: helm-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+    networks:
+      - helm-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: helm-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://helm:helmpassword@postgres:5432/helm?schema=public
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/jobs/renewal-job.js"]
+    networks:
+      - helm-network
+
+networks:
+  helm-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
