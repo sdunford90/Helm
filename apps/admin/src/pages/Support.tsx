@@ -12,7 +12,7 @@ interface Ticket {
   description: string;
 }
 
-const TICKETS: Ticket[] = [
+const INITIAL_TICKETS: Ticket[] = [
   { id: 'T-1042', tenant: 'Sunset Cove Marina', subject: 'Custom domain SSL certificate not working', category: 'Technical', priority: 'high', status: 'open', created: '2026-03-22', assignee: 'Mike D.', description: 'SSL cert provisioning failed for marina.sunsetcove.com.' },
   { id: 'T-1041', tenant: 'Pacific Coast Marina', subject: 'Request for bulk invoice export', category: 'Feature Request', priority: 'medium', status: 'in_progress', created: '2026-03-21', assignee: 'Sarah A.', description: 'Need ability to export all invoices as CSV for tax season.' },
   { id: 'T-1040', tenant: 'Fisherman\'s Wharf Marina', subject: 'Stripe payout delayed', category: 'Billing', priority: 'high', status: 'open', created: '2026-03-20', assignee: 'Mike D.', description: 'Weekly payout has not arrived, it has been 5 business days.' },
@@ -48,25 +48,44 @@ const card: React.CSSProperties = {
 };
 
 const Support: React.FC = () => {
+  const [tickets, setTickets] = useState<Ticket[]>(INITIAL_TICKETS);
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [editStatus, setEditStatus] = useState<Ticket['status']>('open');
+  const [editPriority, setEditPriority] = useState<Ticket['priority']>('low');
 
-  const filtered = TICKETS.filter((t) => {
+  const filtered = tickets.filter((t) => {
     const matchStatus = statusFilter === 'all' || t.status === statusFilter;
     const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
     return matchStatus && matchPriority;
   });
 
-  const openCount = TICKETS.filter((t) => t.status === 'open').length;
-  const highCount = TICKETS.filter((t) => t.priority === 'high' || t.priority === 'urgent').length;
+  const openCount = tickets.filter((t) => t.status === 'open').length;
+  const highCount = tickets.filter((t) => t.priority === 'high' || t.priority === 'urgent').length;
+
+  const handleSelectTicket = (t: Ticket) => {
+    setSelectedTicket(t);
+    setEditStatus(t.status);
+    setEditPriority(t.priority);
+  };
+
+  const handleUpdateTicket = () => {
+    if (!selectedTicket) return;
+    setTickets((prev) =>
+      prev.map((t) =>
+        t.id === selectedTicket.id ? { ...t, status: editStatus, priority: editPriority } : t
+      )
+    );
+    setSelectedTicket(null);
+  };
 
   return (
     <div>
       {/* Stats bar */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
         {[
-          { label: 'Total Tickets', value: TICKETS.length.toString(), color: '#2196F3' },
+          { label: 'Total Tickets', value: tickets.length.toString(), color: '#2196F3' },
           { label: 'Open', value: openCount.toString(), color: '#F44336' },
           { label: 'High/Urgent', value: highCount.toString(), color: '#FF9800' },
           { label: 'Avg Resolution', value: '4.2 hrs', color: '#4CAF50' },
@@ -114,7 +133,7 @@ const Support: React.FC = () => {
               return (
                 <tr
                   key={t.id}
-                  onClick={() => setSelectedTicket(t)}
+                  onClick={() => handleSelectTicket(t)}
                   style={{ cursor: 'pointer' }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.02)')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}

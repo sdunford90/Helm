@@ -95,23 +95,8 @@ export function requireRole(...roles: string[]) {
 /**
  * Platform admin guard — checks for the special "platform_admin" role.
  * Used on /api/admin routes.
- *
- * In development (NODE_ENV !== "production") the Clerk check is skipped so
- * the Admin App can be used locally without a real session.
  */
 export function requirePlatformAdmin() {
-  const isDev = process.env.NODE_ENV !== "production";
-
-  if (isDev) {
-    return [
-      async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
-        req.userId = "dev-platform-admin";
-        req.userRole = "PLATFORM_ADMIN";
-        next();
-      },
-    ];
-  }
-
   return [
     requireAuth(),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {

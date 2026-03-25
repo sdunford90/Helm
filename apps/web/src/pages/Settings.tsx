@@ -140,46 +140,6 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
   { id: 'charge', name: 'Charge to Slip', defaultGL: '1020', availPOS: true, availBilling: true, active: true },
 ];
 
-const HELM_PAYMENT_TYPES_KEY = 'helm_payment_types';
-
-function loadPaymentTypes(): PaymentTypeRow[] {
-  try {
-    const raw = localStorage.getItem(HELM_PAYMENT_TYPES_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return PAYMENT_TYPE_DEFAULTS;
-}
-
-interface ProductGLRow {
-  id: string;
-  label: string;
-  category: string;
-  glAccount: string;
-}
-
-const PRODUCT_GL_DEFAULTS: ProductGLRow[] = [
-  { id: 'wet-annual', label: 'Wet Slip — Annual', category: 'Dockage', glAccount: '4100' },
-  { id: 'wet-monthly', label: 'Wet Slip — Monthly', category: 'Dockage', glAccount: '4100' },
-  { id: 'dry-annual', label: 'Dry Storage — Annual', category: 'Dockage', glAccount: '4100' },
-  { id: 'dry-monthly', label: 'Dry Storage — Monthly', category: 'Dockage', glAccount: '4100' },
-  { id: 'transient-daily', label: 'Transient — Daily', category: 'Transient', glAccount: '4600' },
-  { id: 'transient-weekly', label: 'Transient — Weekly', category: 'Transient', glAccount: '4600' },
-  { id: 'electricity-metered', label: 'Electricity — Metered', category: 'Electricity', glAccount: '4200' },
-  { id: 'electricity-flat', label: 'Electricity — Flat Rate', category: 'Electricity', glAccount: '4200' },
-  { id: 'fuel-regular', label: 'Fuel — Regular Gasoline', category: 'Fuel', glAccount: '4400' },
-  { id: 'fuel-diesel', label: 'Fuel — Diesel', category: 'Fuel', glAccount: '4400' },
-  { id: 'fuel-premium', label: 'Fuel — Premium', category: 'Fuel', glAccount: '4400' },
-  { id: 'ramp-daily', label: 'Launch Ramp — Daily', category: 'Ramp', glAccount: '4700' },
-  { id: 'ramp-season', label: 'Launch Ramp — Season Pass', category: 'Ramp', glAccount: '4700' },
-  { id: 'rental-pontoon', label: 'Rental — Pontoon Boat', category: 'Rental', glAccount: '4300' },
-  { id: 'rental-jetski', label: 'Rental — Jet Ski', category: 'Rental', glAccount: '4300' },
-  { id: 'rental-kayak', label: 'Rental — Kayak / Paddle', category: 'Rental', glAccount: '4300' },
-  { id: 'concierge-svc', label: 'Concierge Services', category: 'Concierge', glAccount: '4800' },
-  { id: 'pos-retail', label: 'POS — Retail / Provisions', category: 'Retail', glAccount: '4500' },
-  { id: 'pos-bait', label: 'POS — Bait & Tackle', category: 'Retail', glAccount: '4500' },
-  { id: 'pos-apparel', label: 'POS — Apparel', category: 'Retail', glAccount: '4500' },
-];
-
 export default function Settings() {
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'integrations' | 'team' | 'advanced'>('profile');
 
@@ -195,20 +155,10 @@ export default function Settings() {
   const [revenueMapping, setRevenueMapping] = useState<Record<string, string>>(
     Object.fromEntries(REVENUE_MAPPING_DEFAULTS.map((r) => [r.label, r.defaultGL]))
   );
-  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeRow[]>(loadPaymentTypes);
-  const [productGLRows, setProductGLRows] = useState<ProductGLRow[]>(PRODUCT_GL_DEFAULTS);
+  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeRow[]>(PAYMENT_TYPE_DEFAULTS);
 
   const updatePaymentType = (id: string, field: keyof PaymentTypeRow, value: any) => {
     setPaymentTypes((prev) => prev.map((pt) => pt.id === id ? { ...pt, [field]: value } : pt));
-  };
-
-  const updateProductGL = (id: string, glAccount: string) => {
-    setProductGLRows((prev) => prev.map((p) => p.id === id ? { ...p, glAccount } : p));
-  };
-
-  const saveBillingSettings = () => {
-    localStorage.setItem(HELM_PAYMENT_TYPES_KEY, JSON.stringify(paymentTypes));
-    updateSettings({ tab: 'billing', paymentTypes, productGLRows });
   };
 
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
@@ -449,41 +399,6 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Product GL Mapping */}
-            <div style={st.card}>
-              <h3 style={st.sectionTitle}>Product GL Mapping</h3>
-              <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px', lineHeight: 1.6 }}>
-                Map individual product types to specific GL accounts. Use this when different products in the same category (e.g., wet vs. dry dockage) need to post to different accounts.
-              </p>
-              {(() => {
-                const categories = [...new Set(productGLRows.map((p) => p.category))];
-                const revenueGLs = GL_ACCOUNTS.filter((gl) => gl.code.startsWith('4'));
-                return categories.map((cat) => (
-                  <div key={cat} style={{ marginBottom: '20px' }}>
-                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#2E4A6B', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '8px', paddingBottom: '4px', borderBottom: '1px solid #E2E8F0' }}>
-                      {cat}
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                      {productGLRows.filter((p) => p.category === cat).map((row) => (
-                        <div key={row.id} style={st.field}>
-                          <label style={st.label}>{row.label}</label>
-                          <select
-                            style={st.select}
-                            value={row.glAccount}
-                            onChange={(e) => updateProductGL(row.id, e.target.value)}
-                          >
-                            {revenueGLs.map((gl) => (
-                              <option key={gl.code} value={gl.code}>{gl.code} — {gl.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-
             {/* Payment Type Configuration */}
             <div style={st.card}>
               <h3 style={st.sectionTitle}>Payment Type Configuration</h3>
@@ -533,7 +448,7 @@ export default function Settings() {
             </div>
           </div>
 
-          <button style={st.saveBtn} onClick={saveBillingSettings} disabled={savingSettings}>
+          <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'billing' })} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Billing Settings'}
           </button>
         </>

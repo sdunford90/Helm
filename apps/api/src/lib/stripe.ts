@@ -2,15 +2,13 @@ import Stripe from "stripe";
 import { prisma } from "./prisma.js";
 
 if (!process.env.STRIPE_SECRET_KEY) {
-  console.warn("[helm-api] STRIPE_SECRET_KEY not set — Stripe features will be unavailable");
+  throw new Error("STRIPE_SECRET_KEY environment variable is required");
 }
 
-export const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY, {
-      apiVersion: "2024-12-18.acacia" as Stripe.LatestApiVersion,
-      typescript: true,
-    })
-  : null;
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-12-18.acacia" as Stripe.LatestApiVersion,
+  typescript: true,
+});
 
 // --------------------------------------------------------------------------
 // Helpers

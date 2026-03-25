@@ -264,31 +264,10 @@ model Tenant {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
-  saasTier  SaasTier?  @relation(fields: [saasTierId], references: [id])
-  users     User[]
-  locations Location[]
+  saasTier SaasTier? @relation(fields: [saasTierId], references: [id])
+  users    User[]
 
   @@map("tenants")
-}
-
-model Location {
-  id        String   @id @default(uuid())
-  tenantId  String
-  name      String
-  address   String?
-  city      String?
-  state     String?
-  zip       String?
-  phone     String?
-  timezone  String   @default("America/New_York")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-
-  @@index([tenantId])
-  @@map("locations")
 }
 
 model SaasTier {
