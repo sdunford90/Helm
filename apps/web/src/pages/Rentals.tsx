@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
-  Star, Clock, Users, Filter, Eye, ChevronLeft, ChevronRight, Info,
+  Star, Clock, Users, Filter, Eye,
 } from 'lucide-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
@@ -304,8 +304,10 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
     return undefined;
   };
 
+  type CellSelection = { productId: string; date: string; slot: TimeSlotKey } | null;
+
   const handleCellClick = useCallback((productId: string, dateStr: string, slot: TimeSlotKey) => {
-    setSelectedCell(prev =>
+    setSelectedCell((prev: CellSelection) =>
       prev && prev.productId === productId && prev.date === dateStr && prev.slot === slot
         ? null
         : { productId, date: dateStr, slot }
@@ -316,9 +318,10 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
     if (!selectedCell) return null;
     const day = MOCK_AVAILABILITY[selectedCell.productId]?.[selectedCell.date];
     if (!day) return null;
-    const slot = day[selectedCell.slot];
-    const product = products.find(p => p.id === selectedCell.productId);
-    return { ...slot, productName: product?.name ?? '', timeLabel: TIME_SLOT_LABELS[selectedCell.slot] };
+    const slotKey: TimeSlotKey = selectedCell.slot;
+    const slot: AvailabilitySlot = day[slotKey];
+    const product = products.find((p: RentalProduct) => p.id === selectedCell.productId);
+    return { status: slot.status as SlotStatus, customerFirstName: slot.customerFirstName, reservationId: slot.reservationId, notes: slot.notes, productName: product?.name ?? '', timeLabel: TIME_SLOT_LABELS[slotKey] };
   }, [selectedCell, products]);
 
   const gridSt = {
@@ -359,7 +362,7 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
             <thead>
               <tr>
                 <th style={gridSt.stickyTh}>Vessel / Product</th>
-                {dates.map(d => {
+                {dates.map((d: Date) => {
                   const dStr = d.toISOString().slice(0, 10);
                   const { day, num, mon } = formatDateHeader(d);
                   const isToday = dStr === todayStr;
@@ -384,7 +387,7 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
                       <div>{p.name}</div>
                       <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 400 }}>{p.type} &middot; {p.capacity} pax</div>
                     </td>
-                    {dates.map(d => {
+                    {dates.map((d: Date) => {
                       const dStr = d.toISOString().slice(0, 10);
                       const isToday = dStr === todayStr;
                       const dayData = MOCK_AVAILABILITY[p.id]?.[dStr] ?? FREE;
@@ -441,13 +444,18 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
               </button>
             </div>
             <div style={{ marginBottom: '12px' }}>
-              <span style={{
-                display: 'inline-block', padding: '4px 12px', borderRadius: '9999px', fontSize: '12px', fontWeight: 600,
-                backgroundColor: SLOT_STATUS_COLORS[selectedSlotData.status].bg,
-                color: SLOT_STATUS_COLORS[selectedSlotData.status].color,
-              }}>
-                {SLOT_STATUS_COLORS[selectedSlotData.status].label}
-              </span>
+              {(() => {
+                const statusKey = selectedSlotData.status as SlotStatus;
+                return (
+                  <span style={{
+                    display: 'inline-block', padding: '4px 12px', borderRadius: '9999px', fontSize: '12px', fontWeight: 600,
+                    backgroundColor: SLOT_STATUS_COLORS[statusKey].bg,
+                    color: SLOT_STATUS_COLORS[statusKey].color,
+                  }}>
+                    {SLOT_STATUS_COLORS[statusKey].label}
+                  </span>
+                );
+              })()}
             </div>
             {selectedSlotData.customerFirstName && (
               <div style={{ marginBottom: '8px' }}>
