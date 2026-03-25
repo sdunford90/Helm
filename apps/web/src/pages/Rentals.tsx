@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
   Star, Clock, Users, Filter, Eye,
 } from 'lucide-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -287,10 +288,24 @@ export default function Rentals() {
   const [showAdd, setShowAdd] = useState(false);
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
 
-  const activeProducts = PRODUCTS.filter((p) => p.status === 'Available').length;
-  const activeRes = RESERVATIONS.filter((r) => ['Pending', 'Confirmed', 'Checked In'].includes(r.status)).length;
-  const monthRevenue = RESERVATIONS.filter((r) => r.status !== 'Cancelled').reduce((sum, r) => sum + r.total, 0);
-  const avgRating = (PRODUCTS.reduce((sum, p) => sum + p.rating, 0) / PRODUCTS.length).toFixed(1);
+  // API calls with fallback to mock data
+  const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/api/rentals/products', { immediate: true });
+  const { data: apiReservations, loading: loadingRes } = useApi<Reservation[]>('get', '/api/rentals/reservations', { immediate: true });
+  const { data: apiPricingRules } = useApi<PricingRule[]>('get', '/api/rentals/pricing-rules', { immediate: true });
+  const { data: apiPromoCodes } = useApi<PromoCode[]>('get', '/api/rentals/promo-codes', { immediate: true });
+  const createProduct = useApi<RentalProduct>('post', '/api/rentals/products');
+
+  const products = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
+  const reservations = useMemo(() => apiReservations ?? RESERVATIONS, [apiReservations]);
+  const pricingRules = useMemo(() => apiPricingRules ?? PRICING_RULES, [apiPricingRules]);
+  const promoCodes = useMemo(() => apiPromoCodes ?? PROMO_CODES, [apiPromoCodes]);
+
+  const loading = loadingProducts || loadingRes;
+
+  const activeProducts = products.filter((p) => p.status === 'Available').length;
+  const activeRes = reservations.filter((r) => ['Pending', 'Confirmed', 'Checked In'].includes(r.status)).length;
+  const monthRevenue = reservations.filter((r) => r.status !== 'Cancelled').reduce((sum, r) => sum + r.total, 0);
+  const avgRating = (products.reduce((sum, p) => sum + p.rating, 0) / products.length).toFixed(1);
 
   const tabs: { key: typeof tab; label: string }[] = [
     { key: 'products', label: 'Products' },

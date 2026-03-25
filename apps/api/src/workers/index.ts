@@ -10,6 +10,7 @@ import {
 } from "../lib/email.js";
 import { sendSms } from "../lib/sms.js";
 import { prisma } from "../lib/prisma.js";
+import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
 
 // --------------------------------------------------------------------------
 // Email worker

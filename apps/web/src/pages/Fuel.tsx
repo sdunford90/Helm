@@ -142,6 +142,8 @@ export default function Fuel() {
       <h1 style={st.title}>Fuel Management</h1>
       <hr style={st.divider} />
 
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading fuel data...</div>}
+
       <div style={st.statsRow}>
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Gallons Sold Today</div>
@@ -284,7 +286,7 @@ export default function Fuel() {
 
       {tab === 'tanks' && (
         <div style={st.tankGrid}>
-          {FUEL_TYPES.map((ft) => {
+          {tankData.map((ft) => {
             const pct = Math.round((ft.currentLevel / ft.tankCapacity) * 100);
             const daysRemaining = Math.round(ft.currentLevel / 50);
             return (
