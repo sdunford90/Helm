@@ -22,6 +22,7 @@ import Transient from './pages/Transient';
 import Ramp from './pages/Ramp';
 import Concierge from './pages/Concierge';
 import AuditLog from './pages/AuditLog';
+import Fuel from './pages/Fuel';
 
 export default function App() {
   return (
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
         <Route path="/rentals" element={<Rentals />} />
         <Route path="/pos" element={<POS />} />
+        <Route path="/fuel" element={<Fuel />} />
         <Route path="/dock-walks" element={<DockWalks />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/announcements" element={<Announcements />} />

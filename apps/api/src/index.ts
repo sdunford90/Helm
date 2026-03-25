@@ -33,6 +33,7 @@ import conciergeRouter from "./routes/concierge.js";
 import auditLogRouter from "./routes/audit-log.js";
 import biApiRouter from "./routes/bi-api.js";
 import insuranceRouter from "./routes/insurance.js";
+import fuelRouter from "./routes/fuel.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -83,6 +84,7 @@ app.use("/api/concierge", conciergeRouter);
 app.use("/api/audit-log", auditLogRouter);
 app.use("/api/bi", biApiRouter);
 app.use("/api/insurance", insuranceRouter);
+app.use("/api/fuel", fuelRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

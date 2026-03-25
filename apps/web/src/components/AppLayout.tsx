@@ -1,5 +1,6 @@
 import { Outlet, useLocation, Link } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
+import HelpCenter from './HelpCenter';
 import {
   LayoutDashboard,
   Users,
@@ -20,6 +21,7 @@ import {
   Waves,
   Concierge as ConciergeBell,
   ScrollText,
+  Fuel,
 } from 'lucide-react';
 
 const NAV_SECTIONS = [
@@ -54,6 +56,7 @@ const NAV_SECTIONS = [
       { path: '/billing', label: 'Billing', icon: DollarSign },
       { path: '/rentals', label: 'Rentals', icon: Ship },
       { path: '/pos', label: 'POS', icon: ShoppingCart },
+      { path: '/fuel', label: 'Fuel', icon: Fuel },
     ],
   },
   {
@@ -241,6 +244,7 @@ export default function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <HelpCenter />
     </div>
   );
 }
