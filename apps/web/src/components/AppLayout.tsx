@@ -19,7 +19,7 @@ import {
   List,
   Bed,
   Waves,
-  Concierge as ConciergeBell,
+  Bell as ConciergeBell,
   ScrollText,
   Fuel,
 } from 'lucide-react';
