@@ -1,10 +1,1320 @@
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
+// ─── Zod Schemas ─────────────────────────────────────────────────────────────
+
+const ProductCategoryEnum = z.enum([
+  "WATERCRAFT",
+  "STORAGE",
+  "EQUIPMENT",
+  "SLIP",
+  "OTHER",
+]);
+
+const CreateProductSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional().nullable(),
+  category: ProductCategoryEnum,
+  hourlyRateCents: z.number().int().min(0).optional().nullable(),
+  dailyRateCents: z.number().int().min(0).optional().nullable(),
+  weeklyRateCents: z.number().int().min(0).optional().nullable(),
+  totalQuantity: z.number().int().min(1).default(1),
+  isActive: z.boolean().optional().default(true),
+});
+
+const UpdateProductSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional().nullable(),
+  category: ProductCategoryEnum.optional(),
+  hourlyRateCents: z.number().int().min(0).optional().nullable(),
+  dailyRateCents: z.number().int().min(0).optional().nullable(),
+  weeklyRateCents: z.number().int().min(0).optional().nullable(),
+  totalQuantity: z.number().int().min(1).optional(),
+  isActive: z.boolean().optional(),
+});
+
+const PricingRuleTypeEnum = z.enum([
+  "FLAT",
+  "PER_FOOT",
+  "TIERED",
+  "SEASONAL",
+  "DEMAND",
+]);
+
+const CreatePricingRuleSchema = z.object({
+  name: z.string().min(1),
+  type: PricingRuleTypeEnum,
+  baseRateCents: z.number().int().min(0),
+  perFootCents: z.number().int().min(0).optional().nullable(),
+  tiersJson: z.array(z.record(z.unknown())).optional().nullable(),
+  seasonStart: z.string().optional().nullable(),
+  seasonEnd: z.string().optional().nullable(),
+  seasonMultiplier: z.number().min(0).optional().nullable(),
+  priority: z.number().int().min(0).default(0),
+  isActive: z.boolean().optional().default(true),
+});
+
+const UpdatePricingRuleSchema = z.object({
+  name: z.string().min(1).optional(),
+  type: PricingRuleTypeEnum.optional(),
+  baseRateCents: z.number().int().min(0).optional(),
+  perFootCents: z.number().int().min(0).optional().nullable(),
+  tiersJson: z.array(z.record(z.unknown())).optional().nullable(),
+  seasonStart: z.string().optional().nullable(),
+  seasonEnd: z.string().optional().nullable(),
+  seasonMultiplier: z.number().min(0).optional().nullable(),
+  priority: z.number().int().min(0).optional(),
+  isActive: z.boolean().optional(),
+});
+
+const CalendarOverrideSchema = z.object({
+  startDate: z.string().min(1),
+  endDate: z.string().min(1),
+  multiplier: z.number().min(0),
+  label: z.string().min(1),
+});
+
+const CalendarQuerySchema = z.object({
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  year: z.coerce.number().int().min(2020).max(2100).optional(),
+});
+
+const ReservationStatusEnum = z.enum([
+  "PENDING",
+  "CONFIRMED",
+  "CHECKED_IN",
+  "CHECKED_OUT",
+  "CANCELLED",
+  "NO_SHOW",
+]);
+
+const CreateReservationSchema = z.object({
+  customerId: z.string().min(1),
+  rentalProductId: z.string().min(1),
+  startDate: z.string().min(1),
+  endDate: z.string().min(1),
+  notes: z.string().optional().nullable(),
+  cancellationPolicyId: z.string().optional().nullable(),
+  depositCents: z.number().int().min(0).optional().default(0),
+});
+
+const UpdateReservationSchema = z.object({
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  notes: z.string().optional().nullable(),
+  status: ReservationStatusEnum.optional(),
+});
+
+const ListReservationsQuerySchema = z.object({
+  status: ReservationStatusEnum.optional(),
+  rentalProductId: z.string().optional(),
+  customerId: z.string().optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  skip: z.coerce.number().int().min(0).default(0),
+  take: z.coerce.number().int().positive().max(100).default(25),
+  sortBy: z.enum(["createdAt", "startDate", "endDate", "totalCents"]).default("startDate"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});
+
+const CheckOutSchema = z.object({
+  overtimeMinutes: z.number().int().min(0).optional().default(0),
+  damageChargeCents: z.number().int().min(0).optional().default(0),
+  damageNotes: z.string().optional().nullable(),
+});
+
+const SuggestionActionSchema = z.object({
+  action: z.enum(["ACCEPTED", "REJECTED"]),
+});
+
+const CreateCancellationPolicySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional().nullable(),
+  rules: z.array(z.object({
+    hoursBeforeStart: z.number().int().min(0),
+    refundPct: z.number().int().min(0).max(100),
+  })).min(1),
+  isDefault: z.boolean().optional().default(false),
+});
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function appError(message: string, statusCode: number, code: string): Error {
+  const err = new Error(message) as Error & {
+    statusCode: number;
+    code: string;
+  };
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+/**
+ * Calculate dynamic price for a reservation based on pricing rules, demand
+ * surge tiers, and calendar overrides.
+ */
+async function calculateDynamicPrice(
+  tenantId: string,
+  productId: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<{ totalCents: number; breakdown: Record<string, unknown> }> {
+  // Get the product
+  const product = await prisma.rentalProduct.findFirst({
+    where: { id: productId, tenantId },
+  });
+  if (!product) throw appError("Product not found", 404, "NOT_FOUND");
+
+  const durationMs = endDate.getTime() - startDate.getTime();
+  const durationHours = durationMs / (1000 * 60 * 60);
+  const durationDays = durationHours / 24;
+
+  // Base price from product rates
+  let baseCents = 0;
+  let rateType = "hourly";
+
+  if (durationDays >= 7 && product.weeklyRateCents) {
+    const weeks = Math.ceil(durationDays / 7);
+    baseCents = weeks * product.weeklyRateCents;
+    rateType = "weekly";
+  } else if (durationDays >= 1 && product.dailyRateCents) {
+    const days = Math.ceil(durationDays);
+    baseCents = days * product.dailyRateCents;
+    rateType = "daily";
+  } else if (product.hourlyRateCents) {
+    const hours = Math.ceil(durationHours);
+    baseCents = hours * product.hourlyRateCents;
+    rateType = "hourly";
+  }
+
+  // Apply pricing rules (get active rules sorted by priority)
+  const pricingRules = await prisma.pricingRule.findMany({
+    where: { tenantId, rentalProductId: productId, isActive: true },
+    orderBy: { priority: "asc" },
+  });
+
+  let ruleMultiplier = 1.0;
+  let appliedRule: string | null = null;
+
+  for (const rule of pricingRules) {
+    if (rule.type === "SEASONAL" && rule.seasonStart && rule.seasonEnd && rule.seasonMultiplier) {
+      const mmdd = `${String(startDate.getMonth() + 1).padStart(2, "0")}-${String(startDate.getDate()).padStart(2, "0")}`;
+      if (mmdd >= rule.seasonStart && mmdd <= rule.seasonEnd) {
+        ruleMultiplier = rule.seasonMultiplier;
+        appliedRule = rule.name;
+        break;
+      }
+    } else if (rule.type === "FLAT") {
+      baseCents = rule.baseRateCents;
+      appliedRule = rule.name;
+      break;
+    } else if (rule.type === "DEMAND") {
+      // handled separately by surge tiers
+    }
+  }
+
+  // Apply calendar overrides
+  let calendarMultiplier = 1.0;
+  let calendarLabel: string | null = null;
+
+  const overrides = await prisma.pricingCalendarOverride.findMany({
+    where: {
+      tenantId,
+      rentalProductId: productId,
+      startDate: { lte: endDate },
+      endDate: { gte: startDate },
+    },
+  });
+
+  if (overrides.length > 0) {
+    // Use the highest multiplier from overlapping overrides
+    const maxOverride = overrides.reduce((max, o) => o.multiplier > max.multiplier ? o : max, overrides[0]);
+    calendarMultiplier = maxOverride.multiplier;
+    calendarLabel = maxOverride.label;
+  }
+
+  // Apply demand surge tiers
+  let surgeMultiplier = 1.0;
+  let surgeThreshold: number | null = null;
+
+  // Calculate current utilization
+  const activeReservations = await prisma.reservation.count({
+    where: {
+      tenantId,
+      rentalProductId: productId,
+      status: { in: ["CONFIRMED", "CHECKED_IN"] },
+      startDate: { lte: endDate },
+      endDate: { gte: startDate },
+    },
+  });
+
+  const utilizationPct = product.totalQuantity > 0
+    ? (activeReservations / product.totalQuantity) * 100
+    : 0;
+
+  const surgeTiers = await prisma.demandSurgeTier.findMany({
+    where: { tenantId, isActive: true },
+    orderBy: { occupancyThresholdPct: "desc" },
+  });
+
+  for (const tier of surgeTiers) {
+    if (utilizationPct >= tier.occupancyThresholdPct) {
+      surgeMultiplier = tier.multiplier;
+      surgeThreshold = tier.occupancyThresholdPct;
+      break;
+    }
+  }
+
+  const totalCents = Math.round(baseCents * ruleMultiplier * calendarMultiplier * surgeMultiplier);
+
+  return {
+    totalCents,
+    breakdown: {
+      baseCents,
+      rateType,
+      durationHours: Math.round(durationHours * 100) / 100,
+      durationDays: Math.round(durationDays * 100) / 100,
+      appliedRule,
+      ruleMultiplier,
+      calendarMultiplier,
+      calendarLabel,
+      surgeMultiplier,
+      surgeThreshold,
+      utilizationPct: Math.round(utilizationPct * 100) / 100,
+    },
+  };
+}
+
+// ─── Authenticated routes ───────────────────────────────────────────────────
+
 router.use(...clerkAuth());
 
-// TODO: Rental agreements, transient slip bookings, kayak/paddleboard rentals
+// ═══════════════════════════════════════════════════════════════════════════════
+// PRODUCTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /products — List rental products with availability ─────────────────
+
+router.get(
+  "/products",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const products = await prisma.rentalProduct.findMany({
+        where: { tenantId },
+        orderBy: { name: "asc" },
+      });
+
+      // Calculate available quantity for each product
+      const now = new Date();
+      const productsWithAvailability = await Promise.all(
+        products.map(async (product) => {
+          const activeReservations = await prisma.reservation.count({
+            where: {
+              tenantId,
+              rentalProductId: product.id,
+              status: { in: ["CONFIRMED", "CHECKED_IN"] },
+              startDate: { lte: now },
+              endDate: { gte: now },
+            },
+          });
+          return {
+            ...product,
+            availableQuantity: Math.max(0, product.totalQuantity - activeReservations),
+            utilizationPct:
+              product.totalQuantity > 0
+                ? Math.round((activeReservations / product.totalQuantity) * 10000) / 100
+                : 0,
+          };
+        }),
+      );
+
+      res.json({ data: productsWithAvailability });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /products — Create rental product ─────────────────────────────────
+
+router.post(
+  "/products",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreateProductSchema.parse(req.body);
+
+      const product = await prisma.rentalProduct.create({
+        data: {
+          tenantId,
+          ...data,
+          availableQuantity: data.totalQuantity,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "RentalProduct",
+          recordId: product.id,
+          action: "CREATED",
+        },
+      });
+
+      res.status(201).json(product);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /products/:id — Update rental product ─────────────────────────────
+
+router.put(
+  "/products/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = UpdateProductSchema.parse(req.body);
+
+      const existing = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!existing) {
+        throw appError("Product not found", 404, "NOT_FOUND");
+      }
+
+      const updated = await prisma.rentalProduct.update({
+        where: { id: req.params.id },
+        data,
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "RentalProduct",
+          recordId: updated.id,
+          action: "UPDATED",
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /products/:id/pricing — Get pricing rules for a product ────────────
+
+router.get(
+  "/products/:id/pricing",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) {
+        throw appError("Product not found", 404, "NOT_FOUND");
+      }
+
+      const rules = await prisma.pricingRule.findMany({
+        where: { tenantId, rentalProductId: req.params.id },
+        orderBy: { priority: "asc" },
+      });
+
+      res.json({ data: rules });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /products/:id/pricing — Create pricing rule ──────────────────────
+
+router.post(
+  "/products/:id/pricing",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreatePricingRuleSchema.parse(req.body);
+
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) {
+        throw appError("Product not found", 404, "NOT_FOUND");
+      }
+
+      const rule = await prisma.pricingRule.create({
+        data: {
+          tenantId,
+          rentalProductId: req.params.id,
+          ...data,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PricingRule",
+          recordId: rule.id,
+          action: "CREATED",
+        },
+      });
+
+      res.status(201).json(rule);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /pricing/:ruleId — Update pricing rule ────────────────────────────
+
+router.put(
+  "/pricing/:ruleId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = UpdatePricingRuleSchema.parse(req.body);
+
+      const existing = await prisma.pricingRule.findFirst({
+        where: { id: req.params.ruleId, tenantId },
+      });
+      if (!existing) {
+        throw appError("Pricing rule not found", 404, "NOT_FOUND");
+      }
+
+      const updated = await prisma.pricingRule.update({
+        where: { id: req.params.ruleId },
+        data,
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PricingRule",
+          recordId: updated.id,
+          action: "UPDATED",
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /products/:id/calendar-overrides — Set calendar override prices ──
+
+router.post(
+  "/products/:id/calendar-overrides",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CalendarOverrideSchema.parse(req.body);
+
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) {
+        throw appError("Product not found", 404, "NOT_FOUND");
+      }
+
+      const override = await prisma.pricingCalendarOverride.create({
+        data: {
+          tenantId,
+          rentalProductId: req.params.id,
+          startDate: new Date(data.startDate),
+          endDate: new Date(data.endDate),
+          multiplier: data.multiplier,
+          label: data.label,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PricingCalendarOverride",
+          recordId: override.id,
+          action: "CREATED",
+        },
+      });
+
+      res.status(201).json(override);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /products/:id/calendar — Get availability calendar with prices ────
+
+router.get(
+  "/products/:id/calendar",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { month, year } = CalendarQuerySchema.parse(req.query);
+
+      const now = new Date();
+      const calMonth = month ?? now.getMonth() + 1;
+      const calYear = year ?? now.getFullYear();
+
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) {
+        throw appError("Product not found", 404, "NOT_FOUND");
+      }
+
+      const startOfMonth = new Date(calYear, calMonth - 1, 1);
+      const endOfMonth = new Date(calYear, calMonth, 0, 23, 59, 59);
+
+      // Get reservations for this month
+      const reservations = await prisma.reservation.findMany({
+        where: {
+          tenantId,
+          rentalProductId: req.params.id,
+          status: { in: ["CONFIRMED", "CHECKED_IN", "PENDING"] },
+          startDate: { lte: endOfMonth },
+          endDate: { gte: startOfMonth },
+        },
+        include: {
+          customer: { select: { id: true, firstName: true, lastName: true } },
+        },
+        orderBy: { startDate: "asc" },
+      });
+
+      // Get calendar overrides for this month
+      const overrides = await prisma.pricingCalendarOverride.findMany({
+        where: {
+          tenantId,
+          rentalProductId: req.params.id,
+          startDate: { lte: endOfMonth },
+          endDate: { gte: startOfMonth },
+        },
+      });
+
+      // Build calendar days
+      const daysInMonth = endOfMonth.getDate();
+      const days = [];
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = new Date(calYear, calMonth - 1, d);
+        const dateStr = date.toISOString().slice(0, 10);
+
+        // Count reservations overlapping this day
+        const dayReservations = reservations.filter((r) => {
+          const rStart = new Date(r.startDate).toISOString().slice(0, 10);
+          const rEnd = new Date(r.endDate).toISOString().slice(0, 10);
+          return dateStr >= rStart && dateStr <= rEnd;
+        });
+
+        const bookedCount = dayReservations.length;
+        const available = Math.max(0, product.totalQuantity - bookedCount);
+
+        // Find applicable override
+        const override = overrides.find((o) => {
+          const oStart = new Date(o.startDate).toISOString().slice(0, 10);
+          const oEnd = new Date(o.endDate).toISOString().slice(0, 10);
+          return dateStr >= oStart && dateStr <= oEnd;
+        });
+
+        const basePrice = product.dailyRateCents ?? product.hourlyRateCents ?? 0;
+        const effectivePrice = override
+          ? Math.round(basePrice * override.multiplier)
+          : basePrice;
+
+        days.push({
+          date: dateStr,
+          available,
+          totalQuantity: product.totalQuantity,
+          bookedCount,
+          priceCents: effectivePrice,
+          override: override ? { label: override.label, multiplier: override.multiplier } : null,
+          reservations: dayReservations.map((r) => ({
+            id: r.id,
+            customerId: r.customerId,
+            customerName: r.customer
+              ? `${r.customer.firstName} ${r.customer.lastName}`
+              : null,
+            status: r.status,
+            startDate: r.startDate,
+            endDate: r.endDate,
+          })),
+        });
+      }
+
+      res.json({
+        month: calMonth,
+        year: calYear,
+        product: { id: product.id, name: product.name, totalQuantity: product.totalQuantity },
+        days,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESERVATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /reservations — List reservations ──────────────────────────────────
+
+router.get(
+  "/reservations",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const query = ListReservationsQuerySchema.parse(req.query);
+
+      const where: Record<string, unknown> = { tenantId };
+
+      if (query.status) where.status = query.status;
+      if (query.rentalProductId) where.rentalProductId = query.rentalProductId;
+      if (query.customerId) where.customerId = query.customerId;
+
+      if (query.dateFrom || query.dateTo) {
+        where.startDate = {};
+        if (query.dateFrom) (where.startDate as Record<string, unknown>).gte = new Date(query.dateFrom);
+        if (query.dateTo) (where.startDate as Record<string, unknown>).lte = new Date(query.dateTo);
+      }
+
+      const [reservations, total] = await Promise.all([
+        prisma.reservation.findMany({
+          where,
+          orderBy: { [query.sortBy]: query.sortOrder },
+          skip: query.skip,
+          take: query.take,
+          include: {
+            customer: {
+              select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+            },
+            rentalProduct: {
+              select: { id: true, name: true, category: true },
+            },
+          },
+        }),
+        prisma.reservation.count({ where }),
+      ]);
+
+      res.json({
+        data: reservations,
+        pagination: { skip: query.skip, take: query.take, total },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /reservations/:id — Single reservation detail ──────────────────────
+
+router.get(
+  "/reservations/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const reservation = await prisma.reservation.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+          },
+          rentalProduct: true,
+          cancellationPolicy: true,
+        },
+      });
+
+      if (!reservation) {
+        throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      res.json(reservation);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /reservations — Create reservation with dynamic pricing ───────────
+
+router.post(
+  "/reservations",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreateReservationSchema.parse(req.body);
+
+      // Verify customer exists
+      const customer = await prisma.customer.findFirst({
+        where: { id: data.customerId, tenantId },
+      });
+      if (!customer) {
+        throw appError("Customer not found", 404, "NOT_FOUND");
+      }
+
+      // Verify product exists and is active
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: data.rentalProductId, tenantId, isActive: true },
+      });
+      if (!product) {
+        throw appError("Product not found or inactive", 404, "NOT_FOUND");
+      }
+
+      const startDate = new Date(data.startDate);
+      const endDate = new Date(data.endDate);
+
+      if (endDate <= startDate) {
+        throw appError("End date must be after start date", 400, "INVALID_DATES");
+      }
+
+      // Check availability
+      const overlapping = await prisma.reservation.count({
+        where: {
+          tenantId,
+          rentalProductId: data.rentalProductId,
+          status: { in: ["CONFIRMED", "CHECKED_IN", "PENDING"] },
+          startDate: { lt: endDate },
+          endDate: { gt: startDate },
+        },
+      });
+
+      if (overlapping >= product.totalQuantity) {
+        throw appError("No availability for the requested dates", 409, "NO_AVAILABILITY");
+      }
+
+      // Calculate dynamic price
+      const pricing = await calculateDynamicPrice(tenantId, data.rentalProductId, startDate, endDate);
+
+      // Apply cancellation policy — use default if none specified
+      let cancellationPolicyId = data.cancellationPolicyId;
+      if (!cancellationPolicyId) {
+        const defaultPolicy = await prisma.cancellationPolicy.findFirst({
+          where: { tenantId, isDefault: true },
+        });
+        if (defaultPolicy) {
+          cancellationPolicyId = defaultPolicy.id;
+        }
+      }
+
+      const reservation = await prisma.reservation.create({
+        data: {
+          tenantId,
+          customerId: data.customerId,
+          rentalProductId: data.rentalProductId,
+          startDate,
+          endDate,
+          status: "CONFIRMED",
+          totalCents: pricing.totalCents,
+          depositCents: data.depositCents,
+          depositPaid: false,
+          cancellationPolicyId,
+          notes: data.notes,
+          pricingBreakdownJson: pricing.breakdown,
+        },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          rentalProduct: {
+            select: { id: true, name: true, category: true },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Reservation",
+          recordId: reservation.id,
+          action: "CREATED",
+          changedFieldsJson: pricing.breakdown,
+        },
+      });
+
+      res.status(201).json(reservation);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /reservations/:id — Update reservation ────────────────────────────
+
+router.put(
+  "/reservations/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = UpdateReservationSchema.parse(req.body);
+
+      const existing = await prisma.reservation.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!existing) {
+        throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      // Recalculate price if dates changed
+      let updateData: Record<string, unknown> = { ...data };
+      if (data.startDate || data.endDate) {
+        const startDate = data.startDate ? new Date(data.startDate) : existing.startDate;
+        const endDate = data.endDate ? new Date(data.endDate) : existing.endDate;
+
+        if (endDate <= startDate) {
+          throw appError("End date must be after start date", 400, "INVALID_DATES");
+        }
+
+        const pricing = await calculateDynamicPrice(
+          tenantId,
+          existing.rentalProductId!,
+          startDate,
+          endDate,
+        );
+
+        updateData = {
+          ...updateData,
+          startDate,
+          endDate,
+          totalCents: pricing.totalCents,
+          pricingBreakdownJson: pricing.breakdown,
+        };
+      }
+
+      const updated = await prisma.reservation.update({
+        where: { id: req.params.id },
+        data: updateData,
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          rentalProduct: {
+            select: { id: true, name: true },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Reservation",
+          recordId: updated.id,
+          action: "UPDATED",
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /reservations/:id/check-in — Mark checked in ─────────────────────
+
+router.post(
+  "/reservations/:id/check-in",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const reservation = await prisma.reservation.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!reservation) {
+        throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      if (reservation.status !== "CONFIRMED") {
+        throw appError(
+          `Cannot check in a reservation with status ${reservation.status}`,
+          400,
+          "INVALID_STATUS",
+        );
+      }
+
+      const updated = await prisma.reservation.update({
+        where: { id: req.params.id },
+        data: {
+          status: "CHECKED_IN",
+          checkedInAt: new Date(),
+        },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          rentalProduct: {
+            select: { id: true, name: true },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Reservation",
+          recordId: updated.id,
+          action: "CHECKED_IN",
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /reservations/:id/check-out — Mark checked out, finalize charges ─
+
+router.post(
+  "/reservations/:id/check-out",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CheckOutSchema.parse(req.body);
+
+      const reservation = await prisma.reservation.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: { rentalProduct: true },
+      });
+      if (!reservation) {
+        throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      if (reservation.status !== "CHECKED_IN") {
+        throw appError(
+          `Cannot check out a reservation with status ${reservation.status}`,
+          400,
+          "INVALID_STATUS",
+        );
+      }
+
+      // Calculate overtime charges
+      let overtimeChargeCents = 0;
+      if (data.overtimeMinutes > 0 && reservation.rentalProduct?.hourlyRateCents) {
+        const overtimeHours = data.overtimeMinutes / 60;
+        overtimeChargeCents = Math.round(overtimeHours * reservation.rentalProduct.hourlyRateCents);
+      }
+
+      const finalTotalCents = reservation.totalCents + overtimeChargeCents + data.damageChargeCents;
+
+      const updated = await prisma.reservation.update({
+        where: { id: req.params.id },
+        data: {
+          status: "CHECKED_OUT",
+          checkedOutAt: new Date(),
+          totalCents: finalTotalCents,
+          overtimeMinutes: data.overtimeMinutes,
+          overtimeChargeCents,
+          damageChargeCents: data.damageChargeCents,
+          damageNotes: data.damageNotes,
+        },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          rentalProduct: {
+            select: { id: true, name: true },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Reservation",
+          recordId: updated.id,
+          action: "CHECKED_OUT",
+          changedFieldsJson: {
+            overtimeMinutes: data.overtimeMinutes,
+            overtimeChargeCents,
+            damageChargeCents: data.damageChargeCents,
+            finalTotalCents,
+          },
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /reservations/:id/cancel — Cancel with policy enforcement ────────
+
+router.post(
+  "/reservations/:id/cancel",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const reservation = await prisma.reservation.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: { cancellationPolicy: true },
+      });
+      if (!reservation) {
+        throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      if (reservation.status === "CANCELLED" || reservation.status === "CHECKED_OUT") {
+        throw appError(
+          `Cannot cancel a reservation with status ${reservation.status}`,
+          400,
+          "INVALID_STATUS",
+        );
+      }
+
+      // Calculate refund based on cancellation policy
+      let refundPct = 0;
+      let refundCents = 0;
+
+      if (reservation.cancellationPolicy) {
+        const hoursUntilStart =
+          (new Date(reservation.startDate).getTime() - Date.now()) / (1000 * 60 * 60);
+
+        const rules = (reservation.cancellationPolicy.rulesJson as { hoursBeforeStart: number; refundPct: number }[]) || [];
+        // Sort rules by hoursBeforeStart descending (most generous first)
+        const sortedRules = [...rules].sort((a, b) => b.hoursBeforeStart - a.hoursBeforeStart);
+
+        for (const rule of sortedRules) {
+          if (hoursUntilStart >= rule.hoursBeforeStart) {
+            refundPct = rule.refundPct;
+            break;
+          }
+        }
+
+        refundCents = Math.round(reservation.totalCents * (refundPct / 100));
+      }
+
+      const updated = await prisma.reservation.update({
+        where: { id: req.params.id },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+          refundCents,
+          refundPct,
+        },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          rentalProduct: {
+            select: { id: true, name: true },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Reservation",
+          recordId: updated.id,
+          action: "CANCELLED",
+          changedFieldsJson: { refundPct, refundCents },
+        },
+      });
+
+      res.json({ ...updated, refundPct, refundCents });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DYNAMIC PRICING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /pricing/suggestions — Algorithmic pricing suggestions ─────────────
+
+router.get(
+  "/pricing/suggestions",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const suggestions = await prisma.algorithmicSuggestion.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: "desc" },
+        include: {
+          pricingRule: { select: { id: true, name: true, type: true } },
+        },
+      });
+
+      res.json({ data: suggestions });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /pricing/suggestions/:id — Accept/reject suggestion ────────────────
+
+router.put(
+  "/pricing/suggestions/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { action } = SuggestionActionSchema.parse(req.body);
+
+      const suggestion = await prisma.algorithmicSuggestion.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!suggestion) {
+        throw appError("Suggestion not found", 404, "NOT_FOUND");
+      }
+
+      if (suggestion.status !== "PENDING") {
+        throw appError(
+          `Suggestion already ${suggestion.status.toLowerCase()}`,
+          400,
+          "ALREADY_PROCESSED",
+        );
+      }
+
+      // If accepted, apply the suggested rate to the pricing rule
+      if (action === "ACCEPTED" && suggestion.pricingRuleId) {
+        await prisma.pricingRule.update({
+          where: { id: suggestion.pricingRuleId },
+          data: { baseRateCents: suggestion.suggestedRateCents },
+        });
+      }
+
+      const updated = await prisma.algorithmicSuggestion.update({
+        where: { id: req.params.id },
+        data: {
+          status: action,
+          reviewedBy: req.userId,
+          reviewedAt: new Date(),
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "AlgorithmicSuggestion",
+          recordId: updated.id,
+          action: action === "ACCEPTED" ? "SUGGESTION_ACCEPTED" : "SUGGESTION_REJECTED",
+          changedFieldsJson: {
+            currentRateCents: suggestion.currentRateCents,
+            suggestedRateCents: suggestion.suggestedRateCents,
+          },
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANCELLATION POLICIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /cancellation-policies — List policies ─────────────────────────────
+
+router.get(
+  "/cancellation-policies",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const policies = await prisma.cancellationPolicy.findMany({
+        where: { tenantId },
+        orderBy: { name: "asc" },
+      });
+
+      res.json({ data: policies });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /cancellation-policies — Create policy ───────────────────────────
+
+router.post(
+  "/cancellation-policies",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreateCancellationPolicySchema.parse(req.body);
+
+      // If setting as default, unset current default
+      if (data.isDefault) {
+        await prisma.cancellationPolicy.updateMany({
+          where: { tenantId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+
+      const policy = await prisma.cancellationPolicy.create({
+        data: {
+          tenantId,
+          name: data.name,
+          description: data.description,
+          rulesJson: data.rules,
+          isDefault: data.isDefault,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "CancellationPolicy",
+          recordId: policy.id,
+          action: "CREATED",
+        },
+      });
+
+      res.status(201).json(policy);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

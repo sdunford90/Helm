@@ -13,7 +13,9 @@ const ListProductsQuerySchema = z.object({
   search: z.string().optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
-  sortBy: z.enum(["name", "priceCents", "createdAt"]).default("name"),
+  sortBy: z
+    .enum(["name", "priceCents", "sku", "createdAt"])
+    .default("name"),
   sortOrder: z.enum(["asc", "desc"]).default("asc"),
 });
 
@@ -41,34 +43,38 @@ const UpdateProductSchema = z.object({
   reorderQty: z.number().int().optional().nullable(),
 });
 
-const CreateTransactionLineItemSchema = z.object({
-  productId: z.string().uuid(),
+const TransactionLineItemSchema = z.object({
+  productId: z.string().min(1),
   quantity: z.number().int().positive(),
+  unitPriceCents: z.number().int().min(0),
   discountCents: z.number().int().min(0).default(0),
 });
 
 const CreateTransactionSchema = z.object({
-  lineItems: z.array(CreateTransactionLineItemSchema).min(1),
-  customerId: z.string().uuid().optional().nullable(),
+  lineItems: z.array(TransactionLineItemSchema).min(1),
+  customerId: z.string().optional().nullable(),
+  shiftId: z.string().optional().nullable(),
   paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT"]).default("CASH"),
-  shiftId: z.string().uuid().optional().nullable(),
   tipCents: z.number().int().min(0).default(0),
 });
 
 const ListTransactionsQuerySchema = z.object({
-  dateFrom: z.coerce.date().optional(),
-  dateTo: z.coerce.date().optional(),
-  paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT"]).optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  customerId: z.string().optional(),
   status: z.string().optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
+  sortBy: z.enum(["createdAt", "totalCents"]).default("createdAt"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
 const RefundSchema = z.object({
   lineItems: z
     .array(
       z.object({
-        lineItemId: z.string().uuid(),
+        lineItemId: z.string().min(1),
         quantity: z.number().int().positive(),
       }),
     )
@@ -92,7 +98,7 @@ const CloseShiftSchema = z.object({
 });
 
 const DailyReportQuerySchema = z.object({
-  date: z.coerce.date().optional(),
+  date: z.string().optional(),
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -111,6 +117,10 @@ function appError(message: string, statusCode: number, code: string): Error {
 
 router.use(...clerkAuth());
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PRODUCTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 // ─── GET /products — List products ──────────────────────────────────────────
 
 router.get(
@@ -123,6 +133,11 @@ router.get(
       const where: Record<string, unknown> = { tenantId };
 
       if (query.category) where.departmentId = query.category;
+      if (query.active !== undefined) {
+        // Products don't have an 'active' column; we treat presence of
+        // trackInventory or a positive price as a proxy. Since the schema
+        // lacks an explicit active flag, we skip this filter gracefully.
+      }
 
       if (query.search) {
         const search = query.search;
@@ -140,9 +155,7 @@ router.get(
           skip: query.skip,
           take: query.take,
           include: {
-            inventory: {
-              select: { id: true, qtyOnHand: true, qtyOnOrder: true, lastCountDate: true },
-            },
+            inventory: true,
           },
         }),
         prisma.product.count({ where }),
@@ -162,7 +175,7 @@ router.get(
   },
 );
 
-// ─── GET /products/:id — Single product with inventory ──────────────────────
+// ─── GET /products/:id — Single product ─────────────────────────────────────
 
 router.get(
   "/products/:id",
@@ -204,7 +217,7 @@ router.post(
         },
       });
 
-      // Auto-create inventory record if tracking inventory
+      // If tracking inventory, create an inventory record
       if (data.trackInventory) {
         await prisma.inventory.create({
           data: {
@@ -227,7 +240,12 @@ router.post(
         },
       });
 
-      res.status(201).json(product);
+      const result = await prisma.product.findFirst({
+        where: { id: product.id, tenantId },
+        include: { inventory: true },
+      });
+
+      res.status(201).json(result);
     } catch (err) {
       next(err);
     }
@@ -253,24 +271,8 @@ router.put(
       const updated = await prisma.product.update({
         where: { id: req.params.id },
         data,
+        include: { inventory: true },
       });
-
-      // If trackInventory was just turned on, ensure inventory record exists
-      if (data.trackInventory && !existing.trackInventory) {
-        const existingInv = await prisma.inventory.findFirst({
-          where: { productId: updated.id, tenantId },
-        });
-        if (!existingInv) {
-          await prisma.inventory.create({
-            data: {
-              tenantId,
-              productId: updated.id,
-              qtyOnHand: 0,
-              qtyOnOrder: 0,
-            },
-          });
-        }
-      }
 
       const changedFields: Record<string, unknown> = {};
       for (const key of Object.keys(data) as (keyof typeof data)[]) {
@@ -300,7 +302,7 @@ router.put(
   },
 );
 
-// ─── DELETE /products/:id — Deactivate product ─────────────────────────────
+// ─── DELETE /products/:id — Deactivate product ──────────────────────────────
 
 router.delete(
   "/products/:id",
@@ -315,12 +317,11 @@ router.delete(
         throw appError("Product not found", 404, "NOT_FOUND");
       }
 
-      // Soft-delete: we mark trackInventory false and remove from active catalog
-      // Since Product model doesn't have an "active" field, we use a convention
-      // of setting the name prefix or using departmentId = "__DEACTIVATED__"
+      // Soft delete: set price to 0 and track as deactivated via audit log
+      // The schema lacks an active flag so we record deactivation in the audit.
       const updated = await prisma.product.update({
         where: { id: req.params.id },
-        data: { departmentId: "__DEACTIVATED__" },
+        data: { priceCents: 0 },
       });
 
       await prisma.auditLog.create({
@@ -340,6 +341,10 @@ router.delete(
   },
 );
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRANSACTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 // ─── POST /transactions — Create POS transaction ────────────────────────────
 
 router.post(
@@ -347,10 +352,10 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const body = CreateTransactionSchema.parse(req.body);
+      const data = CreateTransactionSchema.parse(req.body);
 
-      // Resolve products and calculate totals
-      const productIds = body.lineItems.map((li) => li.productId);
+      // Look up products and compute line item totals
+      const productIds = data.lineItems.map((li) => li.productId);
       const products = await prisma.product.findMany({
         where: { id: { in: productIds }, tenantId },
       });
@@ -359,73 +364,65 @@ router.post(
 
       let subtotalCents = 0;
       let taxCents = 0;
-      let totalDiscountCents = 0;
 
-      const lineItemsData = body.lineItems.map((li) => {
+      const lineItemsData = data.lineItems.map((li) => {
         const product = productMap.get(li.productId);
-        if (!product) {
-          throw appError(
-            `Product not found: ${li.productId}`,
-            400,
-            "PRODUCT_NOT_FOUND",
-          );
-        }
-
-        const unitPrice = product.priceCents;
-        const lineSubtotal = unitPrice * li.quantity;
-        const discount = li.discountCents;
-        // Calculate tax: default 7% if no taxClass, otherwise use taxClass as percentage
-        const taxRate = product.taxClass ? parseFloat(product.taxClass) / 100 : 0.07;
-        const lineTax = Math.round((lineSubtotal - discount) * taxRate);
-        const lineTotal = lineSubtotal - discount + lineTax;
+        const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
+        const lineSubtotal = unitPrice * li.quantity - li.discountCents;
+        // Calculate tax based on taxClass; use 7% default if taxClass exists
+        const taxRate = product?.taxClass ? 0.07 : 0;
+        const lineTax = Math.round(lineSubtotal * taxRate);
+        const lineTotal = lineSubtotal + lineTax;
 
         subtotalCents += lineSubtotal;
         taxCents += lineTax;
-        totalDiscountCents += discount;
 
         return {
-          productId: product.id,
+          productId: li.productId,
           quantity: li.quantity,
           unitPriceCents: unitPrice,
-          discountCents: discount,
+          discountCents: li.discountCents,
           taxCents: lineTax,
           extendedCents: lineTotal,
         };
       });
 
-      const totalCents = subtotalCents - totalDiscountCents + taxCents + body.tipCents;
+      const totalCents = subtotalCents + taxCents + data.tipCents;
 
       const transaction = await prisma.posTransaction.create({
         data: {
           tenantId,
-          cashierId: req.userId ?? null,
-          shiftId: body.shiftId ?? null,
+          cashierId: req.userId,
+          shiftId: data.shiftId ?? null,
           subtotalCents,
           taxCents,
-          tipCents: body.tipCents,
+          tipCents: data.tipCents,
           totalCents,
-          status: "COMPLETED",
+          status: data.paymentMethod,
+          offlineQueued: false,
           lineItems: {
             create: lineItemsData,
           },
         },
         include: {
           lineItems: {
-            include: {
-              product: { select: { id: true, name: true, sku: true } },
-            },
+            include: { product: true },
           },
         },
       });
 
       // Decrement inventory for tracked products
-      for (const li of body.lineItems) {
-        const product = productMap.get(li.productId);
-        if (product?.trackInventory) {
-          await prisma.inventory.updateMany({
-            where: { productId: li.productId, tenantId },
-            data: { qtyOnHand: { decrement: li.quantity } },
-          });
+      for (const li of lineItemsData) {
+        if (li.productId) {
+          const product = productMap.get(li.productId);
+          if (product?.trackInventory) {
+            await prisma.inventory.updateMany({
+              where: { productId: li.productId, tenantId },
+              data: {
+                qtyOnHand: { decrement: li.quantity },
+              },
+            });
+          }
         }
       }
 
@@ -439,8 +436,8 @@ router.post(
           action: "CREATED",
           changedFieldsJson: {
             totalCents,
-            lineItemCount: lineItemsData.length,
-            paymentMethod: body.paymentMethod,
+            paymentMethod: data.paymentMethod,
+            lineItemCount: data.lineItems.length,
           },
         },
       });
@@ -463,26 +460,25 @@ router.get(
 
       const where: Record<string, unknown> = { tenantId };
 
+      if (query.paymentMethod) where.status = query.paymentMethod;
       if (query.status) where.status = query.status;
 
       if (query.dateFrom || query.dateTo) {
         const createdAt: Record<string, unknown> = {};
-        if (query.dateFrom) createdAt.gte = query.dateFrom;
-        if (query.dateTo) createdAt.lte = query.dateTo;
+        if (query.dateFrom) createdAt.gte = new Date(query.dateFrom);
+        if (query.dateTo) createdAt.lte = new Date(query.dateTo + "T23:59:59.999Z");
         where.createdAt = createdAt;
       }
 
       const [transactions, total] = await Promise.all([
         prisma.posTransaction.findMany({
           where,
-          orderBy: { createdAt: "desc" },
+          orderBy: { [query.sortBy]: query.sortOrder },
           skip: query.skip,
           take: query.take,
           include: {
             lineItems: {
-              include: {
-                product: { select: { id: true, name: true, sku: true } },
-              },
+              include: { product: true },
             },
           },
         }),
@@ -503,7 +499,7 @@ router.get(
   },
 );
 
-// ─── GET /transactions/:id — Single transaction with line items ─────────────
+// ─── GET /transactions/:id — Single transaction ─────────────────────────────
 
 router.get(
   "/transactions/:id",
@@ -515,9 +511,7 @@ router.get(
         where: { id: req.params.id, tenantId },
         include: {
           lineItems: {
-            include: {
-              product: { select: { id: true, name: true, sku: true } },
-            },
+            include: { product: true },
           },
           shift: true,
         },
@@ -541,7 +535,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const body = RefundSchema.parse(req.body);
+      const data = RefundSchema.parse(req.body);
 
       const original = await prisma.posTransaction.findFirst({
         where: { id: req.params.id, tenantId },
@@ -556,100 +550,104 @@ router.post(
         throw appError("Transaction already refunded", 400, "ALREADY_REFUNDED");
       }
 
-      let refundLineItems;
       let refundSubtotal = 0;
       let refundTax = 0;
-      let refundTotal = 0;
+      let refundLineItems: Array<{
+        productId: string | null;
+        quantity: number;
+        unitPriceCents: number;
+        discountCents: number;
+        taxCents: number;
+        extendedCents: number;
+      }> = [];
 
-      if (body.lineItems && body.lineItems.length > 0) {
-        // Partial refund
-        const originalItemMap = new Map(
+      if (data.lineItems && data.lineItems.length > 0) {
+        // Partial refund — only specified line items
+        const originalLineMap = new Map(
           original.lineItems.map((li) => [li.id, li]),
         );
 
-        refundLineItems = body.lineItems.map((ri) => {
-          const origItem = originalItemMap.get(ri.lineItemId);
-          if (!origItem) {
+        for (const refundItem of data.lineItems) {
+          const originalLine = originalLineMap.get(refundItem.lineItemId);
+          if (!originalLine) {
             throw appError(
-              `Line item not found: ${ri.lineItemId}`,
+              `Line item ${refundItem.lineItemId} not found`,
               400,
               "LINE_ITEM_NOT_FOUND",
             );
           }
-          if (ri.quantity > origItem.quantity) {
+          if (refundItem.quantity > originalLine.quantity) {
             throw appError(
-              `Refund quantity exceeds original for line item ${ri.lineItemId}`,
+              `Refund quantity exceeds original for line ${refundItem.lineItemId}`,
               400,
-              "QUANTITY_EXCEEDED",
+              "QUANTITY_EXCEEDS_ORIGINAL",
             );
           }
 
-          const ratio = ri.quantity / origItem.quantity;
-          const itemSubtotal = Math.round(origItem.unitPriceCents * ri.quantity);
-          const itemDiscount = Math.round(origItem.discountCents * ratio);
-          const itemTax = Math.round(origItem.taxCents * ratio);
-          const itemTotal = itemSubtotal - itemDiscount + itemTax;
+          const ratio = refundItem.quantity / originalLine.quantity;
+          const lineRefundTax = Math.round(originalLine.taxCents * ratio);
+          const lineRefundExtended = Math.round(originalLine.extendedCents * ratio);
+          const lineRefundSubtotal =
+            originalLine.unitPriceCents * refundItem.quantity -
+            Math.round(originalLine.discountCents * ratio);
 
-          refundSubtotal += itemSubtotal;
-          refundTax += itemTax;
-          refundTotal += itemTotal;
+          refundSubtotal += lineRefundSubtotal;
+          refundTax += lineRefundTax;
 
-          return {
-            productId: origItem.productId,
-            quantity: ri.quantity,
-            unitPriceCents: origItem.unitPriceCents,
-            discountCents: itemDiscount,
-            taxCents: itemTax,
-            extendedCents: -itemTotal,
-          };
-        });
+          refundLineItems.push({
+            productId: originalLine.productId,
+            quantity: -refundItem.quantity,
+            unitPriceCents: originalLine.unitPriceCents,
+            discountCents: Math.round(originalLine.discountCents * ratio),
+            taxCents: -lineRefundTax,
+            extendedCents: -lineRefundExtended,
+          });
+        }
       } else {
         // Full refund
         refundSubtotal = original.subtotalCents;
         refundTax = original.taxCents;
-        refundTotal = original.totalCents;
 
         refundLineItems = original.lineItems.map((li) => ({
           productId: li.productId,
-          quantity: li.quantity,
+          quantity: -li.quantity,
           unitPriceCents: li.unitPriceCents,
           discountCents: li.discountCents,
-          taxCents: li.taxCents,
+          taxCents: -li.taxCents,
           extendedCents: -li.extendedCents,
         }));
       }
+
+      const refundTotal = refundSubtotal + refundTax;
 
       // Create refund transaction
       const refund = await prisma.posTransaction.create({
         data: {
           tenantId,
-          cashierId: req.userId ?? null,
+          cashierId: req.userId,
           shiftId: original.shiftId,
           subtotalCents: -refundSubtotal,
           taxCents: -refundTax,
           tipCents: 0,
           totalCents: -refundTotal,
           status: "REFUNDED",
+          offlineQueued: false,
           lineItems: {
             create: refundLineItems,
           },
         },
         include: {
           lineItems: {
-            include: {
-              product: { select: { id: true, name: true, sku: true } },
-            },
+            include: { product: true },
           },
         },
       });
 
-      // Mark original as refunded if full refund
-      if (!body.lineItems || body.lineItems.length === 0) {
-        await prisma.posTransaction.update({
-          where: { id: original.id },
-          data: { status: "REFUNDED" },
-        });
-      }
+      // Mark original as refunded
+      await prisma.posTransaction.update({
+        where: { id: original.id },
+        data: { status: "REFUNDED" },
+      });
 
       // Restore inventory for refunded items
       for (const li of refundLineItems) {
@@ -660,7 +658,9 @@ router.post(
           if (product?.trackInventory) {
             await prisma.inventory.updateMany({
               where: { productId: li.productId, tenantId },
-              data: { qtyOnHand: { increment: li.quantity } },
+              data: {
+                qtyOnHand: { increment: Math.abs(li.quantity) },
+              },
             });
           }
         }
@@ -677,7 +677,7 @@ router.post(
           changedFieldsJson: {
             originalTransactionId: original.id,
             refundTotalCents: refundTotal,
-            reason: body.reason,
+            reason: data.reason ?? null,
           },
         },
       });
@@ -689,7 +689,11 @@ router.post(
   },
 );
 
-// ─── GET /inventory — Inventory levels across all products ──────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// INVENTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /inventory — Inventory levels ──────────────────────────────────────
 
 router.get(
   "/inventory",
@@ -700,16 +704,7 @@ router.get(
       const inventory = await prisma.inventory.findMany({
         where: { tenantId },
         include: {
-          product: {
-            select: {
-              id: true,
-              name: true,
-              sku: true,
-              priceCents: true,
-              trackInventory: true,
-              reorderQty: true,
-            },
-          },
+          product: true,
         },
         orderBy: { product: { name: "asc" } },
       });
@@ -728,22 +723,23 @@ router.put(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const { quantity, reason } = AdjustInventorySchema.parse(req.body);
+      const data = AdjustInventorySchema.parse(req.body);
 
-      const inv = await prisma.inventory.findFirst({
+      const inventory = await prisma.inventory.findFirst({
         where: { productId: req.params.productId, tenantId },
       });
 
-      if (!inv) {
+      if (!inventory) {
         throw appError("Inventory record not found", 404, "NOT_FOUND");
       }
 
       const updated = await prisma.inventory.update({
-        where: { id: inv.id },
+        where: { id: inventory.id },
         data: {
-          qtyOnHand: quantity,
+          qtyOnHand: data.quantity,
           lastCountDate: new Date(),
         },
+        include: { product: true },
       });
 
       await prisma.auditLog.create({
@@ -755,9 +751,9 @@ router.put(
           recordId: updated.id,
           action: "ADJUSTED",
           changedFieldsJson: {
-            previousQty: inv.qtyOnHand,
-            newQty: quantity,
-            reason: reason ?? null,
+            previousQty: inventory.qtyOnHand,
+            newQty: data.quantity,
+            reason: data.reason ?? null,
           },
         },
       });
@@ -768,6 +764,10 @@ router.put(
     }
   },
 );
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHIFTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /shifts — List shifts ──────────────────────────────────────────────
 
@@ -791,21 +791,26 @@ router.get(
         },
       });
 
-      // Enrich with sales totals
+      // Enrich shifts with sales totals
       const enriched = shifts.map((shift) => {
-        const completedTxns = shift.transactions.filter(
-          (t) => t.status === "COMPLETED",
-        );
-        const salesTotalCents = completedTxns.reduce(
-          (sum, t) => sum + t.totalCents,
-          0,
-        );
-        const transactionCount = completedTxns.length;
+        const salesTotal = shift.transactions
+          .filter((t) => t.status !== "REFUNDED")
+          .reduce((sum, t) => sum + t.totalCents, 0);
+        const cashSales = shift.transactions
+          .filter((t) => t.status === "CASH")
+          .reduce((sum, t) => sum + t.totalCents, 0);
+        const expectedCash = shift.openingFloatCents + cashSales;
+        const variance =
+          shift.closingCashCents != null
+            ? shift.closingCashCents - expectedCash
+            : null;
 
         return {
           ...shift,
-          salesTotalCents,
-          transactionCount,
+          salesTotal,
+          expectedCashCents: expectedCash,
+          varianceCents: variance,
+          transactionCount: shift.transactions.length,
         };
       });
 
@@ -823,10 +828,10 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const body = OpenShiftSchema.parse(req.body);
+      const data = OpenShiftSchema.parse(req.body);
 
-      // Check for existing open shift for this cashier
-      const existingOpen = await prisma.shift.findFirst({
+      // Check for already open shift for this cashier
+      const existing = await prisma.shift.findFirst({
         where: {
           tenantId,
           cashierId: req.userId!,
@@ -834,7 +839,7 @@ router.post(
         },
       });
 
-      if (existingOpen) {
+      if (existing) {
         throw appError(
           "You already have an open shift. Close it before opening a new one.",
           400,
@@ -846,8 +851,8 @@ router.post(
         data: {
           tenantId,
           cashierId: req.userId!,
-          openingFloatCents: body.openingFloatCents,
-          locationId: body.locationId ?? null,
+          locationId: data.locationId ?? null,
+          openingFloatCents: data.openingFloatCents,
           status: "OPEN",
         },
       });
@@ -861,7 +866,7 @@ router.post(
           recordId: shift.id,
           action: "OPENED",
           changedFieldsJson: {
-            openingFloatCents: body.openingFloatCents,
+            openingFloatCents: data.openingFloatCents,
           },
         },
       });
@@ -880,15 +885,11 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const body = CloseShiftSchema.parse(req.body);
+      const data = CloseShiftSchema.parse(req.body);
 
       const shift = await prisma.shift.findFirst({
         where: { id: req.params.id, tenantId },
-        include: {
-          transactions: {
-            select: { totalCents: true, status: true },
-          },
-        },
+        include: { transactions: true },
       });
 
       if (!shift) {
@@ -899,19 +900,18 @@ router.post(
         throw appError("Shift is not open", 400, "SHIFT_NOT_OPEN");
       }
 
-      // Calculate expected cash: opening float + cash transactions
+      // Calculate expected cash
       const cashSales = shift.transactions
-        .filter((t) => t.status === "COMPLETED")
+        .filter((t) => t.status === "CASH")
         .reduce((sum, t) => sum + t.totalCents, 0);
-
-      const expectedCashCents = shift.openingFloatCents + cashSales;
-      const varianceCents = body.closingCashCents - expectedCashCents;
+      const expectedCash = shift.openingFloatCents + cashSales;
+      const variance = data.closingCashCents - expectedCash;
 
       const updated = await prisma.shift.update({
         where: { id: shift.id },
         data: {
           closedAt: new Date(),
-          closingCashCents: body.closingCashCents,
+          closingCashCents: data.closingCashCents,
           status: "CLOSED",
         },
       });
@@ -925,25 +925,28 @@ router.post(
           recordId: updated.id,
           action: "CLOSED",
           changedFieldsJson: {
-            closingCashCents: body.closingCashCents,
-            expectedCashCents,
-            varianceCents,
-            notes: body.notes ?? null,
+            closingCashCents: data.closingCashCents,
+            expectedCashCents: expectedCash,
+            varianceCents: variance,
+            notes: data.notes ?? null,
           },
         },
       });
 
       res.json({
         ...updated,
-        expectedCashCents,
-        varianceCents,
-        salesTotalCents: cashSales,
+        expectedCashCents: expectedCash,
+        varianceCents: variance,
       });
     } catch (err) {
       next(err);
     }
   },
 );
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REPORTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /reports/daily — Daily sales summary ───────────────────────────────
 
@@ -952,57 +955,50 @@ router.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const { date } = DailyReportQuerySchema.parse(req.query);
+      const query = DailyReportQuerySchema.parse(req.query);
 
-      const targetDate = date ?? new Date();
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const reportDate = query.date ? new Date(query.date) : new Date();
+      const dayStart = new Date(reportDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(reportDate);
+      dayEnd.setHours(23, 59, 59, 999);
 
       const transactions = await prisma.posTransaction.findMany({
         where: {
           tenantId,
-          createdAt: { gte: startOfDay, lte: endOfDay },
+          createdAt: {
+            gte: dayStart,
+            lte: dayEnd,
+          },
         },
         include: {
           lineItems: {
-            include: {
-              product: { select: { id: true, name: true, departmentId: true } },
-            },
+            include: { product: true },
           },
         },
       });
 
-      const completed = transactions.filter((t) => t.status === "COMPLETED");
-      const refunded = transactions.filter((t) => t.status === "REFUNDED");
+      const sales = transactions.filter((t) => t.status !== "REFUNDED");
+      const refunds = transactions.filter((t) => t.status === "REFUNDED");
 
-      const totalSalesCents = completed.reduce(
-        (sum, t) => sum + t.totalCents,
-        0,
-      );
-      const totalRefundsCents = refunded.reduce(
+      const totalSales = sales.reduce((sum, t) => sum + t.totalCents, 0);
+      const totalRefunds = refunds.reduce(
         (sum, t) => sum + Math.abs(t.totalCents),
         0,
       );
-      const netSalesCents = totalSalesCents - totalRefundsCents;
-      const totalTaxCents = completed.reduce((sum, t) => sum + t.taxCents, 0);
-      const totalTipsCents = completed.reduce((sum, t) => sum + t.tipCents, 0);
+      const netSales = totalSales - totalRefunds;
+      const totalTax = sales.reduce((sum, t) => sum + t.taxCents, 0);
+      const totalTips = sales.reduce((sum, t) => sum + t.tipCents, 0);
 
-      // Category breakdown
-      const categoryBreakdown: Record<
-        string,
-        { count: number; totalCents: number }
-      > = {};
-      for (const txn of completed) {
-        for (const li of txn.lineItems) {
-          const cat = li.product?.departmentId ?? "Uncategorized";
-          if (!categoryBreakdown[cat]) {
-            categoryBreakdown[cat] = { count: 0, totalCents: 0 };
-          }
-          categoryBreakdown[cat].count += li.quantity;
-          categoryBreakdown[cat].totalCents += li.extendedCents;
+      // Breakdown by payment method
+      const byMethod: Record<string, { count: number; totalCents: number }> = {};
+      for (const t of sales) {
+        const method = t.status;
+        if (!byMethod[method]) {
+          byMethod[method] = { count: 0, totalCents: 0 };
         }
+        byMethod[method].count++;
+        byMethod[method].totalCents += t.totalCents;
       }
 
       // Top products
@@ -1010,36 +1006,32 @@ router.get(
         string,
         { name: string; quantity: number; totalCents: number }
       > = {};
-      for (const txn of completed) {
-        for (const li of txn.lineItems) {
-          const pid = li.productId ?? "unknown";
-          if (!productSales[pid]) {
-            productSales[pid] = {
-              name: li.product?.name ?? "Unknown",
-              quantity: 0,
-              totalCents: 0,
-            };
+      for (const t of sales) {
+        for (const li of t.lineItems) {
+          const name = li.product?.name ?? "Unknown";
+          const key = li.productId ?? name;
+          if (!productSales[key]) {
+            productSales[key] = { name, quantity: 0, totalCents: 0 };
           }
-          productSales[pid].quantity += li.quantity;
-          productSales[pid].totalCents += li.extendedCents;
+          productSales[key].quantity += li.quantity;
+          productSales[key].totalCents += li.extendedCents;
         }
       }
 
-      const topProducts = Object.entries(productSales)
-        .map(([id, data]) => ({ id, ...data }))
+      const topProducts = Object.values(productSales)
         .sort((a, b) => b.totalCents - a.totalCents)
         .slice(0, 10);
 
       res.json({
-        date: startOfDay.toISOString().split("T")[0],
-        transactionCount: completed.length,
-        refundCount: refunded.length,
-        totalSalesCents,
-        totalRefundsCents,
-        netSalesCents,
-        totalTaxCents,
-        totalTipsCents,
-        categoryBreakdown,
+        date: reportDate.toISOString().slice(0, 10),
+        transactionCount: sales.length,
+        refundCount: refunds.length,
+        totalSalesCents: totalSales,
+        totalRefundsCents: totalRefunds,
+        netSalesCents: netSales,
+        totalTaxCents: totalTax,
+        totalTipsCents: totalTips,
+        byPaymentMethod: byMethod,
         topProducts,
       });
     } catch (err) {
