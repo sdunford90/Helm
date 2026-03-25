@@ -31,10 +31,13 @@ function shouldBypass(path: string): boolean {
 /**
  * Tenant resolution middleware.
  *
- * Extracts the subdomain (or matches a custom_domain) from the incoming
+ * Extracts the subdomain (or matches a customDomain) from the incoming
  * request and loads the corresponding tenant from the database.  The tenant
  * is then attached to `req.tenantId` / `req.tenant` and propagated via
  * AsyncLocalStorage so the Prisma middleware can automatically scope queries.
+ *
+ * In development (localhost / 127.0.0.1), falls back to the first tenant in
+ * the database so the API works without a real subdomain.
  */
 export async function tenantMiddleware(
   req: Request,
@@ -48,19 +51,25 @@ export async function tenantMiddleware(
 
   try {
     const hostname = req.hostname; // e.g. "harborview.gethelm.com"
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
 
-    // Attempt subdomain extraction: take the first label if at least 3 labels
-    const parts = hostname.split(".");
-    const subdomain = parts.length >= 3 ? parts[0] : null;
+    let tenant = null;
 
-    // Look up tenant by subdomain or custom_domain
-    const tenant = await prisma.tenant.findFirst({
-      where: subdomain
-        ? {
-            OR: [{ subdomain }, { custom_domain: hostname }],
-          }
-        : { custom_domain: hostname },
-    });
+    if (isLocal) {
+      // Dev mode: pick the first available tenant so everything works locally
+      tenant = await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } });
+    } else {
+      // Attempt subdomain extraction: take the first label if at least 3 labels
+      const parts = hostname.split(".");
+      const subdomain = parts.length >= 3 ? parts[0] : null;
+
+      // Look up tenant by subdomain or customDomain
+      tenant = await prisma.tenant.findFirst({
+        where: subdomain
+          ? { OR: [{ subdomain }, { customDomain: hostname }] }
+          : { customDomain: hostname },
+      });
+    }
 
     if (!tenant) {
       res.status(404).json({ error: "Tenant not found", code: "TENANT_NOT_FOUND" });
