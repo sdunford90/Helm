@@ -51,9 +51,12 @@ function createPrismaClient(): PrismaClient {
       "WaitlistEntry",
       "Boat",
       "DockWalk",
+      "DockWalkItem",
+      "PumpOut",
       "POSTransaction",
       "Rental",
       "Announcement",
+      "AnnouncementDelivery",
       "User",
     ]);
 
