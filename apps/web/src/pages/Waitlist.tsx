@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Search,
   Plus,
@@ -12,6 +12,7 @@ import {
   Mail,
   Phone,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -354,6 +355,16 @@ export default function Waitlist() {
   const [selectedEntry, setSelectedEntry] = useState<WaitlistEntry | null>(null);
   const [entries, setEntries] = useState<WaitlistEntry[]>(MOCK_ENTRIES);
 
+  // API calls
+  const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/api/waitlist', { immediate: true });
+  const addToWaitlistApi = useApi<WaitlistEntry>('post', '/api/waitlist');
+
+  useEffect(() => {
+    if (apiEntries) {
+      setEntries(apiEntries);
+    }
+  }, [apiEntries]);
+
   const filtered = entries.filter((e) => {
     if (slipFilter !== 'All' && e.slipType !== slipFilter) return false;
     if (statusFilter !== 'All' && e.status !== statusFilter) return false;
@@ -387,6 +398,9 @@ export default function Waitlist() {
     <div style={s.page}>
       <h1 style={s.title}>Waitlist</h1>
       <hr style={s.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading waitlist: {error}</div>}
 
       {/* Stats Row */}
       <div style={s.statsRow}>

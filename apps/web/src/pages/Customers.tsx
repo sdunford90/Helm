@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Search, Plus, ChevronDown } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
+import { useApi } from '../hooks/useApi';
 
 interface Customer {
   id: string;

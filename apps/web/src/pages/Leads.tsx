@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import LeadDetailPanel from '../components/LeadDetailPanel';
 import LeadFormBuilder from '../components/LeadFormBuilder';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -301,7 +302,14 @@ export default function Leads() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
 
-  const filtered = MOCK_LEADS.filter((l) => {
+  // API calls
+  const { data: apiLeads, loading, error, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
+  const createLeadApi = useApi<Lead>('post', '/api/leads');
+  const updateLeadApi = useApi<Lead>('put', '/api/leads');
+
+  const leads = apiLeads || MOCK_LEADS;
+
+  const filtered = leads.filter((l) => {
     if (stageFilter !== 'All' && l.stage !== stageFilter) return false;
     if (sourceFilter !== 'All' && l.source !== sourceFilter) return false;
     if (search) {
@@ -318,6 +326,9 @@ export default function Leads() {
     <div style={s.page}>
       <h1 style={s.title}>Leads</h1>
       <hr style={s.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading leads: {error}</div>}
 
       {/* Filter Bar */}
       <div style={s.filterBar}>
@@ -522,8 +533,12 @@ export default function Leads() {
         <LeadDetailPanel
           lead={selectedLead}
           onClose={() => setSelectedLead(null)}
-          onStageChange={(newStage) => {
+          onStageChange={async (newStage) => {
             setSelectedLead({ ...selectedLead, stage: newStage as Stage });
+            if (selectedLead.id) {
+              await updateLeadApi.execute({ ...selectedLead, stage: newStage });
+              refetchLeads();
+            }
           }}
         />
       )}

@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -443,7 +444,12 @@ export default function Slips() {
   const [showAdd, setShowAdd] = useState(false);
   const [selectedSlip, setSelectedSlip] = useState<Slip | null>(null);
 
-  const filtered = MOCK_SLIPS.filter((sl) => {
+  const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
+  const createSlip = useApi<Slip>('post', '/api/slips');
+
+  const slips = apiSlips || MOCK_SLIPS;
+
+  const filtered = slips.filter((sl) => {
     if (!search) return true;
     const q = search.toLowerCase();
     return (
@@ -457,6 +463,9 @@ export default function Slips() {
     <div style={st.page}>
       <h1 style={st.title}>Slips</h1>
       <hr style={st.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading slips...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load slips. Showing cached data.</div>}
 
       {/* Filter Bar */}
       <div style={st.filterBar}>
@@ -574,7 +583,7 @@ export default function Slips() {
             compliance: sl.compliance,
           }))}
           onSlipClick={(slipId) => {
-            const slip = MOCK_SLIPS.find((s) => s.id === slipId);
+            const slip = slips.find((s) => s.id === slipId);
             if (slip) setSelectedSlip(slip);
           }}
           selectedSlipId={selectedSlip?.id}
