@@ -627,6 +627,90 @@ function AddProductModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/* ── Pricing Rule Modal ─────────────────────────────────── */
+
+const RULE_TYPES = ['Seasonal', 'Peak Day', 'Lead Time', 'Multi-day', 'Minimum Stay', 'Last Minute'];
+
+function PricingRuleModal({
+  rule,
+  onClose,
+  onSave,
+}: {
+  rule: PricingRule | null;
+  onClose: () => void;
+  onSave: (r: PricingRule) => void;
+}) {
+  const isNew = !rule?.id;
+  const [form, setForm] = useState<PricingRule>(
+    rule ?? { id: '', name: '', type: 'Seasonal', adjustment: 0, startDate: '', endDate: '', active: true }
+  );
+  const set = (field: keyof PricingRule, value: any) => setForm((p) => ({ ...p, [field]: value }));
+  const handleSave = () => {
+    if (!form.name.trim()) return;
+    onSave({ ...form, id: form.id || String(Date.now()) });
+    onClose();
+  };
+
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={{ ...st.modal, width: '520px' }} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>{isNew ? 'Add Pricing Rule' : 'Edit Pricing Rule'}</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={st.modalBody}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div style={{ ...st.field, gridColumn: '1 / -1' }}>
+              <label style={st.label}>Rule Name *</label>
+              <input style={st.input} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Summer Peak Season" />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Type</label>
+              <select style={st.input} value={form.type} onChange={(e) => set('type', e.target.value)}>
+                {RULE_TYPES.map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Price Adjustment (%)</label>
+              <input
+                style={st.input}
+                type="number"
+                step="1"
+                value={form.adjustment}
+                onChange={(e) => set('adjustment', parseFloat(e.target.value) || 0)}
+                placeholder="e.g. 25 or -10"
+              />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Start Date</label>
+              <input style={st.input} type="date" value={form.startDate} onChange={(e) => set('startDate', e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>End Date</label>
+              <input style={st.input} type="date" value={form.endDate} onChange={(e) => set('endDate', e.target.value)} />
+            </div>
+          </div>
+          <div style={{ marginTop: '16px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: '#0A2342', cursor: 'pointer' }}>
+              <input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} />
+              Rule is active
+            </label>
+          </div>
+          {form.adjustment !== 0 && (
+            <div style={{ marginTop: '12px', padding: '10px 14px', borderRadius: '6px', background: form.adjustment > 0 ? '#FEF9F9' : '#F0FDF4', border: `1px solid ${form.adjustment > 0 ? '#FCA5A5' : '#86EFAC'}`, fontSize: '13px', color: form.adjustment > 0 ? '#9B1C1C' : '#14532D' }}>
+              This rule {form.adjustment > 0 ? 'increases' : 'decreases'} the base price by {Math.abs(form.adjustment)}%
+            </div>
+          )}
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={handleSave}>{isNew ? 'Add Rule' : 'Save Changes'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Reservation Detail Panel ──────────────────────────── */
 
 function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => void }) {
@@ -681,6 +765,8 @@ export default function Rentals() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
+  const [editingRule, setEditingRule] = useState<PricingRule | null | 'new'>(null);
+  const [localRules, setLocalRules] = useState<PricingRule[]>(PRICING_RULES);
 
   // API calls with fallback to mock data
   const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/api/rentals/products', { immediate: true });
@@ -691,7 +777,7 @@ export default function Rentals() {
 
   const products = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
   const reservations = useMemo(() => apiReservations ?? RESERVATIONS, [apiReservations]);
-  const pricingRules = useMemo(() => apiPricingRules ?? PRICING_RULES, [apiPricingRules]);
+  const pricingRules = apiPricingRules ?? localRules;
   const promoCodes = useMemo(() => apiPromoCodes ?? PROMO_CODES, [apiPromoCodes]);
 
   const loading = loadingProducts || loadingRes;
@@ -902,7 +988,7 @@ export default function Rentals() {
         <>
           <div style={st.filterBar}>
             <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Plus size={16} /> Add Rule</button>
+            <button style={st.addBtn} onClick={() => setEditingRule('new')}><Plus size={16} /> Add Rule</button>
           </div>
           <div style={st.tableWrap}>
             <table style={st.table}>
@@ -932,12 +1018,15 @@ export default function Rentals() {
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.startDate}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.endDate}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ ...st.toggleTrack, background: rule.active ? '#00D4FF' : '#CBD5E1' }}>
+                        <button
+                          style={{ ...st.toggleTrack, background: rule.active ? '#00D4FF' : '#CBD5E1' }}
+                          onClick={() => setLocalRules((prev) => prev.map((r) => r.id === rule.id ? { ...r, active: !r.active } : r))}
+                        >
                           <div style={{ ...st.toggleThumb, left: rule.active ? '20px' : '2px' }} />
                         </button>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingRule(rule)}>Edit</button>
                       </td>
                     </tr>
                   );
@@ -1021,6 +1110,19 @@ export default function Rentals() {
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}
+      {editingRule !== null && (
+        <PricingRuleModal
+          rule={editingRule === 'new' ? null : editingRule}
+          onClose={() => setEditingRule(null)}
+          onSave={(saved) => {
+            setLocalRules((prev) => {
+              const idx = prev.findIndex((r) => r.id === saved.id);
+              if (idx >= 0) return prev.map((r) => r.id === saved.id ? saved : r);
+              return [...prev, saved];
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

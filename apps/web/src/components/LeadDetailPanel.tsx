@@ -338,7 +338,7 @@ function getActivityIcon(type: string) {
 
 export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
-  const [activities, setActivities] = useState<ActivityEvent[]>(MOCK_ACTIVITY);
+  const [activities, setActivities] = useState<ActivityEvent[]>(lead.id ? MOCK_ACTIVITY : []);
   const [showConversion, setShowConversion] = useState(false);
   const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
   const [editData, setEditData] = useState<Lead>({ ...lead });

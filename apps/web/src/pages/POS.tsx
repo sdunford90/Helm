@@ -6,6 +6,33 @@ import {
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
+/* ── Payment type config shared with Settings ────────────── */
+
+const HELM_PAYMENT_TYPES_KEY = 'helm_payment_types';
+const PAYMENT_TYPE_DEFAULTS_POS = [
+  { id: 'card', name: 'Card', availPOS: true, active: true },
+  { id: 'cash', name: 'Cash', availPOS: true, active: true },
+  { id: 'ach', name: 'ACH', availPOS: true, active: true },
+  { id: 'charge', name: 'Charge to Slip', availPOS: true, active: true },
+];
+
+function loadPOSPaymentTypes() {
+  try {
+    const raw = localStorage.getItem(HELM_PAYMENT_TYPES_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return PAYMENT_TYPE_DEFAULTS_POS;
+}
+
+const PAY_ICON: Record<string, React.ReactNode> = {
+  card: <CreditCard size={16} />,
+  cash: <Banknote size={16} />,
+  ach: <Building2 size={16} />,
+  check: <Building2 size={16} />,
+  wire: <Building2 size={16} />,
+  charge: <DollarSign size={16} />,
+};
+
 /* ── Types ─────────────────────────────────────────────── */
 
 interface Product {
@@ -228,6 +255,8 @@ export default function POS() {
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [fuelQtyInputs, setFuelQtyInputs] = useState<Record<string, string>>({});
+  const [posPaymentTypes] = useState(loadPOSPaymentTypes);
+  const activePOSMethods = posPaymentTypes.filter((pt: any) => pt.availPOS && pt.active);
 
   // API calls with fallback to mock data
   const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });
@@ -429,10 +458,15 @@ export default function POS() {
               <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
               <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
               <div style={st.payBtns}>
-                <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card' })}><CreditCard size={16} /> Card</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash' })}><Banknote size={16} /> Cash</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH' })}><Building2 size={16} /> ACH</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip' })}><DollarSign size={16} /> Charge to Slip</button>
+                {activePOSMethods.map((pt: any, i: number) => (
+                  <button
+                    key={pt.id}
+                    style={{ ...st.payBtn, ...(i === 0 ? st.payBtnPrimary : {}) }}
+                    onClick={() => total > 0 && setPaymentModal({ method: pt.name })}
+                  >
+                    {PAY_ICON[pt.id] ?? <DollarSign size={16} />} {pt.name}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
