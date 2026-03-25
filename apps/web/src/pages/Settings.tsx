@@ -4,7 +4,8 @@ import {
   Building2, Palette, CreditCard, Link, ShieldCheck,
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
-  Download, Globe, Webhook,
+  Download, Globe, Webhook, Package, Search, Edit2,
+  MapPin, Save, XCircle, ChevronDown,
 } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -16,6 +17,54 @@ interface TeamMember {
   role: string;
   status: 'Active' | 'Invited' | 'Disabled';
   lastLogin: string;
+  locations: string[];
+}
+
+interface DockageRate {
+  id: string;
+  slipType: string;
+  monthlyRate: number;
+  quarterlyRate: number;
+  annualRate: number;
+  electricityMode: 'Flat' | 'Metered';
+  electricityRate: number;
+  glAccount: string;
+  active: boolean;
+}
+
+interface RentalProduct {
+  id: string;
+  name: string;
+  type: string;
+  hourlyRate: number;
+  halfDayRate: number;
+  dailyRate: number;
+  damageWaiver: number;
+  deposit: number;
+  glAccount: string;
+  active: boolean;
+}
+
+interface POSItem {
+  id: string;
+  sku: string;
+  name: string;
+  category: string;
+  cost: number;
+  price: number;
+  taxClass: string;
+  glRevenueAccount: string;
+  glCogsAccount: string;
+  trackInventory: boolean;
+  active: boolean;
+}
+
+interface ServiceFee {
+  id: string;
+  name: string;
+  amount: number;
+  glAccount: string;
+  active: boolean;
 }
 
 interface ApiKeyEntry {
@@ -28,13 +77,79 @@ interface ApiKeyEntry {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
+const MARINA_LOCATIONS = [
+  { id: 'main', name: 'Main Dock' },
+  { id: 'fuel', name: 'Fuel Dock' },
+  { id: 'rental', name: 'Rental Center' },
+];
+
 const TEAM: TeamMember[] = [
-  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', status: 'Active', lastLogin: '2026-03-25 9:14 AM' },
-  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', status: 'Active', lastLogin: '2026-03-25 8:02 AM' },
-  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', status: 'Active', lastLogin: '2026-03-24 6:45 PM' },
-  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', status: 'Active', lastLogin: '2026-03-24 5:30 PM' },
-  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', status: 'Active', lastLogin: '2026-03-23 3:15 PM' },
-  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', status: 'Invited', lastLogin: '—' },
+  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
+  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', status: 'Active', lastLogin: '2026-03-25 8:02 AM', locations: ['Main Dock', 'Fuel Dock'] },
+  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', status: 'Active', lastLogin: '2026-03-24 6:45 PM', locations: ['Main Dock'] },
+  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', status: 'Active', lastLogin: '2026-03-24 5:30 PM', locations: ['Main Dock', 'Rental Center'] },
+  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', status: 'Active', lastLogin: '2026-03-23 3:15 PM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
+  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'] },
+];
+
+const DOCKAGE_RATES_DATA: DockageRate[] = [
+  { id: 'd1', slipType: '25ft Open', monthlyRate: 450, quarterlyRate: 1250, annualRate: 4800, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
+  { id: 'd2', slipType: '30ft Open', monthlyRate: 575, quarterlyRate: 1600, annualRate: 6200, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
+  { id: 'd3', slipType: '30ft Covered', monthlyRate: 725, quarterlyRate: 2050, annualRate: 7900, electricityMode: 'Flat', electricityRate: 75, glAccount: '4100', active: true },
+  { id: 'd4', slipType: '40ft Open', monthlyRate: 850, quarterlyRate: 2400, annualRate: 9200, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
+  { id: 'd5', slipType: '40ft Covered', monthlyRate: 1050, quarterlyRate: 2950, annualRate: 11400, electricityMode: 'Flat', electricityRate: 125, glAccount: '4100', active: true },
+  { id: 'd6', slipType: '50ft Open', monthlyRate: 1200, quarterlyRate: 3400, annualRate: 13000, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
+  { id: 'd7', slipType: '50ft Covered', monthlyRate: 1450, quarterlyRate: 4100, annualRate: 15800, electricityMode: 'Flat', electricityRate: 175, glAccount: '4100', active: true },
+  { id: 'd8', slipType: '60ft End-Tie', monthlyRate: 1800, quarterlyRate: 5100, annualRate: 19500, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: false },
+];
+
+const RENTAL_PRODUCTS_DATA: RentalProduct[] = [
+  { id: 'r1', name: '20ft Pontoon - Sun Tracker', type: 'Pontoon', hourlyRate: 75, halfDayRate: 225, dailyRate: 395, damageWaiver: 35, deposit: 500, glAccount: '4300', active: true },
+  { id: 'r2', name: '22ft Pontoon - Bennington', type: 'Pontoon', hourlyRate: 95, halfDayRate: 275, dailyRate: 475, damageWaiver: 40, deposit: 500, glAccount: '4300', active: true },
+  { id: 'r3', name: 'Yamaha WaveRunner EX', type: 'Jet Ski', hourlyRate: 85, halfDayRate: 250, dailyRate: 425, damageWaiver: 30, deposit: 300, glAccount: '4300', active: true },
+  { id: 'r4', name: 'Sea-Doo Spark Trixx', type: 'Jet Ski', hourlyRate: 75, halfDayRate: 220, dailyRate: 375, damageWaiver: 30, deposit: 300, glAccount: '4300', active: true },
+  { id: 'r5', name: '17ft Boston Whaler', type: 'Motorboat', hourlyRate: 110, halfDayRate: 325, dailyRate: 550, damageWaiver: 45, deposit: 750, glAccount: '4300', active: true },
+  { id: 'r6', name: 'Hobie Cat 16', type: 'Sailboat', hourlyRate: 55, halfDayRate: 160, dailyRate: 275, damageWaiver: 25, deposit: 400, glAccount: '4300', active: false },
+];
+
+const POS_ITEMS_DATA: POSItem[] = [
+  { id: 'p1', sku: 'FUEL-UNL87', name: 'Unleaded 87', category: 'Fuel', cost: 3.10, price: 4.29, taxClass: 'Fuel Tax', glRevenueAccount: '4400', glCogsAccount: '5100', trackInventory: true, active: true },
+  { id: 'p2', sku: 'FUEL-DSL', name: 'Marine Diesel', category: 'Fuel', cost: 3.45, price: 4.79, taxClass: 'Fuel Tax', glRevenueAccount: '4400', glCogsAccount: '5100', trackInventory: true, active: true },
+  { id: 'p3', sku: 'BAIT-SHRMP', name: 'Live Shrimp (dozen)', category: 'Bait', cost: 2.50, price: 5.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p4', sku: 'BAIT-MNOW', name: 'Minnows (bucket)', category: 'Bait', cost: 1.75, price: 4.49, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p5', sku: 'MRN-OIL2T', name: '2-Stroke Engine Oil (qt)', category: 'Marine', cost: 6.50, price: 12.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p6', sku: 'MRN-ROPE50', name: 'Dock Rope 50ft', category: 'Marine', cost: 14.00, price: 28.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p7', sku: 'PRV-WATER', name: 'Bottled Water', category: 'Provisions', cost: 0.35, price: 1.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p8', sku: 'PRV-SNBRN', name: 'Sunscreen SPF 50', category: 'Provisions', cost: 4.00, price: 10.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p9', sku: 'APP-CAP01', name: 'Bayshore Marina Cap', category: 'Apparel', cost: 5.50, price: 24.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+  { id: 'p10', sku: 'APP-TEE01', name: 'Bayshore Marina T-Shirt', category: 'Apparel', cost: 7.00, price: 29.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
+];
+
+const SERVICE_FEES_DATA: ServiceFee[] = [
+  { id: 'sf1', name: 'Pump-Out Fee', amount: 25, glAccount: '4800', active: true },
+  { id: 'sf2', name: 'Launch Ramp - Single Use', amount: 20, glAccount: '4700', active: true },
+  { id: 'sf3', name: 'Launch Ramp - Annual Pass', amount: 350, glAccount: '4700', active: true },
+  { id: 'sf4', name: 'Transient Nightly (per ft)', amount: 3.50, glAccount: '4600', active: true },
+  { id: 'sf5', name: 'Live-Aboard Surcharge', amount: 200, glAccount: '4100', active: true },
+  { id: 'sf6', name: 'Winter Storage (per ft/mo)', amount: 8, glAccount: '4100', active: true },
+  { id: 'sf7', name: 'Jet Ski Lift Fee', amount: 15, glAccount: '4800', active: true },
+  { id: 'sf8', name: 'Package Receiving', amount: 5, glAccount: '4800', active: false },
+];
+
+const GL_ACCOUNTS_FULL = [
+  { code: '1010', name: 'Cash on Hand' },
+  { code: '1020', name: 'Stripe Clearing' },
+  { code: '1030', name: 'ACH Clearing' },
+  { code: '4100', name: 'Slip Revenue' },
+  { code: '4200', name: 'Electricity Revenue' },
+  { code: '4300', name: 'Rental Revenue' },
+  { code: '4400', name: 'Fuel Revenue' },
+  { code: '4500', name: 'Retail Revenue' },
+  { code: '4600', name: 'Transient Revenue' },
+  { code: '4700', name: 'Ramp Revenue' },
+  { code: '4800', name: 'Concierge Revenue' },
+  { code: '5100', name: 'Fuel COGS' },
+  { code: '5200', name: 'Retail COGS' },
 ];
 
 const API_KEYS: ApiKeyEntry[] = [
@@ -141,7 +256,7 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'integrations' | 'team' | 'advanced'>('profile');
+  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'advanced'>('profile');
 
   // API calls
   const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
@@ -161,10 +276,47 @@ export default function Settings() {
     setPaymentTypes((prev) => prev.map((pt) => pt.id === id ? { ...pt, [field]: value } : pt));
   };
 
+  // Catalog state
+  const [catalogLocation, setCatalogLocation] = useState('main');
+  const [catalogSection, setCatalogSection] = useState<'dockage' | 'rentals' | 'pos' | 'fees'>('dockage');
+  const [catalogSearch, setCatalogSearch] = useState('');
+
+  const [dockageRates, setDockageRates] = useState<DockageRate[]>(DOCKAGE_RATES_DATA);
+  const [editingDockageId, setEditingDockageId] = useState<string | null>(null);
+  const [editingDockage, setEditingDockage] = useState<DockageRate | null>(null);
+  const [addingDockage, setAddingDockage] = useState(false);
+  const [newDockage, setNewDockage] = useState<DockageRate>({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true });
+
+  const [rentalProducts, setRentalProducts] = useState<RentalProduct[]>(RENTAL_PRODUCTS_DATA);
+  const [editingRentalId, setEditingRentalId] = useState<string | null>(null);
+  const [editingRental, setEditingRental] = useState<RentalProduct | null>(null);
+  const [addingRental, setAddingRental] = useState(false);
+  const [newRental, setNewRental] = useState<RentalProduct>({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true });
+
+  const [posItems, setPosItems] = useState<POSItem[]>(POS_ITEMS_DATA);
+  const [editingPosId, setEditingPosId] = useState<string | null>(null);
+  const [editingPos, setEditingPos] = useState<POSItem | null>(null);
+  const [addingPos, setAddingPos] = useState(false);
+  const [newPos, setNewPos] = useState<POSItem>({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true });
+
+  const [serviceFees, setServiceFees] = useState<ServiceFee[]>(SERVICE_FEES_DATA);
+  const [editingFeeId, setEditingFeeId] = useState<string | null>(null);
+  const [editingFee, setEditingFee] = useState<ServiceFee | null>(null);
+  const [addingFee, setAddingFee] = useState(false);
+  const [newFee, setNewFee] = useState<ServiceFee>({ id: '', name: '', amount: 0, glAccount: '4800', active: true });
+
+  // Team invite modal state
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteName, setInviteName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('Dock Staff');
+  const [inviteLocations, setInviteLocations] = useState<string[]>([]);
+
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
     { key: 'branding', label: 'Branding', icon: Palette },
     { key: 'billing', label: 'Billing', icon: CreditCard },
+    { key: 'catalog', label: 'Catalog', icon: Package },
     { key: 'integrations', label: 'Integrations', icon: Link },
     { key: 'team', label: 'Team & Roles', icon: ShieldCheck },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
@@ -454,6 +606,366 @@ export default function Settings() {
         </>
       )}
 
+      {/* Catalog */}
+      {tab === 'catalog' && (
+        <>
+          {/* Location Selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <MapPin size={16} style={{ color: '#00D4FF' }} />
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Location:</span>
+              <select style={{ ...st.select, width: '240px' }} value={catalogLocation} onChange={(e) => setCatalogLocation(e.target.value)}>
+                {MARINA_LOCATIONS.map((loc) => (
+                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Category tabs */}
+          <div style={{ display: 'flex', gap: '0', borderBottom: '2px solid #E2E8F0', marginBottom: '24px' }}>
+            {([
+              { key: 'dockage' as const, label: 'Dockage Rates' },
+              { key: 'rentals' as const, label: 'Rental Products' },
+              { key: 'pos' as const, label: 'POS Items' },
+              { key: 'fees' as const, label: 'Service Fees' },
+            ]).map((s) => (
+              <button key={s.key} style={{ ...st.tab, ...(catalogSection === s.key ? st.tabActive : {}) }} onClick={() => { setCatalogSection(s.key); setCatalogSearch(''); }}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Search + Add */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div style={{ position: 'relative', width: '300px' }}>
+              <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
+              <input style={{ ...st.input, paddingLeft: '32px' }} placeholder="Search..." value={catalogSearch} onChange={(e) => setCatalogSearch(e.target.value)} />
+            </div>
+            <button
+              style={st.addBtn}
+              onClick={() => {
+                if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true }); }
+                if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true }); }
+                if (catalogSection === 'pos') { setAddingPos(true); setNewPos({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true }); }
+                if (catalogSection === 'fees') { setAddingFee(true); setNewFee({ id: '', name: '', amount: 0, glAccount: '4800', active: true }); }
+              }}
+            >
+              <Plus size={16} /> Add {catalogSection === 'dockage' ? 'Rate' : catalogSection === 'rentals' ? 'Product' : catalogSection === 'pos' ? 'Item' : 'Fee'}
+            </button>
+          </div>
+
+          {/* ── Dockage Rates ── */}
+          {catalogSection === 'dockage' && (
+            <div style={st.tableWrap}>
+              <table style={st.table}>
+                <thead>
+                  <tr>
+                    <th style={st.th}>Slip Type</th>
+                    <th style={st.th}>Monthly</th>
+                    <th style={st.th}>Quarterly</th>
+                    <th style={st.th}>Annual</th>
+                    <th style={st.th}>Elec. Mode</th>
+                    <th style={st.th}>Elec. Rate</th>
+                    <th style={st.th}>GL Account</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    <th style={st.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {addingDockage && (
+                    <tr>
+                      <td style={st.td}><input style={{ ...st.input, width: '120px' }} value={newDockage.slipType} onChange={(e) => setNewDockage({ ...newDockage, slipType: e.target.value })} placeholder="e.g. 35ft Open" /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" value={newDockage.monthlyRate || ''} onChange={(e) => setNewDockage({ ...newDockage, monthlyRate: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" value={newDockage.quarterlyRate || ''} onChange={(e) => setNewDockage({ ...newDockage, quarterlyRate: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" value={newDockage.annualRate || ''} onChange={(e) => setNewDockage({ ...newDockage, annualRate: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '100px' }} value={newDockage.electricityMode} onChange={(e) => setNewDockage({ ...newDockage, electricityMode: e.target.value as 'Flat' | 'Metered' })}>
+                          <option>Metered</option><option>Flat</option>
+                        </select>
+                      </td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newDockage.electricityRate || ''} onChange={(e) => setNewDockage({ ...newDockage, electricityRate: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '160px' }} value={newDockage.glAccount} onChange={(e) => setNewDockage({ ...newDockage, glAccount: e.target.value })}>
+                          {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newDockage.active} onChange={(e) => setNewDockage({ ...newDockage, active: e.target.checked })} /></td>
+                      <td style={st.td}>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setDockageRates([...dockageRates, { ...newDockage, id: 'd' + Date.now() }]); setAddingDockage(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingDockage(false)}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {dockageRates.filter((d) => d.slipType.toLowerCase().includes(catalogSearch.toLowerCase())).map((d, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                    const isEditing = editingDockageId === d.id;
+                    const ed = isEditing ? editingDockage! : d;
+                    return (
+                      <tr key={d.id}>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '120px' }} value={ed.slipType} onChange={(e) => setEditingDockage({ ...ed, slipType: e.target.value })} /> : d.slipType}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.monthlyRate} onChange={(e) => setEditingDockage({ ...ed, monthlyRate: +e.target.value })} /> : `$${d.monthlyRate.toLocaleString()}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.quarterlyRate} onChange={(e) => setEditingDockage({ ...ed, quarterlyRate: +e.target.value })} /> : `$${d.quarterlyRate.toLocaleString()}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.annualRate} onChange={(e) => setEditingDockage({ ...ed, annualRate: +e.target.value })} /> : `$${d.annualRate.toLocaleString()}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.electricityMode} onChange={(e) => setEditingDockage({ ...ed, electricityMode: e.target.value as 'Flat' | 'Metered' })}><option>Metered</option><option>Flat</option></select> : d.electricityMode}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.electricityRate} onChange={(e) => setEditingDockage({ ...ed, electricityRate: +e.target.value })} /> : (d.electricityMode === 'Flat' ? `$${d.electricityRate}/mo` : `$${d.electricityRate}/kWh`)}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '160px' }} value={ed.glAccount} onChange={(e) => setEditingDockage({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${d.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === d.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingDockage({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: d.active ? '#DEF7EC' : '#F3F4F6', color: d.active ? '#03543F' : '#64748B' }}>{d.active ? 'Yes' : 'No'}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setDockageRates(dockageRates.map((r) => r.id === d.id ? editingDockage! : r)); setEditingDockageId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingDockageId(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingDockageId(d.id); setEditingDockage({ ...d }); }}>Edit</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setDockageRates(dockageRates.filter((r) => r.id !== d.id))}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ── Rental Products ── */}
+          {catalogSection === 'rentals' && (
+            <div style={st.tableWrap}>
+              <table style={st.table}>
+                <thead>
+                  <tr>
+                    <th style={st.th}>Product Name</th>
+                    <th style={st.th}>Type</th>
+                    <th style={st.th}>Hourly</th>
+                    <th style={st.th}>Half-Day</th>
+                    <th style={st.th}>Daily</th>
+                    <th style={st.th}>Damage Waiver</th>
+                    <th style={st.th}>Deposit</th>
+                    <th style={st.th}>GL Account</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    <th style={st.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {addingRental && (
+                    <tr>
+                      <td style={st.td}><input style={{ ...st.input, width: '160px' }} value={newRental.name} onChange={(e) => setNewRental({ ...newRental, name: e.target.value })} placeholder="Product name" /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '110px' }} value={newRental.type} onChange={(e) => setNewRental({ ...newRental, type: e.target.value })}>
+                          <option>Pontoon</option><option>Jet Ski</option><option>Motorboat</option><option>Sailboat</option><option>Kayak</option><option>Paddleboard</option>
+                        </select>
+                      </td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" value={newRental.hourlyRate || ''} onChange={(e) => setNewRental({ ...newRental, hourlyRate: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" value={newRental.halfDayRate || ''} onChange={(e) => setNewRental({ ...newRental, halfDayRate: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" value={newRental.dailyRate || ''} onChange={(e) => setNewRental({ ...newRental, dailyRate: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" value={newRental.damageWaiver || ''} onChange={(e) => setNewRental({ ...newRental, damageWaiver: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" value={newRental.deposit || ''} onChange={(e) => setNewRental({ ...newRental, deposit: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '160px' }} value={newRental.glAccount} onChange={(e) => setNewRental({ ...newRental, glAccount: e.target.value })}>
+                          {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newRental.active} onChange={(e) => setNewRental({ ...newRental, active: e.target.checked })} /></td>
+                      <td style={st.td}>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setRentalProducts([...rentalProducts, { ...newRental, id: 'r' + Date.now() }]); setAddingRental(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingRental(false)}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {rentalProducts.filter((r) => r.name.toLowerCase().includes(catalogSearch.toLowerCase()) || r.type.toLowerCase().includes(catalogSearch.toLowerCase())).map((r, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                    const isEditing = editingRentalId === r.id;
+                    const ed = isEditing ? editingRental! : r;
+                    return (
+                      <tr key={r.id}>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '160px' }} value={ed.name} onChange={(e) => setEditingRental({ ...ed, name: e.target.value })} /> : r.name}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '110px' }} value={ed.type} onChange={(e) => setEditingRental({ ...ed, type: e.target.value })}><option>Pontoon</option><option>Jet Ski</option><option>Motorboat</option><option>Sailboat</option><option>Kayak</option><option>Paddleboard</option></select> : <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{r.type}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.hourlyRate} onChange={(e) => setEditingRental({ ...ed, hourlyRate: +e.target.value })} /> : `$${r.hourlyRate}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.halfDayRate} onChange={(e) => setEditingRental({ ...ed, halfDayRate: +e.target.value })} /> : `$${r.halfDayRate}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.dailyRate} onChange={(e) => setEditingRental({ ...ed, dailyRate: +e.target.value })} /> : `$${r.dailyRate}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.damageWaiver} onChange={(e) => setEditingRental({ ...ed, damageWaiver: +e.target.value })} /> : `$${r.damageWaiver}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.deposit} onChange={(e) => setEditingRental({ ...ed, deposit: +e.target.value })} /> : `$${r.deposit}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '160px' }} value={ed.glAccount} onChange={(e) => setEditingRental({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${r.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === r.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingRental({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: r.active ? '#DEF7EC' : '#F3F4F6', color: r.active ? '#03543F' : '#64748B' }}>{r.active ? 'Yes' : 'No'}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setRentalProducts(rentalProducts.map((p) => p.id === r.id ? editingRental! : p)); setEditingRentalId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingRentalId(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingRentalId(r.id); setEditingRental({ ...r }); }}>Edit</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setRentalProducts(rentalProducts.filter((p) => p.id !== r.id))}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ── POS Items ── */}
+          {catalogSection === 'pos' && (
+            <div style={st.tableWrap}>
+              <table style={st.table}>
+                <thead>
+                  <tr>
+                    <th style={st.th}>SKU</th>
+                    <th style={st.th}>Name</th>
+                    <th style={st.th}>Category</th>
+                    <th style={st.th}>Cost</th>
+                    <th style={st.th}>Price</th>
+                    <th style={st.th}>Tax Class</th>
+                    <th style={st.th}>GL Revenue</th>
+                    <th style={st.th}>GL COGS</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Inventory</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    <th style={st.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {addingPos && (
+                    <tr>
+                      <td style={st.td}><input style={{ ...st.input, width: '100px' }} value={newPos.sku} onChange={(e) => setNewPos({ ...newPos, sku: e.target.value })} placeholder="SKU" /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '140px' }} value={newPos.name} onChange={(e) => setNewPos({ ...newPos, name: e.target.value })} placeholder="Name" /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '110px' }} value={newPos.category} onChange={(e) => setNewPos({ ...newPos, category: e.target.value })}>
+                          <option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option>
+                        </select>
+                      </td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newPos.cost || ''} onChange={(e) => setNewPos({ ...newPos, cost: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newPos.price || ''} onChange={(e) => setNewPos({ ...newPos, price: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '100px' }} value={newPos.taxClass} onChange={(e) => setNewPos({ ...newPos, taxClass: e.target.value })}>
+                          <option>Standard</option><option>Fuel Tax</option><option>Tax Exempt</option>
+                        </select>
+                      </td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '140px' }} value={newPos.glRevenueAccount} onChange={(e) => setNewPos({ ...newPos, glRevenueAccount: e.target.value })}>
+                          {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '140px' }} value={newPos.glCogsAccount} onChange={(e) => setNewPos({ ...newPos, glCogsAccount: e.target.value })}>
+                          {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('5')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newPos.trackInventory} onChange={(e) => setNewPos({ ...newPos, trackInventory: e.target.checked })} /></td>
+                      <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newPos.active} onChange={(e) => setNewPos({ ...newPos, active: e.target.checked })} /></td>
+                      <td style={st.td}>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setPosItems([...posItems, { ...newPos, id: 'p' + Date.now() }]); setAddingPos(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingPos(false)}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {posItems.filter((p) => p.name.toLowerCase().includes(catalogSearch.toLowerCase()) || p.sku.toLowerCase().includes(catalogSearch.toLowerCase()) || p.category.toLowerCase().includes(catalogSearch.toLowerCase())).map((p, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                    const isEditing = editingPosId === p.id;
+                    const ed = isEditing ? editingPos! : p;
+                    return (
+                      <tr key={p.id}>
+                        <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontSize: '12px' }}>{isEditing ? <input style={{ ...st.input, width: '100px' }} value={ed.sku} onChange={(e) => setEditingPos({ ...ed, sku: e.target.value })} /> : p.sku}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '140px' }} value={ed.name} onChange={(e) => setEditingPos({ ...ed, name: e.target.value })} /> : p.name}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '110px' }} value={ed.category} onChange={(e) => setEditingPos({ ...ed, category: e.target.value })}><option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option></select> : <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{p.category}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.cost} onChange={(e) => setEditingPos({ ...ed, cost: +e.target.value })} /> : `$${p.cost.toFixed(2)}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.price} onChange={(e) => setEditingPos({ ...ed, price: +e.target.value })} /> : `$${p.price.toFixed(2)}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.taxClass} onChange={(e) => setEditingPos({ ...ed, taxClass: e.target.value })}><option>Standard</option><option>Fuel Tax</option><option>Tax Exempt</option></select> : p.taxClass}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{isEditing ? <select style={{ ...st.select, width: '140px' }} value={ed.glRevenueAccount} onChange={(e) => setEditingPos({ ...ed, glRevenueAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${p.glRevenueAccount}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{isEditing ? <select style={{ ...st.select, width: '140px' }} value={ed.glCogsAccount} onChange={(e) => setEditingPos({ ...ed, glCogsAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('5')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${p.glCogsAccount}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.trackInventory} onChange={(e) => setEditingPos({ ...ed, trackInventory: e.target.checked })} /> : (p.trackInventory ? 'Yes' : 'No')}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingPos({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: p.active ? '#DEF7EC' : '#F3F4F6', color: p.active ? '#03543F' : '#64748B' }}>{p.active ? 'Yes' : 'No'}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setPosItems(posItems.map((i) => i.id === p.id ? editingPos! : i)); setEditingPosId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingPosId(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingPosId(p.id); setEditingPos({ ...p }); }}>Edit</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setPosItems(posItems.filter((i) => i.id !== p.id))}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ── Service Fees ── */}
+          {catalogSection === 'fees' && (
+            <div style={st.tableWrap}>
+              <table style={st.table}>
+                <thead>
+                  <tr>
+                    <th style={st.th}>Fee Name</th>
+                    <th style={st.th}>Amount</th>
+                    <th style={st.th}>GL Account</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    <th style={st.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {addingFee && (
+                    <tr>
+                      <td style={st.td}><input style={{ ...st.input, width: '200px' }} value={newFee.name} onChange={(e) => setNewFee({ ...newFee, name: e.target.value })} placeholder="Fee name" /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '90px' }} type="number" step="0.01" value={newFee.amount || ''} onChange={(e) => setNewFee({ ...newFee, amount: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '200px' }} value={newFee.glAccount} onChange={(e) => setNewFee({ ...newFee, glAccount: e.target.value })}>
+                          {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newFee.active} onChange={(e) => setNewFee({ ...newFee, active: e.target.checked })} /></td>
+                      <td style={st.td}>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setServiceFees([...serviceFees, { ...newFee, id: 'sf' + Date.now() }]); setAddingFee(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingFee(false)}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {serviceFees.filter((f) => f.name.toLowerCase().includes(catalogSearch.toLowerCase())).map((f, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                    const isEditing = editingFeeId === f.id;
+                    const ed = isEditing ? editingFee! : f;
+                    return (
+                      <tr key={f.id}>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '200px' }} value={ed.name} onChange={(e) => setEditingFee({ ...ed, name: e.target.value })} /> : f.name}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '90px' }} type="number" step="0.01" value={ed.amount} onChange={(e) => setEditingFee({ ...ed, amount: +e.target.value })} /> : `$${f.amount.toFixed(2)}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '200px' }} value={ed.glAccount} onChange={(e) => setEditingFee({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${f.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === f.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingFee({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: f.active ? '#DEF7EC' : '#F3F4F6', color: f.active ? '#03543F' : '#64748B' }}>{f.active ? 'Yes' : 'No'}</span>}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setServiceFees(serviceFees.map((s) => s.id === f.id ? editingFee! : s)); setEditingFeeId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingFeeId(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingFeeId(f.id); setEditingFee({ ...f }); }}>Edit</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setServiceFees(serviceFees.filter((s) => s.id !== f.id))}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
       {/* Integrations */}
       {tab === 'integrations' && (
         <>
@@ -522,8 +1034,57 @@ export default function Settings() {
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h3 style={{ ...st.sectionTitle, marginBottom: 0 }}><ShieldCheck size={20} /> Team Members</h3>
-            <button style={st.addBtn}><Plus size={16} /> Invite Team Member</button>
+            <button style={st.addBtn} onClick={() => { setShowInviteModal(true); setInviteName(''); setInviteEmail(''); setInviteRole('Dock Staff'); setInviteLocations([]); }}><Plus size={16} /> Invite Team Member</button>
           </div>
+
+          {/* Invite Modal */}
+          {showInviteModal && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+              <div style={{ background: '#FFFFFF', borderRadius: '12px', padding: '32px', width: '480px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342', margin: 0 }}>Invite Team Member</h3>
+                  <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }} onClick={() => setShowInviteModal(false)}><X size={20} /></button>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Full Name</label>
+                  <input style={st.input} value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="e.g. John Smith" />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Email</label>
+                  <input style={st.input} type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="e.g. john@bayshoremarina.com" />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Role</label>
+                  <select style={st.select} value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                    {Object.keys(ROLE_PERMISSIONS).map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Location(s)</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                    {MARINA_LOCATIONS.map((loc) => (
+                      <label key={loc.id} style={{ ...st.checkbox, fontSize: '14px' }}>
+                        <input
+                          type="checkbox"
+                          checked={inviteLocations.includes(loc.name)}
+                          onChange={(e) => {
+                            if (e.target.checked) setInviteLocations([...inviteLocations, loc.name]);
+                            else setInviteLocations(inviteLocations.filter((l) => l !== loc.name));
+                          }}
+                        />
+                        {loc.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
+                  <button style={st.outlineBtn} onClick={() => setShowInviteModal(false)}>Cancel</button>
+                  <button style={st.addBtn} onClick={() => setShowInviteModal(false)}>Send Invite</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div style={st.tableWrap}>
             <table style={st.table}>
               <thead>
@@ -531,6 +1092,7 @@ export default function Settings() {
                   <th style={st.th}>Name</th>
                   <th style={st.th}>Email</th>
                   <th style={st.th}>Role</th>
+                  <th style={st.th}>Location(s)</th>
                   <th style={st.th}>Status</th>
                   <th style={st.th}>Last Login</th>
                   <th style={st.th}>Actions</th>
@@ -551,6 +1113,13 @@ export default function Settings() {
                       <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px' }}>{m.email}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{m.role}</span>
+                      </td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          {m.locations.map((loc) => (
+                            <span key={loc} style={{ ...st.badge, backgroundColor: '#F1F5F9', color: '#0A2342', fontSize: '11px' }}>{loc}</span>
+                          ))}
+                        </div>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{m.status}</span>

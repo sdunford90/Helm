@@ -25,13 +25,13 @@ const sidebar: React.CSSProperties = {
 
 const logoArea: React.CSSProperties = {
   padding: '24px 20px 16px',
-  borderBottom: '1px solid rgba(255,68,68,0.2)',
+  borderBottom: '1px solid rgba(0,212,255,0.2)',
 };
 
 const logoText: React.CSSProperties = {
   fontSize: 22,
   fontWeight: 800,
-  color: '#FF4444',
+  color: '#00D4FF',
   letterSpacing: 3,
   margin: 0,
   fontFamily: 'system-ui, -apple-system, sans-serif',
@@ -80,12 +80,12 @@ const AdminLayout: React.FC = () => {
       alignItems: 'center',
       gap: 12,
       padding: '10px 20px',
-      color: isActive ? '#FF4444' : 'rgba(255,255,255,0.6)',
+      color: isActive ? '#00D4FF' : 'rgba(255,255,255,0.6)',
       textDecoration: 'none',
       fontSize: 13,
       fontWeight: isActive ? 600 : 400,
-      background: isActive ? 'rgba(255,68,68,0.08)' : 'transparent',
-      borderLeft: isActive ? '3px solid #FF4444' : '3px solid transparent',
+      background: isActive ? 'rgba(0,212,255,0.08)' : 'transparent',
+      borderLeft: isActive ? '3px solid #00D4FF' : '3px solid transparent',
       transition: 'all 0.15s ease',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     };
@@ -125,7 +125,7 @@ const AdminLayout: React.FC = () => {
           <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>ENV: Production</span>
           <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.1)' }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#FF4444', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 13, fontWeight: 700 }}>
+            <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 13, fontWeight: 700 }}>
               SA
             </div>
             <div>

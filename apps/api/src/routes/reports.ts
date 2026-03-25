@@ -705,4 +705,188 @@ router.get("/dock-walk-violations", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/rent-roll ──────────────────────────────────────────────────
+
+router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const asOfDate = req.query.asOfDate ? new Date(req.query.asOfDate as string) : new Date();
+    const now = asOfDate;
+
+    // Fetch all slips with active/expiring contracts
+    const slips = await prisma.slip.findMany({
+      where: { tenantId },
+      include: {
+        contracts: {
+          where: {
+            OR: [
+              { status: "ACTIVE" },
+              { status: "EXPIRING" },
+            ],
+          },
+          include: {
+            customer: true,
+            boat: true,
+          },
+          orderBy: { startDate: "desc" },
+          take: 1,
+        },
+      },
+      orderBy: [{ dock: "asc" }, { number: "asc" }],
+    });
+
+    const rows = [];
+    let totalMonthlyRentCents = 0;
+    let totalAnnualRentCents = 0;
+    let totalDepositsCents = 0;
+    let totalBalanceCents = 0;
+    let vacantCount = 0;
+    let expiringNext30 = 0;
+
+    for (const slip of slips) {
+      const contract = slip.contracts[0];
+
+      if (!contract) {
+        vacantCount++;
+        rows.push({
+          slipId: slip.id,
+          slipNumber: slip.number,
+          dock: slip.dock,
+          tenant: null,
+          boatName: null,
+          boatLength: null,
+          contractStart: null,
+          contractEnd: null,
+          billingCycle: null,
+          monthlyRateCents: 0,
+          annualRateCents: 0,
+          electricityMode: null,
+          electricityChargeCents: 0,
+          securityDepositCents: 0,
+          contractStatus: "VACANT",
+          autoRenew: false,
+          daysUntilExpiration: null,
+          lastPaymentDate: null,
+          lastPaymentAmountCents: 0,
+          outstandingBalanceCents: 0,
+        });
+        continue;
+      }
+
+      // Calculate annualized rate from billing cycle
+      let monthlyRateCents = contract.rateCents || 0;
+      let annualRateCents = 0;
+      const cycle = contract.billingCycle || "MONTHLY";
+
+      if (cycle === "MONTHLY") {
+        annualRateCents = monthlyRateCents * 12;
+      } else if (cycle === "QUARTERLY") {
+        annualRateCents = monthlyRateCents * 4;
+        monthlyRateCents = Math.round(annualRateCents / 12);
+      } else if (cycle === "ANNUAL" || cycle === "ANNUALLY") {
+        annualRateCents = monthlyRateCents;
+        monthlyRateCents = Math.round(annualRateCents / 12);
+      }
+
+      // Days until expiration
+      const endDate = contract.endDate ? new Date(contract.endDate) : null;
+      const daysUntilExpiration = endDate ? Math.ceil((endDate.getTime() - now.getTime()) / 86400000) : null;
+      if (daysUntilExpiration !== null && daysUntilExpiration <= 30 && daysUntilExpiration >= 0) {
+        expiringNext30++;
+      }
+
+      // Electricity charges — latest meter reading or flat fee
+      let electricityMode: string | null = null;
+      let electricityChargeCents = 0;
+      try {
+        const meterReading = await prisma.meterReading.findFirst({
+          where: { tenantId, slipId: slip.id },
+          orderBy: { readingDate: "desc" },
+        });
+        if (meterReading) {
+          electricityMode = meterReading.isEstimated ? "flat" : "metered";
+          electricityChargeCents = meterReading.amountCents;
+        }
+      } catch { /* meter readings may not exist */ }
+
+      // Security deposit
+      let securityDepositCents = 0;
+      try {
+        const deposit = await prisma.securityDeposit.findFirst({
+          where: { tenantId, contractId: contract.id, status: "HELD" },
+        });
+        if (deposit) securityDepositCents = deposit.amountCents;
+      } catch { /* deposits may not exist */ }
+
+      // Last payment
+      let lastPaymentDate: Date | null = null;
+      let lastPaymentAmountCents = 0;
+      try {
+        const lastPayment = await prisma.payment.findFirst({
+          where: { tenantId, customerId: contract.customerId, status: "COMPLETED" },
+          orderBy: { postedDate: "desc" },
+        });
+        if (lastPayment) {
+          lastPaymentDate = lastPayment.postedDate;
+          lastPaymentAmountCents = lastPayment.amountCents;
+        }
+      } catch { /* payments may not exist */ }
+
+      // Outstanding balance
+      let outstandingBalanceCents = 0;
+      try {
+        const openInvoices = await prisma.invoice.aggregate({
+          where: { tenantId, customerId: contract.customerId, status: { in: ["SENT", "OVERDUE"] } },
+          _sum: { totalCents: true },
+        });
+        outstandingBalanceCents = openInvoices._sum.totalCents ?? 0;
+      } catch { /* invoices may not exist */ }
+
+      totalMonthlyRentCents += monthlyRateCents;
+      totalAnnualRentCents += annualRateCents;
+      totalDepositsCents += securityDepositCents;
+      totalBalanceCents += outstandingBalanceCents;
+
+      rows.push({
+        slipId: slip.id,
+        slipNumber: slip.number,
+        dock: slip.dock,
+        tenant: contract.customer ? `${contract.customer.firstName} ${contract.customer.lastName}` : null,
+        boatName: contract.boat?.name || null,
+        boatLength: contract.boat?.lengthFt || null,
+        contractStart: contract.startDate,
+        contractEnd: contract.endDate,
+        billingCycle: cycle,
+        monthlyRateCents,
+        annualRateCents,
+        electricityMode,
+        electricityChargeCents,
+        securityDepositCents,
+        contractStatus: contract.status,
+        autoRenew: contract.autoRenew ?? false,
+        daysUntilExpiration,
+        lastPaymentDate,
+        lastPaymentAmountCents,
+        outstandingBalanceCents,
+      });
+    }
+
+    res.json({
+      asOfDate: now,
+      summary: {
+        totalMonthlyRentCents,
+        totalAnnualRentCents,
+        totalDepositsCents,
+        totalBalanceCents,
+        totalSlips: slips.length,
+        occupiedSlips: slips.length - vacantCount,
+        vacantSlips: vacantCount,
+        occupancyRate: slips.length > 0 ? ((slips.length - vacantCount) / slips.length * 100).toFixed(1) : "0.0",
+        expiringNext30Days: expiringNext30,
+      },
+      rows,
+    });
+  } catch (err) { next(err); }
+});
+
 export default router;
