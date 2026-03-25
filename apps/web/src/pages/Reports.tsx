@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import { useToast } from '../components/Toast';
 import ReportViewer from '../components/ReportViewer';
 import {
   DollarSign,
@@ -207,6 +208,7 @@ const styles: Record<string, React.CSSProperties> = {
 type Tab = 'library' | 'recent' | 'scheduled';
 
 export default function Reports() {
+  const toast = useToast();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('library');
   const [modalOpen, setModalOpen] = useState(false);
@@ -407,7 +409,7 @@ export default function Reports() {
           <div style={styles.tableWrap}>
             <div style={styles.tableHeader}>
               <h3 style={styles.tableTitle}>Scheduled Reports</h3>
-              <button style={styles.btnPrimary} onClick={() => alert('Add schedule form would open here')}>
+              <button style={styles.btnPrimary} onClick={() => toast.info('Coming Soon', 'Schedule form will open here')}>
                 <Plus size={14} /> Add Schedule
               </button>
             </div>

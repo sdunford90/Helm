@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useToast } from '../components/Toast';
 import {
   Package, Search, Plus, X, Download, Truck,
   AlertTriangle, ClipboardCheck, BarChart3, Edit2,
@@ -341,6 +342,7 @@ type Tab = 'products' | 'po' | 'counts' | 'adjustments' | 'valuation';
 type ModalType = 'addProduct' | 'editProduct' | 'createPO' | 'startCount' | 'adjustment' | 'receivePO' | null;
 
 export default function Inventory() {
+  const toast = useToast();
   const [tab, setTab] = useState<Tab>('products');
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
@@ -421,7 +423,7 @@ export default function Inventory() {
           <div style={st.searchWrap}><Search size={16} style={st.searchIcon} /><input style={st.searchInput} placeholder="Search name, SKU, barcode..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <select style={st.select} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}><input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} /> Low Stock Only</label>
-          <button style={st.outlineBtn} onClick={() => alert('Printing labels for ' + filteredProducts.length + ' products...')}><Printer size={14} /> Print Labels</button>
+          <button style={st.outlineBtn} onClick={() => toast.success('Print Labels', 'Sending ' + filteredProducts.length + ' labels to printer...')}><Printer size={14} /> Print Labels</button>
           <button style={st.addBtn} onClick={() => { setEditingProduct(null); setModal('addProduct'); }}><Plus size={16} /> Add Product</button>
         </div>
         <div style={st.tableWrap}>

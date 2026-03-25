@@ -6,6 +6,7 @@ import {
 import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
 import { useApi } from '../hooks/useApi';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -612,6 +613,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Slips() {
+  const toast = useToast();
   const [view, setView] = useState<'list' | 'map'>('list');
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -801,21 +803,20 @@ export default function Slips() {
           }}
           onClose={() => setSelectedSlip(null)}
           onEdit={() => {
-            window.alert(`Edit slip ${selectedSlip.number} — full slip editing coming soon.`);
+            toast.info('Edit Slip', `Edit slip ${selectedSlip.number} — full slip editing coming soon.`);
           }}
           onAssign={() => {
             if (selectedSlip.status !== 'Vacant' && selectedSlip.status !== 'Reserved') {
-              window.alert(`Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
+              toast.warning('Cannot Assign', `Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
             } else {
               setShowAssignModal(true);
             }
           }}
           onMaintenance={() => {
-            const ok = window.confirm(`Mark slip ${selectedSlip.number} as under maintenance?`);
-            if (ok) {
+            toast.confirm('Maintenance Mode', `Mark slip ${selectedSlip.number} as under maintenance?`, () => {
               updateSlipLocally(selectedSlip.id, { status: 'Maintenance' });
               setSelectedSlip(null);
-            }
+            });
           }}
         />
       )}
