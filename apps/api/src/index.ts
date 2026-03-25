@@ -34,6 +34,8 @@ import auditLogRouter from "./routes/audit-log.js";
 import biApiRouter from "./routes/bi-api.js";
 import insuranceRouter from "./routes/insurance.js";
 import fuelRouter from "./routes/fuel.js";
+import qboRouter from "./routes/qbo.js";
+import storageRouter from "./routes/storage.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -85,6 +87,8 @@ app.use("/api/audit-log", auditLogRouter);
 app.use("/api/bi", biApiRouter);
 app.use("/api/insurance", insuranceRouter);
 app.use("/api/fuel", fuelRouter);
+app.use("/api/qbo", qboRouter);
+app.use("/api/storage", storageRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

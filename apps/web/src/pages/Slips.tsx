@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import {
-  Anchor, Search, Plus, List, LayoutGrid, X,
-  Zap, Waves,
+  Search, Plus, List, LayoutGrid, X,
 } from 'lucide-react';
 import SlipDetailPanel from '../components/SlipDetailPanel';
+import DockMapSVG from '../components/DockMapSVG';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -53,13 +53,6 @@ const statusColors: Record<SlipStatus, { bg: string; color: string; border?: str
   Occupied: { bg: '#D6E8F4', color: '#0A2342' },
   Maintenance: { bg: '#FFF3CD', color: '#856404' },
   Reserved: { bg: '#E0F7FF', color: '#0A2342', border: '#00D4FF' },
-};
-
-const complianceDot = (score: number): string => {
-  if (score >= 90) return '#1B5E20';
-  if (score >= 70) return '#856404';
-  if (score > 0) return '#B71C1C';
-  return 'transparent';
 };
 
 const st: Record<string, React.CSSProperties> = {
@@ -460,22 +453,6 @@ export default function Slips() {
     );
   });
 
-  const docks = Array.from(new Set(MOCK_SLIPS.map((s) => s.dock))).sort();
-
-  const slipCardStyle = (slip: Slip): React.CSSProperties => {
-    const sc = statusColors[slip.status];
-    return {
-      ...st.slipCard,
-      backgroundColor: sc.bg,
-      border: slip.status === 'Vacant'
-        ? '2px dashed #CCC'
-        : slip.status === 'Reserved'
-        ? `2px solid #00D4FF`
-        : `1px solid #E2E8F0`,
-      boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    };
-  };
-
   return (
     <div style={st.page}>
       <h1 style={st.title}>Slips</h1>
@@ -585,68 +562,23 @@ export default function Slips() {
 
       {/* Dock Map View */}
       {view === 'map' && (
-        <div>
-          {/* Legend */}
-          <div style={st.legend}>
-            <div style={st.legendItem}>
-              <div style={{ ...st.legendSwatch, backgroundColor: '#FFFFFF', border: '2px dashed #CCC' }} /> Vacant
-            </div>
-            <div style={st.legendItem}>
-              <div style={{ ...st.legendSwatch, backgroundColor: '#D6E8F4' }} /> Occupied
-            </div>
-            <div style={st.legendItem}>
-              <div style={{ ...st.legendSwatch, backgroundColor: '#FFF3CD' }} /> Maintenance
-            </div>
-            <div style={st.legendItem}>
-              <div style={{ ...st.legendSwatch, backgroundColor: '#FFFFFF', border: '2px solid #00D4FF' }} /> Reserved
-            </div>
-            <div style={st.legendItem}>
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#1B5E20' }} />
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#856404' }} />
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#B71C1C' }} />
-              Compliance
-            </div>
-          </div>
-
-          <div style={st.mapWrap}>
-            {docks.map((dock) => {
-              const dockSlips = filtered.filter((s) => s.dock === dock);
-              return (
-                <div key={dock} style={st.dockSection}>
-                  <div style={st.dockTitle}>
-                    <Anchor size={18} style={{ color: '#00D4FF' }} />
-                    Dock {dock}
-                  </div>
-                  <div style={st.slipGrid}>
-                    {dockSlips.map((sl) => (
-                      <div
-                        key={sl.id}
-                        style={slipCardStyle(sl)}
-                        onClick={() => setSelectedSlip(sl)}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)'; }}
-                      >
-                        {sl.compliance > 0 && (
-                          <div style={{ ...st.compDot, backgroundColor: complianceDot(sl.compliance) }} />
-                        )}
-                        <div>
-                          <div style={st.slipNumber}>{sl.number}</div>
-                          <div style={st.slipSize}>{sl.length}' x {sl.width}'</div>
-                        </div>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
-                            <Zap size={10} /> {sl.power}
-                          </div>
-                          {sl.occupant && <div style={st.slipOccupant}>{sl.occupant}</div>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <DockMapSVG
+          slips={filtered.map((sl) => ({
+            id: sl.id,
+            number: sl.number,
+            dock: sl.dock,
+            length: sl.length,
+            width: sl.width,
+            status: sl.status,
+            occupant: sl.occupant || undefined,
+            compliance: sl.compliance,
+          }))}
+          onSlipClick={(slipId) => {
+            const slip = MOCK_SLIPS.find((s) => s.id === slipId);
+            if (slip) setSelectedSlip(slip);
+          }}
+          selectedSlipId={selectedSlip?.id}
+        />
       )}
 
       {/* Add Slip Modal */}
