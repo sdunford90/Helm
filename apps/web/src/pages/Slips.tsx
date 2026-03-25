@@ -446,8 +446,13 @@ export default function Slips() {
 
   const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
   const createSlip = useApi<Slip>('post', '/api/slips');
+  const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
 
-  const slips = apiSlips || MOCK_SLIPS;
+  const slips = (apiSlips || MOCK_SLIPS).map((s) => ({ ...s, ...localOverrides[s.id] }));
+
+  const updateSlipLocally = (id: string, patch: Partial<Slip>) => {
+    setLocalOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  };
 
   const filtered = slips.filter((sl) => {
     if (!search) return true;
@@ -610,9 +615,23 @@ export default function Slips() {
             meterReadings: selectedSlip.meterReadings,
           }}
           onClose={() => setSelectedSlip(null)}
-          onEdit={() => console.log('Edit slip', selectedSlip.id)}
-          onAssign={() => console.log('Assign slip', selectedSlip.id)}
-          onMaintenance={() => console.log('Maintenance slip', selectedSlip.id)}
+          onEdit={() => {
+            window.alert(`Edit slip ${selectedSlip.number} — full slip editing coming soon.`);
+          }}
+          onAssign={() => {
+            if (selectedSlip.status !== 'Vacant' && selectedSlip.status !== 'Reserved') {
+              window.alert(`Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
+            } else {
+              window.alert(`Assign slip ${selectedSlip.number} — navigate to Contracts to create a new slip contract.`);
+            }
+          }}
+          onMaintenance={() => {
+            const ok = window.confirm(`Mark slip ${selectedSlip.number} as under maintenance?`);
+            if (ok) {
+              updateSlipLocally(selectedSlip.id, { status: 'Maintenance' });
+              setSelectedSlip(null);
+            }
+          }}
         />
       )}
     </div>

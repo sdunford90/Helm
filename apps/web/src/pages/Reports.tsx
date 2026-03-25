@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
   DollarSign,
@@ -79,6 +80,7 @@ const reportCards: ReportCard[] = [
   { id: 'leads', title: 'Lead Conversion', description: 'Lead sources, conversion rates, and sales pipeline analysis.', icon: Target, lastGenerated: '2026-03-18', category: 'customer' },
   { id: 'waitlist', title: 'Waitlist Analytics', description: 'Waitlist volume, average wait time, and conversion to tenants.', icon: ClipboardList, lastGenerated: null, category: 'customer' },
   // Rentals & POS
+  { id: 'rent_roll', title: 'Rent Roll', description: 'Active slip leases, monthly charges, and occupancy details across all docks.', icon: FileText, lastGenerated: '2026-03-25', category: 'rentals_pos' },
   { id: 'rental_util', title: 'Rental Utilization', description: 'Boat rental bookings, utilization rates, and revenue per asset.', icon: ShoppingCart, lastGenerated: '2026-03-22', category: 'rentals_pos' },
   { id: 'pos_sales', title: 'POS Sales Summary', description: 'Point-of-sale transactions, top products, and daily totals.', icon: ShoppingCart, lastGenerated: '2026-03-24', category: 'rentals_pos' },
   { id: 'inventory', title: 'Inventory Valuation', description: 'Current stock levels, cost basis, and reorder recommendations.', icon: Package, lastGenerated: '2026-03-15', category: 'rentals_pos' },
@@ -203,6 +205,7 @@ const styles: Record<string, React.CSSProperties> = {
 type Tab = 'library' | 'recent' | 'scheduled';
 
 export default function Reports() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('library');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalReportId, setModalReportId] = useState<string | null>(null);
@@ -215,6 +218,7 @@ export default function Reports() {
   const [cardFormats, setCardFormats] = useState<Record<string, ReportFormat>>({});
 
   const openModal = (reportId: string) => {
+    if (reportId === 'rent_roll') { navigate('/rent-roll'); return; }
     setModalReportId(reportId);
     setModalFormat(cardFormats[reportId] || 'PDF');
     setModalOpen(true);

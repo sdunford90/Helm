@@ -282,6 +282,38 @@ const st: Record<string, React.CSSProperties> = {
 
 function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
   const [autoRenew, setAutoRenew] = useState(false);
+  const [customer, setCustomer] = useState('');
+  const [slip, setSlip] = useState('');
+  const [boat, setBoat] = useState('');
+  const [billingCycle, setBillingCycle] = useState('Monthly');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [rate, setRate] = useState('');
+  const [deposit, setDeposit] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSave = async () => {
+    if (!customer || !slip || !startDate || !endDate || !rate) {
+      setError('Please fill in all required fields.');
+      return;
+    }
+    setError('');
+    setSaving(true);
+    await onSave?.({
+      customerId: customer,
+      slipNumber: slip,
+      boatId: boat,
+      billingCycle,
+      startDate,
+      endDate,
+      rateCents: Math.round(parseFloat(rate) * 100),
+      depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
+      autoRenew,
+    });
+    setSaving(false);
+    onClose();
+  };
 
   return (
     <div style={st.overlay} onClick={onClose}>
@@ -291,22 +323,23 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
+          {error && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{error}</div>}
           <div style={st.twoCol}>
             <div style={st.field}>
               <label style={st.label}>Customer *</label>
-              <select style={st.formSelect}>
+              <select style={st.formSelect} value={customer} onChange={(e) => setCustomer(e.target.value)}>
                 <option value="">Select customer...</option>
-                <option value="1">James Harborview</option>
-                <option value="2">Maria Seabreeze</option>
-                <option value="3">Robert Dockside</option>
-                <option value="4">Susan Baywatch</option>
-                <option value="5">David Tidewater</option>
-                <option value="6">Elena Windward</option>
+                <option value="james-harborview">James Harborview</option>
+                <option value="maria-seabreeze">Maria Seabreeze</option>
+                <option value="robert-dockside">Robert Dockside</option>
+                <option value="susan-baywatch">Susan Baywatch</option>
+                <option value="david-tidewater">David Tidewater</option>
+                <option value="elena-windward">Elena Windward</option>
               </select>
             </div>
             <div style={st.field}>
               <label style={st.label}>Slip *</label>
-              <select style={st.formSelect}>
+              <select style={st.formSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
                 <option value="">Select slip...</option>
                 <option value="A-01">A-01</option>
                 <option value="A-02">A-02</option>
@@ -321,8 +354,8 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               </select>
             </div>
             <div style={st.field}>
-              <label style={st.label}>Boat *</label>
-              <select style={st.formSelect}>
+              <label style={st.label}>Boat</label>
+              <select style={st.formSelect} value={boat} onChange={(e) => setBoat(e.target.value)}>
                 <option value="">Select boat...</option>
                 <option value="1">Sea Spirit (38' Sailboat)</option>
                 <option value="2">Wave Runner III (28' Powerboat)</option>
@@ -332,7 +365,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
             </div>
             <div style={st.field}>
               <label style={st.label}>Billing Cycle *</label>
-              <select style={st.formSelect}>
+              <select style={st.formSelect} value={billingCycle} onChange={(e) => setBillingCycle(e.target.value)}>
                 <option value="Monthly">Monthly</option>
                 <option value="Quarterly">Quarterly</option>
                 <option value="Semi-Annual">Semi-Annual</option>
@@ -342,19 +375,19 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
             </div>
             <div style={st.field}>
               <label style={st.label}>Start Date *</label>
-              <input style={st.input} type="date" />
+              <input style={st.input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>End Date *</label>
-              <input style={st.input} type="date" />
+              <input style={st.input} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Rate *</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" />
+              <label style={st.label}>Rate ($/period) *</label>
+              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Security Deposit</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" />
+              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
             </div>
           </div>
           <div style={{ marginTop: '8px' }}>
@@ -373,7 +406,9 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Create Contract</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>
+            {saving ? 'Creating...' : 'Create Contract'}
+          </button>
         </div>
       </div>
     </div>

@@ -877,4 +877,73 @@ router.put("/support/tickets/:id", async (req, res, next) => {
   }
 });
 
+// ==========================================================================
+//  LOCATION MANAGEMENT  (per-tenant)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/locations
+router.get("/tenants/:id/locations", async (req, res, next) => {
+  try {
+    const locations = await prisma.location.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { name: "asc" },
+    });
+    res.json(locations);
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/tenants/:id/locations
+router.post("/tenants/:id/locations", async (req, res, next) => {
+  try {
+    const { name, address, city, state, zip, phone, timezone, active } = req.body;
+    if (!name) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+    const location = await prisma.location.create({
+      data: {
+        tenantId: req.params.id,
+        name,
+        address: address ?? null,
+        city: city ?? null,
+        state: state ?? null,
+        zip: zip ?? null,
+        phone: phone ?? null,
+        timezone: timezone ?? "America/New_York",
+        active: active !== false,
+      },
+    });
+    res.status(201).json(location);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/admin/tenants/:id/locations/:locationId
+router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
+  try {
+    const { name, address, city, state, zip, phone, timezone, active } = req.body;
+    const location = await prisma.location.update({
+      where: { id: req.params.locationId },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(address !== undefined && { address }),
+        ...(city !== undefined && { city }),
+        ...(state !== undefined && { state }),
+        ...(zip !== undefined && { zip }),
+        ...(phone !== undefined && { phone }),
+        ...(timezone !== undefined && { timezone }),
+        ...(active !== undefined && { active }),
+      },
+    });
+    res.json(location);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/admin/tenants/:id/locations/:locationId
+router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
+  try {
+    await prisma.location.delete({ where: { id: req.params.locationId } });
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
 export default router;

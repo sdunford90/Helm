@@ -53,14 +53,17 @@ export async function tenantMiddleware(
     const parts = hostname.split(".");
     const subdomain = parts.length >= 3 ? parts[0] : null;
 
-    // Look up tenant by subdomain or custom_domain
-    const tenant = await prisma.tenant.findFirst({
+    // Look up tenant by subdomain or customDomain
+    let tenant = await prisma.tenant.findFirst({
       where: subdomain
-        ? {
-            OR: [{ subdomain }, { custom_domain: hostname }],
-          }
-        : { custom_domain: hostname },
+        ? { OR: [{ subdomain }, { customDomain: hostname }] }
+        : { customDomain: hostname },
     });
+
+    // ── Dev fallback: use the first tenant when hostname doesn't resolve ──
+    if (!tenant && process.env.NODE_ENV !== "production") {
+      tenant = await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } });
+    }
 
     if (!tenant) {
       res.status(404).json({ error: "Tenant not found", code: "TENANT_NOT_FOUND" });

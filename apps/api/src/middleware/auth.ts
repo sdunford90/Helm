@@ -30,6 +30,28 @@ declare global {
  * user record, verifying that the user belongs to the current tenant.
  */
 export function clerkAuth() {
+  // ── Dev bypass: skip Clerk token verification in development ─────────────
+  if (process.env.NODE_ENV !== "production") {
+    return [
+      async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+          // Try to find any user for this tenant so we have a real userId
+          const user = await prisma.user.findFirst({
+            where: { tenantId: req.tenantId },
+            orderBy: { createdAt: "asc" },
+          });
+
+          req.userId = user?.id ?? "dev-user";
+          req.userRole = user?.role ?? "admin";
+          req.userRecord = user as unknown as Express.Request["userRecord"];
+          next();
+        } catch (err) {
+          next(err);
+        }
+      },
+    ];
+  }
+
   return [
     // First: Clerk's own guard — returns 401 if no valid session
     requireAuth(),
@@ -48,8 +70,8 @@ export function clerkAuth() {
         // Look up the internal user record scoped to the current tenant
         const user = await prisma.user.findFirst({
           where: {
-            clerk_id: clerkUserId,
-            tenant_id: req.tenantId,
+            clerkUserId,
+            tenantId: req.tenantId,
           },
         });
 

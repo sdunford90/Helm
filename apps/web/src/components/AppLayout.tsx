@@ -61,7 +61,6 @@ const NAV_SECTIONS = [
       { path: '/pos', label: 'POS', icon: ShoppingCart },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
       { path: '/inventory', label: 'Inventory', icon: Package },
-      { path: '/rent-roll', label: 'Rent Roll', icon: FileSpreadsheet },
     ],
   },
   {
