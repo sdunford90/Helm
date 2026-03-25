@@ -1034,7 +1034,7 @@ export default function Rentals() {
                         <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{p.status}</span>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setShowAdd(true)}>Edit</button>
                       </td>
                     </tr>
                   );
@@ -1150,7 +1150,7 @@ export default function Rentals() {
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <div style={{ fontSize: '14px', color: '#64748B' }}>Configure dynamic pricing rules applied to rental products.</div>
-                <button style={{ ...st.addBtn }}><Plus size={16} /> Add Rule</button>
+                <button style={{ ...st.addBtn }} onClick={() => alert('Add pricing rule form would open here')}><Plus size={16} /> Add Rule</button>
               </div>
               <div style={st.tableWrap}>
                 <table style={st.table}>
@@ -1172,7 +1172,7 @@ export default function Rentals() {
                             <span style={{ ...st.badge, backgroundColor: rule.active ? '#DEF7EC' : '#F3F4F6', color: rule.active ? '#03543F' : '#64748B' }}>{rule.active ? 'Active' : 'Inactive'}</span>
                           </td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>
-                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => alert('Edit form would open here')}>Edit</button>
                           </td>
                         </tr>
                       );
@@ -1187,7 +1187,7 @@ export default function Rentals() {
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <div style={{ fontSize: '14px', color: '#64748B' }}>Manage promotional discount codes for rental bookings.</div>
-                <button style={{ ...st.addBtn }}><Plus size={16} /> Add Promo Code</button>
+                <button style={{ ...st.addBtn }} onClick={() => alert('Add promo code form would open here')}><Plus size={16} /> Add Promo Code</button>
               </div>
               <div style={st.tableWrap}>
                 <table style={st.table}>
@@ -1209,7 +1209,7 @@ export default function Rentals() {
                             <span style={{ ...st.badge, backgroundColor: pc.active ? '#DEF7EC' : '#F3F4F6', color: pc.active ? '#03543F' : '#64748B' }}>{pc.active ? 'Active' : 'Expired'}</span>
                           </td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>
-                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => alert('Edit form would open here')}>Edit</button>
                           </td>
                         </tr>
                       );

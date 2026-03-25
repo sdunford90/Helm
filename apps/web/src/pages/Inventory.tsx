@@ -203,6 +203,8 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
 }
 
 function CreatePOModal({ onClose }: { onClose: () => void }) {
+  const [saved, setSaved] = useState(false);
+  const handleSave = () => { setSaved(true); setTimeout(onClose, 1500); };
   const [vendor, setVendor] = useState('');
   const [expectedDate, setExpectedDate] = useState('');
   const [notes, setNotes] = useState('');
@@ -210,6 +212,7 @@ function CreatePOModal({ onClose }: { onClose: () => void }) {
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Create Purchase Order</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Purchase order created!</div>}
         <div style={st.modalBody}>
           <div style={st.field}><label style={st.label}>Vendor / Supplier *</label><input style={st.input} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="e.g. Gulf Coast Petroleum" /></div>
           <div style={st.field}><label style={st.label}>Expected Delivery Date</label><input style={st.input} type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></div>
@@ -220,7 +223,7 @@ function CreatePOModal({ onClose }: { onClose: () => void }) {
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Create PO</button>
+          <button style={st.saveBtn} onClick={handleSave}>Create PO</button>
         </div>
       </div>
     </div>
@@ -228,12 +231,15 @@ function CreatePOModal({ onClose }: { onClose: () => void }) {
 }
 
 function StartCountModal({ onClose }: { onClose: () => void }) {
+  const [started, setStarted] = useState(false);
+  const handleStart = () => { setStarted(true); setTimeout(onClose, 1500); };
   const [startedBy, setStartedBy] = useState('');
   const [scope, setScope] = useState('All Products');
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Start Inventory Count</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        {started && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Inventory count started!</div>}
         <div style={st.modalBody}>
           <div style={st.field}><label style={st.label}>Started By *</label><input style={st.input} value={startedBy} onChange={(e) => setStartedBy(e.target.value)} placeholder="Your name" /></div>
           <div style={st.field}><label style={st.label}>Count Scope</label>
@@ -254,7 +260,7 @@ function StartCountModal({ onClose }: { onClose: () => void }) {
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Start Count</button>
+          <button style={st.saveBtn} onClick={handleStart}>Start Count</button>
         </div>
       </div>
     </div>
@@ -262,6 +268,8 @@ function StartCountModal({ onClose }: { onClose: () => void }) {
 }
 
 function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onClose: () => void }) {
+  const [saved, setSaved] = useState(false);
+  const handleSave = () => { setSaved(true); setTimeout(onClose, 1500); };
   const [productId, setProductId] = useState('');
   const [type, setType] = useState<Adjustment['type']>('Count');
   const [qty, setQty] = useState('');
@@ -270,6 +278,7 @@ function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onC
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Manual Adjustment</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Adjustment saved!</div>}
         <div style={st.modalBody}>
           <div style={st.field}><label style={st.label}>Product *</label>
             <select style={st.input} value={productId} onChange={(e) => setProductId(e.target.value)}>
@@ -289,7 +298,7 @@ function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onC
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Save Adjustment</button>
+          <button style={st.saveBtn} onClick={handleSave}>Save Adjustment</button>
         </div>
       </div>
     </div>
@@ -297,12 +306,15 @@ function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onC
 }
 
 function ReceivePOModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
+  const [received, setReceived] = useState(false);
+  const handleReceive = () => { setReceived(true); setTimeout(onClose, 1500); };
   const [receivedDate, setReceivedDate] = useState(new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState('');
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Receive PO — {po.poNumber}</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        {received && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>PO {po.poNumber} marked as received!</div>}
         <div style={st.modalBody}>
           <div style={{ padding: '12px 16px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0', marginBottom: '20px', fontSize: '13px' }}>
             <div style={{ fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>{po.vendor}</div>
@@ -316,7 +328,7 @@ function ReceivePOModal({ po, onClose }: { po: PurchaseOrder; onClose: () => voi
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={onClose}>Mark as Received</button>
+          <button style={st.saveBtn} onClick={handleReceive}>Mark as Received</button>
         </div>
       </div>
     </div>

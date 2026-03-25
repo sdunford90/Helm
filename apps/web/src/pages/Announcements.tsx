@@ -248,6 +248,7 @@ export default function Announcements() {
     setActiveTab('compose');
   };
 
+  const [sendSuccess, setSendSuccess] = useState(false);
   const handleSend = async () => {
     const payload = {
       subject: composeSubject,
@@ -258,7 +259,8 @@ export default function Announcements() {
       scheduledDate: composeSchedule ? `${composeDate} ${composeTime}` : null,
     };
     await createAnnouncement(payload);
-    setActiveTab('all');
+    setSendSuccess(true);
+    setTimeout(() => { setSendSuccess(false); setActiveTab('all'); setComposeSubject(''); setComposeBody(''); setComposeChannels([]); }, 2000);
   };
 
   // Filtered announcements
@@ -404,6 +406,7 @@ export default function Announcements() {
         <div style={styles.formGrid}>
           {/* Left: Form */}
           <div style={styles.formSection}>
+            {sendSuccess && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{composeSchedule ? 'Announcement scheduled!' : 'Announcement sent!'}</div>}
             <div>
               <label style={styles.formLabel}>Subject Line</label>
               <input

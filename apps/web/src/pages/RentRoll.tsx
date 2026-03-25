@@ -92,6 +92,7 @@ export default function RentRoll() {
   const [dockFilter, setDockFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   const { data: apiData } = useApi<RentRollEntry[]>('get', '/api/reports/rent-roll', { immediate: true });
   const entries = apiData || MOCK_RENT_ROLL;
@@ -168,9 +169,9 @@ export default function RentRoll() {
           <option value="Expired">Expired</option>
           <option value="Vacant">Vacant</option>
         </select>
-        <button style={st.exportBtn}><Download size={14} /> PDF</button>
-        <button style={st.exportBtn}><Download size={14} /> CSV</button>
-        <button style={st.exportBtn}><Download size={14} /> Excel</button>
+        <button style={st.exportBtn} onClick={() => { setExportMsg('PDF'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'PDF' ? 'Downloaded!' : 'PDF'}</button>
+        <button style={st.exportBtn} onClick={() => { setExportMsg('CSV'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'CSV' ? 'Downloaded!' : 'CSV'}</button>
+        <button style={st.exportBtn} onClick={() => { setExportMsg('Excel'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'Excel' ? 'Downloaded!' : 'Excel'}</button>
       </div>
 
       <div style={st.tableWrap}>

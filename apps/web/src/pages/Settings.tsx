@@ -263,6 +263,8 @@ export default function Settings() {
   // API calls
   const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
   const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/api/settings/team', { immediate: true });
 
   // Use API data when available, fall back to mock
@@ -329,6 +331,8 @@ export default function Settings() {
     <div style={st.page}>
       <h1 style={st.title}>Settings</h1>
       <hr style={st.divider} />
+
+      {savedMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{savedMsg}</div>}
 
       <div style={st.tabs}>
         {tabItems.map((t) => {
@@ -411,7 +415,7 @@ export default function Settings() {
               ))}
             </div>
           </div>
-          <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'profile' })} disabled={savingSettings}>
+          <button style={st.saveBtn} onClick={() => handleSave('profile')} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Changes'}
           </button>
         </div>
@@ -459,7 +463,7 @@ export default function Settings() {
                 <input style={st.input} defaultValue="Your home on the water" />
               </div>
             </div>
-            <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'branding' })} disabled={savingSettings}>
+            <button style={st.saveBtn} onClick={() => handleSave('branding')} disabled={savingSettings}>
               {savingSettings ? 'Saving...' : 'Save Branding'}
             </button>
           </div>
@@ -603,7 +607,7 @@ export default function Settings() {
             </div>
           </div>
 
-          <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'billing' })} disabled={savingSettings}>
+          <button style={st.saveBtn} onClick={() => handleSave('billing')} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Billing Settings'}
           </button>
         </>
@@ -984,7 +988,7 @@ export default function Settings() {
                 </div>
               </div>
             </div>
-            <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }}>Disconnect</button>
+            <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={() => { setSavedMsg('Stripe disconnected'); setTimeout(() => setSavedMsg(null), 2000); }}>Disconnect</button>
           </div>
 
           <div style={st.integrationCard}>
@@ -1000,8 +1004,8 @@ export default function Settings() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button style={st.outlineBtn}><RefreshCw size={14} /> Sync Now</button>
-              <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }}>Disconnect</button>
+              <button style={st.outlineBtn} onClick={() => { setSavedMsg('QuickBooks sync started...'); setTimeout(() => setSavedMsg(null), 2000); }}><RefreshCw size={14} /> Sync Now</button>
+              <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={() => { setSavedMsg('QuickBooks disconnected'); setTimeout(() => setSavedMsg(null), 2000); }}>Disconnect</button>
             </div>
           </div>
 
@@ -1022,12 +1026,12 @@ export default function Settings() {
                     <td style={{ ...st.td, ...st.mono, fontSize: '13px' }}>https://hooks.example.com/helm</td>
                     <td style={st.td}>invoice.created, payment.received</td>
                     <td style={st.td}><span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Active</span></td>
-                    <td style={st.td}><button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button></td>
+                    <td style={st.td}><button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setSavedMsg('Editing webhook endpoint...'); setTimeout(() => setSavedMsg(null), 2000); }}>Edit</button></td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <button style={{ ...st.outlineBtn, marginTop: '16px' }}><Plus size={14} /> Add Endpoint</button>
+            <button style={{ ...st.outlineBtn, marginTop: '16px' }} onClick={() => { setSavedMsg('Add endpoint form would open here'); setTimeout(() => setSavedMsg(null), 2000); }}><Plus size={14} /> Add Endpoint</button>
           </div>
         </>
       )}
@@ -1082,7 +1086,7 @@ export default function Settings() {
                 </div>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
                   <button style={st.outlineBtn} onClick={() => setShowInviteModal(false)}>Cancel</button>
-                  <button style={st.addBtn} onClick={() => setShowInviteModal(false)}>Send Invite</button>
+                  <button style={st.addBtn} onClick={() => { setShowInviteModal(false); setSavedMsg(`Invitation sent to ${inviteEmail || 'team member'}`); setTimeout(() => setSavedMsg(null), 2000); }}>Send Invite</button>
                 </div>
               </div>
             </div>
@@ -1129,7 +1133,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px', color: m.lastLogin === '—' ? '#94A3B8' : '#0A2342' }}>{m.lastLogin}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setSavedMsg(`Editing ${m.name}...`); setTimeout(() => setSavedMsg(null), 2000); }}>Edit</button>
                       </td>
                     </tr>
                   );

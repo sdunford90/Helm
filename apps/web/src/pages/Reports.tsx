@@ -407,7 +407,7 @@ export default function Reports() {
           <div style={styles.tableWrap}>
             <div style={styles.tableHeader}>
               <h3 style={styles.tableTitle}>Scheduled Reports</h3>
-              <button style={styles.btnPrimary}>
+              <button style={styles.btnPrimary} onClick={() => alert('Add schedule form would open here')}>
                 <Plus size={14} /> Add Schedule
               </button>
             </div>
@@ -447,12 +447,12 @@ export default function Reports() {
                     <td style={styles.td}>
                       <span
                         style={
-                          sr.status === 'Active'
+                          getScheduleStatus(sr) === 'Active'
                             ? styles.badgeActive
                             : styles.badgePaused
                         }
                       >
-                        {sr.status}
+                        {getScheduleStatus(sr)}
                       </span>
                     </td>
                     <td style={styles.td}>
@@ -462,14 +462,15 @@ export default function Reports() {
                           padding: '4px 10px',
                           fontSize: '12px',
                         }}
-                        title={sr.status === 'Active' ? 'Pause' : 'Resume'}
+                        title={getScheduleStatus(sr) === 'Active' ? 'Pause' : 'Resume'}
+                        onClick={() => toggleSchedule(sr.id)}
                       >
-                        {sr.status === 'Active' ? (
+                        {getScheduleStatus(sr) === 'Active' ? (
                           <Pause size={12} />
                         ) : (
                           <Play size={12} />
                         )}
-                        {sr.status === 'Active' ? 'Pause' : 'Resume'}
+                        {getScheduleStatus(sr) === 'Active' ? 'Pause' : 'Resume'}
                       </button>
                     </td>
                   </tr>

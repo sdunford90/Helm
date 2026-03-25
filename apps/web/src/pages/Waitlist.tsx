@@ -354,6 +354,8 @@ export default function Waitlist() {
   const [search, setSearch] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<WaitlistEntry | null>(null);
   const [entries, setEntries] = useState<WaitlistEntry[]>(MOCK_ENTRIES);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addSaved, setAddSaved] = useState(false);
 
   // API calls
   const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/api/waitlist', { immediate: true });
@@ -447,7 +449,7 @@ export default function Waitlist() {
 
         <div style={s.spacer} />
 
-        <button style={s.primaryBtn}>
+        <button style={s.primaryBtn} onClick={() => setShowAddModal(true)}>
           <Plus size={16} />
           Add to Waitlist
         </button>
@@ -550,6 +552,33 @@ export default function Waitlist() {
           </tbody>
         </table>
       </div>
+
+      {/* Add to Waitlist Modal */}
+      {showAddModal && (
+        <div style={s.overlay} onClick={() => setShowAddModal(false)}>
+          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <h2 style={s.modalTitle}>Add to Waitlist</h2>
+              <button style={s.closeBtn} onClick={() => setShowAddModal(false)}><X size={20} /></button>
+            </div>
+            {addSaved && <div style={{ padding: '12px 24px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Added to waitlist!</div>}
+            <div style={s.modalBody}>
+              <div style={s.fieldGrid}>
+                <div style={s.field}><span style={s.fieldLabel}>First Name *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="First name" /></div>
+                <div style={s.field}><span style={s.fieldLabel}>Last Name *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Last name" /></div>
+                <div style={s.field}><span style={s.fieldLabel}>Email *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Email" type="email" /></div>
+                <div style={s.field}><span style={s.fieldLabel}>Phone</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Phone" /></div>
+                <div style={s.field}><span style={s.fieldLabel}>Slip Type</span><select style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }}>{SLIP_TYPES.map((t) => <option key={t}>{t}</option>)}</select></div>
+                <div style={s.field}><span style={s.fieldLabel}>Boat Length (ft)</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} type="number" placeholder="30" /></div>
+              </div>
+            </div>
+            <div style={s.modalFooter}>
+              <button style={{ padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' }} onClick={() => setShowAddModal(false)}>Cancel</button>
+              <button style={{ ...s.primaryBtn, padding: '8px 24px' }} onClick={() => { setAddSaved(true); setTimeout(() => { setAddSaved(false); setShowAddModal(false); }, 1500); }}>Add to Waitlist</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Detail Modal */}
       {selectedEntry && (
