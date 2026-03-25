@@ -8,7 +8,8 @@ Helm is a full-stack marina management platform built as a TypeScript monorepo u
 ### Monorepo Structure
 - **apps/web** — Main marina management dashboard (React + Vite, port 5000)
 - **apps/api** — Backend REST API (Express + Prisma + TypeScript, port 3001)
-- **apps/portal** — Customer self-service portal (React + Vite, port 3002)
+- **apps/admin** — Platform admin panel for tenant/location management (React + Vite, port 3002)
+- **apps/portal** — Customer self-service portal (React + Vite)
 - **apps/widgets** — Embeddable widgets (React + Vite)
 - **packages/shared-types** — Shared TypeScript types across apps
 - **packages/ui-kit** — Shared React UI component library
@@ -42,8 +43,22 @@ See `.env.example` for the full list. Key variables:
 5. Start web app: `pnpm --filter @helm/web dev` (port 5000)
 6. Start API: `pnpm --filter @helm/api dev` (port 3001)
 
-## Workflow
-- **Start application**: `pnpm --filter @helm/web dev` → runs on port 5000
+## Workflows
+- **Start application**: `pnpm --filter @helm/web dev` → port 5000 (marina dashboard)
+- **API Server**: `pnpm --filter @helm/api dev` → port 3001 (Express/Prisma backend)
+- **Admin App**: `pnpm --filter @helm/admin dev` → port 3002 (platform admin panel)
+
+## Key Implementation Notes
+- `requirePlatformAdmin()` middleware bypasses Clerk auth in development (NODE_ENV !== "production") — production requires a real `platform_admin` role user
+- Tenant dev bypass in `apps/api/src/middleware/tenant.ts` uses `findFirst({ orderBy: { createdAt: 'asc' } })` for localhost
+- Redis/BullMQ conditional on `REDIS_URL` being set; Stripe conditional on `STRIPE_SECRET_KEY`
+- `localStorage` key `helm_payment_types` shared between Settings.tsx and POS.tsx for payment method sync
+- Default seeded tenant: "Helm Marina" (ID: 77acef35-1a12-414b-a726-feea7a6193d9)
+
+## Database Models (key)
+- `Tenant` → has many `Location`, `User`
+- `Location` → id, tenantId, name, address, city, state, zip, phone, timezone, active
+- `SaasTier` → pricing tiers (monthlyFeeCents, perLocationFeeCents, achFeeRate, cardFeeRate)
 
 ## Notes
 - The `workspace:*` protocol requires pnpm (not npm)

@@ -877,4 +877,129 @@ router.put("/support/tickets/:id", async (req, res, next) => {
   }
 });
 
+// ==========================================================================
+//  LOCATIONS
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id/locations — list locations for a tenant
+// --------------------------------------------------------------------------
+router.get("/tenants/:id/locations", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const locations = await prisma.location.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "asc" },
+    });
+
+    res.json(locations);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/locations — create a location for a tenant
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/locations", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const { name, address, city, state, zip, phone, timezone } = req.body;
+
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+
+    const location = await prisma.location.create({
+      data: {
+        tenantId: req.params.id,
+        name: name.trim(),
+        address: address?.trim() ?? null,
+        city: city?.trim() ?? null,
+        state: state?.trim() ?? null,
+        zip: zip?.trim() ?? null,
+        phone: phone?.trim() ?? null,
+        timezone: timezone ?? "America/New_York",
+      },
+    });
+
+    res.status(201).json(location);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/admin/tenants/:id/locations/:locationId — update a location
+// --------------------------------------------------------------------------
+router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
+  try {
+    const location = await prisma.location.findFirst({
+      where: { id: req.params.locationId, tenantId: req.params.id },
+    });
+
+    if (!location) {
+      res.status(404).json({ error: "Location not found" });
+      return;
+    }
+
+    const { name, address, city, state, zip, phone, timezone, active } = req.body;
+    const data: Record<string, unknown> = {};
+
+    if (name !== undefined) data.name = name.trim();
+    if (address !== undefined) data.address = address?.trim() ?? null;
+    if (city !== undefined) data.city = city?.trim() ?? null;
+    if (state !== undefined) data.state = state?.trim() ?? null;
+    if (zip !== undefined) data.zip = zip?.trim() ?? null;
+    if (phone !== undefined) data.phone = phone?.trim() ?? null;
+    if (timezone !== undefined) data.timezone = timezone;
+    if (active !== undefined) data.active = active;
+
+    const updated = await prisma.location.update({
+      where: { id: req.params.locationId },
+      data,
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// DELETE /api/admin/tenants/:id/locations/:locationId — deactivate a location
+// --------------------------------------------------------------------------
+router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
+  try {
+    const location = await prisma.location.findFirst({
+      where: { id: req.params.locationId, tenantId: req.params.id },
+    });
+
+    if (!location) {
+      res.status(404).json({ error: "Location not found" });
+      return;
+    }
+
+    await prisma.location.update({
+      where: { id: req.params.locationId },
+      data: { active: false },
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
