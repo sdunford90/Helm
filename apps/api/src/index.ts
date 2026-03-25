@@ -25,6 +25,7 @@ import reportsRouter from "./routes/reports.js";
 import announcementsRouter from "./routes/announcements.js";
 import adminRouter from "./routes/admin.js";
 import onboardingRouter from "./routes/onboarding.js";
+import contractsRouter from "./routes/contracts.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -67,6 +68,7 @@ app.use("/api/reports", reportsRouter);
 app.use("/api/announcements", announcementsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/onboarding", onboardingRouter);
+app.use("/api/contracts", contractsRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

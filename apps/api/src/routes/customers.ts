@@ -228,7 +228,7 @@ router.get(
           break;
         }
         if (boat.registrationExpiry && boat.registrationExpiry < now) {
-          if (complianceScore !== "NON_COMPLIANT") complianceScore = "ATTENTION_REQUIRED";
+          complianceScore = "ATTENTION_REQUIRED";
         }
       }
 

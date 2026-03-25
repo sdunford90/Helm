@@ -4,9 +4,13 @@ import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
 import Waitlist from './pages/Waitlist';
 import Customers from './pages/Customers';
+import CustomerDetail from './pages/CustomerDetail';
 import Slips from './pages/Slips';
 import Contracts from './pages/Contracts';
 import Billing from './pages/Billing';
+import InvoiceDetail from './pages/InvoiceDetail';
+import ARaging from './pages/ARaging';
+import ChartOfAccounts from './pages/ChartOfAccounts';
 import Rentals from './pages/Rentals';
 import POS from './pages/POS';
 import DockWalks from './pages/DockWalks';
@@ -24,9 +28,13 @@ export default function App() {
         <Route path="/leads" element={<Leads />} />
         <Route path="/waitlist" element={<Waitlist />} />
         <Route path="/customers" element={<Customers />} />
+        <Route path="/customers/:id" element={<CustomerDetail />} />
         <Route path="/slips" element={<Slips />} />
         <Route path="/contracts" element={<Contracts />} />
         <Route path="/billing" element={<Billing />} />
+        <Route path="/billing/invoices/:id" element={<InvoiceDetail />} />
+        <Route path="/billing/ar-aging" element={<ARaging />} />
+        <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
         <Route path="/rentals" element={<Rentals />} />
         <Route path="/pos" element={<POS />} />
         <Route path="/dock-walks" element={<DockWalks />} />
