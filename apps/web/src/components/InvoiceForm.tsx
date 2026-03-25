@@ -13,6 +13,8 @@ interface LineItem {
 
 interface InvoiceFormProps {
   onClose: () => void;
+  onSaveDraft?: (data: Record<string, unknown>) => void;
+  onFinalize?: (data: Record<string, unknown>) => void;
 }
 
 /* ─── Mock customers ─── */
@@ -138,12 +140,14 @@ function blankLine(): LineItem {
   return { id: nextId++, description: '', qty: 1, unitPrice: 0, taxRate: 7 };
 }
 
-export default function InvoiceForm({ onClose }: InvoiceFormProps) {
+export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: InvoiceFormProps) {
   const [customer, setCustomer] = useState('');
   const [customerOpen, setCustomerOpen] = useState(false);
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineItem[]>([blankLine()]);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const filteredCustomers = mockCustomers.filter((c) =>
     c.toLowerCase().includes(customer.toLowerCase())
@@ -166,6 +170,45 @@ export default function InvoiceForm({ onClose }: InvoiceFormProps) {
   const subtotal = lines.reduce((sum, l) => sum + lineTotal(l), 0);
   const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
   const total = subtotal + totalTax;
+
+  const buildPayload = () => ({
+    customer,
+    dueDate,
+    notes,
+    lines: lines.map((l) => ({
+      description: l.description,
+      qty: l.qty,
+      unitPriceCents: l.unitPrice,
+      taxRate: l.taxRate,
+    })),
+    subtotalCents: subtotal,
+    taxCents: totalTax,
+    totalCents: total,
+  });
+
+  const validate = (): boolean => {
+    if (!customer.trim()) { setError('Please select a customer.'); return false; }
+    if (!dueDate) { setError('Please set a due date.'); return false; }
+    if (lines.every((l) => !l.description.trim() && l.unitPrice === 0)) { setError('Please add at least one line item.'); return false; }
+    setError('');
+    return true;
+  };
+
+  const handleSaveDraft = async () => {
+    if (!validate()) return;
+    setSaving(true);
+    await onSaveDraft?.(buildPayload());
+    setSaving(false);
+    onClose();
+  };
+
+  const handleFinalize = async () => {
+    if (!validate()) return;
+    setSaving(true);
+    await onFinalize?.(buildPayload());
+    setSaving(false);
+    onClose();
+  };
 
   return (
     <div style={s.overlay} onClick={onClose}>
@@ -308,12 +351,13 @@ export default function InvoiceForm({ onClose }: InvoiceFormProps) {
 
         {/* Footer */}
         <div style={s.footer}>
+          {error && <span style={{ fontSize: '13px', color: '#B71C1C', flex: 1, alignSelf: 'center' }}>{error}</span>}
           <button style={s.secondaryBtn} onClick={onClose}>Cancel</button>
-          <button style={s.secondaryBtn}>
-            <Save size={16} /> Save as Draft
+          <button style={{ ...s.secondaryBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSaveDraft} disabled={saving}>
+            <Save size={16} /> {saving ? 'Saving...' : 'Save as Draft'}
           </button>
-          <button style={s.primaryBtn}>
-            <Send size={16} /> Save &amp; Finalize
+          <button style={{ ...s.primaryBtn, opacity: saving ? 0.7 : 1 }} onClick={handleFinalize} disabled={saving}>
+            <Send size={16} /> {saving ? 'Saving...' : 'Save & Finalize'}
           </button>
         </div>
       </div>

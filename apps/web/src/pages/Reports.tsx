@@ -218,6 +218,10 @@ export default function Reports() {
   const [modalDock, setModalDock] = useState('All Docks');
   const [modalSegment, setModalSegment] = useState('All Customers');
   const [cardFormats, setCardFormats] = useState<Record<string, ReportFormat>>({});
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [scheduleStatuses, setScheduleStatuses] = useState<Record<string, 'Active' | 'Paused'>>({});
+  const getScheduleStatus = (sr: ScheduledReport) => scheduleStatuses[sr.id] ?? sr.status;
+  const toggleSchedule = (id: string) => setScheduleStatuses((prev) => ({ ...prev, [id]: prev[id] === 'Active' || (!prev[id] && scheduledReports.find((s) => s.id === id)?.status === 'Active') ? 'Paused' : 'Active' }));
 
   const [viewingReport, setViewingReport] = useState<string | null>(null);
 
@@ -385,9 +389,9 @@ export default function Reports() {
                     <a
                       style={styles.downloadLink}
                       href="#"
-                      onClick={(e) => e.preventDefault()}
+                      onClick={(e) => { e.preventDefault(); setDownloadingId(r.id); setTimeout(() => setDownloadingId(null), 2000); }}
                     >
-                      <Download size={14} /> Download
+                      <Download size={14} /> {downloadingId === r.id ? 'Downloaded!' : 'Download'}
                     </a>
                   </td>
                 </tr>

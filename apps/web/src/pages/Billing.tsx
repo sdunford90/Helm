@@ -100,8 +100,9 @@ export default function Billing() {
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  // API call with fallback to mock data
+  // API calls with fallback to mock data
   const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
+  const createInvoiceApi = useApi<Invoice>('post', '/api/invoices');
   const invoices = useMemo(() => apiInvoices ?? mockInvoices, [apiInvoices]);
 
   const filtered = invoices.filter((inv) => {
@@ -233,7 +234,13 @@ export default function Billing() {
       </div>
 
       {/* Invoice Form Modal */}
-      {showForm && <InvoiceForm onClose={() => setShowForm(false)} />}
+      {showForm && (
+        <InvoiceForm
+          onClose={() => setShowForm(false)}
+          onSaveDraft={(data) => createInvoiceApi.execute({ ...data, status: 'Draft' })}
+          onFinalize={(data) => createInvoiceApi.execute({ ...data, status: 'Issued' })}
+        />
+      )}
     </div>
   );
 }

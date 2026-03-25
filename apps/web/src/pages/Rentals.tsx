@@ -666,12 +666,15 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
 
 function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => void }) {
   const sc = resStatusColors[res.status];
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const showMsg = (msg: string) => { setActionMsg(msg); setTimeout(() => { setActionMsg(null); onClose(); }, 1500); };
   return (
     <div style={st.detailPanel}>
       <div style={st.detailHeader}>
         <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 }}>{res.number}</h2>
         <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
       </div>
+      {actionMsg && <div style={{ padding: '12px 24px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>{actionMsg}</div>}
       <div style={st.detailSection}>
         <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{res.status}</span>
       </div>
@@ -698,10 +701,10 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
         )}
       </div>
       <div style={{ padding: '20px 24px', display: 'flex', gap: '12px' }}>
-        {res.status === 'Confirmed' && <button style={st.saveBtn}>Check In</button>}
-        {res.status === 'Checked In' && <button style={st.saveBtn}>Check Out</button>}
+        {res.status === 'Confirmed' && <button style={st.saveBtn} onClick={() => showMsg(`${res.customer} checked in for ${res.product}`)}>Check In</button>}
+        {res.status === 'Checked In' && <button style={st.saveBtn} onClick={() => showMsg(`${res.customer} checked out from ${res.product}`)}>Check Out</button>}
         {(res.status === 'Pending' || res.status === 'Confirmed') && (
-          <button style={{ ...st.cancelBtn, color: '#9B1C1C', borderColor: '#FCA5A5' }}>Cancel</button>
+          <button style={{ ...st.cancelBtn, color: '#9B1C1C', borderColor: '#FCA5A5' }} onClick={() => showMsg(`Reservation ${res.number} cancelled`)}>Cancel</button>
         )}
       </div>
     </div>
