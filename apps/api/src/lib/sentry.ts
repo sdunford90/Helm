@@ -33,17 +33,10 @@ export function sentryErrorHandler() {
   return Sentry.expressErrorHandler();
 }
 
-export function captureException(
-  error: Error,
-  context?: Record<string, any>,
-): void {
+export function captureException(error: Error, context?: Record<string, any>): void {
   Sentry.captureException(error, { extra: context });
 }
 
-export function setUser(
-  userId: string,
-  tenantId: string,
-  role: string,
-): void {
+export function setUser(userId: string, tenantId: string, role: string): void {
   Sentry.setUser({ id: userId, tenantId, role } as any);
 }

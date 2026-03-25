@@ -3,6 +3,8 @@ import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
   Star, Clock, Users, Filter, Eye,
 } from 'lucide-react';
+import PricingCalendar from '../components/PricingCalendar';
+import PriceSimulator from '../components/PriceSimulator';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -279,7 +281,7 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Rentals() {
-  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos'>('products');
+  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('products');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -295,6 +297,8 @@ export default function Rentals() {
     { key: 'reservations', label: 'Reservations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
+    { key: 'calendar', label: 'Pricing Calendar' },
+    { key: 'simulator', label: 'Price Simulator' },
   ];
 
   return (
@@ -563,6 +567,23 @@ export default function Rentals() {
           </div>
         </>
       )}
+
+      {/* Pricing Calendar Tab */}
+      {tab === 'calendar' && (
+        <PricingCalendar
+          products={[
+            { id: 'pontoon', name: 'Bay Cruiser 24 (Pontoon)', basePriceCents: 8500 },
+            { id: 'jetski',  name: 'Wave Runner Pro (Jet Ski)', basePriceCents: 6500 },
+            { id: 'kayak',   name: 'Harbor Explorer (Kayak)',   basePriceCents: 2500 },
+          ]}
+          onOverrideChange={(productId, date, priceCents) => {
+            console.log('Override:', productId, date, priceCents);
+          }}
+        />
+      )}
+
+      {/* Price Simulator Tab */}
+      {tab === 'simulator' && <PriceSimulator />}
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}

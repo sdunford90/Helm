@@ -19,20 +19,18 @@ interface SignatureRequest {
 }
 
 function getConfig(): EsignConfig | null {
-  if (!process.env.ESIGN_API_KEY) return null;
+  if (!process.env.DOCUSIGN_API_KEY) return null;
   return {
-    provider: (process.env.ESIGN_PROVIDER as "docusign" | "hellosign") || "docusign",
-    apiKey: process.env.ESIGN_API_KEY,
-    accountId: process.env.ESIGN_ACCOUNT_ID,
+    provider: (process.env.ESIGN_PROVIDER as EsignConfig["provider"]) || "docusign",
+    apiKey: process.env.DOCUSIGN_API_KEY,
+    accountId: process.env.DOCUSIGN_ACCOUNT_ID,
   };
 }
 
 /**
- * Create a signature request via DocuSign eSignature API.
- * POST to https://demo.docusign.net/restapi/v2.1/accounts/{accountId}/envelopes
- * Includes document, signer info, and webhook callback.
- * Returns the envelope ID and signing URL.
- * Fallback: If DocuSign not configured, generate a simple magic link.
+ * Send a document for electronic signature.
+ * Creates an envelope via DocuSign eSignature API, or falls back to a magic-link
+ * flow when DocuSign is not configured.
  */
 export async function sendForSignature(
   request: SignatureRequest,
@@ -40,43 +38,42 @@ export async function sendForSignature(
 ): Promise<{ requestId: string; signingUrl: string }> {
   const config = getConfig();
 
-  if (!config) {
+  if (!config || !config.accountId) {
     // Fallback: generate a simple magic link for signing
-    const token = crypto.randomUUID();
-    await prisma.signatureRequest.create({
+    const requestId = crypto.randomUUID();
+    const signingUrl = `${process.env.APP_URL || "https://app.helm.dev"}/sign/${requestId}`;
+
+    await prisma.auditLog.create({
       data: {
         tenantId,
-        requestId: token,
-        documentUrl: request.documentUrl,
-        signerName: request.signerName,
-        signerEmail: request.signerEmail,
-        subject: request.subject,
-        message: request.message,
-        callbackUrl: request.callbackUrl,
-        metadata: request.metadata,
-        status: "PENDING",
+        action: "ESIGN_MAGIC_LINK",
+        entityType: "SIGNATURE_REQUEST",
+        entityId: requestId,
+        details: {
+          signerEmail: request.signerEmail,
+          signerName: request.signerName,
+          subject: request.subject,
+          documentUrl: request.documentUrl,
+          metadata: request.metadata,
+        },
       },
     });
-    const signingUrl = `${process.env.APP_URL}/sign/${token}`;
-    return { requestId: token, signingUrl };
+
+    return { requestId, signingUrl };
   }
 
-  const baseUrl =
-    process.env.DOCUSIGN_BASE_URL ||
-    "https://demo.docusign.net/restapi/v2.1";
-
-  // Create the envelope with document and signer
+  // Create envelope via DocuSign eSignature REST API
   const envelopePayload = {
     emailSubject: request.subject,
     emailBlurb: request.message,
     status: "sent",
     documents: [
       {
-        documentBase64: "", // Will be fetched from R2
+        documentBase64: "", // Will be populated from R2 URL
         name: request.subject,
         fileExtension: "pdf",
         documentId: "1",
-        uri: request.documentUrl,
+        remoteUrl: request.documentUrl,
       },
     ],
     recipients: {
@@ -86,11 +83,9 @@ export async function sendForSignature(
           name: request.signerName,
           recipientId: "1",
           routingOrder: "1",
-          clientUserId: tenantId, // For embedded signing
           tabs: {
-            signHereTabs: [
-              { documentId: "1", pageNumber: "1", xPosition: "100", yPosition: "700" },
-            ],
+            signHereTabs: [{ documentId: "1", pageNumber: "1", xPosition: "100", yPosition: "700" }],
+            dateSignedTabs: [{ documentId: "1", pageNumber: "1", xPosition: "100", yPosition: "750" }],
           },
         },
       ],
@@ -105,16 +100,26 @@ export async function sendForSignature(
         { envelopeEventStatusCode: "voided" },
       ],
     },
+    customFields: {
+      textCustomFields: Object.entries(request.metadata).map(([name, value]) => ({
+        name,
+        value,
+        show: "false",
+      })),
+    },
   };
 
   // Fetch document content from R2
   const docResponse = await fetch(request.documentUrl);
-  const docBuffer = await docResponse.arrayBuffer();
-  envelopePayload.documents[0].documentBase64 =
-    Buffer.from(docBuffer).toString("base64");
+  const docBuffer = Buffer.from(await docResponse.arrayBuffer());
+  envelopePayload.documents[0].documentBase64 = docBuffer.toString("base64");
 
-  // Create envelope via DocuSign API
-  const envelopeResponse = await fetch(
+  const baseUrl = config.provider === "docusign"
+    ? "https://demo.docusign.net/restapi/v2.1"
+    : "https://api.hellosign.com/v3";
+
+  // POST to DocuSign to create the envelope
+  const response = await fetch(
     `${baseUrl}/accounts/${config.accountId}/envelopes`,
     {
       method: "POST",
@@ -126,19 +131,16 @@ export async function sendForSignature(
     },
   );
 
-  if (!envelopeResponse.ok) {
-    const errorBody = await envelopeResponse.text();
-    throw new Error(
-      `DocuSign envelope creation failed: ${envelopeResponse.status} ${errorBody}`,
-    );
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`DocuSign API error ${response.status}: ${errorBody}`);
   }
 
-  const envelope = (await envelopeResponse.json()) as { envelopeId: string };
-  const envelopeId = envelope.envelopeId;
+  const envelope = (await response.json()) as { envelopeId: string; uri: string };
 
-  // Get the recipient signing URL (embedded signing)
+  // Retrieve the signing URL (recipient view)
   const viewResponse = await fetch(
-    `${baseUrl}/accounts/${config.accountId}/envelopes/${envelopeId}/views/recipient`,
+    `${baseUrl}/accounts/${config.accountId}/envelopes/${envelope.envelopeId}/views/recipient`,
     {
       method: "POST",
       headers: {
@@ -146,75 +148,67 @@ export async function sendForSignature(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        returnUrl: `${process.env.APP_URL}/signing-complete`,
-        authenticationMethod: "none",
+        returnUrl: `${process.env.APP_URL || "https://app.helm.dev"}/contracts/signed`,
+        authenticationMethod: "email",
         email: request.signerEmail,
         userName: request.signerName,
-        clientUserId: tenantId,
       }),
     },
   );
 
   if (!viewResponse.ok) {
     const errorBody = await viewResponse.text();
-    throw new Error(
-      `DocuSign signing URL failed: ${viewResponse.status} ${errorBody}`,
-    );
+    throw new Error(`DocuSign recipient view error ${viewResponse.status}: ${errorBody}`);
   }
 
-  const viewResult = (await viewResponse.json()) as { url: string };
+  const view = (await viewResponse.json()) as { url: string };
 
-  // Persist the signature request record
-  await prisma.signatureRequest.create({
+  await prisma.auditLog.create({
     data: {
       tenantId,
-      requestId: envelopeId,
-      documentUrl: request.documentUrl,
-      signerName: request.signerName,
-      signerEmail: request.signerEmail,
-      subject: request.subject,
-      message: request.message,
-      callbackUrl: request.callbackUrl,
-      metadata: request.metadata,
-      status: "SENT",
+      action: "ESIGN_SENT",
+      entityType: "SIGNATURE_REQUEST",
+      entityId: envelope.envelopeId,
+      details: {
+        signerEmail: request.signerEmail,
+        signerName: request.signerName,
+        subject: request.subject,
+        metadata: request.metadata,
+      },
     },
   });
 
-  return { requestId: envelopeId, signingUrl: viewResult.url };
+  return { requestId: envelope.envelopeId, signingUrl: view.url };
 }
 
 /**
- * Bulk send for renewal batches - send each in parallel with concurrency limit of 5.
+ * Bulk send signature requests for renewal batches.
+ * Processes requests in parallel with a concurrency limit of 5.
  */
 export async function sendBatchForSignature(
   requests: SignatureRequest[],
   tenantId: string,
 ): Promise<Array<{ requestId: string; signerEmail: string; status: string }>> {
-  const concurrencyLimit = 5;
+  const CONCURRENCY = 5;
   const results: Array<{ requestId: string; signerEmail: string; status: string }> = [];
 
-  // Process in chunks of concurrencyLimit
-  for (let i = 0; i < requests.length; i += concurrencyLimit) {
-    const chunk = requests.slice(i, i + concurrencyLimit);
-    const chunkResults = await Promise.allSettled(
-      chunk.map(async (request) => {
-        const result = await sendForSignature(request, tenantId);
-        return {
-          requestId: result.requestId,
-          signerEmail: request.signerEmail,
-          status: "sent",
-        };
+  for (let i = 0; i < requests.length; i += CONCURRENCY) {
+    const batch = requests.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (req) => {
+        const result = await sendForSignature(req, tenantId);
+        return { requestId: result.requestId, signerEmail: req.signerEmail, status: "sent" };
       }),
     );
 
-    for (let j = 0; j < chunkResults.length; j++) {
-      const settled = chunkResults[j];
+    for (let j = 0; j < batchResults.length; j++) {
+      const settled = batchResults[j];
       if (settled.status === "fulfilled") {
         results.push(settled.value);
       } else {
         results.push({
           requestId: "",
-          signerEmail: chunk[j].signerEmail,
+          signerEmail: batch[j].signerEmail,
           status: `failed: ${settled.reason?.message || "unknown error"}`,
         });
       }
@@ -225,44 +219,25 @@ export async function sendBatchForSignature(
 }
 
 /**
- * Process DocuSign Connect webhook.
+ * Process a DocuSign Connect webhook callback.
  * On "completed": update contract status, store signed PDF in R2, log audit entry.
  * On "declined": notify staff, update contract status.
  */
-export async function handleWebhook(
-  payload: any,
-  tenantId: string,
-): Promise<void> {
-  const envelopeId = payload.envelopeId || payload.data?.envelopeId;
-  const status = (
-    payload.status ||
-    payload.event ||
-    payload.data?.envelopeSummary?.status ||
-    ""
-  ).toLowerCase();
+export async function handleWebhook(payload: any, tenantId: string): Promise<void> {
+  const envelopeId: string = payload.envelopeId || payload.data?.envelopeId;
+  const status: string = (payload.status || payload.data?.envelopeSummary?.status || "").toLowerCase();
 
-  const sigRequest = await prisma.signatureRequest.findFirst({
-    where: { tenantId, requestId: envelopeId },
-  });
-
-  if (!sigRequest) {
-    console.warn(`Signature request not found for envelope ${envelopeId}`);
-    return;
+  if (!envelopeId) {
+    throw new Error("Missing envelopeId in webhook payload");
   }
 
   if (status === "completed") {
-    // Update the signature request status
-    await prisma.signatureRequest.update({
-      where: { id: sigRequest.id },
-      data: { status: "COMPLETED", signedAt: new Date() },
-    });
-
-    // Fetch signed PDF from DocuSign and store in R2
+    // Download the signed PDF from DocuSign
     const config = getConfig();
-    if (config) {
-      const baseUrl =
-        process.env.DOCUSIGN_BASE_URL ||
-        "https://demo.docusign.net/restapi/v2.1";
+    let signedDocumentUrl: string | undefined;
+
+    if (config?.accountId) {
+      const baseUrl = "https://demo.docusign.net/restapi/v2.1";
       const docResponse = await fetch(
         `${baseUrl}/accounts/${config.accountId}/envelopes/${envelopeId}/documents/combined`,
         {
@@ -271,83 +246,70 @@ export async function handleWebhook(
       );
 
       if (docResponse.ok) {
-        const signedPdf = await docResponse.arrayBuffer();
-        const r2Key = `signed-contracts/${tenantId}/${envelopeId}.pdf`;
+        const pdfBuffer = Buffer.from(await docResponse.arrayBuffer());
 
-        // Upload to R2 via internal upload endpoint
-        await fetch(`${process.env.R2_UPLOAD_URL}/${r2Key}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/pdf" },
-          body: signedPdf,
-        });
+        // Store signed PDF in R2 via presigned URL or direct upload
+        const r2Key = `tenants/${tenantId}/contracts/signed/${envelopeId}.pdf`;
+        signedDocumentUrl = `${process.env.R2_PUBLIC_URL || "https://storage.helm.dev"}/${r2Key}`;
 
-        await prisma.signatureRequest.update({
-          where: { id: sigRequest.id },
-          data: { signedDocumentUrl: `${process.env.R2_PUBLIC_URL}/${r2Key}` },
-        });
+        // Upload to R2 (assumes R2_UPLOAD_URL configured)
+        if (process.env.R2_UPLOAD_URL) {
+          await fetch(`${process.env.R2_UPLOAD_URL}/${r2Key}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/pdf" },
+            body: pdfBuffer,
+          });
+        }
       }
     }
 
-    // Update related contract status if metadata contains contractId
-    const contractId = (sigRequest.metadata as any)?.contractId;
-    if (contractId) {
-      await prisma.contract.update({
-        where: { id: contractId },
-        data: { status: "ACTIVE", signedAt: new Date() },
-      });
-    }
+    // Update contract status
+    await prisma.contract.updateMany({
+      where: { tenantId, esignEnvelopeId: envelopeId },
+      data: { status: "ACTIVE", signedAt: new Date(), signedDocumentUrl },
+    });
 
-    // Log audit entry
     await prisma.auditLog.create({
       data: {
         tenantId,
         action: "ESIGN_COMPLETED",
-        recordType: "SignatureRequest",
-        recordId: sigRequest.id,
-        details: { envelopeId, signerEmail: sigRequest.signerEmail },
+        entityType: "SIGNATURE_REQUEST",
+        entityId: envelopeId,
+        details: { signedDocumentUrl },
       },
     });
   } else if (status === "declined") {
-    await prisma.signatureRequest.update({
-      where: { id: sigRequest.id },
+    // Update contract status
+    await prisma.contract.updateMany({
+      where: { tenantId, esignEnvelopeId: envelopeId },
       data: { status: "DECLINED" },
     });
 
-    // Update related contract status
-    const contractId = (sigRequest.metadata as any)?.contractId;
-    if (contractId) {
-      await prisma.contract.update({
-        where: { id: contractId },
-        data: { status: "DECLINED" },
-      });
-    }
-
-    // Log audit entry
-    await prisma.auditLog.create({
-      data: {
-        tenantId,
-        action: "ESIGN_DECLINED",
-        recordType: "SignatureRequest",
-        recordId: sigRequest.id,
-        details: { envelopeId, signerEmail: sigRequest.signerEmail },
-      },
-    });
-
-    // Notify staff (via internal notification system)
+    // Notify staff via internal notification
     await prisma.notification.create({
       data: {
         tenantId,
         type: "ESIGN_DECLINED",
-        title: `E-signature declined: ${sigRequest.subject}`,
-        body: `${sigRequest.signerName} (${sigRequest.signerEmail}) declined to sign "${sigRequest.subject}".`,
-        channel: "DASHBOARD",
+        title: "Signature Request Declined",
+        body: `Envelope ${envelopeId} was declined by the signer.`,
+        channel: "INTERNAL",
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        action: "ESIGN_DECLINED",
+        entityType: "SIGNATURE_REQUEST",
+        entityId: envelopeId,
+        details: { declinedReason: payload.declineReason || payload.data?.declineReason },
       },
     });
   }
 }
 
 /**
- * Check status of a signature request.
+ * Check the current status of a signature request.
  */
 export async function getSigningStatus(
   requestId: string,
@@ -355,53 +317,48 @@ export async function getSigningStatus(
 ): Promise<{ status: string; signedAt?: string; documentUrl?: string }> {
   const config = getConfig();
 
-  // First check local DB
-  const sigRequest = await prisma.signatureRequest.findFirst({
-    where: { tenantId, requestId },
-  });
+  if (!config?.accountId) {
+    // Fallback: check contract record for magic-link based signing
+    const contract = await prisma.contract.findFirst({
+      where: { tenantId, esignEnvelopeId: requestId },
+      select: { status: true, signedAt: true, signedDocumentUrl: true },
+    });
 
-  if (!sigRequest) {
-    throw new Error(`Signature request ${requestId} not found`);
-  }
+    if (!contract) {
+      return { status: "not_found" };
+    }
 
-  // If we have a completed status locally, return it
-  if (sigRequest.status === "COMPLETED" || sigRequest.status === "DECLINED") {
     return {
-      status: sigRequest.status,
-      signedAt: sigRequest.signedAt?.toISOString(),
-      documentUrl: sigRequest.signedDocumentUrl ?? undefined,
+      status: contract.status.toLowerCase(),
+      signedAt: contract.signedAt?.toISOString(),
+      documentUrl: contract.signedDocumentUrl ?? undefined,
     };
   }
 
-  // Otherwise, check with DocuSign for the latest status
-  if (config && config.accountId) {
-    const baseUrl =
-      process.env.DOCUSIGN_BASE_URL ||
-      "https://demo.docusign.net/restapi/v2.1";
+  const baseUrl = "https://demo.docusign.net/restapi/v2.1";
+  const response = await fetch(
+    `${baseUrl}/accounts/${config.accountId}/envelopes/${requestId}`,
+    {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    },
+  );
 
-    const response = await fetch(
-      `${baseUrl}/accounts/${config.accountId}/envelopes/${requestId}`,
-      {
-        headers: { Authorization: `Bearer ${config.apiKey}` },
-      },
-    );
-
-    if (response.ok) {
-      const envelope = (await response.json()) as {
-        status: string;
-        completedDateTime?: string;
-      };
-      return {
-        status: envelope.status,
-        signedAt: envelope.completedDateTime,
-      };
-    }
+  if (!response.ok) {
+    throw new Error(`DocuSign status check failed: ${response.status}`);
   }
 
+  const envelope = (await response.json()) as {
+    status: string;
+    completedDateTime?: string;
+    documentsUri?: string;
+  };
+
   return {
-    status: sigRequest.status,
-    signedAt: sigRequest.signedAt?.toISOString(),
-    documentUrl: sigRequest.signedDocumentUrl ?? undefined,
+    status: envelope.status,
+    signedAt: envelope.completedDateTime,
+    documentUrl: envelope.status === "completed"
+      ? `${process.env.R2_PUBLIC_URL || "https://storage.helm.dev"}/tenants/${tenantId}/contracts/signed/${requestId}.pdf`
+      : undefined,
   };
 }
 
@@ -414,24 +371,8 @@ export async function cancelSignatureRequest(
 ): Promise<void> {
   const config = getConfig();
 
-  const sigRequest = await prisma.signatureRequest.findFirst({
-    where: { tenantId, requestId },
-  });
-
-  if (!sigRequest) {
-    throw new Error(`Signature request ${requestId} not found`);
-  }
-
-  if (sigRequest.status === "COMPLETED") {
-    throw new Error("Cannot cancel a completed signature request");
-  }
-
-  // Void the envelope in DocuSign
-  if (config && config.accountId) {
-    const baseUrl =
-      process.env.DOCUSIGN_BASE_URL ||
-      "https://demo.docusign.net/restapi/v2.1";
-
+  if (config?.accountId) {
+    const baseUrl = "https://demo.docusign.net/restapi/v2.1";
     const response = await fetch(
       `${baseUrl}/accounts/${config.accountId}/envelopes/${requestId}`,
       {
@@ -449,26 +390,23 @@ export async function cancelSignatureRequest(
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(
-        `DocuSign void failed: ${response.status} ${errorBody}`,
-      );
+      throw new Error(`DocuSign void failed: ${response.status}: ${errorBody}`);
     }
   }
 
-  // Update local record
-  await prisma.signatureRequest.update({
-    where: { id: sigRequest.id },
-    data: { status: "VOIDED" },
+  // Update local contract status
+  await prisma.contract.updateMany({
+    where: { tenantId, esignEnvelopeId: requestId },
+    data: { status: "CANCELLED" },
   });
 
-  // Log audit entry
   await prisma.auditLog.create({
     data: {
       tenantId,
       action: "ESIGN_CANCELLED",
-      recordType: "SignatureRequest",
-      recordId: sigRequest.id,
-      details: { requestId, signerEmail: sigRequest.signerEmail },
+      entityType: "SIGNATURE_REQUEST",
+      entityId: requestId,
+      details: { cancelledBy: "staff" },
     },
   });
 }
