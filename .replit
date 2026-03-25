@@ -37,3 +37,8 @@ outputType = "webview"
 deploymentTarget = "static"
 build = ["bash", "-c", "pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build"]
 publicDir = "apps/web/dist"
+
+[userenv]
+
+[userenv.shared]
+VITE_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xvc2Utb2FyZmlzaC01Mi5jbGVyay5hY2NvdW50cy5kZXYk"
