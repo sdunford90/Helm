@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
-  Star, Clock, Users, Filter, Eye,
+  Star, Clock, Users, Filter, Eye, Edit2, Trash2,
 } from 'lucide-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
@@ -260,7 +260,7 @@ function countAvailableToday(productId: string): { available: number; total: num
 
 /* ── Availability Grid Component ───────────────────────── */
 
-function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
+function AvailabilityGrid({ products, onViewReservation }: { products: RentalProduct[]; onViewReservation?: (resId: string) => void }) {
   const [selectedCell, setSelectedCell] = useState<{ productId: string; date: string; slot: TimeSlotKey } | null>(null);
   const activeProducts = products.filter(p => p.status !== 'Retired');
 
@@ -481,8 +481,11 @@ function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
                   <Plus size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> New Booking
                 </button>
               )}
-              {selectedSlotData.status === 'booked' && (
-                <button style={{ padding: '6px 16px', fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: '#E0F7FF', border: '1px solid #B3E8FF', borderRadius: '6px', cursor: 'pointer' }}>
+              {selectedSlotData.status === 'booked' && selectedSlotData.reservationId && (
+                <button
+                  style={{ padding: '6px 16px', fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: '#E0F7FF', border: '1px solid #B3E8FF', borderRadius: '6px', cursor: 'pointer' }}
+                  onClick={() => { if (onViewReservation && selectedSlotData.reservationId) { onViewReservation(selectedSlotData.reservationId); setSelectedCell(null); } }}
+                >
                   View Reservation
                 </button>
               )}
@@ -705,10 +708,168 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
   );
 }
 
+/* ── Duration CRUD ───────────────────────────────────────── */
+
+interface Duration {
+  id: string; name: string; minutes: number; price: number;
+  location: string; availDays: string[]; unlockRule: 'always' | 'after_time' | 'after_slot_booked';
+  unlockTime?: string; unlockSlot?: 'morning' | 'afternoon';
+}
+
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const INIT_DURATIONS: Duration[] = [
+  { id: '1', name: 'Half Day (Morning)', minutes: 240, price: 85, location: 'Main Dock', availDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], unlockRule: 'always' },
+  { id: '2', name: 'Half Day (Afternoon)', minutes: 240, price: 85, location: 'Main Dock', availDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], unlockRule: 'after_slot_booked', unlockSlot: 'morning' },
+  { id: '3', name: 'Full Day', minutes: 480, price: 150, location: 'Main Dock', availDays: ['Sat', 'Sun'], unlockRule: 'always' },
+  { id: '4', name: '2-Hour Express', minutes: 120, price: 45, location: 'Fuel Dock', availDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], unlockRule: 'after_time', unlockTime: '08:00' },
+  { id: '5', name: 'Sunset Cruise', minutes: 180, price: 120, location: 'Main Dock', availDays: ['Fri', 'Sat', 'Sun'], unlockRule: 'after_time', unlockTime: '15:00' },
+];
+
+function DurationModal({ duration, onClose, onSave }: { duration?: Duration | null; onClose: () => void; onSave: (d: Duration) => void }) {
+  const isEdit = !!duration;
+  const [name, setName] = useState(duration?.name ?? '');
+  const [minutes, setMinutes] = useState(duration ? String(duration.minutes) : '120');
+  const [price, setPrice] = useState(duration ? String(duration.price) : '');
+  const [location, setLocation] = useState(duration?.location ?? 'Main Dock');
+  const [availDays, setAvailDays] = useState<string[]>(duration?.availDays ?? [...DAYS]);
+  const [unlockRule, setUnlockRule] = useState<Duration['unlockRule']>(duration?.unlockRule ?? 'always');
+  const [unlockTime, setUnlockTime] = useState(duration?.unlockTime ?? '08:00');
+  const [unlockSlot, setUnlockSlot] = useState<'morning' | 'afternoon'>(duration?.unlockSlot ?? 'morning');
+
+  const toggleDay = (d: string) => setAvailDays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+
+  const fStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' };
+  const lStyle: React.CSSProperties = { fontSize: '13px', fontWeight: 600, color: '#0A2342' };
+  const iStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', width: '100%' };
+  const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200 };
+  const modalStyle: React.CSSProperties = { background: '#FFFFFF', borderRadius: '8px', width: '520px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' };
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 28px 14px', borderBottom: '1px solid #E2E8F0' }}>
+          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>{isEdit ? 'Edit Duration' : 'Add Duration'}</h2>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }} onClick={onClose}><X size={18} /></button>
+        </div>
+        <div style={{ padding: '20px 28px' }}>
+          <div style={fStyle}><label style={lStyle}>Duration Name *</label><input style={iStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Half Day (Morning)" /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div style={fStyle}><label style={lStyle}>Duration (minutes)</label><input style={iStyle} type="number" value={minutes} onChange={(e) => setMinutes(e.target.value)} /></div>
+            <div style={fStyle}><label style={lStyle}>Price ($)</label><input style={iStyle} type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></div>
+          </div>
+          <div style={fStyle}><label style={lStyle}>Location</label>
+            <select style={iStyle} value={location} onChange={(e) => setLocation(e.target.value)}>
+              <option>Main Dock</option><option>Fuel Dock</option><option>Beach Launch</option><option>Kayak Bay</option><option>Any</option>
+            </select>
+          </div>
+          <div style={fStyle}>
+            <label style={lStyle}>Available Days</label>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '4px' }}>
+              {DAYS.map((d) => (
+                <button key={d} onClick={() => toggleDay(d)} style={{ padding: '4px 10px', fontSize: '12px', fontWeight: 600, borderRadius: '4px', cursor: 'pointer', backgroundColor: availDays.includes(d) ? '#0A2342' : '#F1F5F9', color: availDays.includes(d) ? '#FFFFFF' : '#64748B', border: 'none' }}>{d}</button>
+              ))}
+            </div>
+          </div>
+          <div style={fStyle}>
+            <label style={lStyle}>Unlock Rule</label>
+            <select style={iStyle} value={unlockRule} onChange={(e) => setUnlockRule(e.target.value as Duration['unlockRule'])}>
+              <option value="always">Always available</option>
+              <option value="after_time">Available after time</option>
+              <option value="after_slot_booked">Available after slot is booked</option>
+            </select>
+          </div>
+          {unlockRule === 'after_time' && (
+            <div style={fStyle}><label style={lStyle}>Available After (time)</label><input style={iStyle} type="time" value={unlockTime} onChange={(e) => setUnlockTime(e.target.value)} /></div>
+          )}
+          {unlockRule === 'after_slot_booked' && (
+            <div style={fStyle}><label style={lStyle}>Unlocks After Slot</label>
+              <select style={iStyle} value={unlockSlot} onChange={(e) => setUnlockSlot(e.target.value as 'morning' | 'afternoon')}>
+                <option value="morning">Morning slot is booked</option>
+                <option value="afternoon">Afternoon slot is booked</option>
+              </select>
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', padding: '12px 28px 20px', borderTop: '1px solid #E2E8F0' }}>
+          <button style={{ padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' }} onClick={onClose}>Cancel</button>
+          <button style={{ padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', background: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }} onClick={() => {
+            if (!name) return;
+            onSave({ id: duration?.id ?? String(Date.now()), name, minutes: parseInt(minutes) || 120, price: parseFloat(price) || 0, location, availDays, unlockRule, unlockTime, unlockSlot });
+            onClose();
+          }}>{isEdit ? 'Save Changes' : 'Add Duration'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DurationsTab() {
+  const [durations, setDurations] = useState<Duration[]>(INIT_DURATIONS);
+  const [modal, setModal] = useState<'add' | 'edit' | null>(null);
+  const [editing, setEditing] = useState<Duration | null>(null);
+
+  const unlockLabel = (d: Duration) => {
+    if (d.unlockRule === 'always') return 'Always';
+    if (d.unlockRule === 'after_time') return `After ${d.unlockTime}`;
+    if (d.unlockRule === 'after_slot_booked') return `After ${d.unlockSlot} booked`;
+    return '—';
+  };
+
+  const thS: React.CSSProperties = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF', whiteSpace: 'nowrap' };
+  const tdS: React.CSSProperties = { padding: '10px 14px', color: '#0A2342', borderBottom: '1px solid #E2E8F0', fontSize: '13px' };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div style={{ fontSize: '14px', color: '#64748B' }}>Configure rental duration slots with pricing, availability, and unlock rules.</div>
+        <button style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }} onClick={() => { setEditing(null); setModal('add'); }}>
+          <Plus size={16} /> Add Duration
+        </button>
+      </div>
+      <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+          <thead><tr>
+            <th style={thS}>Name</th>
+            <th style={thS}>Minutes</th>
+            <th style={thS}>Price</th>
+            <th style={thS}>Location</th>
+            <th style={thS}>Available Days</th>
+            <th style={thS}>Unlock Rule</th>
+            <th style={thS}>Actions</th>
+          </tr></thead>
+          <tbody>
+            {durations.map((d, idx) => (
+              <tr key={d.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
+                <td style={{ ...tdS, fontWeight: 600 }}>{d.name}</td>
+                <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{d.minutes} min</td>
+                <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>${d.price.toFixed(2)}</td>
+                <td style={tdS}>{d.location}</td>
+                <td style={tdS}>{d.availDays.length === 7 ? 'Every day' : d.availDays.join(', ')}</td>
+                <td style={tdS}><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: d.unlockRule === 'always' ? '#DEF7EC' : '#E0F7FF', color: d.unlockRule === 'always' ? '#03543F' : '#0A2342' }}>{unlockLabel(d)}</span></td>
+                <td style={tdS}>
+                  <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => { setEditing(d); setModal('edit'); }} title="Edit"><Edit2 size={14} /></button>
+                  <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => setDurations((prev) => prev.filter((x) => x.id !== d.id))} title="Delete"><Trash2 size={14} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <DurationModal
+          duration={modal === 'edit' ? editing : null}
+          onClose={() => setModal(null)}
+          onSave={(d) => setDurations((prev) => modal === 'edit' ? prev.map((x) => x.id === d.id ? d : x) : [...prev, d])}
+        />
+      )}
+    </div>
+  );
+}
+
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Rentals() {
-  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator' | 'availability'>('products');
+  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator' | 'availability' | 'durations'>('products');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -746,11 +907,17 @@ export default function Rentals() {
     { key: 'products', label: 'Products' },
     { key: 'availability', label: 'Availability' },
     { key: 'reservations', label: 'Reservations' },
+    { key: 'durations', label: 'Durations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
     { key: 'calendar', label: 'Pricing Calendar' },
     { key: 'simulator', label: 'Price Simulator' },
   ];
+
+  const handleViewReservation = (resId: string) => {
+    const found = reservations.find((r) => r.number === resId);
+    if (found) { setSelectedRes(found); setTab('reservations'); }
+  };
 
   return (
     <div style={st.page}>
@@ -1058,7 +1225,10 @@ export default function Rentals() {
       {tab === 'simulator' && <PriceSimulator />}
 
       {/* Availability Grid Tab */}
-      {tab === 'availability' && <AvailabilityGrid products={products} />}
+      {tab === 'availability' && <AvailabilityGrid products={products} onViewReservation={handleViewReservation} />}
+
+      {/* Durations Tab */}
+      {tab === 'durations' && <DurationsTab />}
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} onSave={handleAddProduct} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}

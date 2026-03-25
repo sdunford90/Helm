@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
-  AlertTriangle, Trash2,
+  AlertTriangle, Trash2, RotateCcw,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
@@ -35,6 +35,7 @@ interface Transaction {
   total: number;
   method: string;
   cashier: string;
+  cartItems?: CartItem[];
 }
 
 /* ── Mock Data ─────────────────────────────────────────── */
@@ -263,10 +264,22 @@ function PaymentModal({
   );
 }
 
+/* ── Recalled Transaction Banner ───────────────────────── */
+
+function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', background: '#E0F7FF', border: '1px solid #00D4FF', borderRadius: '6px', marginBottom: '12px', fontSize: '13px', color: '#0A2342' }}>
+      <RotateCcw size={14} style={{ color: '#00D4FF' }} />
+      <span>Recalled transaction <strong>{txnNumber}</strong> — edit items and re-tender to complete.</span>
+      <button onClick={onClear} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }}><X size={14} /></button>
+    </div>
+  );
+}
+
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function POS() {
-  const [tab, setTab] = useState<'sale' | 'transactions' | 'products' | 'inventory'>('sale');
+  const [tab, setTab] = useState<'sale' | 'transactions'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [shiftOpen, setShiftOpen] = useState(true);
@@ -277,13 +290,20 @@ export default function POS() {
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [fuelQtyInputs, setFuelQtyInputs] = useState<Record<string, string>>({});
+  const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
+  const [achEnabled, setAchEnabled] = useState(true);
 
-  // API calls with fallback to mock data
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('helm_payment_types') || '[]');
+      const achType = stored.find((t: { id: string; availPOS?: boolean }) => t.id === 'ach');
+      if (achType && achType.availPOS === false) setAchEnabled(false);
+    } catch { /* ignore */ }
+  }, []);
+
   const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });
   const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/api/pos/transactions', { immediate: true });
-  const { data: apiShift } = useApi<{ cashier: string; float: number; openedAt: string } | null>('get', '/api/pos/shifts/current', { immediate: true });
   const createTransaction = useApi<Transaction>('post', '/api/pos/transactions');
-  const openShift = useApi<{ cashier: string; float: number }>('post', '/api/pos/shifts');
 
   const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
   const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
@@ -309,9 +329,34 @@ export default function POS() {
       total: Math.round((subtotal + tax) * 100) / 100,
       method,
       cashier: shiftCashier,
+      cartItems: [...cart],
     };
     setLocalTransactions((prev) => [txn, ...(prev.length > 0 ? prev : (apiTransactions ?? TRANSACTIONS))]);
     setCart([]);
+    setRecalledTxn(null);
+  };
+
+  const recallTransaction = (txn: Transaction) => {
+    if (txn.cartItems && txn.cartItems.length > 0) {
+      setCart(txn.cartItems.map((ci) => ({ ...ci })));
+    } else {
+      const recalled: CartItem = {
+        product: {
+          id: `recalled-${txn.id}`,
+          sku: txn.number,
+          name: `Recalled: ${txn.number}`,
+          category: 'Recalled',
+          price: txn.total,
+          taxRate: 0,
+          inStock: 999,
+          reorderPoint: 0,
+        },
+        quantity: 1,
+      };
+      setCart([recalled]);
+    }
+    setRecalledTxn(txn.number);
+    setTab('sale');
   };
 
   const loading = loadingProducts || loadingTxns;
@@ -354,8 +399,6 @@ export default function POS() {
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sale', label: 'New Sale' },
     { key: 'transactions', label: 'Transactions' },
-    { key: 'products', label: 'Products' },
-    { key: 'inventory', label: 'Inventory' },
   ];
 
   return (
@@ -397,6 +440,7 @@ export default function POS() {
       {tab === 'sale' && (
         <div style={st.saleLayout}>
           <div>
+            {recalledTxn && <RecallBanner txnNumber={recalledTxn} onClear={() => { setRecalledTxn(null); setCart([]); }} />}
             <div style={st.searchWrap}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -506,8 +550,10 @@ export default function POS() {
               <div style={st.payBtns}>
                 <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card' })}><CreditCard size={16} /> Card</button>
                 <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash' })}><Banknote size={16} /> Cash</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH' })}><Building2 size={16} /> ACH</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip' })}><DollarSign size={16} /> Charge to Slip</button>
+                {achEnabled && (
+                  <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH' })}><Building2 size={16} /> ACH</button>
+                )}
+                <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip' })}><DollarSign size={16} /> Charge to Slip</button>
               </div>
             </div>
           </div>
@@ -526,6 +572,7 @@ export default function POS() {
             <span style={{ color: '#64748B' }}>to</span>
             <input style={st.input} type="date" defaultValue="2026-03-25" />
           </div>
+          <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '12px' }}>Click a transaction number to recall it to the sale screen.</p>
           <div style={st.tableWrap}>
             <table style={st.table}>
               <thead>
@@ -538,133 +585,40 @@ export default function POS() {
                   <th style={st.th}>Total</th>
                   <th style={st.th}>Payment</th>
                   <th style={st.th}>Cashier</th>
+                  <th style={st.th}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {transactions.map((t, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
-                    <tr key={t.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{t.number}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px' }}>{t.date}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{t.items}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>${t.subtotal.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>${t.tax.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 600 }}>${t.total.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
+                    <tr key={t.id}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#EFF6FF'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = rowBg; }}
+                      style={{ background: rowBg, transition: 'background 0.1s' }}>
+                      <td
+                        style={{ ...st.td, fontWeight: 700, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }}
+                        onClick={() => recallTransaction(t)}
+                        title="Click to recall this transaction"
+                      >
+                        {t.number}
+                      </td>
+                      <td style={{ ...st.td, fontSize: '13px' }}>{t.date}</td>
+                      <td style={{ ...st.td, textAlign: 'center' }}>{t.items}</td>
+                      <td style={{ ...st.td, ...st.mono }}>${t.subtotal.toFixed(2)}</td>
+                      <td style={{ ...st.td, ...st.mono }}>${t.tax.toFixed(2)}</td>
+                      <td style={{ ...st.td, ...st.mono, fontWeight: 600 }}>${t.total.toFixed(2)}</td>
+                      <td style={st.td}>
                         <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{t.method}</span>
                       </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{t.cashier}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* Products */}
-      {tab === 'products' && (
-        <>
-          <div style={st.filterBar}>
-            <div style={{ ...st.searchWrap, flex: 1 }}>
-              <Search size={16} style={st.searchIcon} />
-              <input style={st.searchInput} placeholder="Search products..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-            <select style={st.select}>
-              <option value="">All Categories</option>
-              <option>Fuel</option>
-              <option>Provisions</option>
-              <option>Bait & Tackle</option>
-              <option>Marine Supplies</option>
-              <option>Apparel</option>
-            </select>
-            <button style={st.addBtn}><Plus size={16} /> Add Product</button>
-          </div>
-          <div style={st.tableWrap}>
-            <table style={st.table}>
-              <thead>
-                <tr>
-                  <th style={st.th}>SKU</th>
-                  <th style={st.th}>Name</th>
-                  <th style={st.th}>Category</th>
-                  <th style={st.th}>Price</th>
-                  <th style={st.th}>Tax Rate</th>
-                  <th style={st.th}>In Stock</th>
-                  <th style={st.th}>Reorder Pt</th>
-                  <th style={st.th}>Status</th>
-                  <th style={st.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())).map((p, idx) => {
-                  const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                  const ss = stockStatus(p);
-                  return (
-                    <tr key={p.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.sku}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.name}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{p.category}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>${p.price.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{p.taxRate}%</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.inStock}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.reorderPoint}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span>
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* Inventory */}
-      {tab === 'inventory' && (
-        <>
-          <div style={st.filterBar}>
-            <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Package size={16} /> Create Purchase Order</button>
-          </div>
-          <div style={st.tableWrap}>
-            <table style={st.table}>
-              <thead>
-                <tr>
-                  <th style={st.th}>Product</th>
-                  <th style={st.th}>SKU</th>
-                  <th style={st.th}>Current Stock</th>
-                  <th style={st.th}>Reorder Point</th>
-                  <th style={st.th}>Last Restocked</th>
-                  <th style={st.th}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...posProducts].sort((a, b) => {
-                  const aRatio = a.inStock / a.reorderPoint;
-                  const bRatio = b.inStock / b.reorderPoint;
-                  return aRatio - bRatio;
-                }).map((p, idx) => {
-                  const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                  const ss = stockStatus(p);
-                  const restockDates = ['2026-03-20', '2026-03-18', '2026-03-15', '2026-03-22', '2026-03-19', '2026-03-21', '2026-03-17', '2026-03-14', '2026-03-16', '2026-03-13', '2026-03-12', '2026-03-11'];
-                  return (
-                    <tr key={p.id} style={{ backgroundColor: ss.label === 'Low Stock' ? '#FFFBEB' : ss.label === 'Out of Stock' ? '#FEF2F2' : 'transparent' }}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.name}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.sku}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.inStock}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.reorderPoint}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{restockDates[idx] || '2026-03-10'}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>
-                          {ss.label === 'Low Stock' && <AlertTriangle size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />}
-                          {ss.label}
-                        </span>
+                      <td style={st.td}>{t.cashier}</td>
+                      <td style={st.td}>
+                        <button
+                          style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: '1px solid #00D4FF', color: '#0A2342', borderRadius: '4px', padding: '4px 10px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}
+                          onClick={() => recallTransaction(t)}
+                        >
+                          <RotateCcw size={12} /> Recall
+                        </button>
                       </td>
                     </tr>
                   );

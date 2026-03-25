@@ -1,5 +1,11 @@
-import { useState } from 'react';
+import { useState, createContext, useContext } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, Download, Printer, ChevronDown, ChevronUp } from 'lucide-react';
+
+/* ── Report context (navigate + date range) ─────────────── */
+interface ReportCtx { navigate: (to: string) => void; dateFrom: string; dateTo: string; }
+const ReportContext = createContext<ReportCtx>({ navigate: () => {}, dateFrom: '2026-03-01', dateTo: '2026-03-25' });
+const useReport = () => useContext(ReportContext);
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -34,6 +40,43 @@ const s: Record<string, React.CSSProperties> = {
 
 const fmt = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const pct = (n: number) => `${n.toFixed(1)}%`;
+
+/* ── Sort helpers ────────────────────────────────────────── */
+function useSortState<T extends object>(initial: T[], defaultKey: keyof T) {
+  const [sortKey, setSortKey] = useState<keyof T>(defaultKey);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const toggle = (key: keyof T) => {
+    if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+  const sorted = [...initial].sort((a, b) => {
+    const av = a[sortKey]; const bv = b[sortKey];
+    if (typeof av === 'number' && typeof bv === 'number') return sortDir === 'asc' ? av - bv : bv - av;
+    return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  return { sorted, sortKey, sortDir, toggle };
+}
+
+function SortTh({ label, colKey, sortKey, sortDir, toggle, right }: { label: string; colKey: string; sortKey: string; sortDir: 'asc' | 'desc'; toggle: (k: string) => void; right?: boolean }) {
+  const active = colKey === sortKey;
+  return (
+    <th style={{ ...(right ? s.thRight : s.th), cursor: 'pointer', userSelect: 'none', backgroundColor: '#0A2342', color: active ? '#00D4FF' : '#64748B' } as React.CSSProperties}
+      onClick={() => toggle(colKey)}>
+      {label} {active ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+    </th>
+  );
+}
+
+/* ── Clickable customer cell ─────────────────────────────── */
+function CustomerCell({ name, id }: { name: string; id?: string }) {
+  const { navigate } = useReport();
+  return (
+    <td style={{ ...s.td, fontWeight: 600, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }}
+      onClick={() => navigate(id ? `/customers/${id}` : '/customers')}>
+      {name}
+    </td>
+  );
+}
 
 /* ── Report-specific renderers ──────────────────────────── */
 
@@ -73,7 +116,7 @@ function RevenueSummary() {
 }
 
 function ARAgingReport() {
-  const rows = [
+  const DATA = [
     { customer: 'Blue Water Excursions', current: 0, d30: 4810, d60: 4810, d90: 0, d120: 0, total: 9620, status: 'Overdue' },
     { customer: 'Robert Dockside', current: 1742, d30: 0, d60: 0, d90: 0, d120: 0, total: 1742, status: 'Current' },
     { customer: 'Coastal Charters LLC', current: 3950, d30: 3950, d60: 0, d90: 0, d120: 0, total: 7900, status: 'Overdue' },
@@ -81,24 +124,35 @@ function ARAgingReport() {
     { customer: 'Derek Harborview', current: 0, d30: 0, d60: 2200, d90: 0, d120: 0, total: 2200, status: 'Overdue' },
     { customer: 'Pacific Marine LLC', current: 0, d30: 0, d60: 0, d90: 3600, d120: 1800, total: 5400, status: 'Collections' },
   ];
+  const { sorted, sortKey, sortDir, toggle } = useSortState(DATA, 'total');
   const buckets = ['current', 'd30', 'd60', 'd90', 'd120'] as const;
-  const totals = buckets.reduce((acc, b) => ({ ...acc, [b]: rows.reduce((s, r) => s + r[b], 0) }), {} as Record<string, number>);
-  totals['total'] = rows.reduce((s, r) => s + r.total, 0);
+  const totals = buckets.reduce((acc, b) => ({ ...acc, [b]: DATA.reduce((s, r) => s + r[b], 0) }), {} as Record<string, number>);
+  totals['total'] = DATA.reduce((s, r) => s + r.total, 0);
+  const sk = sortKey as string; const sd = sortDir;
   return (
     <>
       <div style={s.kpiRow}>
-        {[{ l: 'Total Outstanding', v: fmt(totals['total'] as number) }, { l: '30+ Days', v: fmt(rows.reduce((s, r) => s + r.d30 + r.d60 + r.d90 + r.d120, 0)) }, { l: '90+ Days', v: fmt(rows.reduce((s, r) => s + r.d90 + r.d120, 0)) }, { l: 'Accounts', v: String(rows.length) }].map((k) => (
+        {[{ l: 'Total Outstanding', v: fmt(totals['total'] as number) }, { l: '30+ Days', v: fmt(DATA.reduce((s, r) => s + r.d30 + r.d60 + r.d90 + r.d120, 0)) }, { l: '90+ Days', v: fmt(DATA.reduce((s, r) => s + r.d90 + r.d120, 0)) }, { l: 'Accounts', v: String(DATA.length) }].map((k) => (
           <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
         ))}
       </div>
       <div style={s.section}>
         <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Accounts Receivable Aging</h3><span style={s.dateRange}>As of March 25, 2026</span></div>
         <table style={s.table}>
-          <thead><tr><th style={s.th}>Customer</th><th style={s.thRight}>Current</th><th style={s.thRight}>1–30 Days</th><th style={s.thRight}>31–60 Days</th><th style={s.thRight}>61–90 Days</th><th style={s.thRight}>90+ Days</th><th style={s.thRight}>Total</th><th style={s.th}>Status</th></tr></thead>
+          <thead><tr>
+            <SortTh label="Customer" colKey="customer" sortKey={sk} sortDir={sd} toggle={toggle} />
+            <SortTh label="Current" colKey="current" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="1–30 Days" colKey="d30" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="31–60 Days" colKey="d60" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="61–90 Days" colKey="d90" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="90+ Days" colKey="d120" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="Total" colKey="total" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <th style={s.th}>Status</th>
+          </tr></thead>
           <tbody>
-            {rows.map((r) => (
+            {sorted.map((r) => (
               <tr key={r.customer}>
-                <td style={s.td}>{r.customer}</td>
+                <CustomerCell name={r.customer} />
                 <td style={s.tdRight}>{r.current > 0 ? fmt(r.current) : '—'}</td>
                 <td style={s.tdRight}>{r.d30 > 0 ? fmt(r.d30) : '—'}</td>
                 <td style={s.tdRight}>{r.d60 > 0 ? fmt(r.d60) : '—'}</td>
@@ -340,7 +394,7 @@ function MaintenanceReport() {
 }
 
 function CustomerActivityReport() {
-  const rows = [
+  const DATA = [
     { customer: 'David Tidewater', slip: 'B-01', transactions: 3, lastActivity: '2026-03-24', balance: 0, status: 'Active' },
     { customer: 'James Harborview', slip: 'A-01', transactions: 4, lastActivity: '2026-03-23', balance: 0, status: 'Active' },
     { customer: 'Coastal Charters LLC', slip: 'B-03', transactions: 2, lastActivity: '2026-02-01', balance: 3950, status: 'Overdue' },
@@ -350,21 +404,30 @@ function CustomerActivityReport() {
     { customer: 'Elena Windward', slip: 'C-01', transactions: 3, lastActivity: '2026-03-20', balance: 0, status: 'Active' },
     { customer: 'Robert Dockside', slip: 'A-04', transactions: 2, lastActivity: '2026-02-01', balance: 1742, status: 'Overdue' },
   ];
+  const { sorted, sortKey, sortDir, toggle } = useSortState(DATA, 'customer');
+  const sk = sortKey as string; const sd = sortDir;
   return (
     <>
       <div style={s.kpiRow}>
-        {[{ l: 'Active Tenants', v: String(rows.filter(r => r.status === 'Active').length) }, { l: 'Overdue Accounts', v: String(rows.filter(r => r.status === 'Overdue').length) }, { l: 'Total Transactions', v: String(rows.reduce((s, r) => s + r.transactions, 0)) }, { l: 'Total AR Balance', v: fmt(rows.reduce((s, r) => s + r.balance, 0)) }].map((k) => (
+        {[{ l: 'Active Tenants', v: String(DATA.filter(r => r.status === 'Active').length) }, { l: 'Overdue Accounts', v: String(DATA.filter(r => r.status === 'Overdue').length) }, { l: 'Total Transactions', v: String(DATA.reduce((s, r) => s + r.transactions, 0)) }, { l: 'Total AR Balance', v: fmt(DATA.reduce((s, r) => s + r.balance, 0)) }].map((k) => (
           <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
         ))}
       </div>
       <div style={s.section}>
         <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Customer Activity Summary</h3><span style={s.dateRange}>March 2026</span></div>
         <table style={s.table}>
-          <thead><tr><th style={s.th}>Customer</th><th style={s.th}>Slip</th><th style={s.thRight}>Transactions</th><th style={s.th}>Last Activity</th><th style={s.thRight}>Balance</th><th style={s.th}>Status</th></tr></thead>
+          <thead><tr>
+            <SortTh label="Customer" colKey="customer" sortKey={sk} sortDir={sd} toggle={toggle} />
+            <SortTh label="Slip" colKey="slip" sortKey={sk} sortDir={sd} toggle={toggle} />
+            <SortTh label="Transactions" colKey="transactions" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <SortTh label="Last Activity" colKey="lastActivity" sortKey={sk} sortDir={sd} toggle={toggle} />
+            <SortTh label="Balance" colKey="balance" sortKey={sk} sortDir={sd} toggle={toggle} right />
+            <th style={s.th}>Status</th>
+          </tr></thead>
           <tbody>
-            {rows.map((r) => (
+            {sorted.map((r) => (
               <tr key={r.customer}>
-                <td style={{ ...s.td, fontWeight: 600 }}>{r.customer}</td>
+                <CustomerCell name={r.customer} />
                 <td style={s.tdMuted}>{r.slip}</td>
                 <td style={s.tdRight}>{r.transactions}</td>
                 <td style={s.tdMuted}>{r.lastActivity}</td>
@@ -617,27 +680,47 @@ interface ReportViewerProps {
 }
 
 export default function ReportViewer({ reportId, onClose }: ReportViewerProps) {
+  const navigate = useNavigate();
   const meta = reportMeta[reportId];
+  const [dateFrom, setDateFrom] = useState('2026-03-01');
+  const [dateTo, setDateTo] = useState('2026-03-25');
   if (!meta) return null;
   const ReportContent = meta.component;
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.panel} onClick={(e) => e.stopPropagation()}>
-        <div style={s.header}>
-          <div>
-            <h2 style={s.headerTitle}>{meta.title}</h2>
-            <div style={s.headerSub}>{meta.subtitle} · Generated {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+    <ReportContext.Provider value={{ navigate: (to) => { onClose(); navigate(to); }, dateFrom, dateTo }}>
+      <div style={s.overlay} onClick={onClose}>
+        <div style={s.panel} onClick={(e) => e.stopPropagation()}>
+          <div style={s.header}>
+            <div>
+              <h2 style={s.headerTitle}>{meta.title}</h2>
+              <div style={s.headerSub}>{meta.subtitle} · Generated {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+            </div>
+            <div style={s.headerActions}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#FFFFFF' }}>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  style={{ padding: '5px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }}
+                />
+                <span style={{ opacity: 0.6 }}>→</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  style={{ padding: '5px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }}
+                />
+              </div>
+              <button style={s.actionBtn}><Printer size={14} /> Print</button>
+              <button style={s.actionBtn}><Download size={14} /> Export CSV</button>
+              <button style={s.closeBtn} onClick={onClose}><X size={22} /></button>
+            </div>
           </div>
-          <div style={s.headerActions}>
-            <button style={s.actionBtn}><Printer size={14} /> Print</button>
-            <button style={s.actionBtn}><Download size={14} /> Export CSV</button>
-            <button style={s.closeBtn} onClick={onClose}><X size={22} /></button>
+          <div style={s.body}>
+            <ReportContent />
           </div>
-        </div>
-        <div style={s.body}>
-          <ReportContent />
         </div>
       </div>
-    </div>
+    </ReportContext.Provider>
   );
 }

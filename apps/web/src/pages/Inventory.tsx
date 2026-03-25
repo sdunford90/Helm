@@ -110,30 +110,258 @@ const st: Record<string, React.CSSProperties> = {
   td: { padding: '10px 12px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
   mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' },
   badge: { display: 'inline-block', padding: '2px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '9999px' },
+  overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10,35,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modal: { background: '#FFFFFF', borderRadius: '8px', width: '520px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' },
+  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px 32px 16px', borderBottom: '1px solid #E2E8F0' },
+  modalTitle: { fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 },
+  closeBtn: { background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: '4px' },
+  modalBody: { padding: '24px 32px' },
+  field: { display: 'flex', flexDirection: 'column' as const, gap: '4px', marginBottom: '16px' },
+  label: { fontSize: '13px', fontWeight: 600, color: '#0A2342' },
+  input: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box' as const, width: '100%' },
+  row2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' },
+  modalFooter: { display: 'flex', justifyContent: 'flex-end', gap: '12px', padding: '16px 32px 24px', borderTop: '1px solid #E2E8F0' },
+  cancelBtn: { padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' },
+  saveBtn: { padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' },
 };
+
+/* ── Modals ─────────────────────────────────────────────── */
+
+function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
+  const isEdit = !!product;
+  const [form, setForm] = useState({
+    sku: product?.sku ?? '',
+    barcode: product?.barcode ?? '',
+    name: product?.name ?? '',
+    category: product?.category ?? 'Provisions',
+    costCents: product ? String(product.costCents / 100) : '',
+    priceCents: product ? String(product.priceCents / 100) : '',
+    taxClass: product?.taxClass ?? 'Standard',
+    qoh: product ? String(product.qoh) : '',
+    reorderPoint: product ? String(product.reorderPoint) : '',
+    glRevenue: product?.glRevenue ?? '4500',
+    glCogs: product?.glCogs ?? '5200',
+  });
+  const f = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [field]: e.target.value }));
+  const categories = ['Fuel', 'Provisions', 'Bait & Tackle', 'Marine Supplies', 'Apparel', 'Boat Parts'];
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>{isEdit ? 'Edit Product' : 'Add Product'}</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={st.modalBody}>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>SKU *</label><input style={st.input} value={form.sku} onChange={f('sku')} placeholder="e.g. ICE-10LB" /></div>
+            <div style={st.field}><label style={st.label}>Barcode</label><input style={st.input} value={form.barcode} onChange={f('barcode')} placeholder="UPC / EAN" /></div>
+          </div>
+          <div style={st.field}><label style={st.label}>Product Name *</label><input style={st.input} value={form.name} onChange={f('name')} placeholder="e.g. Bag of Ice (10lb)" /></div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Category</label>
+              <select style={st.input} value={form.category} onChange={f('category')}>
+                {categories.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div style={st.field}><label style={st.label}>Tax Class</label>
+              <select style={st.input} value={form.taxClass} onChange={f('taxClass')}>
+                <option>Standard</option><option>Exempt</option>
+              </select>
+            </div>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Cost ($)</label><input style={st.input} type="number" step="0.01" value={form.costCents} onChange={f('costCents')} placeholder="0.00" /></div>
+            <div style={st.field}><label style={st.label}>Price ($)</label><input style={st.input} type="number" step="0.01" value={form.priceCents} onChange={f('priceCents')} placeholder="0.00" /></div>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Qty on Hand</label><input style={st.input} type="number" value={form.qoh} onChange={f('qoh')} /></div>
+            <div style={st.field}><label style={st.label}>Reorder Point</label><input style={st.input} type="number" value={form.reorderPoint} onChange={f('reorderPoint')} /></div>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>GL Revenue Acct</label><input style={st.input} value={form.glRevenue} onChange={f('glRevenue')} placeholder="e.g. 4500" /></div>
+            <div style={st.field}><label style={st.label}>GL COGS Acct</label><input style={st.input} value={form.glCogs} onChange={f('glCogs')} placeholder="e.g. 5200" /></div>
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={() => {
+            onSave({
+              id: product?.id ?? String(Date.now()),
+              sku: form.sku, barcode: form.barcode, name: form.name, category: form.category,
+              costCents: Math.round(parseFloat(form.costCents || '0') * 100),
+              priceCents: Math.round(parseFloat(form.priceCents || '0') * 100),
+              taxClass: form.taxClass, qoh: parseInt(form.qoh || '0'),
+              reorderPoint: parseInt(form.reorderPoint || '0'),
+              glRevenue: form.glRevenue, glCogs: form.glCogs, trackInventory: true, active: true,
+            });
+            onClose();
+          }}>{isEdit ? 'Save Changes' : 'Add Product'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreatePOModal({ onClose }: { onClose: () => void }) {
+  const [vendor, setVendor] = useState('');
+  const [expectedDate, setExpectedDate] = useState('');
+  const [notes, setNotes] = useState('');
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Create Purchase Order</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Vendor / Supplier *</label><input style={st.input} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="e.g. Gulf Coast Petroleum" /></div>
+          <div style={st.field}><label style={st.label}>Expected Delivery Date</label><input style={st.input} type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} /></div>
+          <div style={st.field}><label style={st.label}>Notes</label><input style={st.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional notes..." /></div>
+          <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px dashed #CBD5E1', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+            Line items can be added after creating the PO.
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={onClose}>Create PO</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StartCountModal({ onClose }: { onClose: () => void }) {
+  const [startedBy, setStartedBy] = useState('');
+  const [scope, setScope] = useState('All Products');
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Start Inventory Count</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Started By *</label><input style={st.input} value={startedBy} onChange={(e) => setStartedBy(e.target.value)} placeholder="Your name" /></div>
+          <div style={st.field}><label style={st.label}>Count Scope</label>
+            <select style={st.input} value={scope} onChange={(e) => setScope(e.target.value)}>
+              <option>All Products</option>
+              <option>Low Stock Only</option>
+              <option>Fuel</option>
+              <option>Provisions</option>
+              <option>Bait &amp; Tackle</option>
+              <option>Marine Supplies</option>
+              <option>Apparel</option>
+              <option>Boat Parts</option>
+            </select>
+          </div>
+          <div style={{ padding: '12px', background: '#FFF3CD', borderRadius: '6px', border: '1px solid #F59E0B', fontSize: '13px', color: '#856404' }}>
+            Starting a count will lock inventory updates for the selected products until the count is completed or discarded.
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={onClose}>Start Count</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onClose: () => void }) {
+  const [productId, setProductId] = useState('');
+  const [type, setType] = useState<Adjustment['type']>('Count');
+  const [qty, setQty] = useState('');
+  const [reason, setReason] = useState('');
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Manual Adjustment</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Product *</label>
+            <select style={st.input} value={productId} onChange={(e) => setProductId(e.target.value)}>
+              <option value="">Select product...</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+            </select>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Adjustment Type</label>
+              <select style={st.input} value={type} onChange={(e) => setType(e.target.value as Adjustment['type'])}>
+                <option>Count</option><option>Damaged</option><option>Return</option><option>Shrinkage</option><option>Received</option>
+              </select>
+            </div>
+            <div style={st.field}><label style={st.label}>Quantity Change *</label><input style={st.input} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="+10 or -3" /></div>
+          </div>
+          <div style={st.field}><label style={st.label}>Reason / Notes</label><input style={st.input} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Brief description of reason..." /></div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={onClose}>Save Adjustment</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReceivePOModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
+  const [receivedDate, setReceivedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [notes, setNotes] = useState('');
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Receive PO — {po.poNumber}</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={{ padding: '12px 16px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0', marginBottom: '20px', fontSize: '13px' }}>
+            <div style={{ fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>{po.vendor}</div>
+            <div style={{ color: '#64748B' }}>{po.items} line items · Expected {po.expectedDate}</div>
+          </div>
+          <div style={st.field}><label style={st.label}>Received Date</label><input style={st.input} type="date" value={receivedDate} onChange={(e) => setReceivedDate(e.target.value)} /></div>
+          <div style={st.field}><label style={st.label}>Receiving Notes</label><input style={st.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Any notes about the delivery..." /></div>
+          <div style={{ padding: '10px 14px', background: '#DEF7EC', borderRadius: '6px', fontSize: '13px', color: '#03543F' }}>
+            Marking as received will update inventory quantities for all items in this PO.
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={onClose}>Mark as Received</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ── Component ─────────────────────────────────────────── */
 
 type Tab = 'products' | 'po' | 'counts' | 'adjustments' | 'valuation';
+type ModalType = 'addProduct' | 'editProduct' | 'createPO' | 'startCount' | 'adjustment' | 'receivePO' | null;
 
 export default function Inventory() {
   const [tab, setTab] = useState<Tab>('products');
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [lowOnly, setLowOnly] = useState(false);
+  const [products, setProducts] = useState<Product[]>(PRODUCTS);
+  const [modal, setModal] = useState<ModalType>(null);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [receivingPO, setReceivingPO] = useState<PurchaseOrder | null>(null);
 
-  const totalValue = PRODUCTS.reduce((s, p) => s + p.qoh * p.costCents, 0);
-  const lowCount = PRODUCTS.filter((p) => p.qoh <= p.reorderPoint && p.qoh > 0).length;
-  const outCount = PRODUCTS.filter((p) => p.qoh === 0).length;
+  const totalValue = products.reduce((s, p) => s + p.qoh * p.costCents, 0);
+  const lowCount = products.filter((p) => p.qoh <= p.reorderPoint && p.qoh > 0).length;
+  const outCount = products.filter((p) => p.qoh === 0).length;
   const openPOs = POS_DATA.filter((p) => p.status === 'Submitted' || p.status === 'Partial').length;
-  const categories = ['All', ...Array.from(new Set(PRODUCTS.map((p) => p.category)))];
+  const categories = ['All', ...Array.from(new Set(products.map((p) => p.category)))];
 
-  const filteredProducts = PRODUCTS.filter((p) => {
+  const filteredProducts = products.filter((p) => {
     if (catFilter !== 'All' && p.category !== catFilter) return false;
     if (lowOnly && p.qoh > p.reorderPoint) return false;
     if (search) { const q = search.toLowerCase(); return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.barcode.includes(q); }
     return true;
   });
+
+  const handleSaveProduct = (p: Product) => {
+    setProducts((prev) => {
+      const idx = prev.findIndex((x) => x.id === p.id);
+      if (idx >= 0) { const updated = [...prev]; updated[idx] = p; return updated; }
+      return [...prev, p];
+    });
+    setEditingProduct(null);
+    setModal(null);
+  };
+
+  const openEdit = (p: Product) => { setEditingProduct(p); setModal('editProduct'); };
 
   const tabItems: { key: Tab; label: string }[] = [
     { key: 'products', label: 'Products' },
@@ -151,8 +379,8 @@ export default function Inventory() {
       <div style={st.statsRow}>
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Total Products</div>
-          <div style={st.statValue}>{PRODUCTS.length}</div>
-          <div style={st.statSub}>{PRODUCTS.filter((p) => p.active).length} active</div>
+          <div style={st.statValue}>{products.length}</div>
+          <div style={st.statSub}>{products.filter((p) => p.active).length} active</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Inventory Value</div>
@@ -181,8 +409,8 @@ export default function Inventory() {
           <div style={st.searchWrap}><Search size={16} style={st.searchIcon} /><input style={st.searchInput} placeholder="Search name, SKU, barcode..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <select style={st.select} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}><input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} /> Low Stock Only</label>
-          <button style={st.outlineBtn}><Printer size={14} /> Print Labels</button>
-          <button style={st.addBtn}><Plus size={16} /> Add Product</button>
+          <button style={st.outlineBtn} onClick={() => alert('Printing labels for ' + filteredProducts.length + ' products...')}><Printer size={14} /> Print Labels</button>
+          <button style={st.addBtn} onClick={() => { setEditingProduct(null); setModal('addProduct'); }}><Plus size={16} /> Add Product</button>
         </div>
         <div style={st.tableWrap}>
           <table style={st.table}>
@@ -192,25 +420,30 @@ export default function Inventory() {
               <th style={st.th}>Reorder</th><th style={st.th}>Status</th><th style={st.th}>GL Rev</th><th style={st.th}>Actions</th>
             </tr></thead>
             <tbody>
-              {filteredProducts.map((p, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const ss = stockStatus(p); const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents * 100).toFixed(0) : '0'; return (
-                <tr key={p.id}>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 600 }}>{p.sku}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontSize: '11px' }}>{p.barcode}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.name}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg }}>{p.category}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{fmt(p.costCents)}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{fmt(p.priceCents)}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, color: '#03543F', fontWeight: 600 }}>{margin}%</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 700, color: p.qoh <= p.reorderPoint ? '#856404' : '#0A2342' }}>{p.qoh}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.reorderPoint}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span></td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontSize: '11px' }}>{p.glRevenue}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg }}>
-                    <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }}><Edit2 size={14} /></button>
-                    <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><Trash2 size={14} /></button>
-                  </td>
-                </tr>
-              ); })}
+              {filteredProducts.map((p, idx) => {
+                const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const ss = stockStatus(p); const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents * 100).toFixed(0) : '0'; return (
+                  <tr key={p.id}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#EFF6FF'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = rowBg; }}
+                    style={{ background: rowBg }}>
+                    <td style={{ ...st.td, ...st.mono, fontWeight: 600, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEdit(p)}>{p.sku}</td>
+                    <td style={{ ...st.td, ...st.mono, fontSize: '11px' }}>{p.barcode}</td>
+                    <td style={{ ...st.td, fontWeight: 600, cursor: 'pointer', color: '#0A2342' }} onClick={() => openEdit(p)}>{p.name}</td>
+                    <td style={st.td}>{p.category}</td>
+                    <td style={{ ...st.td, ...st.mono }}>{fmt(p.costCents)}</td>
+                    <td style={{ ...st.td, ...st.mono }}>{fmt(p.priceCents)}</td>
+                    <td style={{ ...st.td, color: '#03543F', fontWeight: 600 }}>{margin}%</td>
+                    <td style={{ ...st.td, ...st.mono, fontWeight: 700, color: p.qoh <= p.reorderPoint ? '#856404' : '#0A2342' }}>{p.qoh}</td>
+                    <td style={{ ...st.td, ...st.mono }}>{p.reorderPoint}</td>
+                    <td style={st.td}><span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span></td>
+                    <td style={{ ...st.td, ...st.mono, fontSize: '11px' }}>{p.glRevenue}</td>
+                    <td style={st.td}>
+                      <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => openEdit(p)} title="Edit"><Edit2 size={14} /></button>
+                      <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => setProducts((prev) => prev.filter((x) => x.id !== p.id))} title="Remove"><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -218,21 +451,23 @@ export default function Inventory() {
 
       {/* Purchase Orders */}
       {tab === 'po' && (<>
-        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn}><Plus size={16} /> Create PO</button></div>
+        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('createPO')}><Plus size={16} /> Create PO</button></div>
         <div style={st.tableWrap}><table style={st.table}><thead><tr>
           <th style={st.th}>PO #</th><th style={st.th}>Vendor</th><th style={st.th}>Items</th><th style={st.th}>Total Cost</th><th style={st.th}>Expected</th><th style={st.th}>Created</th><th style={st.th}>Status</th><th style={st.th}>Actions</th>
         </tr></thead><tbody>
           {POS_DATA.map((po, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = poStatusColors[po.status]; return (
-            <tr key={po.id}>
-              <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 700 }}>{po.poNumber}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{po.vendor}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{po.items}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{fmt(po.totalCostCents)}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{po.expectedDate}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{po.createdDate}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{po.status}</span></td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>
-                {(po.status === 'Submitted' || po.status === 'Partial') && <button style={{ ...st.outlineBtn, padding: '4px 10px', fontSize: '12px' }}><Truck size={12} /> Receive</button>}
+            <tr key={po.id} style={{ backgroundColor: rowBg }}>
+              <td style={{ ...st.td, fontWeight: 700 }}>{po.poNumber}</td>
+              <td style={st.td}>{po.vendor}</td>
+              <td style={{ ...st.td, textAlign: 'center' }}>{po.items}</td>
+              <td style={{ ...st.td, ...st.mono }}>{fmt(po.totalCostCents)}</td>
+              <td style={st.td}>{po.expectedDate}</td>
+              <td style={st.td}>{po.createdDate}</td>
+              <td style={st.td}><span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{po.status}</span></td>
+              <td style={st.td}>
+                {(po.status === 'Submitted' || po.status === 'Partial') && (
+                  <button style={{ ...st.outlineBtn, padding: '4px 10px', fontSize: '12px' }} onClick={() => { setReceivingPO(po); setModal('receivePO'); }}><Truck size={12} /> Receive</button>
+                )}
                 {po.status === 'Draft' && <button style={{ ...st.outlineBtn, padding: '4px 10px', fontSize: '12px' }}>Submit</button>}
               </td>
             </tr>
@@ -242,18 +477,18 @@ export default function Inventory() {
 
       {/* Counts */}
       {tab === 'counts' && (<>
-        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn}><ClipboardCheck size={16} /> Start Count</button></div>
+        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('startCount')}><ClipboardCheck size={16} /> Start Count</button></div>
         <div style={st.tableWrap}><table style={st.table}><thead><tr>
           <th style={st.th}>Count #</th><th style={st.th}>Date</th><th style={st.th}>Started By</th><th style={st.th}>Products</th><th style={st.th}>Discrepancies</th><th style={st.th}>Status</th>
         </tr></thead><tbody>
           {COUNTS.map((c, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; return (
-            <tr key={c.id}>
-              <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 700 }}>{c.countNumber}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{c.date}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{c.startedBy}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{c.products}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center', color: c.discrepancies > 0 ? '#856404' : '#03543F', fontWeight: 600 }}>{c.discrepancies}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: c.status === 'In Progress' ? '#E0F7FF' : '#DEF7EC', color: c.status === 'In Progress' ? '#0A2342' : '#03543F' }}>{c.status}</span></td>
+            <tr key={c.id} style={{ backgroundColor: rowBg }}>
+              <td style={{ ...st.td, fontWeight: 700 }}>{c.countNumber}</td>
+              <td style={st.td}>{c.date}</td>
+              <td style={st.td}>{c.startedBy}</td>
+              <td style={{ ...st.td, textAlign: 'center' }}>{c.products}</td>
+              <td style={{ ...st.td, textAlign: 'center', color: c.discrepancies > 0 ? '#856404' : '#03543F', fontWeight: 600 }}>{c.discrepancies}</td>
+              <td style={st.td}><span style={{ ...st.badge, backgroundColor: c.status === 'In Progress' ? '#E0F7FF' : '#DEF7EC', color: c.status === 'In Progress' ? '#0A2342' : '#03543F' }}>{c.status}</span></td>
             </tr>
           ); })}
         </tbody></table></div>
@@ -263,22 +498,22 @@ export default function Inventory() {
       {tab === 'adjustments' && (<>
         <div style={st.filterBar}>
           <div style={st.searchWrap}><Search size={16} style={st.searchIcon} /><input style={st.searchInput} placeholder="Search product..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
-          <button style={st.addBtn}><Plus size={16} /> Manual Adjustment</button>
+          <button style={st.addBtn} onClick={() => setModal('adjustment')}><Plus size={16} /> Manual Adjustment</button>
         </div>
         <div style={st.tableWrap}><table style={st.table}><thead><tr>
           <th style={st.th}>Date</th><th style={st.th}>Product</th><th style={st.th}>SKU</th><th style={st.th}>Type</th><th style={st.th}>Qty Change</th><th style={st.th}>Before</th><th style={st.th}>After</th><th style={st.th}>Staff</th><th style={st.th}>Notes</th>
         </tr></thead><tbody>
           {ADJUSTMENTS.map((a, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const tc = adjTypeColors[a.type]; return (
-            <tr key={a.id}>
-              <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{a.date}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{a.product}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{a.sku}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: tc.bg, color: tc.color }}>{a.type}</span></td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 700, color: a.qtyChange > 0 ? '#03543F' : '#9B1C1C' }}>{a.qtyChange > 0 ? '+' : ''}{a.qtyChange}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{a.before}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{a.after}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg }}>{a.staff}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, color: a.notes ? '#0A2342' : '#94A3B8', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.notes || '—'}</td>
+            <tr key={a.id} style={{ backgroundColor: rowBg }}>
+              <td style={{ ...st.td, fontSize: '12px' }}>{a.date}</td>
+              <td style={{ ...st.td, fontWeight: 600 }}>{a.product}</td>
+              <td style={{ ...st.td, ...st.mono }}>{a.sku}</td>
+              <td style={st.td}><span style={{ ...st.badge, backgroundColor: tc.bg, color: tc.color }}>{a.type}</span></td>
+              <td style={{ ...st.td, ...st.mono, fontWeight: 700, color: a.qtyChange > 0 ? '#03543F' : '#9B1C1C' }}>{a.qtyChange > 0 ? '+' : ''}{a.qtyChange}</td>
+              <td style={{ ...st.td, ...st.mono }}>{a.before}</td>
+              <td style={{ ...st.td, ...st.mono }}>{a.after}</td>
+              <td style={st.td}>{a.staff}</td>
+              <td style={{ ...st.td, color: a.notes ? '#0A2342' : '#94A3B8', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.notes || '—'}</td>
             </tr>
           ); })}
         </tbody></table></div>
@@ -288,34 +523,43 @@ export default function Inventory() {
       {tab === 'valuation' && (<>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' }}>
           <div style={st.statCard}><div style={st.statLabel}>Total Cost Value</div><div style={st.statValue}>{fmt(totalValue)}</div></div>
-          <div style={st.statCard}><div style={st.statLabel}>Total Retail Value</div><div style={st.statValue}>{fmt(PRODUCTS.reduce((s, p) => s + p.qoh * p.priceCents, 0))}</div></div>
-          <div style={st.statCard}><div style={st.statLabel}>Avg Margin</div><div style={st.statValue}>{(PRODUCTS.reduce((s, p) => s + (p.priceCents > 0 ? (p.priceCents - p.costCents) / p.priceCents * 100 : 0), 0) / PRODUCTS.length).toFixed(1)}%</div></div>
+          <div style={st.statCard}><div style={st.statLabel}>Total Retail Value</div><div style={st.statValue}>{fmt(products.reduce((s, p) => s + p.qoh * p.priceCents, 0))}</div></div>
+          <div style={st.statCard}><div style={st.statLabel}>Potential Margin</div><div style={st.statValue}>{totalValue > 0 ? ((products.reduce((s, p) => s + p.qoh * p.priceCents, 0) - totalValue) / products.reduce((s, p) => s + p.qoh * p.priceCents, 0) * 100).toFixed(1) : '0'}%</div></div>
         </div>
-        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.outlineBtn}><Download size={14} /> Export CSV</button></div>
         <div style={st.tableWrap}><table style={st.table}><thead><tr>
-          <th style={st.th}>Product</th><th style={st.th}>SKU</th><th style={st.th}>QOH</th><th style={st.th}>Unit Cost</th><th style={st.th}>Total Cost</th><th style={st.th}>Retail Price</th><th style={st.th}>Total Retail</th><th style={st.th}>Margin %</th>
+          <th style={st.th}>Category</th><th style={st.th}>Products</th><th style={st.th}>Total Units</th><th style={st.th}>Cost Value</th><th style={st.th}>Retail Value</th><th style={st.th}>Margin %</th>
         </tr></thead><tbody>
-          {PRODUCTS.map((p, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents * 100) : 0; return (
-            <tr key={p.id}>
-              <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.name}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.sku}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, textAlign: 'right' }}>{p.qoh.toLocaleString()}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, textAlign: 'right' }}>{fmt(p.costCents)}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, textAlign: 'right', fontWeight: 600 }}>{fmt(p.qoh * p.costCents)}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, textAlign: 'right' }}>{fmt(p.priceCents)}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, textAlign: 'right' }}>{fmt(p.qoh * p.priceCents)}</td>
-              <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'right', fontWeight: 600, color: margin > 40 ? '#03543F' : margin > 20 ? '#0A2342' : '#856404' }}>{margin.toFixed(1)}%</td>
-            </tr>
-          ); })}
-        </tbody>
-        <tfoot><tr style={{ fontWeight: 700, backgroundColor: '#F1F5F9' }}>
-          <td colSpan={4} style={{ ...st.td, textAlign: 'right', fontWeight: 700 }}>TOTALS:</td>
-          <td style={{ ...st.td, ...st.mono, textAlign: 'right', fontWeight: 700 }}>{fmt(totalValue)}</td>
-          <td style={st.td}></td>
-          <td style={{ ...st.td, ...st.mono, textAlign: 'right', fontWeight: 700 }}>{fmt(PRODUCTS.reduce((s, p) => s + p.qoh * p.priceCents, 0))}</td>
-          <td style={st.td}></td>
-        </tr></tfoot></table></div>
+          {Array.from(new Set(products.map((p) => p.category))).map((cat, idx) => {
+            const catProducts = products.filter((p) => p.category === cat);
+            const costVal = catProducts.reduce((s, p) => s + p.qoh * p.costCents, 0);
+            const retailVal = catProducts.reduce((s, p) => s + p.qoh * p.priceCents, 0);
+            const margin = retailVal > 0 ? ((retailVal - costVal) / retailVal * 100).toFixed(1) : '0';
+            const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+            return (
+              <tr key={cat} style={{ backgroundColor: rowBg }}>
+                <td style={{ ...st.td, fontWeight: 600 }}>{cat}</td>
+                <td style={{ ...st.td, textAlign: 'center' }}>{catProducts.length}</td>
+                <td style={{ ...st.td, ...st.mono }}>{catProducts.reduce((s, p) => s + p.qoh, 0).toLocaleString()}</td>
+                <td style={{ ...st.td, ...st.mono }}>{fmt(costVal)}</td>
+                <td style={{ ...st.td, ...st.mono }}>{fmt(retailVal)}</td>
+                <td style={{ ...st.td, color: '#03543F', fontWeight: 600 }}>{margin}%</td>
+              </tr>
+            );
+          })}
+        </tbody></table></div>
       </>)}
+
+      {/* Modals */}
+      {(modal === 'addProduct') && (
+        <ProductModal product={null} onClose={() => setModal(null)} onSave={handleSaveProduct} />
+      )}
+      {(modal === 'editProduct' && editingProduct) && (
+        <ProductModal product={editingProduct} onClose={() => { setModal(null); setEditingProduct(null); }} onSave={handleSaveProduct} />
+      )}
+      {modal === 'createPO' && <CreatePOModal onClose={() => setModal(null)} />}
+      {modal === 'startCount' && <StartCountModal onClose={() => setModal(null)} />}
+      {modal === 'adjustment' && <ManualAdjustmentModal products={products} onClose={() => setModal(null)} />}
+      {modal === 'receivePO' && receivingPO && <ReceivePOModal po={receivingPO} onClose={() => { setModal(null); setReceivingPO(null); }} />}
     </div>
   );
 }

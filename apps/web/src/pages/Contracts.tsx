@@ -20,7 +20,43 @@ interface Contract {
   boatName: string;
   securityDeposit: number;
   autoRenew: boolean;
+  billingItemId?: string;
+  glRevenueAccount?: string;
+  glCogsAccount?: string;
 }
+
+const GL_REVENUE_ACCOUNTS = [
+  { code: '4100', label: '4100 - Slip Rental Revenue' },
+  { code: '4110', label: '4110 - Seasonal Slip Revenue' },
+  { code: '4200', label: '4200 - Live-Aboard Revenue' },
+  { code: '4300', label: '4300 - Fuel Sales Revenue' },
+  { code: '4400', label: '4400 - Marine Store Revenue' },
+  { code: '4500', label: '4500 - Service Revenue' },
+  { code: '4600', label: '4600 - Rental Revenue' },
+  { code: '4700', label: '4700 - Event Revenue' },
+  { code: '4800', label: '4800 - Electric / Metered Utilities' },
+  { code: '4900', label: '4900 - Miscellaneous Revenue' },
+];
+const GL_COGS_ACCOUNTS = [
+  { code: '5100', label: '5100 - Cost of Fuel Sold' },
+  { code: '5200', label: '5200 - Cost of Marine Goods Sold' },
+  { code: '5300', label: '5300 - Direct Labor' },
+  { code: '5400', label: '5400 - Subcontracted Services' },
+  { code: '5500', label: '5500 - Slip Maintenance Costs' },
+  { code: '5600', label: '5600 - Rental Equipment Depreciation' },
+  { code: '5700', label: '5700 - Utilities Costs' },
+  { code: '5900', label: '5900 - Other Direct Costs' },
+];
+const BILLING_ITEMS = [
+  { id: 'BI-001', label: 'Standard Slip Rental' },
+  { id: 'BI-002', label: 'Seasonal Slip Package' },
+  { id: 'BI-003', label: 'Annual Slip Agreement' },
+  { id: 'BI-004', label: 'Live-Aboard Slip' },
+  { id: 'BI-005', label: 'Side-Tie Berth' },
+  { id: 'BI-006', label: 'Mooring Ball' },
+  { id: 'BI-007', label: 'Dry Storage' },
+  { id: 'BI-008', label: 'Covered Slip Premium' },
+];
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
@@ -442,6 +478,9 @@ function ContractDetailModal({
   const [autoRenew, setAutoRenew] = useState(contract.autoRenew);
   const [deposit, setDeposit] = useState(String(contract.securityDeposit));
   const [status, setStatus] = useState<ContractStatus>(contract.status);
+  const [billingItemId, setBillingItemId] = useState(contract.billingItemId ?? '');
+  const [glRevenueAccount, setGlRevenueAccount] = useState(contract.glRevenueAccount ?? '4100');
+  const [glCogsAccount, setGlCogsAccount] = useState(contract.glCogsAccount ?? '5500');
   const [saving, setSaving] = useState(false);
 
   /* ── Transfer state ── */
@@ -461,6 +500,9 @@ function ContractDetailModal({
       autoRenew,
       securityDeposit: parseFloat(deposit) || contract.securityDeposit,
       status,
+      billingItemId: billingItemId || undefined,
+      glRevenueAccount,
+      glCogsAccount,
     });
     setSaving(false);
     setMode('view');
@@ -563,6 +605,30 @@ function ContractDetailModal({
                   <div style={{ ...st.toggleRow, marginTop: '24px' }} onClick={() => setAutoRenew(!autoRenew)}>
                     {autoRenew ? <ToggleRight size={24} style={{ color: '#00D4FF' }} /> : <ToggleLeft size={24} style={{ color: '#CCC' }} />}
                     <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Auto-Renew</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid #E2E8F0' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px' }}>GL / Billing Mapping</div>
+                <div style={st.twoCol}>
+                  <div style={{ ...st.field, gridColumn: '1 / -1' }}>
+                    <label style={st.label}>Billing Item</label>
+                    <select style={st.formSelect} value={billingItemId} onChange={(e) => setBillingItemId(e.target.value)}>
+                      <option value="">— None / Manual —</option>
+                      {BILLING_ITEMS.map((bi) => <option key={bi.id} value={bi.id}>{bi.id} — {bi.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>GL Revenue Account</label>
+                    <select style={st.formSelect} value={glRevenueAccount} onChange={(e) => setGlRevenueAccount(e.target.value)}>
+                      {GL_REVENUE_ACCOUNTS.map((a) => <option key={a.code} value={a.code}>{a.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>GL COGS Account</label>
+                    <select style={st.formSelect} value={glCogsAccount} onChange={(e) => setGlCogsAccount(e.target.value)}>
+                      {GL_COGS_ACCOUNTS.map((a) => <option key={a.code} value={a.code}>{a.label}</option>)}
+                    </select>
                   </div>
                 </div>
               </div>

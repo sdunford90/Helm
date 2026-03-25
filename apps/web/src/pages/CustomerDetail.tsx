@@ -67,9 +67,9 @@ const CUSTOMER: CustomerDetail = {
   lifetimeValue: 28500.0,
 };
 
-const BOATS = [
-  { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92 },
-  { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78 },
+const BOATS: Boat[] = [
+  { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92, make: 'Hunter', model: '380', year: '2018', beam: '12.5', draft: '5.5', height: '57', color: 'White', hin: 'HUN38001A818', mmsi: '338102847', engineType: 'Inboard Diesel', engineHp: '42', fuelType: 'Diesel' },
+  { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78, make: 'Sea Ray', model: '280 Sundancer', year: '2020', beam: '9.5', draft: '2.8', height: '8.5', color: 'Blue/White', hin: 'SRAY2801B020', mmsi: '', engineType: 'Inboard Gas', engineHp: '260', fuelType: 'Gasoline' },
 ];
 
 const INVOICES = [
@@ -87,6 +87,18 @@ interface Boat {
   length: number;
   registration: string;
   compliance: number;
+  make?: string;
+  model?: string;
+  year?: string;
+  beam?: string;
+  draft?: string;
+  height?: string;
+  color?: string;
+  hin?: string;
+  mmsi?: string;
+  engineType?: string;
+  engineHp?: string;
+  fuelType?: string;
 }
 
 interface Invoice {
@@ -404,57 +416,95 @@ const mCancelBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px',
 const mSaveBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' };
 const mTwoCol: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' };
 
+const BOAT_TYPES = ['Sailboat', 'Powerboat', 'Trawler', 'Yacht', 'Runabout', 'Cabin Cruiser', 'Catamaran', 'Center Console', 'Pontoon', 'Jet Ski / PWC', 'Other'];
+const ENGINE_TYPES = ['Inboard Gas', 'Inboard Diesel', 'Outboard Gas', 'Outboard Electric', 'Sterndrive', 'Jet Drive', 'Sail / No Engine', 'Other'];
+const FUEL_TYPES = ['Gasoline', 'Diesel', 'Electric', 'Hybrid', 'N/A'];
+
+function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, val: string) => void }) {
+  const secTitle: React.CSSProperties = { fontSize: '12px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px', marginTop: '20px', paddingBottom: '6px', borderBottom: '1px solid #E2E8F0' };
+  return (
+    <>
+      <p style={secTitle}>Basic Info</p>
+      <div style={mTwoCol}>
+        <div style={{ ...mField, gridColumn: '1 / -1' }}>
+          <label style={mLabel}>Vessel Name *</label>
+          <input style={mInput} value={v.name} onChange={(e) => set('name', e.target.value)} placeholder="Vessel name" />
+        </div>
+        <div style={mField}>
+          <label style={mLabel}>Type</label>
+          <select style={mSelect} value={v.type} onChange={(e) => set('type', e.target.value)}>
+            {BOAT_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div style={mField}>
+          <label style={mLabel}>Length (ft)</label>
+          <input style={mInput} type="number" step="0.1" value={v.length} onChange={(e) => set('length', e.target.value)} placeholder="e.g. 38" />
+        </div>
+        <div style={mField}>
+          <label style={mLabel}>Registration #</label>
+          <input style={mInput} value={v.registration} onChange={(e) => set('registration', e.target.value)} placeholder="e.g. FL-1234-AB" />
+        </div>
+        <div style={mField}><label style={mLabel}>Year</label><input style={mInput} type="number" value={v.year} onChange={(e) => set('year', e.target.value)} placeholder="e.g. 2022" /></div>
+        <div style={mField}><label style={mLabel}>Make</label><input style={mInput} value={v.make} onChange={(e) => set('make', e.target.value)} placeholder="e.g. Hunter" /></div>
+        <div style={mField}><label style={mLabel}>Model</label><input style={mInput} value={v.model} onChange={(e) => set('model', e.target.value)} placeholder="e.g. 380" /></div>
+        <div style={mField}><label style={mLabel}>Color</label><input style={mInput} value={v.color} onChange={(e) => set('color', e.target.value)} placeholder="e.g. White" /></div>
+      </div>
+      <p style={secTitle}>Dimensions</p>
+      <div style={mTwoCol}>
+        <div style={mField}><label style={mLabel}>Beam (ft)</label><input style={mInput} type="number" step="0.1" value={v.beam} onChange={(e) => set('beam', e.target.value)} placeholder="e.g. 12.5" /></div>
+        <div style={mField}><label style={mLabel}>Draft (ft)</label><input style={mInput} type="number" step="0.1" value={v.draft} onChange={(e) => set('draft', e.target.value)} placeholder="e.g. 5.5" /></div>
+        <div style={mField}><label style={mLabel}>Height (ft)</label><input style={mInput} type="number" step="0.1" value={v.height} onChange={(e) => set('height', e.target.value)} placeholder="e.g. 57" /></div>
+      </div>
+      <p style={secTitle}>Identification</p>
+      <div style={mTwoCol}>
+        <div style={mField}><label style={mLabel}>HIN</label><input style={mInput} value={v.hin} onChange={(e) => set('hin', e.target.value)} placeholder="Hull ID Number" /></div>
+        <div style={mField}><label style={mLabel}>MMSI</label><input style={mInput} value={v.mmsi} onChange={(e) => set('mmsi', e.target.value)} placeholder="Maritime Mobile Service Identity" /></div>
+      </div>
+      <p style={secTitle}>Engine & Fuel</p>
+      <div style={mTwoCol}>
+        <div style={mField}><label style={mLabel}>Engine Type</label>
+          <select style={mSelect} value={v.engineType} onChange={(e) => set('engineType', e.target.value)}>
+            {ENGINE_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div style={mField}><label style={mLabel}>Engine HP</label><input style={mInput} type="number" value={v.engineHp} onChange={(e) => set('engineHp', e.target.value)} placeholder="e.g. 260" /></div>
+        <div style={mField}><label style={mLabel}>Fuel Type</label>
+          <select style={mSelect} value={v.fuelType} onChange={(e) => set('fuelType', e.target.value)}>
+            {FUEL_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void }) {
-  const [name, setName] = useState(boat.name);
-  const [type, setType] = useState(boat.type);
-  const [length, setLength] = useState(String(boat.length));
-  const [registration, setRegistration] = useState(boat.registration);
+  const [vals, setVals] = useState<Record<string, string>>({
+    name: boat.name, type: boat.type, length: String(boat.length), registration: boat.registration,
+    make: boat.make ?? '', model: boat.model ?? '', year: boat.year ?? '', color: boat.color ?? '',
+    beam: boat.beam ?? '', draft: boat.draft ?? '', height: boat.height ?? '',
+    hin: boat.hin ?? '', mmsi: boat.mmsi ?? '', engineType: boat.engineType ?? ENGINE_TYPES[0], engineHp: boat.engineHp ?? '', fuelType: boat.fuelType ?? FUEL_TYPES[0],
+  });
+  const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
 
   const handleSave = () => {
-    if (!name) return;
+    if (!vals.name) return;
     setSaving(true);
-    onSave({ ...boat, name, type, length: parseFloat(length) || boat.length, registration });
+    onSave({ ...boat, ...vals, length: parseFloat(vals.length) || boat.length });
     setSaving(false);
     onClose();
   };
 
+  const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
   return (
     <div style={modalOverlay} onClick={onClose}>
-      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
         <div style={mHead}>
           <h2 style={mTitle}>Edit Boat</h2>
           <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
         </div>
-        <div style={mBody}>
-          <div style={mTwoCol}>
-            <div style={{ ...mField, gridColumn: '1 / -1' }}>
-              <label style={mLabel}>Vessel Name *</label>
-              <input style={mInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Vessel name" />
-            </div>
-            <div style={mField}>
-              <label style={mLabel}>Type</label>
-              <select style={mSelect} value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="Sailboat">Sailboat</option>
-                <option value="Powerboat">Powerboat</option>
-                <option value="Trawler">Trawler</option>
-                <option value="Yacht">Yacht</option>
-                <option value="Runabout">Runabout</option>
-                <option value="Cabin Cruiser">Cabin Cruiser</option>
-                <option value="Catamaran">Catamaran</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            <div style={mField}>
-              <label style={mLabel}>Length (ft)</label>
-              <input style={mInput} type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder="e.g. 38" />
-            </div>
-            <div style={{ ...mField, gridColumn: '1 / -1' }}>
-              <label style={mLabel}>Registration #</label>
-              <input style={mInput} value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. FL-1234-AB" />
-            </div>
-          </div>
-        </div>
+        <div style={mBody}><BoatFields v={vals} set={set} /></div>
         <div style={mFoot}>
           <button style={mCancelBtn} onClick={onClose}>Cancel</button>
           <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
@@ -465,57 +515,35 @@ function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => v
 }
 
 function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Partial<Boat>) => void }) {
-  const [name, setName] = useState('');
-  const [type, setType] = useState('Sailboat');
-  const [length, setLength] = useState('');
-  const [registration, setRegistration] = useState('');
+  const [vals, setVals] = useState<Record<string, string>>({
+    name: '', type: BOAT_TYPES[0], length: '', registration: '',
+    make: '', model: '', year: '', color: '',
+    beam: '', draft: '', height: '',
+    hin: '', mmsi: '', engineType: ENGINE_TYPES[0], engineHp: '', fuelType: FUEL_TYPES[0],
+  });
+  const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
   const handleSave = () => {
-    if (!name) { setErr('Vessel name is required.'); return; }
+    if (!vals.name) { setErr('Vessel name is required.'); return; }
     setSaving(true);
-    onSave({ name, type, length: parseFloat(length) || 0, registration });
+    onSave({ ...vals, length: parseFloat(vals.length) || 0 });
     setSaving(false);
     onClose();
   };
 
+  const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
   return (
     <div style={modalOverlay} onClick={onClose}>
-      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
         <div style={mHead}>
           <h2 style={mTitle}>Add Boat</h2>
           <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
         </div>
         <div style={mBody}>
           {err && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
-          <div style={mTwoCol}>
-            <div style={{ ...mField, gridColumn: '1 / -1' }}>
-              <label style={mLabel}>Vessel Name *</label>
-              <input style={mInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Vessel name" />
-            </div>
-            <div style={mField}>
-              <label style={mLabel}>Type</label>
-              <select style={mSelect} value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="Sailboat">Sailboat</option>
-                <option value="Powerboat">Powerboat</option>
-                <option value="Trawler">Trawler</option>
-                <option value="Yacht">Yacht</option>
-                <option value="Runabout">Runabout</option>
-                <option value="Cabin Cruiser">Cabin Cruiser</option>
-                <option value="Catamaran">Catamaran</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            <div style={mField}>
-              <label style={mLabel}>Length (ft)</label>
-              <input style={mInput} type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder="e.g. 38" />
-            </div>
-            <div style={{ ...mField, gridColumn: '1 / -1' }}>
-              <label style={mLabel}>Registration #</label>
-              <input style={mInput} value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. FL-1234-AB" />
-            </div>
-          </div>
+          <BoatFields v={vals} set={set} />
         </div>
         <div style={mFoot}>
           <button style={mCancelBtn} onClick={onClose}>Cancel</button>

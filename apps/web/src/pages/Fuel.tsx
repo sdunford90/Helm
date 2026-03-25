@@ -102,24 +102,174 @@ const st: Record<string, React.CSSProperties> = {
   tankBar: { width: '80px', height: '200px', borderRadius: '8px', background: '#F1F5F9', border: '2px solid #E2E8F0', margin: '0 auto 16px', position: 'relative' as const, overflow: 'hidden' },
   tankFill: { position: 'absolute' as const, bottom: 0, left: 0, right: 0, borderRadius: '0 0 6px 6px', transition: 'height 0.3s' },
   tankText: { fontSize: '13px', color: '#64748B', marginTop: '8px' },
+  overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10,35,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modal: { background: '#FFFFFF', borderRadius: '8px', width: '480px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' },
+  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px 32px 16px', borderBottom: '1px solid #E2E8F0' },
+  modalTitle: { fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 },
+  closeBtn: { background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: '4px' },
+  modalBody: { padding: '24px 32px' },
+  field: { display: 'flex', flexDirection: 'column' as const, gap: '4px', marginBottom: '16px' },
+  label: { fontSize: '13px', fontWeight: 600, color: '#0A2342' },
+  input: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box' as const, width: '100%' },
+  row2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' },
+  modalFooter: { display: 'flex', justifyContent: 'flex-end', gap: '12px', padding: '16px 32px 24px', borderTop: '1px solid #E2E8F0' },
+  cancelBtn: { padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' },
+  saveBtn: { padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' },
 };
+
+/* ── Modals ─────────────────────────────────────────────── */
+
+function RecordSaleModal({ fuelTypes, onClose, onSave }: { fuelTypes: FuelType[]; onClose: () => void; onSave: (s: FuelSale) => void }) {
+  const [customer, setCustomer] = useState('');
+  const [fuelTypeId, setFuelTypeId] = useState(fuelTypes[0]?.id ?? '');
+  const [gallons, setGallons] = useState('');
+  const [pump, setPump] = useState('1');
+  const [method, setMethod] = useState('Card');
+  const ft = fuelTypes.find((f) => f.id === fuelTypeId);
+  const total = ft ? parseFloat(gallons || '0') * ft.pricePerGal : 0;
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Record Fuel Sale</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Customer / Vessel</label><input style={st.input} value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Name or slip # (leave blank for walk-up)" /></div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Fuel Type *</label>
+              <select style={st.input} value={fuelTypeId} onChange={(e) => setFuelTypeId(e.target.value)}>
+                {fuelTypes.map((f) => <option key={f.id} value={f.id}>{f.label} (${f.pricePerGal.toFixed(2)}/gal)</option>)}
+              </select>
+            </div>
+            <div style={st.field}><label style={st.label}>Pump #</label>
+              <select style={st.input} value={pump} onChange={(e) => setPump(e.target.value)}>
+                <option value="1">Pump 1</option><option value="2">Pump 2</option><option value="3">Pump 3</option>
+              </select>
+            </div>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Gallons Dispensed *</label><input style={st.input} type="number" step="0.1" value={gallons} onChange={(e) => setGallons(e.target.value)} placeholder="0.0" /></div>
+            <div style={st.field}><label style={st.label}>Payment Method</label>
+              <select style={st.input} value={method} onChange={(e) => setMethod(e.target.value)}>
+                <option>Card</option><option>Cash</option><option>Charge to Slip</option><option>ACH</option>
+              </select>
+            </div>
+          </div>
+          {total > 0 && (
+            <div style={{ padding: '12px 16px', background: '#E0F7FF', borderRadius: '6px', border: '1px solid #00D4FF', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '14px', color: '#0A2342', fontWeight: 600 }}>Sale Total</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={() => {
+            if (!gallons || !ft) return;
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${timeStr}`;
+            onSave({ id: String(Date.now()), date: dateStr, customer: customer || 'Walk-up Guest', fuelType: ft.label, gallons: parseFloat(gallons), pricePerGal: ft.pricePerGal, total: Math.round(total * 100) / 100, pump: parseInt(pump), staff: 'Current User', method });
+            onClose();
+          }}>Record Sale</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LogDeliveryModal({ fuelTypes, onClose, onSave }: { fuelTypes: FuelType[]; onClose: () => void; onSave: (d: Delivery) => void }) {
+  const [supplier, setSupplier] = useState('');
+  const [fuelTypeId, setFuelTypeId] = useState(fuelTypes[0]?.id ?? '');
+  const [gallons, setGallons] = useState('');
+  const [costPerGal, setCostPerGal] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const total = parseFloat(gallons || '0') * parseFloat(costPerGal || '0');
+  const ft = fuelTypes.find((f) => f.id === fuelTypeId);
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Log Fuel Delivery</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Supplier *</label><input style={st.input} value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Gulf Coast Petroleum" /></div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Fuel Type *</label>
+              <select style={st.input} value={fuelTypeId} onChange={(e) => setFuelTypeId(e.target.value)}>
+                {fuelTypes.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            </div>
+            <div style={st.field}><label style={st.label}>Delivery Date</label><input style={st.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+          </div>
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Gallons Received *</label><input style={st.input} type="number" value={gallons} onChange={(e) => setGallons(e.target.value)} placeholder="0" /></div>
+            <div style={st.field}><label style={st.label}>Cost / Gallon ($)</label><input style={st.input} type="number" step="0.01" value={costPerGal} onChange={(e) => setCostPerGal(e.target.value)} placeholder="0.00" /></div>
+          </div>
+          {total > 0 && (
+            <div style={{ padding: '12px 16px', background: '#E0F7FF', borderRadius: '6px', border: '1px solid #00D4FF', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '14px', color: '#0A2342', fontWeight: 600 }}>Total Cost</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={() => {
+            if (!supplier || !gallons || !ft) return;
+            const tankAfter = ft.currentLevel + parseFloat(gallons);
+            onSave({ id: String(Date.now()), date, supplier, fuelType: ft.label, gallons: parseFloat(gallons), costPerGal: parseFloat(costPerGal || '0'), totalCost: Math.round(total), tankAfter });
+            onClose();
+          }}>Log Delivery</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UpdatePriceModal({ fuelType, onClose, onSave }: { fuelType: FuelType; onClose: () => void; onSave: (id: string, retail: number, cost: number) => void }) {
+  const [retail, setRetail] = useState(String(fuelType.pricePerGal));
+  const [cost, setCost] = useState(String(fuelType.costPerGal));
+  const newMargin = parseFloat(retail || '0') - parseFloat(cost || '0');
+  const newMarginPct = parseFloat(retail || '0') > 0 ? (newMargin / parseFloat(retail)) * 100 : 0;
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={{ ...st.modal, width: '400px' }} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}><h2 style={st.modalTitle}>Update Price — {fuelType.label}</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
+        <div style={st.modalBody}>
+          <div style={st.field}><label style={st.label}>Retail Price ($/gal) *</label><input style={{ ...st.input, fontSize: '18px', fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={retail} onChange={(e) => setRetail(e.target.value)} autoFocus /></div>
+          <div style={st.field}><label style={st.label}>Cost Price ($/gal)</label><input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} /></div>
+          <div style={{ padding: '12px 16px', background: newMargin > 0 ? '#DEF7EC' : '#FDE8E8', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+            <span style={{ fontSize: '13px', color: '#64748B', fontWeight: 600 }}>Projected Margin</span>
+            <span style={{ fontSize: '16px', fontWeight: 700, color: newMargin > 0 ? '#03543F' : '#9B1C1C', fontFamily: '"JetBrains Mono", monospace' }}>
+              ${newMargin.toFixed(2)}/gal ({newMarginPct.toFixed(1)}%)
+            </span>
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={() => { onSave(fuelType.id, parseFloat(retail), parseFloat(cost)); onClose(); }}>Update Price</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Fuel() {
   const [tab, setTab] = useState<'sales' | 'pricing' | 'deliveries' | 'tanks'>('sales');
+  const [modal, setModal] = useState<'recordSale' | 'logDelivery' | { updatePrice: FuelType } | null>(null);
 
-  // API calls with fallback to mock data
   const { data: apiFuelTypes, loading: loadingTypes } = useApi<FuelType[]>('get', '/api/fuel/types', { immediate: true });
   const { data: apiSales, loading: loadingSales } = useApi<FuelSale[]>('get', '/api/fuel/sales', { immediate: true });
   const { data: apiDeliveries, loading: loadingDeliveries } = useApi<Delivery[]>('get', '/api/fuel/deliveries', { immediate: true });
   const { data: apiTankLevels } = useApi<FuelType[]>('get', '/api/fuel/tank-levels', { immediate: true });
-  const recordSale = useApi<FuelSale>('post', '/api/fuel/sales');
 
-  const fuelTypes = useMemo(() => apiFuelTypes ?? FUEL_TYPES, [apiFuelTypes]);
-  const sales = useMemo(() => apiSales ?? SALES, [apiSales]);
+  const [localFuelTypes, setLocalFuelTypes] = useState<FuelType[]>([]);
+  const [localSales, setLocalSales] = useState<FuelSale[]>([]);
+  const [localDeliveries, setLocalDeliveries] = useState<FuelSale[]>([]);
+
+  const fuelTypes = useMemo(() => localFuelTypes.length > 0 ? localFuelTypes : (apiFuelTypes ?? FUEL_TYPES), [localFuelTypes, apiFuelTypes]);
+  const sales = useMemo(() => localSales.length > 0 ? localSales : (apiSales ?? SALES), [localSales, apiSales]);
   const deliveries = useMemo(() => apiDeliveries ?? DELIVERIES, [apiDeliveries]);
-  const tankData = useMemo(() => apiTankLevels ?? fuelTypes, [apiTankLevels, fuelTypes]);
+  const tankData = useMemo(() => localFuelTypes.length > 0 ? localFuelTypes : (apiTankLevels ?? fuelTypes), [localFuelTypes, apiTankLevels, fuelTypes]);
 
   const loading = loadingTypes || loadingSales || loadingDeliveries;
 
@@ -136,6 +286,24 @@ export default function Fuel() {
   ];
 
   const tankColor = (pct: number) => pct > 50 ? '#22C55E' : pct > 25 ? '#F59E0B' : '#EF4444';
+
+  const handleSaveSale = (s: FuelSale) => {
+    setLocalSales((prev) => [s, ...(prev.length > 0 ? prev : (apiSales ?? SALES))]);
+  };
+
+  const handleSaveDelivery = (d: Delivery) => {
+    setLocalFuelTypes((prev) => {
+      const base = prev.length > 0 ? prev : (apiFuelTypes ?? FUEL_TYPES);
+      return base.map((ft) => ft.label === d.fuelType ? { ...ft, currentLevel: Math.min(ft.tankCapacity, ft.currentLevel + d.gallons) } : ft);
+    });
+  };
+
+  const handleUpdatePrice = (id: string, retail: number, cost: number) => {
+    setLocalFuelTypes((prev) => {
+      const base = prev.length > 0 ? prev : (apiFuelTypes ?? FUEL_TYPES);
+      return base.map((ft) => ft.id === id ? { ...ft, pricePerGal: retail, costPerGal: cost } : ft);
+    });
+  };
 
   return (
     <div style={st.page}>
@@ -177,7 +345,7 @@ export default function Fuel() {
         <>
           <div style={st.filterBar}>
             <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Plus size={16} /> Record Sale</button>
+            <button style={st.addBtn} onClick={() => setModal('recordSale')}><Plus size={16} /> Record Sale</button>
           </div>
           <div style={st.tableWrap}>
             <table style={st.table}>
@@ -198,16 +366,16 @@ export default function Fuel() {
                 {sales.map((s, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
-                    <tr key={s.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px' }}>{s.date}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{s.customer}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{s.fuelType}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{s.gallons.toFixed(1)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>${s.pricePerGal.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 600 }}>${s.total.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>#{s.pump}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{s.staff}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{s.method}</td>
+                    <tr key={s.id} style={{ backgroundColor: rowBg }}>
+                      <td style={{ ...st.td, fontSize: '13px' }}>{s.date}</td>
+                      <td style={{ ...st.td, fontWeight: 600 }}>{s.customer}</td>
+                      <td style={st.td}>{s.fuelType}</td>
+                      <td style={{ ...st.td, ...st.mono }}>{s.gallons.toFixed(1)}</td>
+                      <td style={{ ...st.td, ...st.mono }}>${s.pricePerGal.toFixed(2)}</td>
+                      <td style={{ ...st.td, ...st.mono, fontWeight: 600 }}>${s.total.toFixed(2)}</td>
+                      <td style={{ ...st.td, textAlign: 'center' }}>#{s.pump}</td>
+                      <td style={st.td}>{s.staff}</td>
+                      <td style={st.td}>{s.method}</td>
                     </tr>
                   );
                 })}
@@ -238,7 +406,12 @@ export default function Fuel() {
                 <span style={st.priceRowLabel}>Margin %</span>
                 <span style={{ ...st.priceRowValue, color: '#22C55E' }}>{(((ft.pricePerGal - ft.costPerGal) / ft.pricePerGal) * 100).toFixed(1)}%</span>
               </div>
-              <button style={{ ...st.addBtn, marginTop: '16px', width: '100%', justifyContent: 'center' }}><Edit2 size={14} /> Update Price</button>
+              <button
+                style={{ ...st.addBtn, marginTop: '16px', width: '100%', justifyContent: 'center' }}
+                onClick={() => setModal({ updatePrice: ft })}
+              >
+                <Edit2 size={14} /> Update Price
+              </button>
             </div>
           ))}
         </div>
@@ -248,7 +421,7 @@ export default function Fuel() {
         <>
           <div style={st.filterBar}>
             <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Truck size={16} /> Log Delivery</button>
+            <button style={st.addBtn} onClick={() => setModal('logDelivery')}><Truck size={16} /> Log Delivery</button>
           </div>
           <div style={st.tableWrap}>
             <table style={st.table}>
@@ -267,14 +440,14 @@ export default function Fuel() {
                 {deliveries.map((d, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
-                    <tr key={d.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{d.date}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{d.supplier}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{d.fuelType}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{d.gallons.toLocaleString()}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>${d.costPerGal.toFixed(2)}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontWeight: 600 }}>${d.totalCost.toLocaleString()}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{d.tankAfter.toLocaleString()} gal</td>
+                    <tr key={d.id} style={{ backgroundColor: rowBg }}>
+                      <td style={st.td}>{d.date}</td>
+                      <td style={{ ...st.td, fontWeight: 600 }}>{d.supplier}</td>
+                      <td style={st.td}>{d.fuelType}</td>
+                      <td style={{ ...st.td, ...st.mono }}>{d.gallons.toLocaleString()}</td>
+                      <td style={{ ...st.td, ...st.mono }}>${d.costPerGal.toFixed(2)}</td>
+                      <td style={{ ...st.td, ...st.mono, fontWeight: 600 }}>${d.totalCost.toLocaleString()}</td>
+                      <td style={{ ...st.td, ...st.mono }}>{d.tankAfter.toLocaleString()} gal</td>
                     </tr>
                   );
                 })}
@@ -302,6 +475,17 @@ export default function Fuel() {
             );
           })}
         </div>
+      )}
+
+      {/* Modals */}
+      {modal === 'recordSale' && (
+        <RecordSaleModal fuelTypes={fuelTypes} onClose={() => setModal(null)} onSave={handleSaveSale} />
+      )}
+      {modal === 'logDelivery' && (
+        <LogDeliveryModal fuelTypes={fuelTypes} onClose={() => setModal(null)} onSave={handleSaveDelivery} />
+      )}
+      {modal !== null && typeof modal === 'object' && 'updatePrice' in modal && (
+        <UpdatePriceModal fuelType={modal.updatePrice} onClose={() => setModal(null)} onSave={handleUpdatePrice} />
       )}
     </div>
   );
