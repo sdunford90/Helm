@@ -23,6 +23,7 @@ import Ramp from './pages/Ramp';
 import Concierge from './pages/Concierge';
 import AuditLog from './pages/AuditLog';
 import Fuel from './pages/Fuel';
+import PortfolioDashboard from './pages/PortfolioDashboard';
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="/ramp" element={<Ramp />} />
         <Route path="/concierge" element={<Concierge />} />
         <Route path="/audit-log" element={<AuditLog />} />
+        <Route path="/portfolio" element={<PortfolioDashboard />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

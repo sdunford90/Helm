@@ -9,6 +9,7 @@ import Insurance from './pages/Insurance';
 import ConciergeRequests from './pages/ConciergeRequests';
 import WaitlistStatus from './pages/WaitlistStatus';
 import Announcements from './pages/Announcements';
+import Messages from './pages/Messages';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/concierge" element={<ConciergeRequests />} />
         <Route path="/waitlist" element={<WaitlistStatus />} />
         <Route path="/announcements" element={<Announcements />} />
+        <Route path="/messages" element={<Messages />} />
       </Route>
     </Routes>
   );
