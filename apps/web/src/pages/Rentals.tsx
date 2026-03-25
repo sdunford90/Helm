@@ -869,7 +869,8 @@ function DurationsTab() {
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Rentals() {
-  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator' | 'availability' | 'durations'>('products');
+  const [tab, setTab] = useState<'products' | 'reservations' | 'availability' | 'settings'>('products');
+  const [settingsTab, setSettingsTab] = useState<'durations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('durations');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -907,6 +908,10 @@ export default function Rentals() {
     { key: 'products', label: 'Products' },
     { key: 'availability', label: 'Availability' },
     { key: 'reservations', label: 'Reservations' },
+    { key: 'settings', label: 'Settings' },
+  ];
+
+  const settingsTabs: { key: typeof settingsTab; label: string }[] = [
     { key: 'durations', label: 'Durations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
@@ -1105,130 +1110,129 @@ export default function Rentals() {
         </>
       )}
 
-      {/* Pricing Rules Tab */}
-      {tab === 'pricing' && (
-        <>
-          <div style={st.filterBar}>
-            <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Plus size={16} /> Add Rule</button>
-          </div>
-          <div style={st.tableWrap}>
-            <table style={st.table}>
-              <thead>
-                <tr>
-                  <th style={st.th}>Name</th>
-                  <th style={st.th}>Type</th>
-                  <th style={st.th}>Adjustment</th>
-                  <th style={st.th}>Start Date</th>
-                  <th style={st.th}>End Date</th>
-                  <th style={st.th}>Active</th>
-                  <th style={st.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pricingRules.map((rule, idx) => {
-                  const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                  return (
-                    <tr key={rule.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{rule.name}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{rule.type}</span>
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, color: rule.adjustment > 0 ? '#9B1C1C' : '#03543F' }}>
-                        {rule.adjustment > 0 ? '+' : ''}{rule.adjustment}%
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.startDate}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.endDate}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ ...st.toggleTrack, background: rule.active ? '#00D4FF' : '#CBD5E1' }}>
-                          <div style={{ ...st.toggleThumb, left: rule.active ? '20px' : '2px' }} />
-                        </button>
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* Promo Codes Tab */}
-      {tab === 'promos' && (
-        <>
-          <div style={st.filterBar}>
-            <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Plus size={16} /> Add Promo Code</button>
-          </div>
-          <div style={st.tableWrap}>
-            <table style={st.table}>
-              <thead>
-                <tr>
-                  <th style={st.th}>Code</th>
-                  <th style={st.th}>Discount</th>
-                  <th style={st.th}>Valid From</th>
-                  <th style={st.th}>Valid To</th>
-                  <th style={st.th}>Uses / Max</th>
-                  <th style={st.th}>Status</th>
-                  <th style={st.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {promoCodes.map((pc, idx) => {
-                  const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                  return (
-                    <tr key={pc.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600, ...st.mono }}>{pc.code}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>
-                        {pc.discountType === '%' ? `${pc.discount}%` : `$${pc.discount}`} off
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{pc.validFrom}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{pc.validTo}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>
-                        {pc.uses} / {pc.maxUses || '∞'}
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <span style={{ ...st.badge, backgroundColor: pc.active ? '#DEF7EC' : '#F3F4F6', color: pc.active ? '#03543F' : '#64748B' }}>
-                          {pc.active ? 'Active' : 'Expired'}
-                        </span>
-                      </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {/* Pricing Calendar Tab */}
-      {tab === 'calendar' && (
-        <PricingCalendar
-          products={[
-            { id: 'pontoon', name: 'Bay Cruiser 24 (Pontoon)', basePriceCents: 8500 },
-            { id: 'jetski',  name: 'Wave Runner Pro (Jet Ski)', basePriceCents: 6500 },
-            { id: 'kayak',   name: 'Harbor Explorer (Kayak)',   basePriceCents: 2500 },
-          ]}
-          onOverrideChange={(productId, date, priceCents) => {
-            console.log('Override:', productId, date, priceCents);
-          }}
-        />
-      )}
-
-      {/* Price Simulator Tab */}
-      {tab === 'simulator' && <PriceSimulator />}
-
       {/* Availability Grid Tab */}
       {tab === 'availability' && <AvailabilityGrid products={products} onViewReservation={handleViewReservation} />}
 
-      {/* Durations Tab */}
-      {tab === 'durations' && <DurationsTab />}
+      {/* Settings Tab */}
+      {tab === 'settings' && (
+        <div>
+          {/* Settings sub-nav */}
+          <div style={{ display: 'flex', gap: '4px', marginBottom: '28px', borderBottom: '2px solid #E2E8F0', paddingBottom: '0' }}>
+            {settingsTabs.map((st2) => (
+              <button
+                key={st2.key}
+                onClick={() => setSettingsTab(st2.key)}
+                style={{
+                  padding: '8px 18px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  border: 'none',
+                  borderBottom: settingsTab === st2.key ? '2px solid #00D4FF' : '2px solid transparent',
+                  marginBottom: '-2px',
+                  backgroundColor: 'transparent',
+                  color: settingsTab === st2.key ? '#0A2342' : '#64748B',
+                  cursor: 'pointer',
+                  borderRadius: '4px 4px 0 0',
+                  transition: 'color 0.15s',
+                }}
+              >
+                {st2.label}
+              </button>
+            ))}
+          </div>
+
+          {settingsTab === 'durations' && <DurationsTab />}
+
+          {settingsTab === 'pricing' && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div style={{ fontSize: '14px', color: '#64748B' }}>Configure dynamic pricing rules applied to rental products.</div>
+                <button style={{ ...st.addBtn }}><Plus size={16} /> Add Rule</button>
+              </div>
+              <div style={st.tableWrap}>
+                <table style={st.table}>
+                  <thead><tr>
+                    <th style={st.th}>Rule Name</th><th style={st.th}>Applies To</th><th style={st.th}>Type</th>
+                    <th style={st.th}>Adjustment</th><th style={st.th}>Days / Conditions</th><th style={st.th}>Status</th><th style={st.th}></th>
+                  </tr></thead>
+                  <tbody>
+                    {pricingRules.map((rule, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                      return (
+                        <tr key={rule.id}>
+                          <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{rule.name}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.appliesTo}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.type}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{rule.adjustment > 0 ? '+' : ''}{rule.adjustment}{rule.adjustmentType === '%' ? '%' : '$'}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.days.join(', ') || rule.conditions}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            <span style={{ ...st.badge, backgroundColor: rule.active ? '#DEF7EC' : '#F3F4F6', color: rule.active ? '#03543F' : '#64748B' }}>{rule.active ? 'Active' : 'Inactive'}</span>
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {settingsTab === 'promos' && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div style={{ fontSize: '14px', color: '#64748B' }}>Manage promotional discount codes for rental bookings.</div>
+                <button style={{ ...st.addBtn }}><Plus size={16} /> Add Promo Code</button>
+              </div>
+              <div style={st.tableWrap}>
+                <table style={st.table}>
+                  <thead><tr>
+                    <th style={st.th}>Code</th><th style={st.th}>Discount</th><th style={st.th}>Valid From</th>
+                    <th style={st.th}>Valid To</th><th style={st.th}>Uses</th><th style={st.th}>Status</th><th style={st.th}></th>
+                  </tr></thead>
+                  <tbody>
+                    {promoCodes.map((pc, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                      return (
+                        <tr key={pc.id}>
+                          <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600, ...st.mono }}>{pc.code}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{pc.discountType === '%' ? `${pc.discount}%` : `$${pc.discount}`} off</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{pc.validFrom}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{pc.validTo}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{pc.uses} / {pc.maxUses || '∞'}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            <span style={{ ...st.badge, backgroundColor: pc.active ? '#DEF7EC' : '#F3F4F6', color: pc.active ? '#03543F' : '#64748B' }}>{pc.active ? 'Active' : 'Expired'}</span>
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}>Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {settingsTab === 'calendar' && (
+            <PricingCalendar
+              products={[
+                { id: 'pontoon', name: 'Bay Cruiser 24 (Pontoon)', basePriceCents: 8500 },
+                { id: 'jetski',  name: 'Wave Runner Pro (Jet Ski)', basePriceCents: 6500 },
+                { id: 'kayak',   name: 'Harbor Explorer (Kayak)',   basePriceCents: 2500 },
+              ]}
+              onOverrideChange={(productId, date, priceCents) => {
+                console.log('Override:', productId, date, priceCents);
+              }}
+            />
+          )}
+
+          {settingsTab === 'simulator' && <PriceSimulator />}
+        </div>
+      )}
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} onSave={handleAddProduct} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}
