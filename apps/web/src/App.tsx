@@ -26,6 +26,7 @@ import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import EmailAutomation from './pages/EmailAutomation';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 
 function AppRoutes() {
@@ -61,6 +62,7 @@ function AppRoutes() {
         <Route path="/ramp" element={<Ramp />} />
         <Route path="/concierge" element={<Concierge />} />
         <Route path="/audit-log" element={<AuditLog />} />
+        <Route path="/email-automation" element={<EmailAutomation />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
         <Route path="/settings" element={<Settings />} />
       </Route>

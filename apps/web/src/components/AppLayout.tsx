@@ -28,6 +28,7 @@ import {
   ChevronDown,
   Package,
   FileSpreadsheet,
+  Mail,
 } from 'lucide-react';
 
 const LOCATIONS = [
@@ -77,6 +78,7 @@ const NAV_SECTIONS = [
     items: [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
+      { path: '/email-automation', label: 'Email Automation', icon: Mail },
       { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],
