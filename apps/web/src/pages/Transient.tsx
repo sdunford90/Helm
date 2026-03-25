@@ -174,7 +174,6 @@ export default function Transient() {
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading bookings...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load bookings. Showing cached data.</div>}
 
       {/* Stats */}
       <div style={s.statsRow}>

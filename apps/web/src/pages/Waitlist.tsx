@@ -400,7 +400,6 @@ export default function Waitlist() {
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading waitlist: {error}</div>}
 
       {/* Stats Row */}
       <div style={s.statsRow}>

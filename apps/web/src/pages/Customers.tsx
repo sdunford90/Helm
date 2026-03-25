@@ -205,7 +205,6 @@ export default function Customers() {
       <hr style={styles.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading customers: {error}</div>}
 
       {/* Filter Bar */}
       <div style={styles.filterBar}>

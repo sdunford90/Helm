@@ -465,7 +465,6 @@ export default function Slips() {
       <hr style={st.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading slips...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load slips. Showing cached data.</div>}
 
       {/* Filter Bar */}
       <div style={st.filterBar}>

@@ -266,7 +266,6 @@ export default function DockWalks() {
       <hr style={st.divider} />
 
       {(walksLoading || violationsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading dock walks...</div>}
-      {(walksError || violationsError) && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load dock walks. Showing cached data.</div>}
 
       {/* Stats */}
       <div style={st.statsRow}>

@@ -588,7 +588,6 @@ export default function CustomerDetailPage() {
       </button>
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading customer: {error}</div>}
 
       <div style={s.headerRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

@@ -209,7 +209,6 @@ export default function Concierge() {
       <hr style={s.divider} />
 
       {(requestsLoading || vendorsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading concierge data...</div>}
-      {(requestsError || vendorsError) && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load concierge data. Showing cached data.</div>}
 
       {/* Stats */}
       <div style={s.statsRow}>
