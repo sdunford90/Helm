@@ -5,8 +5,9 @@ import {
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
-  MapPin, Save, XCircle, ChevronDown,
+  MapPin, Save, XCircle, ChevronDown, ToggleRight,
 } from 'lucide-react';
+import { useModules } from '../context/ModulesContext';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -256,7 +257,8 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'advanced'>('profile');
+  const { modules, setModule } = useModules();
+  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'advanced' | 'modules'>('profile');
 
   // API calls
   const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
@@ -319,6 +321,7 @@ export default function Settings() {
     { key: 'catalog', label: 'Catalog', icon: Package },
     { key: 'integrations', label: 'Integrations', icon: Link },
     { key: 'team', label: 'Team & Roles', icon: ShieldCheck },
+    { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
 
@@ -1151,6 +1154,73 @@ export default function Settings() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Modules */}
+      {tab === 'modules' && (
+        <div style={st.card}>
+          <h3 style={st.sectionTitle}><ToggleRight size={20} /> Module Management</h3>
+          <p style={{ color: '#64748B', fontSize: '14px', marginBottom: '24px', lineHeight: 1.6 }}>
+            Enable or disable optional modules for this marina. Disabled modules are hidden from the navigation and inaccessible to all users.
+          </p>
+          {([
+            {
+              key: 'rentals' as const,
+              label: 'Rentals',
+              description: 'Boat, kayak, jet ski and equipment rentals — includes availability calendar, reservation management, pricing rules, promo codes, and the Rentals dashboard.',
+            },
+          ] as { key: keyof typeof modules; label: string; description: string }[]).map((mod) => (
+            <div
+              key={mod.key}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: '24px',
+                padding: '20px 0',
+                borderBottom: '1px solid #F2F4F6',
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: '15px', color: '#0A2342', marginBottom: '4px' }}>{mod.label}</div>
+                <div style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.5 }}>{mod.description}</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: modules[mod.key] ? '#03543F' : '#9CA3AF' }}>
+                  {modules[mod.key] ? 'Enabled' : 'Disabled'}
+                </span>
+                <button
+                  onClick={() => setModule(mod.key, !modules[mod.key])}
+                  style={{
+                    position: 'relative',
+                    width: '44px',
+                    height: '24px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: modules[mod.key] ? '#00D4FF' : '#CBD5E1',
+                    transition: 'background 0.2s',
+                    padding: 0,
+                    flexShrink: 0,
+                  }}
+                  title={modules[mod.key] ? 'Disable module' : 'Enable module'}
+                >
+                  <div style={{
+                    position: 'absolute',
+                    top: '3px',
+                    left: modules[mod.key] ? '23px' : '3px',
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '50%',
+                    background: '#FFFFFF',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                    transition: 'left 0.2s',
+                  }} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Advanced */}

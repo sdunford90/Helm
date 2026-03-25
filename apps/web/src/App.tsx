@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
@@ -26,8 +26,11 @@ import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import { ModulesProvider, useModules } from './context/ModulesContext';
 
-export default function App() {
+function AppRoutes() {
+  const { modules } = useModules();
+
   return (
     <Routes>
       <Route path="/onboarding" element={<Onboarding />} />
@@ -43,7 +46,10 @@ export default function App() {
         <Route path="/billing/invoices/:id" element={<InvoiceDetail />} />
         <Route path="/billing/ar-aging" element={<ARaging />} />
         <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
-        <Route path="/rentals" element={<Rentals />} />
+        <Route
+          path="/rentals"
+          element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}
+        />
         <Route path="/pos" element={<POS />} />
         <Route path="/fuel" element={<Fuel />} />
         <Route path="/inventory" element={<Inventory />} />
@@ -59,5 +65,13 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <ModulesProvider>
+      <AppRoutes />
+    </ModulesProvider>
   );
 }

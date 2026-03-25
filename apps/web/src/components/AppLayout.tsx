@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet, useLocation, Link } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
+import { useModules } from '../context/ModulesContext';
 import {
   LayoutDashboard,
   Users,
@@ -213,6 +214,7 @@ function getPageTitle(pathname: string): string {
 export default function AppLayout() {
   const location = useLocation();
   const { user } = useUser();
+  const { modules } = useModules();
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
     : 'H';
@@ -224,27 +226,34 @@ export default function AppLayout() {
     <div style={styles.container}>
       <nav style={styles.sidebar}>
         <div style={styles.logo}>HELM</div>
-        {NAV_SECTIONS.map((section) => (
-          <div key={section.label}>
-            <div style={styles.sectionLabel}>{section.label}</div>
-            {section.items.map((item) => {
-              const isActive = location.pathname === item.path;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  style={{
-                    ...styles.navItem,
-                    ...(isActive ? styles.navItemActive : {}),
-                  }}
-                >
-                  <item.icon size={20} />
-                  {item.label}
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+        {NAV_SECTIONS.map((section) => {
+          const visibleItems = section.items.filter((item) => {
+            if (item.path === '/rentals' && !modules.rentals) return false;
+            return true;
+          });
+          if (visibleItems.length === 0) return null;
+          return (
+            <div key={section.label}>
+              <div style={styles.sectionLabel}>{section.label}</div>
+              {visibleItems.map((item) => {
+                const isActive = location.pathname === item.path;
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    style={{
+                      ...styles.navItem,
+                      ...(isActive ? styles.navItemActive : {}),
+                    }}
+                  >
+                    <item.icon size={20} />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })}
       </nav>
 
       <div style={styles.main}>
