@@ -765,6 +765,7 @@ export default function Rentals() {
                   <th style={st.th}>Daily</th>
                   <th style={st.th}>Rating</th>
                   <th style={st.th}>Bookings</th>
+                  <th style={st.th}>Today&apos;s Availability</th>
                   <th style={st.th}>Status</th>
                   <th style={st.th}>Actions</th>
                 </tr>
@@ -787,6 +788,24 @@ export default function Rentals() {
                         </span>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.totalBookings}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>
+                        {(() => {
+                          const av = countAvailableToday(p.id);
+                          const pct = Math.round((av.available / av.total) * 100);
+                          const barBg = pct === 0 ? '#FDE8E8' : pct <= 33 ? '#FFF3CD' : '#DEF7EC';
+                          const barFg = pct === 0 ? '#9B1C1C' : pct <= 33 ? '#856404' : '#03543F';
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div style={{ flex: 1, height: '6px', borderRadius: '3px', backgroundColor: '#E2E8F0', overflow: 'hidden', minWidth: '48px' }}>
+                                <div style={{ width: `${pct}%`, height: '100%', borderRadius: '3px', backgroundColor: barFg, transition: 'width 0.3s' }} />
+                              </div>
+                              <span style={{ ...st.badge, backgroundColor: barBg, color: barFg, fontSize: '11px', whiteSpace: 'nowrap' as const }}>
+                                {av.available}/{av.total} slots
+                              </span>
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{p.status}</span>
                       </td>
