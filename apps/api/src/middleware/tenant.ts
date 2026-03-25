@@ -22,7 +22,7 @@ declare global {
 }
 
 /** Routes that should bypass tenant resolution. */
-const BYPASS_PREFIXES = ["/api/health", "/api/admin", "/api/onboarding"];
+const BYPASS_PREFIXES = ["/api/health", "/api/admin", "/api/onboarding", "/api/auth/webhook"];
 
 function shouldBypass(path: string): boolean {
   return BYPASS_PREFIXES.some((prefix) => path.startsWith(prefix));
