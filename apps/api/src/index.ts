@@ -27,6 +27,12 @@ import adminRouter from "./routes/admin.js";
 import onboardingRouter from "./routes/onboarding.js";
 import contractsRouter from "./routes/contracts.js";
 import settingsRouter from "./routes/settings.js";
+import transientRouter from "./routes/transient.js";
+import conciergeRouter from "./routes/concierge.js";
+import rampRouter from "./routes/ramp.js";
+import referralPartnersRouter from "./routes/referral-partners.js";
+import promoCodesRouter from "./routes/promo-codes.js";
+import purchaseOrdersRouter from "./routes/purchase-orders.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -71,6 +77,12 @@ app.use("/api/admin", adminRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/contracts", contractsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/transient", transientRouter);
+app.use("/api/concierge", conciergeRouter);
+app.use("/api/ramp", rampRouter);
+app.use("/api/referral-partners", referralPartnersRouter);
+app.use("/api/promo-codes", promoCodesRouter);
+app.use("/api/purchase-orders", purchaseOrdersRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

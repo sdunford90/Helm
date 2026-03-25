@@ -286,7 +286,40 @@ router.put(
         include: { customer: true, vendor: true },
       });
 
-      // TODO: Create billable charge / invoice line item from quoteCents
+      // Create billable invoice from completed concierge request
+      if (updated.quoteCents && updated.quoteCents > 0) {
+        const invoiceCount = await prisma.invoice.count({ where: { tenantId: (req as any).tenantId } });
+        const invoiceNumber = `INV-${String(invoiceCount + 1).padStart(5, "0")}`;
+
+        await prisma.invoice.create({
+          data: {
+            tenantId: (req as any).tenantId,
+            customerId: updated.customerId,
+            invoiceNumber,
+            status: "DRAFT",
+            subtotalCents: updated.quoteCents,
+            taxCents: 0,
+            totalCents: updated.quoteCents,
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Net 30
+            lineItems: {
+              create: [
+                {
+                  tenantId: (req as any).tenantId,
+                  description: `Concierge Service: ${updated.serviceType}`,
+                  amountCents: updated.quoteCents,
+                  quantity: 1,
+                },
+              ],
+            },
+          },
+        });
+
+        // Update concierge request status to INVOICED
+        await prisma.conciergeRequest.update({
+          where: { id: req.params.id },
+          data: { status: "INVOICED" },
+        });
+      }
 
       res.json({ data: updated });
     } catch (err) {

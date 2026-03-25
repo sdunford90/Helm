@@ -3,6 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { createPaymentIntent } from "../lib/stripe.js";
+import { queues } from "../lib/queue.js";
 
 const router = Router();
 
@@ -300,7 +301,32 @@ router.put(
         include: { slip: true },
       });
 
-      // TODO: Trigger overstay alert (email/SMS notification)
+      // Trigger overstay alert (email/SMS notification)
+      const slip = await prisma.slip.findUnique({ where: { id: booking.slipId } });
+      const tenant = await prisma.tenant.findUnique({ where: { id: (req as any).tenantId } });
+
+      // Send email alert to marina staff
+      if (tenant?.email) {
+        await queues.email.add("overstay-alert", {
+          type: "overstay-alert",
+          tenantId: (req as any).tenantId,
+          to: tenant.email,
+          guestName: booking.guestName,
+          slipNumber: slip?.slipNumber ?? "Unknown",
+          expectedCheckout: booking.checkOut?.toLocaleDateString() ?? "Not specified",
+        });
+      }
+
+      // Send SMS alert to marina staff
+      if (tenant?.phone) {
+        await queues.sms.add("overstay-alert", {
+          type: "overstay-alert",
+          tenantId: (req as any).tenantId,
+          to: tenant.phone,
+          guestName: booking.guestName,
+          slipNumber: slip?.slipNumber ?? "Unknown",
+        });
+      }
 
       res.json({ data: updated, alert: "OVERSTAY_TRIGGERED" });
     } catch (err) {
