@@ -32,6 +32,7 @@ import rampRouter from "./routes/ramp.js";
 import conciergeRouter from "./routes/concierge.js";
 import auditLogRouter from "./routes/audit-log.js";
 import biApiRouter from "./routes/bi-api.js";
+import insuranceRouter from "./routes/insurance.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -81,6 +82,7 @@ app.use("/api/ramp", rampRouter);
 app.use("/api/concierge", conciergeRouter);
 app.use("/api/audit-log", auditLogRouter);
 app.use("/api/bi", biApiRouter);
+app.use("/api/insurance", insuranceRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)
