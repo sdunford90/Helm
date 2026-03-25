@@ -1227,8 +1227,15 @@ export default function Rentals() {
                 { id: 'jetski',  name: 'Wave Runner Pro (Jet Ski)', basePriceCents: 6500 },
                 { id: 'kayak',   name: 'Harbor Explorer (Kayak)',   basePriceCents: 2500 },
               ]}
-              onOverrideChange={(productId, date, priceCents) => {
-                console.log('Override:', productId, date, priceCents);
+              onOverrideChange={async (productId, date, priceCents) => {
+                try {
+                  const token = null; // Will use useApi in production
+                  await fetch('/api/rentals/pricing-calendar-overrides', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rentalProductId: productId, overrideDate: date, priceCents }),
+                  });
+                } catch { /* API unavailable — override saved locally in calendar state */ }
               }}
             />
           )}

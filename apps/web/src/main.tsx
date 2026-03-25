@@ -74,6 +74,16 @@ const MissingKeyScreen = () => (
   </div>
 );
 
+// Register service worker for offline dock walk PWA support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').then(
+      (reg) => console.log('[helm] SW registered:', reg.scope),
+      (err) => console.warn('[helm] SW registration failed:', err),
+    );
+  });
+}
+
 if (!CLERK_KEY) {
   ReactDOM.createRoot(document.getElementById('root')!).render(<MissingKeyScreen />);
 } else {

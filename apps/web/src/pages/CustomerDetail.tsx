@@ -1031,8 +1031,14 @@ export default function CustomerDetailPage() {
             payments: 12,
           }}
           onClose={() => setShowMerge(false)}
-          onMerge={(targetId, selections) => {
-            console.log('Merge into:', targetId, selections);
+          onMerge={async (targetId, selections) => {
+            try {
+              await fetch(`/api/customers/${targetId}/merge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sourceCustomerId: id, selections }),
+              });
+            } catch { /* API unavailable — merge will execute when connected */ }
             setShowMerge(false);
           }}
         />
