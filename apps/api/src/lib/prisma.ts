@@ -47,6 +47,7 @@ function createPrismaClient(): PrismaClient {
       "Invoice",
       "Payment",
       "Lead",
+      "LeadForm",
       "WaitlistEntry",
       "Boat",
       "DockWalk",
