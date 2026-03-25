@@ -16,8 +16,9 @@ interface Slip {
   number: string;
   dock: string;
   length: number;
-  width: number;
-  depth: number;
+  beam: number;
+  draft: number;
+  height: number;
   type: string;
   power: string;
   electricityMode: string;
@@ -36,16 +37,16 @@ interface Slip {
 /* ── Mock Data ─────────────────────────────────────────── */
 
 const MOCK_SLIPS: Slip[] = [
-  { id: '1', number: 'A-01', dock: 'A', length: 40, width: 14, depth: 8, type: 'Covered', power: '30A/50A', electricityMode: 'Metered', status: 'Occupied', occupant: 'James Harborview', compliance: 95, occupantDetail: { name: 'James Harborview', boat: 'Sea Spirit (38\' Sailboat)', contractStart: '2024-03-15', contractEnd: '2025-03-14' }, meterReadings: [{ date: '2025-03-01', kWh: 1240, amount: 148.80 }, { date: '2025-02-01', kWh: 1080, amount: 129.60 }, { date: '2025-01-01', kWh: 920, amount: 110.40 }] },
-  { id: '2', number: 'A-02', dock: 'A', length: 40, width: 14, depth: 8, type: 'Covered', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Maria Seabreeze', compliance: 88, occupantDetail: { name: 'Maria Seabreeze', boat: 'Coastal Dream (32\' Powerboat)', contractStart: '2024-06-01', contractEnd: '2025-05-31' }, meterReadings: [{ date: '2025-03-01', kWh: 800, amount: 75.00 }] },
-  { id: '3', number: 'A-03', dock: 'A', length: 35, width: 12, depth: 7, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '4', number: 'A-04', dock: 'A', length: 35, width: 12, depth: 7, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Reserved', occupant: 'Robert Dockside (pending)', compliance: 0, meterReadings: [] },
-  { id: '5', number: 'B-01', dock: 'B', length: 50, width: 16, depth: 10, type: 'Covered', power: '50A/100A', electricityMode: 'Metered', status: 'Occupied', occupant: 'David Tidewater', compliance: 62, occupantDetail: { name: 'David Tidewater', boat: 'Tidewater Express (48\' Yacht)', contractStart: '2024-01-05', contractEnd: '2025-01-04' }, meterReadings: [{ date: '2025-03-01', kWh: 2100, amount: 252.00 }, { date: '2025-02-01', kWh: 1950, amount: 234.00 }] },
-  { id: '6', number: 'B-02', dock: 'B', length: 50, width: 16, depth: 10, type: 'Covered', power: '50A', electricityMode: 'Flat Rate', status: 'Maintenance', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '7', number: 'B-03', dock: 'B', length: 45, width: 14, depth: 9, type: 'Open', power: '30A/50A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '8', number: 'C-01', dock: 'C', length: 30, width: 10, depth: 6, type: 'Open', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Elena Windward', compliance: 91, occupantDetail: { name: 'Elena Windward', boat: 'Windward (28\' Sailboat)', contractStart: '2025-04-01', contractEnd: '2025-10-31' }, meterReadings: [] },
-  { id: '9', number: 'C-02', dock: 'C', length: 30, width: 10, depth: 6, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '10', number: 'C-03', dock: 'C', length: 30, width: 10, depth: 6, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
+  { id: '1', number: 'A-01', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A/50A', electricityMode: 'Metered', status: 'Occupied', occupant: 'James Harborview', compliance: 95, occupantDetail: { name: 'James Harborview', boat: 'Sea Spirit (38\' Sailboat)', contractStart: '2024-03-15', contractEnd: '2025-03-14' }, meterReadings: [{ date: '2025-03-01', kWh: 1240, amount: 148.80 }, { date: '2025-02-01', kWh: 1080, amount: 129.60 }, { date: '2025-01-01', kWh: 920, amount: 110.40 }] },
+  { id: '2', number: 'A-02', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Maria Seabreeze', compliance: 88, occupantDetail: { name: 'Maria Seabreeze', boat: 'Coastal Dream (32\' Powerboat)', contractStart: '2024-06-01', contractEnd: '2025-05-31' }, meterReadings: [{ date: '2025-03-01', kWh: 800, amount: 75.00 }] },
+  { id: '3', number: 'A-03', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
+  { id: '4', number: 'A-04', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Reserved', occupant: 'Robert Dockside (pending)', compliance: 0, meterReadings: [] },
+  { id: '5', number: 'B-01', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A/100A', electricityMode: 'Metered', status: 'Occupied', occupant: 'David Tidewater', compliance: 62, occupantDetail: { name: 'David Tidewater', boat: 'Tidewater Express (48\' Yacht)', contractStart: '2024-01-05', contractEnd: '2025-01-04' }, meterReadings: [{ date: '2025-03-01', kWh: 2100, amount: 252.00 }, { date: '2025-02-01', kWh: 1950, amount: 234.00 }] },
+  { id: '6', number: 'B-02', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A', electricityMode: 'Flat Rate', status: 'Maintenance', occupant: '', compliance: 0, meterReadings: [] },
+  { id: '7', number: 'B-03', dock: 'B', length: 45, beam: 14, draft: 9, height: 22, type: 'Open', power: '30A/50A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
+  { id: '8', number: 'C-01', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Elena Windward', compliance: 91, occupantDetail: { name: 'Elena Windward', boat: 'Windward (28\' Sailboat)', contractStart: '2025-04-01', contractEnd: '2025-10-31' }, meterReadings: [] },
+  { id: '9', number: 'C-02', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
+  { id: '10', number: 'C-03', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
 ];
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -395,12 +396,16 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
               <input style={st.input} type="number" placeholder="40" />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Width (ft)</label>
+              <label style={st.label}>Beam (ft)</label>
               <input style={st.input} type="number" placeholder="14" />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Depth (ft)</label>
+              <label style={st.label}>Draft (ft)</label>
               <input style={st.input} type="number" placeholder="8" />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Height (ft)</label>
+              <input style={st.input} type="number" placeholder="20" />
             </div>
             <div style={st.field}>
               <label style={st.label}>Type</label>
@@ -492,7 +497,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div>
             <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0A2342' }}>Assign Slip {slip.number}</h3>
-            <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{slip.dock} · {slip.length}ft × {slip.width}ft</div>
+            <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{slip.dock} · {slip.length}' L × {slip.beam}' Bm × {slip.draft}' Dr × {slip.height}' Ht</div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
             <X size={20} />
@@ -681,7 +686,10 @@ export default function Slips() {
               <tr>
                 <th style={st.th}>Slip #</th>
                 <th style={st.th}>Dock</th>
-                <th style={st.th}>Size (L x W x D)</th>
+                <th style={st.th}>Length</th>
+                <th style={st.th}>Beam</th>
+                <th style={st.th}>Draft</th>
+                <th style={st.th}>Height</th>
                 <th style={st.th}>Type</th>
                 <th style={st.th}>Power</th>
                 <th style={st.th}>Electricity</th>
@@ -704,7 +712,10 @@ export default function Slips() {
                   >
                     <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{sl.number}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.dock}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.length}' x {sl.width}' x {sl.depth}'</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.length}'</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.beam}'</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.draft}'</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.height}'</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.type}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.power}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.electricityMode}</td>
@@ -743,7 +754,7 @@ export default function Slips() {
             number: sl.number,
             dock: sl.dock,
             length: sl.length,
-            width: sl.width,
+            beam: sl.beam,
             status: sl.status,
             occupant: sl.occupant || undefined,
             compliance: sl.compliance,
@@ -767,8 +778,9 @@ export default function Slips() {
             number: selectedSlip.number,
             dock: selectedSlip.dock,
             length: selectedSlip.length,
-            width: selectedSlip.width,
-            depth: selectedSlip.depth,
+            beam: selectedSlip.beam,
+            draft: selectedSlip.draft,
+            height: selectedSlip.height,
             power: selectedSlip.power,
             type: selectedSlip.type,
             electricityMode: selectedSlip.electricityMode,

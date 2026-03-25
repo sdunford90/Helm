@@ -8,7 +8,7 @@ interface SlipData {
   number: string;
   dock: string;
   length: number;
-  width: number;
+  beam: number;
   status: 'Vacant' | 'Occupied' | 'Maintenance' | 'Reserved';
   occupant?: string;
   compliance?: number;
@@ -249,7 +249,7 @@ export default function DockMapSVG({ slips, onSlipClick, selectedSlipId }: DockM
           </div>
           <div>Status: {tooltip.slip.status}</div>
           <div>
-            Size: {tooltip.slip.length}' x {tooltip.slip.width}'
+            Size: {tooltip.slip.length}' L × {tooltip.slip.beam}' Bm
           </div>
           {tooltip.slip.occupant && <div>Occupant: {tooltip.slip.occupant}</div>}
           {tooltip.slip.compliance != null && tooltip.slip.compliance > 0 && (
@@ -424,7 +424,7 @@ export default function DockMapSVG({ slips, onSlipClick, selectedSlipId }: DockM
                         fontSize="9"
                         fontFamily="monospace"
                       >
-                        {slip.length}' x {slip.width}'
+                        {slip.length}' × {slip.beam}'
                       </text>
                       {/* Compliance dot */}
                       {slip.compliance != null && slip.compliance > 0 && (
@@ -508,7 +508,7 @@ export default function DockMapSVG({ slips, onSlipClick, selectedSlipId }: DockM
                         fontSize="9"
                         fontFamily="monospace"
                       >
-                        {slip.length}' x {slip.width}'
+                        {slip.length}' × {slip.beam}'
                       </text>
                       {slip.compliance != null && slip.compliance > 0 && (
                         <circle
