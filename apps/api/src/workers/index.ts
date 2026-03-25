@@ -11,6 +11,7 @@ import {
 import { sendSms } from "../lib/sms.js";
 import { prisma } from "../lib/prisma.js";
 import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
+import { runTenantLifecycleCheck } from "../jobs/tenant-lifecycle.js";
 
 // --------------------------------------------------------------------------
 // Email worker
@@ -232,6 +233,32 @@ qboSyncWorker.on("failed", (job, err) => {
 });
 
 // --------------------------------------------------------------------------
+// Billing worker (tenant lifecycle)
+// --------------------------------------------------------------------------
+
+const billingWorker = new Worker(
+  "billing",
+  async (job) => {
+    switch (job.name) {
+      case "tenant-lifecycle": {
+        const result = await runTenantLifecycleCheck();
+        console.log(
+          `[billing-worker] Tenant lifecycle check complete: ${result.transitioned} transitions, ${result.notified} notifications`,
+        );
+        break;
+      }
+      default:
+        console.warn(`[billing-worker] Unknown job name: ${job.name}`);
+    }
+  },
+  { connection: redisConnection, concurrency: 1 },
+);
+
+billingWorker.on("failed", (job, err) => {
+  console.error(`[billing-worker] Job ${job?.id} failed:`, err.message);
+});
+
+// --------------------------------------------------------------------------
 // Graceful shutdown
 // --------------------------------------------------------------------------
 
@@ -242,6 +269,7 @@ async function shutdown() {
     smsWorker.close(),
     automationWorker.close(),
     qboSyncWorker.close(),
+    billingWorker.close(),
   ]);
   console.log("[helm-workers] All workers stopped");
   process.exit(0);

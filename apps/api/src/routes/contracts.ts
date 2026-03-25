@@ -86,6 +86,26 @@ const RenewContractSchema = z.object({
   billingCycle: BillingCycleEnum.optional(),
 });
 
+const SendForSignatureSchema = z.object({
+  signerName: z.string().min(1),
+  signerEmail: z.string().email(),
+  message: z.string().optional(),
+});
+
+const BulkSendForSignatureSchema = z.object({
+  contractIds: z.array(z.string().uuid()).min(1).max(50),
+  message: z.string().optional(),
+});
+
+const EsignWebhookSchema = z.object({
+  event: z.enum(["signature_request_signed", "signature_request_declined", "signature_request_viewed"]),
+  requestId: z.string(),
+  contractId: z.string(),
+  signedDocumentUrl: z.string().url().optional(),
+  signerEmail: z.string().email().optional(),
+  timestamp: z.coerce.date().optional(),
+});
+
 const ExpiringQuerySchema = z.object({
   days: z.coerce.number().int().positive().default(30),
   skip: z.coerce.number().int().min(0).default(0),
@@ -734,6 +754,298 @@ router.post(
       });
 
       res.status(201).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /:id/send-for-signature — Send contract for e-signature ──────────
+
+router.post(
+  "/:id/send-for-signature",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { signerName, signerEmail, message } =
+        SendForSignatureSchema.parse(req.body);
+
+      const contract = await prisma.slipContract.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
+          slip: { select: { id: true, slipNumber: true } },
+        },
+      });
+
+      if (!contract) {
+        throw appError("Contract not found", 404, "NOT_FOUND");
+      }
+
+      if (contract.status === "TERMINATED") {
+        throw appError(
+          "Cannot send terminated contract for signature",
+          400,
+          "INVALID_STATUS",
+        );
+      }
+
+      // Generate a request ID (in production this comes from the esign provider)
+      const requestId = `esign_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+      // Update contract with e-signature tracking fields
+      await prisma.slipContract.update({
+        where: { id: req.params.id },
+        data: {
+          esignRequestId: requestId,
+          esignStatus: "sent",
+          esignSentAt: new Date(),
+          esignSignerName: signerName,
+          esignSignerEmail: signerEmail,
+        } as Record<string, unknown>,
+      });
+
+      // Audit log
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          recordType: "SlipContract",
+          recordId: req.params.id,
+          action: "ESIGN_SENT",
+          changedFieldsJson: {
+            requestId,
+            signerName,
+            signerEmail,
+            message: message || null,
+          },
+        },
+      });
+
+      res.json({
+        requestId,
+        status: "sent",
+        signerName,
+        signerEmail,
+        message: "Signature request sent successfully",
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /bulk-send-for-signature — Send multiple contracts for signature ──
+
+router.post(
+  "/bulk-send-for-signature",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { contractIds, message } =
+        BulkSendForSignatureSchema.parse(req.body);
+
+      const contracts = await prisma.slipContract.findMany({
+        where: {
+          id: { in: contractIds },
+          tenantId,
+          status: { notIn: ["TERMINATED"] },
+        },
+        include: {
+          customer: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
+        },
+      });
+
+      if (contracts.length === 0) {
+        throw appError(
+          "No eligible contracts found",
+          404,
+          "NO_CONTRACTS_FOUND",
+        );
+      }
+
+      const results: {
+        contractId: string;
+        requestId: string;
+        status: string;
+        signerEmail: string;
+      }[] = [];
+
+      for (const contract of contracts) {
+        const requestId = `esign_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const signerEmail = contract.customer?.email || "";
+        const signerName = contract.customer
+          ? `${contract.customer.firstName} ${contract.customer.lastName}`
+          : "Unknown";
+
+        await prisma.slipContract.update({
+          where: { id: contract.id },
+          data: {
+            esignRequestId: requestId,
+            esignStatus: "sent",
+            esignSentAt: new Date(),
+            esignSignerName: signerName,
+            esignSignerEmail: signerEmail,
+          } as Record<string, unknown>,
+        });
+
+        await prisma.auditLog.create({
+          data: {
+            tenantId,
+            userId: req.userId,
+            recordType: "SlipContract",
+            recordId: contract.id,
+            action: "ESIGN_SENT",
+            changedFieldsJson: {
+              requestId,
+              signerName,
+              signerEmail,
+              message: message || null,
+              batchOperation: true,
+            },
+          },
+        });
+
+        results.push({
+          contractId: contract.id,
+          requestId,
+          status: "sent",
+          signerEmail,
+        });
+      }
+
+      res.json({
+        sent: results.length,
+        skipped: contractIds.length - results.length,
+        results,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /esign-webhook — Handle e-signature provider callbacks ────────────
+
+router.post(
+  "/esign-webhook",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const {
+        event,
+        requestId,
+        contractId,
+        signedDocumentUrl,
+        signerEmail,
+        timestamp,
+      } = EsignWebhookSchema.parse(req.body);
+
+      const contract = await prisma.slipContract.findFirst({
+        where: { id: contractId },
+      });
+
+      if (!contract) {
+        throw appError("Contract not found", 404, "NOT_FOUND");
+      }
+
+      let newStatus: string;
+      switch (event) {
+        case "signature_request_signed":
+          newStatus = "signed";
+          break;
+        case "signature_request_declined":
+          newStatus = "declined";
+          break;
+        case "signature_request_viewed":
+          newStatus = "viewed";
+          break;
+        default:
+          newStatus = "sent";
+      }
+
+      const updateData: Record<string, unknown> = {
+        esignStatus: newStatus,
+      };
+
+      if (event === "signature_request_signed") {
+        updateData.esignSignedAt = timestamp || new Date();
+        if (signedDocumentUrl) {
+          updateData.esignSignedDocumentUrl = signedDocumentUrl;
+        }
+      }
+
+      await prisma.slipContract.update({
+        where: { id: contractId },
+        data: updateData,
+      });
+
+      // Audit log
+      await prisma.auditLog.create({
+        data: {
+          tenantId: contract.tenantId,
+          userId: null,
+          recordType: "SlipContract",
+          recordId: contractId,
+          action: `ESIGN_${newStatus.toUpperCase()}`,
+          changedFieldsJson: {
+            event,
+            requestId,
+            signerEmail: signerEmail || null,
+            signedDocumentUrl: signedDocumentUrl || null,
+            timestamp: (timestamp || new Date()).toISOString(),
+          },
+        },
+      });
+
+      res.json({ received: true, status: newStatus });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /:id/signature-status — Get current signing status ─────────────────
+
+router.get(
+  "/:id/signature-status",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const contract = await prisma.slipContract.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: {
+          id: true,
+          esignRequestId: true,
+          esignStatus: true,
+          esignSentAt: true,
+          esignSignedAt: true,
+          esignSignerName: true,
+          esignSignerEmail: true,
+          esignSignedDocumentUrl: true,
+        } as Record<string, boolean>,
+      });
+
+      if (!contract) {
+        throw appError("Contract not found", 404, "NOT_FOUND");
+      }
+
+      const c = contract as Record<string, unknown>;
+
+      res.json({
+        contractId: c.id,
+        requestId: c.esignRequestId || null,
+        status: c.esignStatus || null,
+        sentAt: c.esignSentAt || null,
+        signedAt: c.esignSignedAt || null,
+        signerName: c.esignSignerName || null,
+        signerEmail: c.esignSignerEmail || null,
+        signedDocumentUrl: c.esignSignedDocumentUrl || null,
+      });
     } catch (err) {
       next(err);
     }

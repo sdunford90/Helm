@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
+import CommunicationPrefs from '../components/CommunicationPrefs';
 import { useApi } from '../hooks/useApi';
 
 /* ── Mock Data ─────────────────────────────────────────── */
@@ -773,6 +774,11 @@ export default function CustomerDetailPage() {
               <div style={{ ...s.mono, fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{fmt(c.deposits)}</div>
             </div>
           </div>
+        </div>
+
+        {/* Communication Preferences */}
+        <div style={{ gridColumn: '1 / -1' }}>
+          <CommunicationPrefs customerId={c.id} onSave={() => refetchCustomer()} />
         </div>
       </div>
     </>

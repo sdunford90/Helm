@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
-import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat } from 'lucide-react';
+import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import ESignatureFlow from '../components/ESignatureFlow';
 
 /* ── Types ─────────────────────────────────────────────── */
 
 type ContractStatus = 'Draft' | 'Active' | 'Expiring' | 'Expired' | 'Terminated' | 'Renewed';
 
+type SignatureStatus = 'signed' | 'pending' | 'viewed' | 'declined' | null;
+
 interface Contract {
   id: string;
   number: string;
   customer: string;
+  customerEmail: string;
   slip: string;
   rate: number;
   billingCycle: string;
@@ -23,6 +27,7 @@ interface Contract {
   billingItemId?: string;
   glRevenueAccount?: string;
   glCogsAccount?: string;
+  signatureStatus: SignatureStatus;
 }
 
 const GL_REVENUE_ACCOUNTS = [
@@ -61,13 +66,13 @@ const BILLING_ITEMS = [
 /* ── Mock Data ─────────────────────────────────────────── */
 
 const MOCK_CONTRACTS: Contract[] = [
-  { id: '1', number: 'CTR-001', customer: 'James Harborview', slip: 'A-01', rate: 850, billingCycle: 'Monthly', start: '2024-03-15', end: '2025-03-14', status: 'Active', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true },
-  { id: '2', number: 'CTR-002', customer: 'Maria Seabreeze', slip: 'A-02', rate: 750, billingCycle: 'Monthly', start: '2024-06-01', end: '2025-05-31', status: 'Active', boat: 'Coastal Dream', boatName: "Coastal Dream (32' Powerboat)", securityDeposit: 1500, autoRenew: true },
-  { id: '3', number: 'CTR-003', customer: 'David Tidewater', slip: 'B-01', rate: 1200, billingCycle: 'Monthly', start: '2024-01-05', end: '2025-01-04', status: 'Expired', boat: 'Tidewater Express', boatName: "Tidewater Express (42' Trawler)", securityDeposit: 2400, autoRenew: false },
-  { id: '4', number: 'CTR-004', customer: 'Elena Windward', slip: 'C-01', rate: 3000, billingCycle: 'Seasonal', start: '2025-04-01', end: '2025-10-31', status: 'Active', boat: 'Windward', boatName: "Windward (45' Sailboat)", securityDeposit: 1500, autoRenew: false },
-  { id: '5', number: 'CTR-005', customer: 'Robert Dockside', slip: 'A-04', rate: 700, billingCycle: 'Monthly', start: '2025-05-01', end: '2026-04-30', status: 'Draft', boat: 'Dock Runner', boatName: "Dock Runner (25' Runabout)", securityDeposit: 1400, autoRenew: true },
-  { id: '6', number: 'CTR-006', customer: 'James Harborview', slip: 'A-01', rate: 900, billingCycle: 'Monthly', start: '2025-03-15', end: '2026-03-14', status: 'Renewed', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true },
-  { id: '7', number: 'CTR-007', customer: 'Susan Baywatch', slip: 'B-03', rate: 950, billingCycle: 'Monthly', start: '2023-11-10', end: '2024-11-09', status: 'Terminated', boat: 'Bay Cruiser', boatName: "Bay Cruiser (30' Cabin Cruiser)", securityDeposit: 1900, autoRenew: false },
+  { id: '1', number: 'CTR-001', customer: 'James Harborview', customerEmail: 'james@harborview.com', slip: 'A-01', rate: 850, billingCycle: 'Monthly', start: '2024-03-15', end: '2025-03-14', status: 'Active', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true, signatureStatus: 'signed' },
+  { id: '2', number: 'CTR-002', customer: 'Maria Seabreeze', customerEmail: 'maria@seabreeze.com', slip: 'A-02', rate: 750, billingCycle: 'Monthly', start: '2024-06-01', end: '2025-05-31', status: 'Active', boat: 'Coastal Dream', boatName: "Coastal Dream (32' Powerboat)", securityDeposit: 1500, autoRenew: true, signatureStatus: 'pending' },
+  { id: '3', number: 'CTR-003', customer: 'David Tidewater', customerEmail: 'david@tidewater.com', slip: 'B-01', rate: 1200, billingCycle: 'Monthly', start: '2024-01-05', end: '2025-01-04', status: 'Expired', boat: 'Tidewater Express', boatName: "Tidewater Express (42' Trawler)", securityDeposit: 2400, autoRenew: false, signatureStatus: 'signed' },
+  { id: '4', number: 'CTR-004', customer: 'Elena Windward', customerEmail: 'elena@windward.com', slip: 'C-01', rate: 3000, billingCycle: 'Seasonal', start: '2025-04-01', end: '2025-10-31', status: 'Active', boat: 'Windward', boatName: "Windward (45' Sailboat)", securityDeposit: 1500, autoRenew: false, signatureStatus: null },
+  { id: '5', number: 'CTR-005', customer: 'Robert Dockside', customerEmail: 'robert@dockside.com', slip: 'A-04', rate: 700, billingCycle: 'Monthly', start: '2025-05-01', end: '2026-04-30', status: 'Draft', boat: 'Dock Runner', boatName: "Dock Runner (25' Runabout)", securityDeposit: 1400, autoRenew: true, signatureStatus: null },
+  { id: '6', number: 'CTR-006', customer: 'James Harborview', customerEmail: 'james@harborview.com', slip: 'A-01', rate: 900, billingCycle: 'Monthly', start: '2025-03-15', end: '2026-03-14', status: 'Renewed', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true, signatureStatus: 'signed' },
+  { id: '7', number: 'CTR-007', customer: 'Susan Baywatch', customerEmail: 'susan@baywatch.com', slip: 'B-03', rate: 950, billingCycle: 'Monthly', start: '2023-11-10', end: '2024-11-09', status: 'Terminated', boat: 'Bay Cruiser', boatName: "Bay Cruiser (30' Cabin Cruiser)", securityDeposit: 1900, autoRenew: false, signatureStatus: null },
 ];
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -79,6 +84,13 @@ const statusColors: Record<ContractStatus, { bg: string; color: string; border?:
   Expired: { bg: '#FDECEA', color: '#B71C1C' },
   Terminated: { bg: '#FFFFFF', color: '#B71C1C', border: '#B71C1C' },
   Renewed: { bg: '#0A2342', color: '#FFFFFF' },
+};
+
+const sigStatusColors: Record<string, { bg: string; color: string; label: string }> = {
+  signed: { bg: '#E8F5E9', color: '#1B5E20', label: 'Signed' },
+  pending: { bg: '#FFF3CD', color: '#856404', label: 'Pending' },
+  viewed: { bg: '#E0F2FE', color: '#0369A1', label: 'Viewed' },
+  declined: { bg: '#FDECEA', color: '#B71C1C', label: 'Declined' },
 };
 
 const st: Record<string, React.CSSProperties> = {
@@ -750,6 +762,9 @@ export default function Contracts() {
   const [showForm, setShowForm] = useState(false);
   const [viewingContract, setViewingContract] = useState<Contract | null>(null);
   const [localContracts, setLocalContracts] = useState<Contract[]>([]);
+  const [esignContract, setEsignContract] = useState<Contract | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchSending, setBatchSending] = useState(false);
 
   const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/api/contracts', { immediate: true });
   const createContract = useApi<Contract>('post', '/api/contracts');
@@ -773,6 +788,55 @@ export default function Contracts() {
     );
     setLocalContracts(updated);
     transferContractApi.execute({ body: { contractId, newSlip, effectiveDate, notes } }).catch(() => {});
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (filteredContracts: Contract[]) => {
+    if (selectedIds.size === filteredContracts.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredContracts.map((c) => c.id)));
+    }
+  };
+
+  const handleBatchSend = async () => {
+    if (selectedIds.size === 0) return;
+    setBatchSending(true);
+    try {
+      const res = await fetch('/api/contracts/bulk-send-for-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contractIds: Array.from(selectedIds) }),
+      });
+      if (res.ok) {
+        const updated = contracts.map((c) =>
+          selectedIds.has(c.id) ? { ...c, signatureStatus: 'pending' as SignatureStatus } : c
+        );
+        setLocalContracts(updated);
+        setSelectedIds(new Set());
+      }
+    } catch {
+      // silently fail
+    } finally {
+      setBatchSending(false);
+    }
+  };
+
+  const handleEsignSent = () => {
+    if (esignContract) {
+      const updated = contracts.map((c) =>
+        c.id === esignContract.id ? { ...c, signatureStatus: 'pending' as SignatureStatus } : c
+      );
+      setLocalContracts(updated);
+    }
   };
 
   const now = new Date();
@@ -843,6 +907,16 @@ export default function Contracts() {
           />
         </div>
 
+        {selectedIds.size > 0 && (
+          <button
+            style={{ ...st.addButton, backgroundColor: '#0369A1', opacity: batchSending ? 0.6 : 1 }}
+            onClick={handleBatchSend}
+            disabled={batchSending}
+          >
+            <Send size={15} /> {batchSending ? 'Sending...' : `Send Batch for Signature (${selectedIds.size})`}
+          </button>
+        )}
+
         <button style={st.addButton} onClick={() => setShowForm(true)}>
           <Plus size={16} /> New Contract
         </button>
@@ -854,6 +928,14 @@ export default function Contracts() {
           <table style={st.table}>
             <thead>
               <tr>
+                <th style={{ ...st.th, width: '40px', textAlign: 'center' }}>
+                  <button
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => toggleSelectAll(filtered)}
+                  >
+                    {selectedIds.size === filtered.length && filtered.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />}
+                  </button>
+                </th>
                 <th style={st.th}>Contract #</th>
                 <th style={st.th}>Customer</th>
                 <th style={st.th}>Boat</th>
@@ -863,6 +945,7 @@ export default function Contracts() {
                 <th style={st.th}>Start</th>
                 <th style={st.th}>End</th>
                 <th style={st.th}>Status</th>
+                <th style={st.th}>Signature</th>
                 <th style={st.th}>Actions</th>
               </tr>
             </thead>
@@ -870,17 +953,27 @@ export default function Contracts() {
               {filtered.map((c, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                 const sc = statusColors[c.status];
+                const sigSt = c.signatureStatus ? sigStatusColors[c.signatureStatus] : null;
+                const isSelected = selectedIds.has(c.id);
                 return (
-                  <tr key={c.id}>
-                    <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600, ...st.mono }}>{c.number}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>{c.customer}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Ship size={14} color="#2E4A6B" />{c.boatName}</span></td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{c.slip}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{fmt(c.rate)}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>{c.billingCycle}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, color: '#64748B' }}>{c.start}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, color: '#64748B' }}>{c.end}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>
+                  <tr key={c.id} style={{ backgroundColor: isSelected ? '#EFF6FF' : undefined }}>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, textAlign: 'center' }}>
+                      <button
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onClick={() => toggleSelect(c.id)}
+                      >
+                        {isSelected ? <CheckSquare size={16} color="#0A2342" /> : <Square size={16} color="#94A3B8" />}
+                      </button>
+                    </td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, fontWeight: 600, ...st.mono }}>{c.number}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>{c.customer}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}><span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Ship size={14} color="#2E4A6B" />{c.boatName}</span></td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, fontWeight: 600 }}>{c.slip}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, ...st.mono }}>{fmt(c.rate)}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>{c.billingCycle}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, color: '#64748B' }}>{c.start}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, color: '#64748B' }}>{c.end}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>
                       <span
                         style={{
                           ...st.badge,
@@ -892,13 +985,33 @@ export default function Contracts() {
                         {c.status}
                       </span>
                     </td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>
-                      <button
-                        style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
-                        onClick={() => setViewingContract(c)}
-                      >
-                        View
-                      </button>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>
+                      {sigSt ? (
+                        <span style={{ ...st.badge, backgroundColor: sigSt.bg, color: sigSt.color }}>
+                          {sigSt.label}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '12px', color: '#94A3B8' }}>Unsigned</span>
+                      )}
+                    </td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button
+                          style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                          onClick={() => setViewingContract(c)}
+                        >
+                          View
+                        </button>
+                        {c.signatureStatus !== 'signed' && c.status !== 'Terminated' && (
+                          <button
+                            style={{ background: 'none', border: 'none', color: '#0A2342', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                            onClick={() => setEsignContract(c)}
+                            title="Send for Signature"
+                          >
+                            <PenTool size={13} /> Sign
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -930,6 +1043,16 @@ export default function Contracts() {
           onClose={() => setViewingContract(null)}
           onUpdate={handleUpdate}
           onTransfer={handleTransfer}
+        />
+      )}
+      {esignContract && (
+        <ESignatureFlow
+          contractId={esignContract.id}
+          contractNumber={esignContract.number}
+          customerName={esignContract.customer}
+          customerEmail={esignContract.customerEmail}
+          onClose={() => setEsignContract(null)}
+          onSent={handleEsignSent}
         />
       )}
     </div>

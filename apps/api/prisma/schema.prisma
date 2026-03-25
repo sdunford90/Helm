@@ -449,6 +449,7 @@ model Customer {
   npsSurveys          NpsSurvey[]
   transientBookings   TransientBooking[]
   rampTickets         RampTicket[]
+  communicationPreferences CommunicationPreference[]
 
   @@index([tenantId])
   @@map("customers")
@@ -1300,6 +1301,23 @@ model AnnouncementDelivery {
   customer     Customer     @relation(fields: [customerId], references: [id])
 
   @@map("announcement_deliveries")
+}
+
+model CommunicationPreference {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  customerId String   @map("customer_id")
+  channel    String   // email, sms
+  category   String   // billing, inspections, marketing, announcements
+  optedIn    Boolean  @default(true) @map("opted_in")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@unique([customerId, channel, category])
+  @@index([tenantId])
+  @@index([customerId])
+  @@map("communication_preferences")
 }
 
 model ApiKey {
