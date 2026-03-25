@@ -11,6 +11,8 @@ import {
   XCircle,
   Send,
   Clock,
+  Edit2,
+  Check,
 } from 'lucide-react';
 import ConversionWizard from './ConversionWizard';
 
@@ -45,6 +47,7 @@ interface LeadDetailPanelProps {
   lead: Lead;
   onClose: () => void;
   onStageChange: (stage: string) => void;
+  onSave?: (lead: Lead) => void;
 }
 
 /* ── Stage Flow ───────────────────────────────────────── */
@@ -60,6 +63,9 @@ const STAGE_COLORS: Record<Stage, { bg: string; text: string }> = {
   Lost: { bg: '#FDECEA', text: '#B71C1C' },
 };
 
+const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
+const SOURCES = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
+const SLIP_TYPES = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STAFF = ['Sarah Chen', 'Mike Torres', 'Jessica Park', 'David Liu'];
 
 /* ── Mock Activity ────────────────────────────────────── */
@@ -77,10 +83,7 @@ const MOCK_ACTIVITY: ActivityEvent[] = [
 const s: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: 'rgba(10, 35, 66, 0.4)',
     zIndex: 1000,
     display: 'flex',
@@ -103,20 +106,9 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'flex-start',
     gap: '16px',
   },
-  headerLeft: {
-    flex: 1,
-  },
-  headerName: {
-    fontSize: '22px',
-    fontWeight: 700,
-    color: '#0A2342',
-    margin: '0 0 8px 0',
-  },
-  headerBadgeRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
+  headerLeft: { flex: 1 },
+  headerName: { fontSize: '22px', fontWeight: 700, color: '#0A2342', margin: '0 0 8px 0' },
+  headerBadgeRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' as const },
   badge: {
     display: 'inline-block',
     padding: '3px 12px',
@@ -136,6 +128,45 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  editBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 14px',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: '#0A2342',
+    backgroundColor: '#F0F4F8',
+    border: '1px solid #CBD5E1',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
+  saveBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 14px',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: '#FFFFFF',
+    backgroundColor: '#0A2342',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
+  cancelEditBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 14px',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: '#64748B',
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #CBD5E1',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
   convertBtn: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -149,15 +180,8 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
   },
-  body: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '0',
-  },
-  section: {
-    padding: '24px',
-    borderBottom: '1px solid #F2F4F6',
-  },
+  body: { flex: 1, overflowY: 'auto', padding: '0' },
+  section: { padding: '24px', borderBottom: '1px solid #F2F4F6' },
   sectionTitle: {
     fontSize: '13px',
     fontWeight: 600,
@@ -169,16 +193,8 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: '8px',
   },
-  fieldGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '16px',
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '4px',
-  },
+  fieldGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' },
+  field: { display: 'flex', flexDirection: 'column' as const, gap: '4px' },
   fieldLabel: {
     fontSize: '12px',
     fontWeight: 600,
@@ -186,22 +202,32 @@ const s: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.03em',
   },
-  fieldValue: {
+  fieldValue: { fontSize: '14px', color: '#0A2342', fontWeight: 500 },
+  fieldInput: {
     fontSize: '14px',
     color: '#0A2342',
-    fontWeight: 500,
+    border: '1px solid #CBD5E1',
+    borderRadius: '6px',
+    padding: '7px 10px',
+    backgroundColor: '#FAFCFE',
+    outline: 'none',
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    fontFamily: 'Inter, system-ui, sans-serif',
   },
-  fieldValueMono: {
+  fieldSelect: {
     fontSize: '14px',
     color: '#0A2342',
-    fontWeight: 500,
-    fontFamily: '"JetBrains Mono", monospace',
+    border: '1px solid #CBD5E1',
+    borderRadius: '6px',
+    padding: '7px 10px',
+    backgroundColor: '#FAFCFE',
+    outline: 'none',
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    cursor: 'pointer',
   },
-  timeline: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0px',
-  },
+  timeline: { display: 'flex', flexDirection: 'column' as const, gap: '0px' },
   timelineItem: {
     display: 'flex',
     gap: '12px',
@@ -221,27 +247,10 @@ const s: Record<string, React.CSSProperties> = {
     backgroundColor: '#00D4FF',
     border: '2px solid #FFFFFF',
   },
-  timelineContent: {
-    flex: 1,
-  },
-  timelineDesc: {
-    fontSize: '14px',
-    color: '#0A2342',
-    lineHeight: 1.5,
-    margin: '0 0 4px 0',
-  },
-  timelineMeta: {
-    fontSize: '12px',
-    color: '#64748B',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  noteForm: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '8px',
-  },
+  timelineContent: { flex: 1 },
+  timelineDesc: { fontSize: '14px', color: '#0A2342', lineHeight: 1.5, margin: '0 0 4px 0' },
+  timelineMeta: { fontSize: '12px', color: '#64748B', display: 'flex', alignItems: 'center', gap: '8px' },
+  noteForm: { display: 'flex', flexDirection: 'column' as const, gap: '8px' },
   textarea: {
     width: '100%',
     minHeight: '80px',
@@ -255,10 +264,7 @@ const s: Record<string, React.CSSProperties> = {
     outline: 'none',
     boxSizing: 'border-box' as const,
   },
-  noteSubmitRow: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-  },
+  noteSubmitRow: { display: 'flex', justifyContent: 'flex-end' },
   noteSubmitBtn: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -271,20 +277,6 @@ const s: Record<string, React.CSSProperties> = {
     border: 'none',
     borderRadius: '6px',
     cursor: 'pointer',
-  },
-  assignSelect: {
-    padding: '8px 32px 8px 12px',
-    fontSize: '14px',
-    color: '#0A2342',
-    border: '1px solid #CCC',
-    borderRadius: '6px',
-    backgroundColor: '#FFF',
-    appearance: 'none' as const,
-    backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%232E4A6B\' stroke-width=\'2\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E")',
-    backgroundRepeat: 'no-repeat',
-    backgroundPosition: 'right 10px center',
-    cursor: 'pointer',
-    width: '100%',
   },
   footer: {
     padding: '20px 24px',
@@ -328,7 +320,7 @@ const s: Record<string, React.CSSProperties> = {
 
 function getNextStage(current: Stage): Stage | null {
   const idx = STAGE_ORDER.indexOf(current);
-  if (idx === -1 || idx >= 4) return null; // Won and Lost have no next
+  if (idx === -1 || idx >= 4) return null;
   return STAGE_ORDER[idx + 1];
 }
 
@@ -344,15 +336,30 @@ function getActivityIcon(type: string) {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function LeadDetailPanel({ lead, onClose, onStageChange }: LeadDetailPanelProps) {
+export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
-  const [assignedTo, setAssignedTo] = useState(lead.assignedTo);
   const [activities, setActivities] = useState<ActivityEvent[]>(MOCK_ACTIVITY);
   const [showConversion, setShowConversion] = useState(false);
+  const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
+  const [editData, setEditData] = useState<Lead>({ ...lead });
 
-  const nextStage = getNextStage(lead.stage);
   const isNew = !lead.id;
-  const stageColor = STAGE_COLORS[lead.stage];
+  const stageColor = STAGE_COLORS[editData.stage];
+  const nextStage = getNextStage(lead.stage);
+
+  const handleEdit = (field: keyof Lead, value: string | number) => {
+    setEditData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSave = () => {
+    onSave?.(editData);
+    setIsEditing(false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditData({ ...lead });
+    setIsEditing(false);
+  };
 
   const handleAddNote = () => {
     if (!noteText.trim()) return;
@@ -378,23 +385,33 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange }: LeadDe
                 {isNew ? 'New Lead' : `${lead.firstName} ${lead.lastName}`}
               </h2>
               <div style={s.headerBadgeRow}>
-                <span
-                  style={{
-                    ...s.badge,
-                    backgroundColor: stageColor.bg,
-                    color: stageColor.text,
-                  }}
-                >
-                  {lead.stage}
+                <span style={{ ...s.badge, backgroundColor: stageColor.bg, color: stageColor.text }}>
+                  {isEditing ? editData.stage : lead.stage}
                 </span>
-                {lead.stage === 'Won' && (
-                  <button
-                    style={s.convertBtn}
-                    onClick={() => setShowConversion(true)}
-                  >
+                {!isEditing && lead.stage === 'Won' && (
+                  <button style={s.convertBtn} onClick={() => setShowConversion(true)}>
                     <ArrowRightCircle size={14} />
                     Convert to Customer
                   </button>
+                )}
+                {!isEditing && (
+                  <button style={s.editBtn} onClick={() => setIsEditing(true)}>
+                    <Edit2 size={13} />
+                    Edit
+                  </button>
+                )}
+                {isEditing && (
+                  <>
+                    <button style={s.saveBtn} onClick={handleSave}>
+                      <Check size={13} />
+                      Save
+                    </button>
+                    {!isNew && (
+                      <button style={s.cancelEditBtn} onClick={handleCancelEdit}>
+                        Cancel
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -405,75 +422,193 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange }: LeadDe
 
           {/* Body */}
           <div style={s.body}>
-            {/* Contact Info */}
+            {/* Contact Information */}
             <div style={s.section}>
               <div style={s.sectionTitle}>
                 <User size={14} />
                 Contact Information
               </div>
               <div style={s.fieldGrid}>
+                {/* First Name */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>First Name</span>
-                  <span style={s.fieldValue}>{lead.firstName || '—'}</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      value={editData.firstName}
+                      onChange={(e) => handleEdit('firstName', e.target.value)}
+                      placeholder="First name"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.firstName || '—'}</span>
+                  )}
                 </div>
+                {/* Last Name */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Last Name</span>
-                  <span style={s.fieldValue}>{lead.lastName || '—'}</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      value={editData.lastName}
+                      onChange={(e) => handleEdit('lastName', e.target.value)}
+                      placeholder="Last name"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.lastName || '—'}</span>
+                  )}
                 </div>
+                {/* Email */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Email</span>
-                  <span style={s.fieldValue}>{lead.email || '—'}</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      type="email"
+                      value={editData.email}
+                      onChange={(e) => handleEdit('email', e.target.value)}
+                      placeholder="email@example.com"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.email || '—'}</span>
+                  )}
                 </div>
+                {/* Phone */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Phone</span>
-                  <span style={s.fieldValue}>{lead.phone || '—'}</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      type="tel"
+                      value={editData.phone}
+                      onChange={(e) => handleEdit('phone', e.target.value)}
+                      placeholder="(555) 000-0000"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.phone || '—'}</span>
+                  )}
                 </div>
+                {/* Boat Length */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Boat Length</span>
-                  <span style={s.fieldValueMono}>{lead.boatLength ? `${lead.boatLength} ft` : '—'}</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      type="number"
+                      value={editData.boatLength || ''}
+                      onChange={(e) => handleEdit('boatLength', Number(e.target.value))}
+                      placeholder="ft"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.boatLength ? `${lead.boatLength} ft` : '—'}</span>
+                  )}
                 </div>
+                {/* Slip Type */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Slip Type</span>
-                  <span style={s.fieldValue}>{lead.slipType || '—'}</span>
+                  {isEditing ? (
+                    <select
+                      style={s.fieldSelect}
+                      value={editData.slipType}
+                      onChange={(e) => handleEdit('slipType', e.target.value)}
+                    >
+                      {SLIP_TYPES.map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <span style={s.fieldValue}>{lead.slipType || '—'}</span>
+                  )}
+                </div>
+                {/* Source */}
+                <div style={s.field}>
+                  <span style={s.fieldLabel}>Source</span>
+                  {isEditing ? (
+                    <select
+                      style={s.fieldSelect}
+                      value={editData.source}
+                      onChange={(e) => handleEdit('source', e.target.value)}
+                    >
+                      {SOURCES.map((src) => <option key={src}>{src}</option>)}
+                    </select>
+                  ) : (
+                    <span style={s.fieldValue}>{lead.source || '—'}</span>
+                  )}
+                </div>
+                {/* Stage */}
+                <div style={s.field}>
+                  <span style={s.fieldLabel}>Stage</span>
+                  {isEditing ? (
+                    <select
+                      style={s.fieldSelect}
+                      value={editData.stage}
+                      onChange={(e) => handleEdit('stage', e.target.value)}
+                    >
+                      {STAGES.map((st) => <option key={st}>{st}</option>)}
+                    </select>
+                  ) : (
+                    <span style={s.fieldValue}>{lead.stage}</span>
+                  )}
+                </div>
+                {/* Assigned To */}
+                <div style={{ ...s.field, gridColumn: '1 / -1' }}>
+                  <span style={s.fieldLabel}>Assigned To</span>
+                  {isEditing ? (
+                    <select
+                      style={s.fieldSelect}
+                      value={editData.assignedTo}
+                      onChange={(e) => handleEdit('assignedTo', e.target.value)}
+                    >
+                      <option value="">Unassigned</option>
+                      {STAFF.map((name) => <option key={name}>{name}</option>)}
+                    </select>
+                  ) : (
+                    <span style={s.fieldValue}>{lead.assignedTo || '—'}</span>
+                  )}
+                </div>
+                {/* Notes */}
+                <div style={{ ...s.field, gridColumn: '1 / -1' }}>
+                  <span style={s.fieldLabel}>Notes</span>
+                  {isEditing ? (
+                    <textarea
+                      style={{ ...s.textarea, minHeight: '60px' }}
+                      value={editData.notes}
+                      onChange={(e) => handleEdit('notes', e.target.value)}
+                      placeholder="Add notes about this lead..."
+                    />
+                  ) : (
+                    <span style={{ ...s.fieldValue, fontWeight: 400, color: '#2E4A6B' }}>
+                      {lead.notes || '—'}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
 
-            {/* Source Info */}
-            <div style={s.section}>
-              <div style={s.sectionTitle}>
-                <Globe size={14} />
-                Source
-              </div>
-              <div style={s.fieldGrid}>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Source</span>
-                  <span style={s.fieldValue}>{lead.source}</span>
+            {/* Source Info — view only */}
+            {!isEditing && (
+              <div style={s.section}>
+                <div style={s.sectionTitle}>
+                  <Globe size={14} />
+                  Source Details
                 </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Form</span>
-                  <span style={s.fieldValue}>Slip Inquiry Form</span>
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Landing URL</span>
-                  <span style={{ ...s.fieldValue, color: '#0369A1', fontSize: '13px' }}>
-                    /marina/slips
-                  </span>
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>UTM Source</span>
-                  <span style={s.fieldValue}>google</span>
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>UTM Campaign</span>
-                  <span style={s.fieldValue}>spring_promo</span>
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Referral Code</span>
-                  <span style={s.fieldValueMono}>{lead.source === 'Referral' ? 'REF-412' : '—'}</span>
+                <div style={s.fieldGrid}>
+                  <div style={s.field}>
+                    <span style={s.fieldLabel}>Form</span>
+                    <span style={s.fieldValue}>Slip Inquiry Form</span>
+                  </div>
+                  <div style={s.field}>
+                    <span style={s.fieldLabel}>Landing URL</span>
+                    <span style={{ ...s.fieldValue, color: '#0369A1', fontSize: '13px' }}>/marina/slips</span>
+                  </div>
+                  <div style={s.field}>
+                    <span style={s.fieldLabel}>UTM Source</span>
+                    <span style={s.fieldValue}>google</span>
+                  </div>
+                  <div style={s.field}>
+                    <span style={s.fieldLabel}>UTM Campaign</span>
+                    <span style={s.fieldValue}>spring_promo</span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Activity Timeline */}
             <div style={s.section}>
@@ -499,14 +634,12 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange }: LeadDe
                   </div>
                 ))}
                 {activities.length === 0 && (
-                  <div style={{ fontSize: '13px', color: '#64748B', padding: '8px 0' }}>
-                    No activity yet.
-                  </div>
+                  <div style={{ fontSize: '13px', color: '#64748B', padding: '8px 0' }}>No activity yet.</div>
                 )}
               </div>
             </div>
 
-            {/* Notes */}
+            {/* Add Note */}
             <div style={s.section}>
               <div style={s.sectionTitle}>
                 <MessageSquare size={14} />
@@ -527,68 +660,50 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange }: LeadDe
                 </div>
               </div>
             </div>
-
-            {/* Assignment */}
-            <div style={s.section}>
-              <div style={s.sectionTitle}>
-                <User size={14} />
-                Assignment
-              </div>
-              <select
-                style={s.assignSelect}
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-              >
-                <option value="">Unassigned</option>
-                {STAFF.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </div>
           </div>
 
           {/* Footer Actions */}
           <div style={s.footer}>
-            {lead.stage !== 'Won' && lead.stage !== 'Lost' && nextStage && (
-              <button
-                style={s.primaryBtn}
-                onClick={() => onStageChange(nextStage)}
-              >
+            {!isEditing && lead.stage !== 'Won' && lead.stage !== 'Lost' && nextStage && (
+              <button style={s.primaryBtn} onClick={() => onStageChange(nextStage)}>
                 <ChevronRight size={16} />
                 Move to {nextStage}
               </button>
             )}
-            {lead.stage !== 'Lost' && (
-              <button
-                style={s.destructiveBtn}
-                onClick={() => onStageChange('Lost')}
-              >
+            {!isEditing && lead.stage !== 'Lost' && (
+              <button style={s.destructiveBtn} onClick={() => onStageChange('Lost')}>
                 <XCircle size={16} />
                 Mark as Lost
               </button>
             )}
-            {lead.stage === 'Lost' && (
-              <button
-                style={s.primaryBtn}
-                onClick={() => onStageChange('New')}
-              >
+            {!isEditing && lead.stage === 'Lost' && (
+              <button style={s.primaryBtn} onClick={() => onStageChange('New')}>
                 <ArrowRightCircle size={16} />
                 Reopen Lead
               </button>
+            )}
+            {isEditing && (
+              <>
+                <button style={s.primaryBtn} onClick={handleSave}>
+                  <Check size={16} />
+                  Save Changes
+                </button>
+                {!isNew && (
+                  <button style={s.destructiveBtn} onClick={handleCancelEdit}>
+                    Cancel
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
       </div>
 
-      {/* Conversion Wizard */}
       {showConversion && (
         <ConversionWizard
           lead={lead}
           onClose={() => setShowConversion(false)}
-          onConvert={() => {
-            setShowConversion(false);
-            onClose();
-          }}
+          onConvert={() => { setShowConversion(false); onClose(); }}
         />
       )}
     </>

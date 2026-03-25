@@ -301,13 +301,14 @@ export default function Leads() {
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
+  const [localLeads, setLocalLeads] = useState<Lead[]>(MOCK_LEADS);
 
   // API calls
-  const { data: apiLeads, loading, error, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
+  const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
   const createLeadApi = useApi<Lead>('post', '/api/leads');
   const updateLeadApi = useApi<Lead>('put', '/api/leads');
 
-  const leads = apiLeads || MOCK_LEADS;
+  const leads = apiLeads || localLeads;
 
   const filtered = leads.filter((l) => {
     if (stageFilter !== 'All' && l.stage !== stageFilter) return false;
@@ -328,7 +329,6 @@ export default function Leads() {
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
-      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading leads: {error}</div>}
 
       {/* Filter Bar */}
       <div style={s.filterBar}>
@@ -533,10 +533,23 @@ export default function Leads() {
         <LeadDetailPanel
           lead={selectedLead}
           onClose={() => setSelectedLead(null)}
+          onSave={(updated) => {
+            if (updated.id) {
+              setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated : l));
+              updateLeadApi.execute(updated).then(() => refetchLeads());
+            } else {
+              const newLead = { ...updated, id: String(Date.now()) };
+              setLocalLeads((prev) => [newLead, ...prev]);
+              createLeadApi.execute(newLead).then(() => refetchLeads());
+            }
+            setSelectedLead(null);
+          }}
           onStageChange={async (newStage) => {
-            setSelectedLead({ ...selectedLead, stage: newStage as Stage });
+            const updated = { ...selectedLead, stage: newStage as Stage };
+            setSelectedLead(updated);
+            setLocalLeads((prev) => prev.map((l) => l.id === selectedLead.id ? updated : l));
             if (selectedLead.id) {
-              await updateLeadApi.execute({ ...selectedLead, stage: newStage });
+              await updateLeadApi.execute(updated);
               refetchLeads();
             }
           }}
