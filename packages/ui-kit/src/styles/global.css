@@ -1,0 +1,160 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=DM+Serif+Display&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+  /* Colors */
+  --color-navy: #0A2342;
+  --color-cyan: #00D4FF;
+  --color-slate: #2E4A6B;
+  --color-white: #FFFFFF;
+  --color-sky-blue: #D6E8F4;
+  --color-off-white: #F7F9FB;
+  --color-light-gray: #F2F4F6;
+  --color-border: #CCCCCC;
+  --color-success-bg: #E8F5E9;
+  --color-success-text: #1B5E20;
+  --color-warning-bg: #FFF3CD;
+  --color-warning-text: #856404;
+  --color-alert-bg: #FDECEA;
+  --color-alert-text: #B71C1C;
+  --color-text-primary: #0A2342;
+  --color-text-secondary: #2E4A6B;
+  --color-text-muted: #444444;
+
+  /* Typography */
+  --font-primary: 'Inter', system-ui, sans-serif;
+  --font-display: 'DM Serif Display', serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --font-size-display: 56px;
+  --font-size-h1: 36px;
+  --font-size-h2: 28px;
+  --font-size-h3: 22px;
+  --font-size-body-large: 18px;
+  --font-size-body: 15px;
+  --font-size-body-small: 13px;
+  --font-size-caption: 11px;
+  --font-size-mono: 14px;
+
+  --font-weight-bold: 700;
+  --font-weight-semibold: 600;
+  --font-weight-regular: 400;
+
+  --line-height-heading: 1.2;
+  --line-height-body: 1.5;
+
+  --letter-spacing-heading: -0.02em;
+  --letter-spacing-body: 0;
+  --letter-spacing-caps: 0.05em;
+
+  /* Spacing */
+  --spacing-micro: 4px;
+  --spacing-tight: 8px;
+  --spacing-default: 16px;
+  --spacing-comfortable: 24px;
+  --spacing-loose: 32px;
+  --spacing-open: 48px;
+  --spacing-hero: 64px;
+
+  /* Border Radius */
+  --radius-small: 4px;
+  --radius-default: 6px;
+  --radius-large: 8px;
+  --radius-pill: 9999px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-elevated: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+/* Base Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-primary);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-body);
+  color: var(--color-text-primary);
+  background-color: var(--color-off-white);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-primary);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-heading);
+  letter-spacing: var(--letter-spacing-heading);
+  color: var(--color-navy);
+}
+
+h1 { font-size: var(--font-size-h1); }
+h2 { font-size: var(--font-size-h2); }
+h3 { font-size: var(--font-size-h3); }
+
+a {
+  color: var(--color-cyan);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Mono class for financial figures */
+.font-mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status color utilities */
+.status-success {
+  background-color: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.status-warning {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.status-alert {
+  background-color: var(--color-alert-bg);
+  color: var(--color-alert-text);
+}
+
+.status-active {
+  background-color: var(--color-navy);
+  color: var(--color-white);
+}
+
+.status-inactive {
+  background-color: var(--color-light-gray);
+  color: var(--color-text-muted);
+}

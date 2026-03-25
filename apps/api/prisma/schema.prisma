@@ -1,0 +1,1295 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum TenantStatus {
+  ACTIVE
+  GRACE_PERIOD
+  LOCKED
+}
+
+enum UserRole {
+  PLATFORM_ADMIN
+  MARINA_OWNER
+  MARINA_MANAGER
+  DOCK_STAFF
+  POS_CASHIER
+  ACCOUNTING
+  PORTAL_USER
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL_SENT
+  WON
+  LOST
+}
+
+enum WaitlistStatus {
+  WAITING
+  NOTIFIED
+  HOLD
+  ACCEPTED
+  EXPIRED
+  REMOVED
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  WAITLIST
+  COLLECTIONS_HOLD
+  SEASONAL
+}
+
+enum SlipStatus {
+  VACANT
+  OCCUPIED
+  MAINTENANCE
+  RESERVED
+}
+
+enum ElectricityMode {
+  FLAT_FEE
+  METERED
+}
+
+enum ContractStatus {
+  DRAFT
+  ACTIVE
+  EXPIRING
+  EXPIRED
+  TERMINATED
+  RENEWED
+}
+
+enum BillingCycle {
+  MONTHLY
+  QUARTERLY
+  SEMI_ANNUAL
+  ANNUAL
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  PAST_DUE
+  VOID
+  COLLECTIONS
+}
+
+enum PaymentMethod {
+  CARD
+  ACH
+  CASH
+  CHARGE_TO_SLIP
+  GIFT_CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum TerminationType {
+  FIXED
+  FORMULA
+}
+
+enum DeferredEntryStatus {
+  PENDING
+  RECOGNIZED
+}
+
+enum DepositStatus {
+  HELD
+  RELEASED
+  APPLIED
+  REFUNDED
+}
+
+enum GLAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
+enum PricingRuleType {
+  SEASONAL
+  PEAK_DAY
+  LEAD_TIME
+  MULTI_DAY
+}
+
+enum SuggestionStatus {
+  PENDING
+  APPROVED
+  IGNORED
+}
+
+enum AutomationEventType {
+  ABANDONED_CART_1
+  ABANDONED_CART_2
+  ABANDONED_CART_3
+  POST_BOOKING_CONFIRM
+  PRE_ARRIVAL
+  CHECK_IN_REMINDER
+  POST_RENTAL_THANKS
+  NPS_SURVEY
+  GOOGLE_REVIEW_PROMPT
+  RE_ENGAGEMENT
+}
+
+enum TransientStatus {
+  BOOKED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  OVERSTAY
+}
+
+enum RampTicketType {
+  SINGLE_LAUNCH
+  DAILY_PASS
+  SEASONAL_PASS
+}
+
+enum ConciergeStatus {
+  SUBMITTED
+  QUOTED
+  APPROVED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  INVOICED
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+  RECONCILED
+}
+
+enum DockWalkStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum DockWalkItemStatus {
+  OK
+  VIOLATION
+  NEEDS_ATTENTION
+}
+
+enum InsuranceStatus {
+  PENDING_REVIEW
+  APPROVED
+  EXPIRED
+  REJECTED
+}
+
+enum AnnouncementChannel {
+  EMAIL
+  SMS
+  BOTH
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  OPENED
+}
+
+enum ApiKeyScope {
+  TENANT
+  PORTFOLIO
+}
+
+enum CollectionResolution {
+  PAID_IN_FULL
+  SETTLED
+  WRITTEN_OFF
+}
+
+enum ChargebackStatus {
+  OPEN
+  EVIDENCE_SUBMITTED
+  WON
+  LOST
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id                   String       @id @default(uuid())
+  name                 String
+  subdomain            String       @unique
+  customDomain         String?
+  brandingJson         Json?
+  invoiceTemplateJson  Json?
+  stripeAccountId      String?
+  qboRealmId           String?
+  timezone             String       @default("America/New_York")
+  fiscalYearEnd        String       @default("12/31")
+  saasTierId           String?
+  status               TenantStatus @default(ACTIVE)
+  gracePeriodStartedAt DateTime?
+  lockedAt             DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  saasTier SaasTier? @relation(fields: [saasTierId], references: [id])
+  users    User[]
+
+  @@map("tenants")
+}
+
+model SaasTier {
+  id                 String @id @default(uuid())
+  name               String
+  monthlyFeeCents    Int
+  perLocationFeeCents Int
+  achFeeRate         Float
+  cardFeeRate        Float
+  storageLimitGb     Int
+
+  tenants Tenant[]
+
+  @@map("saas_tiers")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  tenantId    String
+  email       String
+  role        UserRole
+  firstName   String
+  lastName    String
+  clerkUserId String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model LeadForm {
+  id         String  @id @default(uuid())
+  tenantId   String
+  locationId String?
+  formType   String
+  name       String
+  fieldsJson Json
+  active     Boolean @default(true)
+  embedKey   String  @unique @default(uuid())
+
+  leads Lead[]
+
+  @@index([tenantId])
+  @@map("lead_forms")
+}
+
+model Lead {
+  id            String    @id @default(uuid())
+  tenantId      String
+  locationId    String?
+  stage         LeadStage @default(NEW)
+  sourceFormId  String?
+  sourceUrl     String?
+  utmSource     String?
+  utmMedium     String?
+  referralCode  String?
+  firstName     String
+  lastName      String
+  email         String?
+  phone         String?
+  boatLength    Float?
+  slipType      String?
+  notes         String?
+  assignedTo    String?
+  lostReason    String?
+  convertedAt   DateTime?
+  customerId    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sourceForm     LeadForm?      @relation(fields: [sourceFormId], references: [id])
+  waitlistEntries WaitlistEntry[]
+
+  @@index([tenantId])
+  @@map("leads")
+}
+
+model ReferralPartner {
+  id               String @id @default(uuid())
+  tenantId         String
+  name             String
+  code             String @unique
+  contactEmail     String?
+  type             String
+  leadsCount       Int    @default(0)
+  conversionsCount Int    @default(0)
+
+  @@index([tenantId])
+  @@map("referral_partners")
+}
+
+model WaitlistEntry {
+  id            String         @id @default(uuid())
+  tenantId      String
+  locationId    String?
+  customerId    String?
+  leadId        String?
+  slipType      String?
+  boatLength    Float?
+  desiredDate   DateTime?
+  queuePosition Int
+  status        WaitlistStatus @default(WAITING)
+  notifiedAt    DateTime?
+  holdExpiresAt DateTime?
+  createdAt     DateTime       @default(now())
+
+  customer Customer? @relation(fields: [customerId], references: [id])
+  lead     Lead?     @relation(fields: [leadId], references: [id])
+
+  @@index([tenantId])
+  @@map("waitlist_entries")
+}
+
+model Customer {
+  id                  String         @id @default(uuid())
+  tenantId            String
+  firstName           String
+  lastName            String
+  company             String?
+  email               String?
+  phone               String?
+  addressJson         Json?
+  dob                 DateTime?
+  dlNumber            String?
+  dlState             String?
+  dlExpiry            DateTime?
+  dlPhotoUrl          String?
+  emergencyContactJson Json?
+  status              CustomerStatus @default(ACTIVE)
+  taxExempt           Boolean        @default(false)
+  exemptionCertUrl    String?
+  exemptionExpiry     DateTime?
+  achBlocked          Boolean        @default(false)
+  stripeCustomerId    String?
+  qboCustomerId       String?
+  leadSource          String?
+  convertedFromLeadId String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  boats               Boat[]
+  waitlistEntries     WaitlistEntry[]
+  slipContracts       SlipContract[]
+  invoices            Invoice[]
+  payments            Payment[]
+  reservations        Reservation[]
+  conciergeRequests   ConciergeRequest[]
+  securityDeposits    SecurityDeposit[]
+  insuranceRecords    InsuranceRecord[]
+  announcementDeliveries AnnouncementDelivery[]
+  achReturns          AchReturn[]
+  chargebacks         Chargeback[]
+  collectionsAccounts CollectionsAccount[]
+  npsSurveys          NpsSurvey[]
+  transientBookings   TransientBooking[]
+  rampTickets         RampTicket[]
+
+  @@index([tenantId])
+  @@map("customers")
+}
+
+model Boat {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  customerId         String
+  name               String?
+  registrationNumber String?
+  registrationState  String?
+  registrationExpiry DateTime?
+  hin                String?
+  make               String?
+  model              String?
+  year               Int?
+  lengthFt           Float
+  beamFt             Float?
+  draftFt            Float?
+  fuelType           String?
+  engineCount        Int?
+  engineHp           Int?
+
+  customer         Customer           @relation(fields: [customerId], references: [id])
+  safetyRecords    VesselSafetyRecord[]
+  insuranceRecords InsuranceRecord[]
+  slipContracts    SlipContract[]
+
+  @@index([tenantId])
+  @@map("boats")
+}
+
+model VesselSafetyRecord {
+  id              String    @id @default(uuid())
+  tenantId        String
+  boatId          String
+  inspectionDate  DateTime
+  inspectorId     String?
+  passFail        String?
+  notes           String?
+  fireExtCount    Int?
+  fireExtExpiry   DateTime?
+  lifeJacketCount Int?
+  flareExpiry     DateTime?
+  hasHorn         Boolean?
+  hasThrowable    Boolean?
+  nextDueDate     DateTime?
+
+  boat Boat @relation(fields: [boatId], references: [id])
+
+  @@index([tenantId])
+  @@map("vessel_safety_records")
+}
+
+model Slip {
+  id              String          @id @default(uuid())
+  tenantId        String
+  dockId          String?
+  slipNumber      String
+  lengthFt        Float
+  beamFt          Float?
+  depthFt         Float?
+  slipType        String?
+  shorePower      String?
+  status          SlipStatus      @default(VACANT)
+  transientCapable Boolean        @default(false)
+  electricityMode ElectricityMode @default(FLAT_FEE)
+  flatFeeCents    Int?
+  kwhRateCents    Int?
+  qrCodeUrl       String?
+
+  contracts        SlipContract[]
+  meterReadings    MeterReading[]
+  transientBookings TransientBooking[]
+  dockWalkItems    DockWalkItem[]
+  pumpOuts         PumpOut[]
+
+  @@index([tenantId])
+  @@map("slips")
+}
+
+model SlipContract {
+  id                    String           @id @default(uuid())
+  tenantId              String
+  slipId                String
+  customerId            String
+  boatId                String?
+  startDate             DateTime
+  endDate               DateTime?
+  billingCycle          BillingCycle     @default(MONTHLY)
+  billingAnchor         Int?
+  rateCents             Int
+  electricityMode       ElectricityMode?
+  autoRenew             Boolean          @default(false)
+  status                ContractStatus   @default(DRAFT)
+  securityDepositCents  Int?
+  earlyTerminationType  TerminationType?
+  earlyTerminationValue Float?
+  qboItemId             String?
+  renewalBatchId        String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  slip           Slip           @relation(fields: [slipId], references: [id])
+  customer       Customer       @relation(fields: [customerId], references: [id])
+  boat           Boat?          @relation(fields: [boatId], references: [id])
+  renewalBatch   RenewalBatch?  @relation(fields: [renewalBatchId], references: [id])
+  securityDeposits SecurityDeposit[]
+
+  @@index([tenantId])
+  @@map("slip_contracts")
+}
+
+model RenewalBatch {
+  id                String   @id @default(uuid())
+  tenantId          String
+  createdBy         String
+  status            String
+  rateIncreaseType  String?
+  rateIncreaseValue Float?
+  contractCount     Int
+  revenueDeltaCents Int?
+  approvedBy        String?
+  approvedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  contracts SlipContract[]
+
+  @@index([tenantId])
+  @@map("renewal_batches")
+}
+
+model MeterReading {
+  id          String   @id @default(uuid())
+  tenantId    String
+  slipId      String
+  readingDate DateTime
+  previousKwh Float
+  currentKwh  Float
+  consumedKwh Float
+  rateCents   Int
+  amountCents Int
+  isEstimated Boolean  @default(false)
+  staffId     String?
+
+  slip Slip @relation(fields: [slipId], references: [id])
+
+  @@index([tenantId])
+  @@map("meter_readings")
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  tenantId      String
+  customerId    String
+  invoiceNumber String
+  issuedDate    DateTime
+  dueDate       DateTime
+  status        InvoiceStatus @default(DRAFT)
+  subtotalCents Int
+  taxCents      Int           @default(0)
+  totalCents    Int
+  balanceCents  Int
+  pdfUrl        String?
+  qboInvoiceId  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  customer  Customer         @relation(fields: [customerId], references: [id])
+  lineItems InvoiceLineItem[]
+  payments  Payment[]
+
+  @@index([tenantId])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id            String  @id @default(uuid())
+  invoiceId     String
+  description   String
+  quantity      Float   @default(1)
+  unitPriceCents Int
+  discountCents Int     @default(0)
+  taxRate       Float   @default(0)
+  taxCents      Int     @default(0)
+  extendedCents Int
+  glAccountId   String?
+  isDeferred    Boolean @default(false)
+  sourceType    String?
+  sourceId      String?
+
+  invoice           Invoice           @relation(fields: [invoiceId], references: [id])
+  glAccount         GlAccount?        @relation(fields: [glAccountId], references: [id])
+  deferredSchedules DeferredSchedule[]
+
+  @@map("invoice_line_items")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  tenantId        String
+  customerId      String
+  invoiceId       String?
+  amountCents     Int
+  method          PaymentMethod
+  stripePaymentId String?
+  postedDate      DateTime
+  status          PaymentStatus @default(PENDING)
+  qboPaymentId    String?
+  createdAt       DateTime      @default(now())
+
+  customer   Customer   @relation(fields: [customerId], references: [id])
+  invoice    Invoice?   @relation(fields: [invoiceId], references: [id])
+  achReturns AchReturn[]
+
+  @@index([tenantId])
+  @@map("payments")
+}
+
+model ProcessedWebhook {
+  id            String   @id @default(uuid())
+  stripeEventId String   @unique
+  processedAt   DateTime @default(now())
+  status        String
+  tenantId      String?
+
+  @@map("processed_webhooks")
+}
+
+model AchReturn {
+  id                String    @id @default(uuid())
+  tenantId          String
+  paymentId         String
+  customerId        String
+  rCode             String
+  returnedAt        DateTime
+  reversalEntryId   String?
+  returnFeeCents    Int?
+  customerNotifiedAt DateTime?
+  achBlockedSet     Boolean   @default(false)
+
+  payment  Payment  @relation(fields: [paymentId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("ach_returns")
+}
+
+model Chargeback {
+  id                 String           @id @default(uuid())
+  tenantId           String
+  customerId         String
+  stripeDisputeId    String           @unique
+  amountCents        Int
+  status             ChargebackStatus @default(OPEN)
+  evidenceSubmittedAt DateTime?
+  outcome            String?
+  creditIssuedCents  Int?
+  platformFeeCents   Int?
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("chargebacks")
+}
+
+model CollectionsAccount {
+  id                   String               @id @default(uuid())
+  tenantId             String
+  customerId           String
+  assignedAt           DateTime             @default(now())
+  assignedBy           String
+  agencyName           String?
+  balanceAtHandoffCents Int
+  status               String
+  recoveredCents       Int                  @default(0)
+  resolvedAt           DateTime?
+  resolutionType       CollectionResolution?
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("collections_accounts")
+}
+
+model DeferredSchedule {
+  id                String   @id @default(uuid())
+  tenantId          String
+  invoiceLineItemId String
+  totalCents        Int
+  recognizedCents   Int      @default(0)
+  startDate         DateTime
+  endDate           DateTime
+  status            String
+
+  invoiceLineItem InvoiceLineItem @relation(fields: [invoiceLineItemId], references: [id])
+  entries         DeferredEntry[]
+
+  @@index([tenantId])
+  @@map("deferred_schedules")
+}
+
+model DeferredEntry {
+  id              String             @id @default(uuid())
+  scheduleId      String
+  recognitionDate DateTime
+  amountCents     Int
+  glEntryId       String?
+  status          DeferredEntryStatus @default(PENDING)
+
+  schedule DeferredSchedule @relation(fields: [scheduleId], references: [id])
+
+  @@map("deferred_entries")
+}
+
+model SecurityDeposit {
+  id                  String       @id @default(uuid())
+  tenantId            String
+  customerId          String
+  contractId          String?
+  amountCents         Int
+  stripeChargeId      String?
+  status              DepositStatus @default(HELD)
+  releasedAt          DateTime?
+  appliedToInvoiceId  String?
+  qboLiabilityEntryId String?
+
+  customer Customer      @relation(fields: [customerId], references: [id])
+  contract SlipContract? @relation(fields: [contractId], references: [id])
+
+  @@index([tenantId])
+  @@map("security_deposits")
+}
+
+model GlAccount {
+  id                String        @id @default(uuid())
+  tenantId          String
+  accountNumber     String
+  name              String
+  type              GLAccountType
+  subType           String?
+  qboAccountId      String?
+  isDeferredRevenue Boolean       @default(false)
+
+  entries   GlEntry[]
+  lineItems InvoiceLineItem[]
+
+  @@index([tenantId])
+  @@map("gl_accounts")
+}
+
+model GlEntry {
+  id          String   @id @default(uuid())
+  tenantId    String
+  journalId   String?
+  accountId   String
+  debitCents  Int      @default(0)
+  creditCents Int      @default(0)
+  description String?
+  postedAt    DateTime @default(now())
+  sourceType  String?
+  sourceId    String?
+
+  account GlAccount @relation(fields: [accountId], references: [id])
+
+  @@index([tenantId])
+  @@map("gl_entries")
+}
+
+model AuditLog {
+  id               String   @id @default(uuid())
+  tenantId         String
+  userId           String?
+  userName         String?
+  recordType       String
+  recordId         String
+  action           String
+  changedFieldsJson Json?
+  ipAddress        String?
+  createdAt        DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([recordType, recordId])
+  @@map("audit_logs")
+}
+
+model CancellationPolicy {
+  id              String  @id @default(uuid())
+  tenantId        String
+  locationId      String?
+  name            String
+  isWeatherPolicy Boolean @default(false)
+  rulesJson       Json
+
+  rentalProducts RentalProduct[]
+
+  @@index([tenantId])
+  @@map("cancellation_policies")
+}
+
+model RentalProduct {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  locationId           String?
+  boatId               String?
+  name                 String
+  description          String?
+  durationType         String?
+  basePriceCents       Int
+  floorPriceCents      Int?
+  ceilingPriceCents    Int?
+  damageWaiverCents    Int?
+  depositCents         Int?
+  cancellationPolicyId String?
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  cancellationPolicy    CancellationPolicy?     @relation(fields: [cancellationPolicyId], references: [id])
+  pricingRules          PricingRule[]
+  calendarOverrides     PricingCalendarOverride[]
+  demandSurgeTiers      DemandSurgeTier[]
+  algorithmicSuggestions AlgorithmicSuggestion[]
+  reservations          Reservation[]
+
+  @@index([tenantId])
+  @@map("rental_products")
+}
+
+model PricingRule {
+  id              String          @id @default(uuid())
+  rentalProductId String
+  ruleType        PricingRuleType
+  value           Float
+  startDate       DateTime?
+  endDate         DateTime?
+  daysJson        Json?
+  priority        Int             @default(0)
+
+  rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
+
+  @@map("pricing_rules")
+}
+
+model PricingCalendarOverride {
+  id              String   @id @default(uuid())
+  rentalProductId String
+  overrideDate    DateTime
+  priceCents      Int
+  createdBy       String?
+  note            String?
+
+  rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
+
+  @@map("pricing_calendar_overrides")
+}
+
+model DemandSurgeTier {
+  id                      String @id @default(uuid())
+  rentalProductId         String
+  availabilityThresholdPct Float
+  multiplier              Float
+  priority                Int    @default(0)
+
+  rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
+
+  @@map("demand_surge_tiers")
+}
+
+model AlgorithmicSuggestion {
+  id                String           @id @default(uuid())
+  rentalProductId   String
+  suggestedDate     DateTime
+  rulePriceCents    Int
+  suggestedPriceCents Int
+  reason            String?
+  status            SuggestionStatus @default(PENDING)
+  reviewedBy        String?
+  reviewedAt        DateTime?
+
+  rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
+
+  @@map("algorithmic_suggestions")
+}
+
+model Reservation {
+  id                   String            @id @default(uuid())
+  tenantId             String
+  customerId           String
+  rentalProductId      String
+  startDt              DateTime
+  endDt                DateTime
+  totalCents           Int
+  waiverSelected       Boolean           @default(false)
+  depositAuthId        String?
+  status               ReservationStatus @default(PENDING)
+  cancellationReason   String?
+  refundCents          Int?
+  stripePaymentIntentId String?
+  priceLockExpiresAt   DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  customer        Customer              @relation(fields: [customerId], references: [id])
+  rentalProduct   RentalProduct         @relation(fields: [rentalProductId], references: [id])
+  automationEvents RentalAutomationEvent[]
+  npsSurveys      NpsSurvey[]
+
+  @@index([tenantId])
+  @@map("reservations")
+}
+
+model RentalAutomationEvent {
+  id            String              @id @default(uuid())
+  tenantId      String
+  reservationId String
+  customerId    String
+  eventType     AutomationEventType
+  scheduledAt   DateTime
+  sentAt        DateTime?
+  status        String
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+
+  @@index([tenantId])
+  @@map("rental_automation_events")
+}
+
+model NpsSurvey {
+  id                String    @id @default(uuid())
+  tenantId          String
+  reservationId     String
+  customerId        String
+  score             Int?
+  comment           String?
+  sentAt            DateTime?
+  respondedAt       DateTime?
+  googlePromptSentAt DateTime?
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+  customer    Customer    @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("nps_surveys")
+}
+
+model PromoCode {
+  id            String    @id @default(uuid())
+  tenantId      String
+  code          String
+  discountType  String
+  discountValue Float
+  usageLimit    Int?
+  usedCount     Int       @default(0)
+  validFrom     DateTime?
+  validTo       DateTime?
+  active        Boolean   @default(true)
+
+  @@index([tenantId])
+  @@map("promo_codes")
+}
+
+model TransientBooking {
+  id              String          @id @default(uuid())
+  tenantId        String
+  slipId          String
+  guestName       String
+  guestEmail      String?
+  guestPhone      String?
+  boatName        String?
+  boatLength      Float?
+  checkIn         DateTime
+  checkOut        DateTime?
+  rateCents       Int
+  totalCents      Int
+  stripePaymentId String?
+  status          TransientStatus @default(BOOKED)
+  customerId      String?
+  createdAt       DateTime        @default(now())
+
+  slip     Slip      @relation(fields: [slipId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("transient_bookings")
+}
+
+model RampTicket {
+  id               String         @id @default(uuid())
+  tenantId         String
+  locationId       String?
+  customerId       String?
+  guestName        String?
+  licensePlate     String?
+  boatRegistration String?
+  ticketType       RampTicketType
+  amountCents      Int
+  paymentMethod    String?
+  stripePaymentId  String?
+  createdAt        DateTime       @default(now())
+
+  customer Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@map("ramp_tickets")
+}
+
+model ConciergeRequest {
+  id            String          @id @default(uuid())
+  tenantId      String
+  customerId    String
+  boatId        String?
+  serviceType   String
+  preferredDate DateTime?
+  notes         String?
+  urgency       String?
+  status        ConciergeStatus @default(SUBMITTED)
+  assignedTo    String?
+  vendorId      String?
+  quoteCents    Int?
+  approvedAt    DateTime?
+  completedAt   DateTime?
+  invoiceId     String?
+
+  customer Customer        @relation(fields: [customerId], references: [id])
+  vendor   ConciergeVendor? @relation(fields: [vendorId], references: [id])
+
+  @@index([tenantId])
+  @@map("concierge_requests")
+}
+
+model ConciergeVendor {
+  id        String  @id @default(uuid())
+  tenantId  String
+  name      String
+  specialty String?
+  phone     String?
+  email     String?
+  notes     String?
+  active    Boolean @default(true)
+
+  requests ConciergeRequest[]
+
+  @@index([tenantId])
+  @@map("concierge_vendors")
+}
+
+model PosTransaction {
+  id            String   @id @default(uuid())
+  tenantId      String
+  cashierId     String?
+  shiftId       String?
+  subtotalCents Int
+  taxCents      Int      @default(0)
+  tipCents      Int      @default(0)
+  totalCents    Int
+  offlineQueued Boolean  @default(false)
+  syncedAt      DateTime?
+  status        String
+  createdAt     DateTime @default(now())
+
+  shift     Shift?        @relation(fields: [shiftId], references: [id])
+  lineItems PosLineItem[]
+
+  @@index([tenantId])
+  @@map("pos_transactions")
+}
+
+model PosLineItem {
+  id            String @id @default(uuid())
+  transactionId String
+  productId     String?
+  quantity      Int     @default(1)
+  unitPriceCents Int
+  discountCents Int     @default(0)
+  taxCents      Int     @default(0)
+  extendedCents Int
+
+  transaction PosTransaction @relation(fields: [transactionId], references: [id])
+  product     Product?       @relation(fields: [productId], references: [id])
+
+  @@map("pos_line_items")
+}
+
+model Shift {
+  id               String      @id @default(uuid())
+  tenantId         String
+  locationId       String?
+  cashierId        String
+  openedAt         DateTime    @default(now())
+  closedAt         DateTime?
+  openingFloatCents Int
+  closingCashCents Int?
+  tipTotalCents    Int         @default(0)
+  status           ShiftStatus @default(OPEN)
+
+  transactions PosTransaction[]
+
+  @@index([tenantId])
+  @@map("shifts")
+}
+
+model Product {
+  id             String  @id @default(uuid())
+  tenantId       String
+  name           String
+  sku            String?
+  barcode        String?
+  departmentId   String?
+  costCents      Int?
+  priceCents     Int
+  taxClass       String?
+  trackInventory Boolean @default(false)
+  reorderQty     Int?
+
+  inventory    Inventory[]
+  posLineItems PosLineItem[]
+
+  @@index([tenantId])
+  @@map("products")
+}
+
+model Inventory {
+  id            String    @id @default(uuid())
+  tenantId      String
+  productId     String
+  locationId    String?
+  qtyOnHand     Int       @default(0)
+  qtyOnOrder    Int       @default(0)
+  lastCountDate DateTime?
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([tenantId])
+  @@map("inventory")
+}
+
+model PurchaseOrder {
+  id           String    @id @default(uuid())
+  tenantId     String
+  vendorId     String?
+  status       String
+  expectedDate DateTime?
+  totalCents   Int
+  createdAt    DateTime  @default(now())
+
+  @@index([tenantId])
+  @@map("purchase_orders")
+}
+
+model DockWalk {
+  id          String         @id @default(uuid())
+  tenantId    String
+  inspectorId String
+  dockId      String?
+  startedAt   DateTime       @default(now())
+  completedAt DateTime?
+  status      DockWalkStatus @default(IN_PROGRESS)
+
+  items DockWalkItem[]
+
+  @@index([tenantId])
+  @@map("dock_walks")
+}
+
+model DockWalkItem {
+  id            String             @id @default(uuid())
+  dockWalkId    String
+  slipId        String?
+  status        DockWalkItemStatus @default(OK)
+  notes         String?
+  violationType String?
+  photoUrls     Json?
+  feeCents      Int?
+  notifiedAt    DateTime?
+
+  dockWalk DockWalk @relation(fields: [dockWalkId], references: [id])
+  slip     Slip?    @relation(fields: [slipId], references: [id])
+
+  @@map("dock_walk_items")
+}
+
+model PumpOut {
+  id            String   @id @default(uuid())
+  tenantId      String
+  slipId        String
+  staffId       String?
+  eventDate     DateTime
+  gallons       Float
+  feeCents      Int?
+  invoiceLineId String?
+
+  slip Slip @relation(fields: [slipId], references: [id])
+
+  @@index([tenantId])
+  @@map("pump_outs")
+}
+
+model InsuranceRecord {
+  id                   String          @id @default(uuid())
+  tenantId             String
+  customerId           String
+  boatId               String?
+  documentUrl          String?
+  insurer              String?
+  policyNumber         String?
+  startDate            DateTime?
+  expiryDate           DateTime?
+  coverageJson         Json?
+  extractionConfidence String?
+  status               InsuranceStatus @default(PENDING_REVIEW)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  boat     Boat?    @relation(fields: [boatId], references: [id])
+
+  @@index([tenantId])
+  @@map("insurance_records")
+}
+
+model Announcement {
+  id             String              @id @default(uuid())
+  tenantId       String
+  subject        String
+  body           String
+  audienceFilter Json?
+  channels       AnnouncementChannel @default(EMAIL)
+  isEmergency    Boolean             @default(false)
+  scheduledAt    DateTime?
+  sentAt         DateTime?
+  staffId        String?
+  createdAt      DateTime            @default(now())
+
+  deliveries AnnouncementDelivery[]
+
+  @@index([tenantId])
+  @@map("announcements")
+}
+
+model AnnouncementDelivery {
+  id             String         @id @default(uuid())
+  announcementId String
+  customerId     String
+  channel        String
+  status         DeliveryStatus @default(PENDING)
+  openedAt       DateTime?
+
+  announcement Announcement @relation(fields: [announcementId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id])
+
+  @@map("announcement_deliveries")
+}
+
+model ApiKey {
+  id         String      @id @default(uuid())
+  tenantId   String
+  keyHash    String
+  scope      ApiKeyScope
+  createdBy  String?
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([tenantId])
+  @@map("api_keys")
+}

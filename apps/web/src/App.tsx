@@ -1,0 +1,39 @@
+import { Routes, Route } from 'react-router-dom';
+import AppLayout from './components/AppLayout';
+import Dashboard from './pages/Dashboard';
+import Leads from './pages/Leads';
+import Waitlist from './pages/Waitlist';
+import Customers from './pages/Customers';
+import Slips from './pages/Slips';
+import Contracts from './pages/Contracts';
+import Billing from './pages/Billing';
+import Rentals from './pages/Rentals';
+import POS from './pages/POS';
+import DockWalks from './pages/DockWalks';
+import Reports from './pages/Reports';
+import Announcements from './pages/Announcements';
+import Settings from './pages/Settings';
+import Onboarding from './pages/Onboarding';
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/onboarding" element={<Onboarding />} />
+      <Route element={<AppLayout />}>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/leads" element={<Leads />} />
+        <Route path="/waitlist" element={<Waitlist />} />
+        <Route path="/customers" element={<Customers />} />
+        <Route path="/slips" element={<Slips />} />
+        <Route path="/contracts" element={<Contracts />} />
+        <Route path="/billing" element={<Billing />} />
+        <Route path="/rentals" element={<Rentals />} />
+        <Route path="/pos" element={<POS />} />
+        <Route path="/dock-walks" element={<DockWalks />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/announcements" element={<Announcements />} />
+        <Route path="/settings" element={<Settings />} />
+      </Route>
+    </Routes>
+  );
+}

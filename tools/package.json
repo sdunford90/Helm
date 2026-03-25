@@ -1,0 +1,17 @@
+{
+  "name": "@helm/tools",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "migrate:all": "tsx migrate-all.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
