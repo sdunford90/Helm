@@ -1161,10 +1161,10 @@ export default function Rentals() {
                       return (
                         <tr key={rule.id}>
                           <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{rule.name}</td>
-                          <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.appliesTo}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{(rule as any).appliesTo ?? 'All Products'}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.type}</td>
-                          <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{rule.adjustment > 0 ? '+' : ''}{rule.adjustment}{rule.adjustmentType === '%' ? '%' : '$'}</td>
-                          <td style={{ ...st.td, backgroundColor: rowBg }}>{rule.days.join(', ') || rule.conditions}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{rule.adjustment > 0 ? '+' : ''}{rule.adjustment}%</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{(rule as any).days?.join(', ') || (rule as any).conditions || `${rule.startDate} – ${rule.endDate}`}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>
                             <span style={{ ...st.badge, backgroundColor: rule.active ? '#DEF7EC' : '#F3F4F6', color: rule.active ? '#03543F' : '#64748B' }}>{rule.active ? 'Active' : 'Inactive'}</span>
                           </td>
