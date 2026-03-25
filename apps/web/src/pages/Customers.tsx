@@ -178,7 +178,13 @@ export default function Customers() {
   const [achBlockedFilter, setAchBlockedFilter] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const filtered = MOCK_CUSTOMERS.filter((c) => {
+  // API calls
+  const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/api/customers', { immediate: true });
+  const createCustomerApi = useApi<Customer>('post', '/api/customers');
+
+  const customers = apiCustomers || MOCK_CUSTOMERS;
+
+  const filtered = customers.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;
     if (taxExemptFilter && !c.taxExempt) return false;
     if (achBlockedFilter && !c.achBlocked) return false;
@@ -197,6 +203,9 @@ export default function Customers() {
     <div style={styles.page}>
       <h1 style={styles.title}>Customers</h1>
       <hr style={styles.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading customers: {error}</div>}
 
       {/* Filter Bar */}
       <div style={styles.filterBar}>
@@ -322,8 +331,9 @@ export default function Customers() {
       {showForm && (
         <CustomerForm
           onClose={() => setShowForm(false)}
-          onSave={(data) => {
-            console.log('Save customer:', data);
+          onSave={async (data) => {
+            await createCustomerApi.execute(data);
+            refetchCustomers();
             setShowForm(false);
           }}
         />

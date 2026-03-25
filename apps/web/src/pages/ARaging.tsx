@@ -1,5 +1,6 @@
 import { Download } from 'lucide-react';
 import { formatCents } from '../lib/format';
+import { useApi } from '../hooks/useApi';
 
 /* ─── Types ─── */
 interface AgingRow {
@@ -89,17 +90,23 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 ];
 
 export default function ARaging() {
-  const grandTotal = mockAgingData.reduce((s, r) => s + rowTotal(r), 0);
+  // API call with fallback to mock data
+  const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/api/reports/ar-aging', { immediate: true });
+  const agingData = apiAgingData ?? mockAgingData;
+
+  const grandTotal = agingData.reduce((s, r) => s + rowTotal(r), 0);
 
   return (
     <div style={s.page}>
       <h1 style={s.title}>A/R Aging</h1>
       <hr style={s.divider} />
 
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading aging data...</div>}
+
       {/* Summary Cards */}
       <div style={s.summaryRow}>
         {agingBuckets.map((b) => {
-          const val = colSum(mockAgingData, b.field);
+          const val = colSum(agingData, b.field);
           return (
             <div key={b.label} style={{ ...s.card, borderTop: `3px solid ${b.color}` }}>
               <div style={s.cardLabel as React.CSSProperties}>{b.label}</div>
@@ -130,7 +137,7 @@ export default function ARaging() {
             </tr>
           </thead>
           <tbody>
-            {mockAgingData.map((row, idx) => {
+            {agingData.map((row, idx) => {
               const total = rowTotal(row);
               return (
                 <tr key={row.customer} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
@@ -155,11 +162,11 @@ export default function ARaging() {
             {/* Totals Row */}
             <tr style={s.totalsRow}>
               <td style={{ ...s.td, fontWeight: 700 }}>TOTAL</td>
-              <td style={{ ...s.tdRight, fontWeight: 700 }}>{formatCents(colSum(mockAgingData, 'current'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#856404' }}>{formatCents(colSum(mockAgingData, 'days1to30'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#E65100' }}>{formatCents(colSum(mockAgingData, 'days31to60'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#BF360C' }}>{formatCents(colSum(mockAgingData, 'days61to90'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#B71C1C' }}>{formatCents(colSum(mockAgingData, 'days90plus'))}</td>
+              <td style={{ ...s.tdRight, fontWeight: 700 }}>{formatCents(colSum(agingData, 'current'))}</td>
+              <td style={{ ...s.tdRight, fontWeight: 700, color: '#856404' }}>{formatCents(colSum(agingData, 'days1to30'))}</td>
+              <td style={{ ...s.tdRight, fontWeight: 700, color: '#E65100' }}>{formatCents(colSum(agingData, 'days31to60'))}</td>
+              <td style={{ ...s.tdRight, fontWeight: 700, color: '#BF360C' }}>{formatCents(colSum(agingData, 'days61to90'))}</td>
+              <td style={{ ...s.tdRight, fontWeight: 700, color: '#B71C1C' }}>{formatCents(colSum(agingData, 'days90plus'))}</td>
               <td style={{ ...s.tdRight, fontWeight: 700, fontSize: '14px' }}>{formatCents(grandTotal)}</td>
             </tr>
           </tbody>

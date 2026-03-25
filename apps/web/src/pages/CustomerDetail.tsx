@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
+import { useApi } from '../hooks/useApi';
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
@@ -78,6 +79,23 @@ const INVOICES = [
   { id: 'INV-004', description: 'Pump-Out Service', amount: 45.0, status: 'Open', date: '2025-03-20' },
   { id: 'INV-005', description: 'Late Fee', amount: 25.0, status: 'Overdue', date: '2025-01-15' },
 ];
+
+interface Boat {
+  id: string;
+  name: string;
+  type: string;
+  length: number;
+  registration: string;
+  compliance: number;
+}
+
+interface Invoice {
+  id: string;
+  description: string;
+  amount: number;
+  status: string;
+  date: string;
+}
 
 const ACTIVITY = [
   { date: '2025-03-20', action: 'Pump-out service completed', type: 'service' },
@@ -356,7 +374,15 @@ export default function CustomerDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
 
-  const c = CUSTOMER; // In production, fetch by id
+  // API calls
+  const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
+  const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
+  const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
+  const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
+
+  const c = apiCustomer || CUSTOMER; // Fallback to mock data
+  const boats = apiBoats || BOATS;
+  const invoices = apiInvoices || INVOICES;
   const badgeStyle = statusBadgeColors[c.status];
 
   const tabs: { key: Tab; label: string }[] = [
@@ -466,7 +492,7 @@ export default function CustomerDetailPage() {
           </tr>
         </thead>
         <tbody>
-          {BOATS.map((b, idx) => {
+          {boats.map((b, idx) => {
             const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
             const cb = complianceBadge(b.compliance);
             return (
@@ -502,7 +528,7 @@ export default function CustomerDetailPage() {
           </tr>
         </thead>
         <tbody>
-          {INVOICES.map((inv, idx) => {
+          {invoices.map((inv, idx) => {
             const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
             const ib = invoiceStatusColors[inv.status];
             return (
@@ -560,6 +586,9 @@ export default function CustomerDetailPage() {
       <button style={s.backRow} onClick={() => navigate('/customers')}>
         <ArrowLeft size={16} /> Back to Customers
       </button>
+
+      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '16px', color: '#B71C1C', backgroundColor: '#FDECEA', borderRadius: '8px', marginBottom: '16px' }}>Error loading customer: {error}</div>}
 
       <div style={s.headerRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -619,8 +648,9 @@ export default function CustomerDetailPage() {
             status: c.status,
           }}
           onClose={() => setShowEdit(false)}
-          onSave={(data) => {
-            console.log('Update customer:', data);
+          onSave={async (data) => {
+            await updateCustomerApi.execute(data);
+            refetchCustomer();
             setShowEdit(false);
           }}
         />

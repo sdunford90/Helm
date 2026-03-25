@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   Building2, Palette, CreditCard, Link, ShieldCheck,
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
@@ -97,6 +98,14 @@ const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
 export default function Settings() {
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'integrations' | 'team' | 'advanced'>('profile');
 
+  // API calls
+  const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
+  const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
+  const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/api/settings/team', { immediate: true });
+
+  // Use API data when available, fall back to mock
+  const teamMembers = apiTeam ?? TEAM;
+
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
     { key: 'branding', label: 'Branding', icon: Palette },
@@ -192,7 +201,9 @@ export default function Settings() {
               ))}
             </div>
           </div>
-          <button style={st.saveBtn}>Save Changes</button>
+          <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'profile' })} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save Changes'}
+          </button>
         </div>
       )}
 
@@ -238,7 +249,9 @@ export default function Settings() {
                 <input style={st.input} defaultValue="Your home on the water" />
               </div>
             </div>
-            <button style={st.saveBtn}>Save Branding</button>
+            <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'branding' })} disabled={savingSettings}>
+              {savingSettings ? 'Saving...' : 'Save Branding'}
+            </button>
           </div>
         </>
       )}
@@ -305,7 +318,9 @@ export default function Settings() {
               ))}
             </div>
           </div>
-          <button style={st.saveBtn}>Save Billing Settings</button>
+          <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'billing' })} disabled={savingSettings}>
+            {savingSettings ? 'Saving...' : 'Save Billing Settings'}
+          </button>
         </>
       )}
 
@@ -392,7 +407,7 @@ export default function Settings() {
                 </tr>
               </thead>
               <tbody>
-                {TEAM.map((m, idx) => {
+                {teamMembers.map((m, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   const statusColors: Record<string, { bg: string; color: string }> = {
                     Active: { bg: '#DEF7EC', color: '#03543F' },

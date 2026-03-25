@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -31,6 +32,14 @@ type TimePeriod = 'Today' | 'This Week' | 'This Month' | 'This Quarter';
 
 const Dashboard: React.FC = () => {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('This Month');
+
+  // --- API Calls ---
+  const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/api/reports/occupancy', { immediate: true });
+  const { data: revenueApiData, loading: revenueLoading } = useApi<any>('get', '/api/reports/revenue', { immediate: true });
+  const { data: arData, loading: arLoading } = useApi<any>('get', '/api/reports/ar-aging', { immediate: true });
+  const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/api/reports/compliance', { immediate: true });
+
+  const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading;
 
   const periods: TimePeriod[] = ['Today', 'This Week', 'This Month', 'This Quarter'];
 
@@ -212,8 +221,8 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // --- Data ---
-  const kpis = [
+  // --- Data (API with fallback to mock) ---
+  const mockKpis = [
     {
       label: 'Occupancy Rate',
       value: '87%',
@@ -263,6 +272,23 @@ const Dashboard: React.FC = () => {
       icon: <ShieldCheck size={18} color={colors.cyan} />,
     },
   ];
+
+  // Merge API data into KPIs when available
+  const kpis = mockKpis.map((kpi) => {
+    if (kpi.label === 'Occupancy Rate' && occupancyData) {
+      return { ...kpi, value: `${occupancyData.rate ?? kpi.value}`, sub: occupancyData.sub ?? kpi.sub, trendText: occupancyData.trendText ?? kpi.trendText };
+    }
+    if (kpi.label === 'Monthly Revenue' && revenueApiData) {
+      return { ...kpi, value: revenueApiData.total ?? kpi.value, sub: revenueApiData.sub ?? kpi.sub, trendText: revenueApiData.trendText ?? kpi.trendText };
+    }
+    if (kpi.label === 'Outstanding A/R' && arData) {
+      return { ...kpi, value: arData.total ?? kpi.value, sub: arData.sub ?? kpi.sub, trendText: arData.trendText ?? kpi.trendText };
+    }
+    if (kpi.label === 'Compliance Score' && complianceData) {
+      return { ...kpi, value: complianceData.score ?? kpi.value, sub: complianceData.sub ?? kpi.sub, trendText: complianceData.trendText ?? kpi.trendText };
+    }
+    return kpi;
+  });
 
   const revenueData = [
     { month: 'Oct', value: 98200 },
@@ -339,6 +365,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <div style={pageStyle}>
+      {apiLoading && (
+        <div style={{ padding: '8px 16px', marginBottom: '16px', backgroundColor: 'rgba(0,212,255,0.08)', borderRadius: '8px', fontSize: '13px', color: colors.darkGray }}>
+          Loading live data...
+        </div>
+      )}
       {/* Header */}
       <div style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

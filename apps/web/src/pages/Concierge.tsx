@@ -14,6 +14,7 @@ import {
   FileText,
   AlertCircle,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 

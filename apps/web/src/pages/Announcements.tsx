@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   Megaphone,
   Search,
@@ -219,6 +220,13 @@ export default function Announcements() {
   const [channelFilter, setChannelFilter] = useState<string>('All');
   const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<string>('All');
 
+  // API calls
+  const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/api/announcements', { immediate: true });
+  const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
+
+  // Use API data when available, fall back to mock
+  const announcements = apiAnnouncements ?? mockAnnouncements;
+
   // Compose form state
   const [composeSubject, setComposeSubject] = useState('');
   const [composeChannels, setComposeChannels] = useState<Channel[]>([]);
@@ -240,8 +248,21 @@ export default function Announcements() {
     setActiveTab('compose');
   };
 
+  const handleSend = async () => {
+    const payload = {
+      subject: composeSubject,
+      channels: composeChannels,
+      audience: composeAudience,
+      body: composeBody,
+      scheduled: composeSchedule,
+      scheduledDate: composeSchedule ? `${composeDate} ${composeTime}` : null,
+    };
+    await createAnnouncement(payload);
+    setActiveTab('all');
+  };
+
   // Filtered announcements
-  const filteredAnnouncements = mockAnnouncements.filter(a => {
+  const filteredAnnouncements = announcements.filter(a => {
     const matchesSearch = a.subject.toLowerCase().includes(search.toLowerCase());
     const matchesChannel = channelFilter === 'All' || a.channels.includes(channelFilter as Channel);
     return matchesSearch && matchesChannel;
@@ -476,9 +497,9 @@ export default function Announcements() {
             </div>
 
             <div>
-              <button style={styles.sendBtn}>
+              <button style={styles.sendBtn} onClick={handleSend} disabled={createLoading}>
                 {composeSchedule ? <Clock size={18} /> : <Send size={18} />}
-                {composeSchedule ? 'Schedule' : 'Send'}
+                {createLoading ? 'Sending...' : composeSchedule ? 'Schedule' : 'Send'}
               </button>
             </div>
           </div>

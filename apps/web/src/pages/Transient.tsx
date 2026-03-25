@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   CreditCard,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -126,6 +127,9 @@ const s: Record<string, React.CSSProperties> = {
 /* ── Component ─────────────────────────────────────────── */
 
 export default function Transient() {
+  const { data: apiBookings, loading, error } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
+  const createBooking = useApi<Booking>('post', '/api/transient');
+
   const [bookings, setBookings] = useState<Booking[]>(MOCK_BOOKINGS);
   const [tab, setTab] = useState<TabKey>('current');
   const [search, setSearch] = useState('');
@@ -133,20 +137,22 @@ export default function Transient() {
   const [dateFilter, setDateFilter] = useState('');
   const [showModal, setShowModal] = useState(false);
 
+  const allBookings = apiBookings || bookings;
+
   /* Derived */
-  const activeGuests = bookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
-  const checkInsToday = bookings.filter((b) => b.checkIn === '2026-03-25' && (b.status === 'Booked' || b.status === 'Checked In')).length;
+  const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
+  const checkInsToday = allBookings.filter((b) => b.checkIn === '2026-03-25' && (b.status === 'Booked' || b.status === 'Checked In')).length;
   const avgStay = (() => {
-    const stays = bookings.map((b) => nights(b.checkIn, b.checkOut));
-    return (stays.reduce((a, c) => a + c, 0) / stays.length).toFixed(1);
+    const stays = allBookings.map((b) => nights(b.checkIn, b.checkOut));
+    return stays.length > 0 ? (stays.reduce((a, c) => a + c, 0) / stays.length).toFixed(1) : '0';
   })();
-  const revenueMonth = bookings
+  const revenueMonth = allBookings
     .filter((b) => b.checkIn.startsWith('2026-03') && b.payment !== 'Refunded')
     .reduce((sum, b) => sum + b.nightlyRate * nights(b.checkIn, b.checkOut), 0);
 
-  const currentGuests = bookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay' || b.status === 'Booked');
+  const currentGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay' || b.status === 'Booked');
 
-  const filteredAll = bookings.filter((b) => {
+  const filteredAll = allBookings.filter((b) => {
     if (statusFilter !== 'All' && b.status !== statusFilter) return false;
     if (dateFilter && b.checkIn !== dateFilter) return false;
     if (search) {
@@ -166,6 +172,9 @@ export default function Transient() {
     <div style={s.page}>
       <h1 style={s.title}>Transient Bookings</h1>
       <hr style={s.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading bookings...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load bookings. Showing cached data.</div>}
 
       {/* Stats */}
       <div style={s.statsRow}>
@@ -420,7 +429,7 @@ export default function Transient() {
             </div>
             <div style={s.modalFooter}>
               <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} onClick={() => setShowModal(false)}>
+              <button style={s.primaryBtn} onClick={() => { createBooking.execute({}); setShowModal(false); }}>
                 <CreditCard size={16} /> Create Booking
               </button>
             </div>

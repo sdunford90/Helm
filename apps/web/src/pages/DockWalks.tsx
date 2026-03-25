@@ -4,6 +4,7 @@ import {
   Eye, CheckCircle2, Clock, MapPin, Camera, Droplets,
   Shield,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -135,7 +136,7 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Start Walk Modal ──────────────────────────────────── */
 
-function StartWalkModal({ onClose }: { onClose: () => void }) {
+function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
@@ -242,9 +243,16 @@ export default function DockWalks() {
   const [showStartWalk, setShowStartWalk] = useState(false);
   const [selectedViolation, setSelectedViolation] = useState<Violation | null>(null);
 
-  const openViolations = VIOLATIONS.filter((v) => v.status === 'Open').length;
-  const avgItems = Math.round(WALKS.reduce((s, w) => s + w.slipsChecked, 0) / WALKS.length);
-  const lastWalk = WALKS[0];
+  const { data: apiWalks, loading: walksLoading, error: walksError } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
+  const { data: apiViolations, loading: violationsLoading, error: violationsError } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
+  const startWalk = useApi<DockWalk>('post', '/api/dock-walks');
+
+  const walks = apiWalks || WALKS;
+  const violations = apiViolations || VIOLATIONS;
+
+  const openViolations = violations.filter((v) => v.status === 'Open').length;
+  const avgItems = walks.length > 0 ? Math.round(walks.reduce((s, w) => s + w.slipsChecked, 0) / walks.length) : 0;
+  const lastWalk = walks[0];
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'history', label: 'Walk History' },
@@ -257,17 +265,20 @@ export default function DockWalks() {
       <h1 style={st.title}>Dock Walks</h1>
       <hr style={st.divider} />
 
+      {(walksLoading || violationsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading dock walks...</div>}
+      {(walksError || violationsError) && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load dock walks. Showing cached data.</div>}
+
       {/* Stats */}
       <div style={st.statsRow}>
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Walks</div>
-          <div style={st.statValue}>{WALKS.length}</div>
+          <div style={st.statValue}>{walks.length}</div>
           <div style={st.statSub}>This month</div>
         </div>
         <div style={{ ...st.statCard, borderTop: openViolations > 0 ? '3px solid #F59E0B' : '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Open Violations</div>
           <div style={{ ...st.statValue, color: openViolations > 0 ? '#C2410C' : '#03543F' }}>{openViolations}</div>
-          <div style={st.statSub}>{VIOLATIONS.filter((v) => v.severity === 'High' || v.severity === 'Critical').filter((v) => v.status === 'Open').length} high/critical</div>
+          <div style={st.statSub}>{violations.filter((v) => v.severity === 'High' || v.severity === 'Critical').filter((v) => v.status === 'Open').length} high/critical</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Avg Slips / Walk</div>
@@ -317,7 +328,7 @@ export default function DockWalks() {
                 </tr>
               </thead>
               <tbody>
-                {WALKS.filter((w) => !search || w.number.toLowerCase().includes(search.toLowerCase()) || w.inspector.toLowerCase().includes(search.toLowerCase())).map((w, idx) => {
+                {walks.filter((w) => !search || w.number.toLowerCase().includes(search.toLowerCase()) || w.inspector.toLowerCase().includes(search.toLowerCase())).map((w, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={w.id}>
@@ -381,7 +392,7 @@ export default function DockWalks() {
                 </tr>
               </thead>
               <tbody>
-                {VIOLATIONS.filter((v) => {
+                {violations.filter((v) => {
                   if (severityFilter !== 'All' && v.severity !== severityFilter) return false;
                   if (statusFilter !== 'All' && v.status !== statusFilter) return false;
                   if (!search) return true;
@@ -459,7 +470,7 @@ export default function DockWalks() {
         </>
       )}
 
-      {showStartWalk && <StartWalkModal onClose={() => setShowStartWalk(false)} />}
+      {showStartWalk && <StartWalkModal onClose={() => setShowStartWalk(false)} onSave={(data) => startWalk.execute(data)} />}
       {selectedViolation && <ViolationDetail violation={selectedViolation} onClose={() => setSelectedViolation(null)} />}
     </div>
   );

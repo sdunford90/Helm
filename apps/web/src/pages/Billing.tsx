@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useApi } from '../hooks/useApi';
 import {
   DollarSign,
   Search,
@@ -99,7 +100,11 @@ export default function Billing() {
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  const filtered = mockInvoices.filter((inv) => {
+  // API call with fallback to mock data
+  const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
+  const invoices = useMemo(() => apiInvoices ?? mockInvoices, [apiInvoices]);
+
+  const filtered = invoices.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
     if (search && !inv.customer.toLowerCase().includes(search.toLowerCase()) && !inv.number.toLowerCase().includes(search.toLowerCase())) return false;
     if (dateFrom && inv.issued < dateFrom) return false;
@@ -107,9 +112,9 @@ export default function Billing() {
     return true;
   });
 
-  const totalOutstanding = mockInvoices.reduce((s, i) => s + i.balance, 0);
-  const paidThisMonth = mockInvoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
-  const pastDue = mockInvoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
+  const totalOutstanding = invoices.reduce((s, i) => s + i.balance, 0);
+  const paidThisMonth = invoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
+  const pastDue = invoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
   const credits = 4500; // mock credits
 
   const summaryCards = [
@@ -123,6 +128,8 @@ export default function Billing() {
     <div style={styles.page}>
       <h1 style={styles.title}>Billing</h1>
       <hr style={styles.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
 
       {/* Summary Cards */}
       <div style={styles.summaryRow}>

@@ -1,5 +1,6 @@
-import { useState, Fragment } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { Plus, Check, X, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ─── Types ─── */
 type AccountType = 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense';
@@ -124,7 +125,13 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export default function ChartOfAccounts() {
+  // API call with fallback to mock data
+  const { data: apiAccounts, loading } = useApi<GLAccount[]>('get', '/api/reports/gl-summary', { immediate: true });
   const [accounts, setAccounts] = useState<GLAccount[]>(mockAccounts);
+
+  useEffect(() => {
+    if (apiAccounts) setAccounts(apiAccounts);
+  }, [apiAccounts]);
   const [collapsedTypes, setCollapsedTypes] = useState<Set<AccountType>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -162,6 +169,8 @@ export default function ChartOfAccounts() {
     <div style={s.page}>
       <h1 style={s.title}>Chart of Accounts</h1>
       <hr style={s.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading accounts...</div>}
 
       <div style={s.toolbar}>
         <button style={s.addBtn}><Plus size={16} /> Add Account</button>

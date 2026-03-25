@@ -366,7 +366,7 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Add Slip Modal ─────────────────────────────────────── */
 
-function AddSlipModal({ onClose }: { onClose: () => void }) {
+function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
@@ -591,7 +591,7 @@ export default function Slips() {
       )}
 
       {/* Add Slip Modal */}
-      {showAdd && <AddSlipModal onClose={() => setShowAdd(false)} />}
+      {showAdd && <AddSlipModal onClose={() => setShowAdd(false)} onSave={(data) => createSlip.execute(data)} />}
 
       {/* Slip Detail Panel */}
       {selectedSlip && (

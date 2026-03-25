@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -278,7 +279,7 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Contract Form Modal ─────────────────────────────────── */
 
-function ContractFormModal({ onClose }: { onClose: () => void }) {
+function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
   const [autoRenew, setAutoRenew] = useState(false);
 
   return (
@@ -387,8 +388,13 @@ export default function Contracts() {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
 
+  const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/api/contracts', { immediate: true });
+  const createContract = useApi<Contract>('post', '/api/contracts');
+
+  const contracts = apiContracts || MOCK_CONTRACTS;
+
   const now = new Date();
-  const filtered = MOCK_CONTRACTS.filter((c) => {
+  const filtered = contracts.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;
     if (cycleFilter !== 'All' && c.billingCycle !== cycleFilter) return false;
     if (expiringFilter !== 'All') {
@@ -414,6 +420,9 @@ export default function Contracts() {
     <div style={st.page}>
       <h1 style={st.title}>Contracts</h1>
       <hr style={st.divider} />
+
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading contracts...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load contracts. Showing cached data.</div>}
 
       {/* Filter Bar */}
       <div style={st.filterBar}>
@@ -530,7 +539,7 @@ export default function Contracts() {
         </div>
       )}
 
-      {showForm && <ContractFormModal onClose={() => setShowForm(false)} />}
+      {showForm && <ContractFormModal onClose={() => setShowForm(false)} onSave={(data) => createContract.execute(data)} />}
     </div>
   );
 }

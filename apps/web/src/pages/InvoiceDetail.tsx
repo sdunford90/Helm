@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useApi } from '../hooks/useApi';
 import {
   ArrowLeft,
   Send,
@@ -272,7 +273,15 @@ export default function InvoiceDetail() {
   const navigate = useNavigate();
   const [showPayment, setShowPayment] = useState(false);
 
-  const invoice = mockInvoices[id || ''] || getDefaultInvoice(id || '0');
+  // API calls with fallback to mock data
+  const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/api/invoices/${id}`, { immediate: true });
+  const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/api/payments?invoiceId=${id}`, { immediate: true });
+  const recordPayment = useApi<Payment>('post', '/api/payments');
+
+  const fallbackInvoice = mockInvoices[id || ''] || getDefaultInvoice(id || '0');
+  const invoice = apiInvoice
+    ? { ...apiInvoice, payments: apiPayments ?? apiInvoice.payments }
+    : fallbackInvoice;
 
   const lineTotal = (l: LineItem) => l.qty * l.unitPrice - l.discount;
   const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
@@ -290,6 +299,8 @@ export default function InvoiceDetail() {
       <button style={st.backBtn} onClick={() => navigate('/billing')}>
         <ArrowLeft size={16} /> Back to Billing
       </button>
+
+      {(loadingInvoice || loadingPayments) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoice...</div>}
 
       {/* Header */}
       <div style={st.headerRow}>
@@ -475,6 +486,10 @@ export default function InvoiceDetail() {
           customer={invoice.customer}
           balanceDue={balanceDue}
           onClose={() => setShowPayment(false)}
+          onSubmit={async (payment: Record<string, unknown>) => {
+            await recordPayment.execute({ ...payment, invoiceId: id });
+            setShowPayment(false);
+          }}
         />
       )}
     </div>
