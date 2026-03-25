@@ -56,10 +56,10 @@ const tabBtn = (active: boolean): React.CSSProperties => ({
   padding: '10px 20px',
   fontSize: 13,
   fontWeight: active ? 600 : 400,
-  color: active ? '#FF4444' : 'rgba(255,255,255,0.5)',
+  color: active ? '#00D4FF' : 'rgba(255,255,255,0.5)',
   background: 'transparent',
   border: 'none',
-  borderBottom: active ? '2px solid #FF4444' : '2px solid transparent',
+  borderBottom: active ? '2px solid #00D4FF' : '2px solid transparent',
   cursor: 'pointer',
 });
 
@@ -116,7 +116,7 @@ const TenantDetail: React.FC = () => {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button style={{ background: 'rgba(33,150,243,0.15)', color: '#2196F3', border: '1px solid rgba(33,150,243,0.3)', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          <button style={{ background: 'rgba(0,212,255,0.15)', color: '#00D4FF', border: '1px solid rgba(0,212,255,0.3)', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
             Impersonate
           </button>
           {tenant.status === 'locked' ? (
@@ -227,7 +227,7 @@ const TenantDetail: React.FC = () => {
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button onClick={handleSaveFees} style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '10px 20px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              <button onClick={handleSaveFees} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '10px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                 Save Fee Overrides
               </button>
               {feeSaved && <span style={{ fontSize: 12, color: '#4CAF50', fontWeight: 600 }}>Saved successfully</span>}
@@ -279,7 +279,7 @@ const TenantDetail: React.FC = () => {
           <div style={{ ...card, gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 10 }}>Storage Usage — {tenant.storageUsed} GB of {tenant.storageQuota} GB</div>
             <div style={{ height: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${(tenant.storageUsed / tenant.storageQuota) * 100}%`, background: '#FF4444', borderRadius: 4 }} />
+              <div style={{ height: '100%', width: `${(tenant.storageUsed / tenant.storageQuota) * 100}%`, background: '#00D4FF', borderRadius: 4 }} />
             </div>
           </div>
         </div>
@@ -345,7 +345,7 @@ const TenantDetail: React.FC = () => {
               tenant.notes.map((n: any, i: number) => (
                 <div key={i} style={{ padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#FF4444' }}>{n.author}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#00D4FF' }}>{n.author}</span>
                     <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{n.date}</span>
                   </div>
                   <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', lineHeight: 1.5 }}>{n.text}</div>

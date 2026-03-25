@@ -1,7 +1,7 @@
 import React from 'react';
 
 const KPIS = [
-  { label: 'Total Tenants', value: '18', sub: '14 active / 3 trial / 1 locked', color: '#FF4444' },
+  { label: 'Total Tenants', value: '18', sub: '14 active / 3 trial / 1 locked', color: '#00D4FF' },
   { label: 'Total MRR', value: '$14,850', sub: '+12% vs last month', color: '#4CAF50' },
   { label: 'Platform GMV This Month', value: '$2.34M', sub: 'Across all marinas', color: '#2196F3' },
   { label: 'Platform Fee Revenue', value: '$68,420', sub: 'Transaction fees collected', color: '#FF9800' },
@@ -128,7 +128,7 @@ const Dashboard: React.FC = () => {
             {MRR_TREND.map((m) => (
               <div key={m.month} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
                 <div style={{ fontSize: 11, color: '#4CAF50', fontWeight: 600 }}>${(m.value / 1000).toFixed(1)}k</div>
-                <div style={{ width: '100%', height: `${(m.value / maxMRR) * 100}px`, background: 'linear-gradient(180deg, #FF4444 0%, #CC2222 100%)', borderRadius: 4 }} />
+                <div style={{ width: '100%', height: `${(m.value / maxMRR) * 100}px`, background: 'linear-gradient(180deg, #00D4FF 0%, #0A2342 100%)', borderRadius: 4 }} />
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>{m.month}</div>
               </div>
             ))}
@@ -145,7 +145,7 @@ const Dashboard: React.FC = () => {
               <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: i < RECENT_ACTIVITY.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', minWidth: 80, paddingTop: 2 }}>{a.time}</div>
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#FF4444', marginBottom: 2 }}>{a.event}</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#00D4FF', marginBottom: 2 }}>{a.event}</div>
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{a.detail}</div>
                 </div>
               </div>

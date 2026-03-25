@@ -138,7 +138,7 @@ const Support: React.FC = () => {
                   onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.02)')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
-                  <td style={{ padding: '10px', fontSize: 13, fontWeight: 600, color: '#FF4444', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.id}</td>
+                  <td style={{ padding: '10px', fontSize: 13, fontWeight: 600, color: '#00D4FF', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.id}</td>
                   <td style={{ padding: '10px', fontSize: 12, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.tenant}</td>
                   <td style={{ padding: '10px', fontSize: 13, color: '#FFF', fontWeight: 500, borderBottom: '1px solid rgba(255,255,255,0.04)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.subject}</td>
                   <td style={{ padding: '10px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.category}</td>
@@ -164,7 +164,7 @@ const Support: React.FC = () => {
           <div style={{ background: '#0D1B2A', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 32, width: 520, maxHeight: '80vh', overflow: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#FF4444', marginBottom: 4 }}>{selectedTicket.id}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#00D4FF', marginBottom: 4 }}>{selectedTicket.id}</div>
                 <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#FFF' }}>{selectedTicket.subject}</h3>
               </div>
               <button onClick={() => setSelectedTicket(null)} style={{ background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: 20, cursor: 'pointer', padding: 4 }}>x</button>
@@ -207,7 +207,7 @@ const Support: React.FC = () => {
             </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 24, justifyContent: 'flex-end' }}>
               <button onClick={() => setSelectedTicket(null)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '8px 16px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={handleUpdateTicket} style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '8px 16px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save Changes</button>
+              <button onClick={handleUpdateTicket} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '8px 16px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save Changes</button>
             </div>
           </div>
         </div>

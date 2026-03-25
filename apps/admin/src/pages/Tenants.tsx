@@ -85,7 +85,7 @@ const Tenants: React.FC = () => {
         </div>
         <button
           onClick={() => setShowModal(true)}
-          style={{ background: '#FF4444', color: '#FFF', border: 'none', borderRadius: 6, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          style={{ background: '#0A2342', color: '#00D4FF', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
         >
           + Create Tenant
         </button>
@@ -168,7 +168,7 @@ const Tenants: React.FC = () => {
             </div>
             <div style={{ display: 'flex', gap: 12, marginTop: 28, justifyContent: 'flex-end' }}>
               <button onClick={() => setShowModal(false)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '9px 20px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={() => setShowModal(false)} style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '9px 20px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Create Tenant</button>
+              <button onClick={() => setShowModal(false)} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Create Tenant</button>
             </div>
           </div>
         </div>

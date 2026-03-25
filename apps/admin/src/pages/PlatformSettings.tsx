@@ -42,7 +42,7 @@ const toggleStyle = (on: boolean): React.CSSProperties => ({
   width: 44,
   height: 24,
   borderRadius: 12,
-  background: on ? '#FF4444' : 'rgba(255,255,255,0.1)',
+  background: on ? '#00D4FF' : 'rgba(255,255,255,0.1)',
   position: 'relative',
   cursor: 'pointer',
   transition: 'background 0.2s',
@@ -248,7 +248,7 @@ const PlatformSettings: React.FC = () => {
       {/* Save Button */}
       <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
         <button style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '10px 24px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Reset to Defaults</button>
-        <button style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '10px 24px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save All Changes</button>
+        <button style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '10px 24px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save All Changes</button>
       </div>
     </div>
   );

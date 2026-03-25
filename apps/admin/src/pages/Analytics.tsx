@@ -76,7 +76,7 @@ const Analytics: React.FC = () => {
           {GMV_TREND.map((m) => (
             <div key={m.month} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
               <div style={{ fontSize: 12, color: '#4CAF50', fontWeight: 600 }}>${(m.value / 1000000).toFixed(2)}M</div>
-              <div style={{ width: '100%', height: `${(m.value / maxGMV) * 130}px`, background: 'linear-gradient(180deg, #FF4444 0%, #991111 100%)', borderRadius: 4 }} />
+              <div style={{ width: '100%', height: `${(m.value / maxGMV) * 130}px`, background: 'linear-gradient(180deg, #00D4FF 0%, #0A2342 100%)', borderRadius: 4 }} />
               <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{m.month}</div>
             </div>
           ))}
@@ -163,14 +163,14 @@ const Analytics: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {TOP_TENANTS.map((t, i) => (
               <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 22, fontSize: 12, fontWeight: 700, color: i < 3 ? '#FF4444' : 'rgba(255,255,255,0.3)', textAlign: 'right' }}>#{i + 1}</div>
+                <div style={{ width: 22, fontSize: 12, fontWeight: 700, color: i < 3 ? '#00D4FF' : 'rgba(255,255,255,0.3)', textAlign: 'right' }}>#{i + 1}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <span style={{ fontSize: 12, color: '#FFF', fontWeight: 500 }}>{t.name}</span>
                     <span style={{ fontSize: 12, color: '#4CAF50', fontWeight: 600 }}>${(t.gmv / 1000).toFixed(0)}k</span>
                   </div>
                   <div style={{ height: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 2, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${(t.gmv / maxTopGMV) * 100}%`, background: i < 3 ? '#FF4444' : 'rgba(255,68,68,0.4)', borderRadius: 2 }} />
+                    <div style={{ height: '100%', width: `${(t.gmv / maxTopGMV) * 100}%`, background: i < 3 ? '#00D4FF' : 'rgba(0,212,255,0.4)', borderRadius: 2 }} />
                   </div>
                 </div>
               </div>
@@ -189,7 +189,7 @@ const Analytics: React.FC = () => {
                   <span style={{ fontSize: 12, fontWeight: 600, color: '#FFF' }}>{f.pct}%</span>
                 </div>
                 <div style={{ height: 6, background: 'rgba(255,255,255,0.04)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${f.pct}%`, background: f.pct > 75 ? '#4CAF50' : f.pct > 40 ? '#FF9800' : '#FF4444', borderRadius: 3, transition: 'width 0.3s' }} />
+                  <div style={{ height: '100%', width: `${f.pct}%`, background: f.pct > 75 ? '#4CAF50' : f.pct > 40 ? '#FF9800' : '#00D4FF', borderRadius: 3, transition: 'width 0.3s' }} />
                 </div>
               </div>
             ))}

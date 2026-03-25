@@ -61,10 +61,10 @@ const tabBtn = (active: boolean): React.CSSProperties => ({
   padding: '10px 20px',
   fontSize: 13,
   fontWeight: active ? 600 : 400,
-  color: active ? '#FF4444' : 'rgba(255,255,255,0.5)',
+  color: active ? '#00D4FF' : 'rgba(255,255,255,0.5)',
   background: 'transparent',
   border: 'none',
-  borderBottom: active ? '2px solid #FF4444' : '2px solid transparent',
+  borderBottom: active ? '2px solid #00D4FF' : '2px solid transparent',
   cursor: 'pointer',
 });
 
@@ -95,7 +95,7 @@ const Billing: React.FC = () => {
         <div style={card}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1 }}>March 2026 SaaS Invoices</div>
-            <button style={{ background: '#FF4444', color: '#FFF', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            <button style={{ background: '#0A2342', color: '#00D4FF', border: '1px solid #00D4FF', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
               Generate Monthly Invoices
             </button>
           </div>
