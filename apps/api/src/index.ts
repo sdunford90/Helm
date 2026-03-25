@@ -27,6 +27,11 @@ import adminRouter from "./routes/admin.js";
 import onboardingRouter from "./routes/onboarding.js";
 import contractsRouter from "./routes/contracts.js";
 import settingsRouter from "./routes/settings.js";
+import transientRouter from "./routes/transient.js";
+import rampRouter from "./routes/ramp.js";
+import conciergeRouter from "./routes/concierge.js";
+import auditLogRouter from "./routes/audit-log.js";
+import biApiRouter from "./routes/bi-api.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -71,6 +76,11 @@ app.use("/api/admin", adminRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/contracts", contractsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/transient", transientRouter);
+app.use("/api/ramp", rampRouter);
+app.use("/api/concierge", conciergeRouter);
+app.use("/api/audit-log", auditLogRouter);
+app.use("/api/bi", biApiRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

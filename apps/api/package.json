@@ -21,7 +21,11 @@
     "stripe": "^17.0.0",
     "svix": "^1.42.0",
     "uuid": "^10.0.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "resend": "^4.0.0",
+    "twilio": "^5.0.0",
+    "puppeteer": "^23.0.0",
+    "@anthropic-ai/sdk": "^0.30.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

@@ -16,6 +16,10 @@ import {
   Settings,
   HelpCircle,
   List,
+  Bed,
+  Waves,
+  Concierge as ConciergeBell,
+  ScrollText,
 } from 'lucide-react';
 
 const NAV_SECTIONS = [
@@ -39,6 +43,9 @@ const NAV_SECTIONS = [
       { path: '/slips', label: 'Slips', icon: Anchor },
       { path: '/contracts', label: 'Contracts', icon: FileText },
       { path: '/dock-walks', label: 'Dock Walks', icon: ClipboardCheck },
+      { path: '/transient', label: 'Transient', icon: Bed },
+      { path: '/ramp', label: 'Launch Ramp', icon: Waves },
+      { path: '/concierge', label: 'Concierge', icon: ConciergeBell },
     ],
   },
   {
@@ -54,6 +61,7 @@ const NAV_SECTIONS = [
     items: [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
+      { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],
   },

@@ -18,6 +18,10 @@ import Reports from './pages/Reports';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
 import Onboarding from './pages/Onboarding';
+import Transient from './pages/Transient';
+import Ramp from './pages/Ramp';
+import Concierge from './pages/Concierge';
+import AuditLog from './pages/AuditLog';
 
 export default function App() {
   return (
@@ -40,6 +44,10 @@ export default function App() {
         <Route path="/dock-walks" element={<DockWalks />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/announcements" element={<Announcements />} />
+        <Route path="/transient" element={<Transient />} />
+        <Route path="/ramp" element={<Ramp />} />
+        <Route path="/concierge" element={<Concierge />} />
+        <Route path="/audit-log" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>
