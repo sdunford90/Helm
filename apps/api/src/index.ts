@@ -36,6 +36,7 @@ import insuranceRouter from "./routes/insurance.js";
 import fuelRouter from "./routes/fuel.js";
 import qboRouter from "./routes/qbo.js";
 import storageRouter from "./routes/storage.js";
+import inventoryRouter from "./routes/inventory.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -89,6 +90,7 @@ app.use("/api/insurance", insuranceRouter);
 app.use("/api/fuel", fuelRouter);
 app.use("/api/qbo", qboRouter);
 app.use("/api/storage", storageRouter);
+app.use("/api/inventory", inventoryRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)
