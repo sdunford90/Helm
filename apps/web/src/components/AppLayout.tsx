@@ -99,6 +99,7 @@ const styles = {
     left: 0,
     bottom: 0,
     overflowY: 'auto',
+    zIndex: 200,
   } as React.CSSProperties,
   logo: {
     padding: '24px 24px 16px',
@@ -146,6 +147,9 @@ const styles = {
     justifyContent: 'space-between',
     padding: '0 32px',
     flexShrink: 0,
+    position: 'sticky',
+    top: 0,
+    zIndex: 100,
   } as React.CSSProperties,
   breadcrumb: {
     fontSize: '13px',
