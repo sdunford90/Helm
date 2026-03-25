@@ -10,6 +10,10 @@ localPort = 3001
 externalPort = 3001
 
 [[ports]]
+localPort = 3002
+externalPort = 3002
+
+[[ports]]
 localPort = 5000
 externalPort = 80
 
@@ -28,6 +32,10 @@ args = "Start application"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "API Server"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Admin App"
 
 [[workflows.workflow]]
 name = "Start application"
@@ -49,6 +57,18 @@ author = "agent"
 task = "shell.exec"
 args = "pnpm --filter @helm/api dev"
 waitForPort = 3001
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Admin App"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @helm/admin dev"
+waitForPort = 3002
 
 [workflows.workflow.metadata]
 outputType = "console"
