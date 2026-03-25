@@ -5,9 +5,9 @@ export async function seedCustomersAndBoats(prisma: PrismaClient, tenantId: stri
   await prisma.customer.deleteMany({ where: { tenantId } });
 
   const custData = [
-    { firstName: 'James', lastName: 'Harborview', email: 'james.harborview@email.com', phone: '5552345678', status: 'ACTIVE' as const, addressJson: { street: '1420 Pelican Way', city: 'Bayshore', state: 'FL', zip: '33541' }, dob: '1975-06-15', dlNumber: 'H123-456-78-901', dlState: 'FL' },
+    { firstName: 'James', lastName: 'Harborview', email: 'james.harborview@email.com', phone: '5552345678', status: 'ACTIVE' as const, addressJson: { street: '1420 Pelican Way', city: 'Bayshore', state: 'FL', zip: '33541' }, dob: new Date('1975-06-15'), dlNumber: 'H123-456-78-901', dlState: 'FL' },
     { firstName: 'Maria', lastName: 'Seabreeze', email: 'maria.seabreeze@email.com', phone: '5553456789', status: 'ACTIVE' as const, addressJson: { street: '890 Coastal Blvd', city: 'Bayshore', state: 'FL', zip: '33541' } },
-    { firstName: 'David', lastName: 'Tidewater', email: 'david.tidewater@email.com', phone: '5554567890', status: 'ACTIVE' as const, addressJson: { street: '2100 Harbor Dr', city: 'Tampa', state: 'FL', zip: '33602' }, dob: '1968-03-22' },
+    { firstName: 'David', lastName: 'Tidewater', email: 'david.tidewater@email.com', phone: '5554567890', status: 'ACTIVE' as const, addressJson: { street: '2100 Harbor Dr', city: 'Tampa', state: 'FL', zip: '33602' }, dob: new Date('1968-03-22') },
     { firstName: 'Elena', lastName: 'Windward', email: 'elena.windward@email.com', phone: '5555678901', status: 'SEASONAL' as const, addressJson: { street: '45 Oak Lane', city: 'Sarasota', state: 'FL', zip: '34236' } },
     { firstName: 'Robert', lastName: 'Chen', email: 'robert.chen@email.com', phone: '5556789012', status: 'ACTIVE' as const, addressJson: { street: '333 Mangrove Ct', city: 'Bayshore', state: 'FL', zip: '33541' } },
     { firstName: 'Coastal Charters', lastName: 'LLC', company: 'Coastal Charters LLC', email: 'billing@coastalcharters.com', phone: '5557890123', status: 'ACTIVE' as const, addressJson: { street: '100 Marina Plaza Ste 200', city: 'Bayshore', state: 'FL', zip: '33541' }, taxExempt: true },
