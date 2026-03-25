@@ -155,7 +155,7 @@ const Support: React.FC = () => {
             })}
           </tbody>
         </table>
-        <div style={{ padding: '12px 10px', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>Showing {filtered.length} of {TICKETS.length} tickets</div>
+        <div style={{ padding: '12px 10px', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>Showing {filtered.length} of {tickets.length} tickets</div>
       </div>
 
       {/* Detail Modal */}
@@ -173,8 +173,6 @@ const Support: React.FC = () => {
               {[
                 ['Tenant', selectedTicket.tenant],
                 ['Category', selectedTicket.category],
-                ['Priority', selectedTicket.priority],
-                ['Status', selectedTicket.status.replace('_', ' ')],
                 ['Assignee', selectedTicket.assignee],
                 ['Created', selectedTicket.created],
               ].map(([l, v]) => (
@@ -183,14 +181,33 @@ const Support: React.FC = () => {
                   <div style={{ fontSize: 13, color: '#FFF', fontWeight: 500 }}>{v}</div>
                 </div>
               ))}
+              <div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 4 }}>Status</div>
+                <select value={editStatus} onChange={(e) => setEditStatus(e.target.value as Ticket['status'])} style={{ background: '#070E18', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '8px 12px', color: '#FFF', fontSize: 13, outline: 'none', width: '100%' }}>
+                  <option value="open">Open</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="waiting">Waiting</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 4 }}>Priority</div>
+                <select value={editPriority} onChange={(e) => setEditPriority(e.target.value as Ticket['priority'])} style={{ background: '#070E18', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '8px 12px', color: '#FFF', fontSize: 13, outline: 'none', width: '100%' }}>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </div>
             </div>
             <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 8 }}>Description</div>
               <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.6 }}>{selectedTicket.description}</div>
             </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 24, justifyContent: 'flex-end' }}>
-              <button onClick={() => setSelectedTicket(null)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '8px 16px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Close</button>
-              <button style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '8px 16px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Update Status</button>
+              <button onClick={() => setSelectedTicket(null)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '8px 16px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleUpdateTicket} style={{ background: '#FF4444', border: 'none', borderRadius: 6, padding: '8px 16px', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save Changes</button>
             </div>
           </div>
         </div>
