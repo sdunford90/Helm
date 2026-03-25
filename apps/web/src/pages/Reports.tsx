@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import ReportViewer from '../components/ReportViewer';
 import {
   DollarSign,
   Anchor,
@@ -151,6 +152,7 @@ const styles: Record<string, React.CSSProperties> = {
   cardMeta: { fontSize: '12px', color: '#94A3B8', margin: 0 },
   cardActions: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' },
   btnGenerate: { padding: '6px 14px', fontSize: '13px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' },
+  btnView: { padding: '6px 14px', fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.4)', borderRadius: '6px', cursor: 'pointer' },
   selectFormat: {
     padding: '6px 10px',
     fontSize: '12px',
@@ -216,6 +218,13 @@ export default function Reports() {
   const [modalDock, setModalDock] = useState('All Docks');
   const [modalSegment, setModalSegment] = useState('All Customers');
   const [cardFormats, setCardFormats] = useState<Record<string, ReportFormat>>({});
+
+  const [viewingReport, setViewingReport] = useState<string | null>(null);
+
+  const openViewer = (reportId: string) => {
+    if (reportId === 'rent_roll') { navigate('/rent-roll'); return; }
+    setViewingReport(reportId);
+  };
 
   const openModal = (reportId: string) => {
     if (reportId === 'rent_roll') { navigate('/rent-roll'); return; }
@@ -299,10 +308,16 @@ export default function Reports() {
                         </p>
                         <div style={styles.cardActions}>
                           <button
+                            style={styles.btnView}
+                            onClick={() => openViewer(card.id)}
+                          >
+                            View
+                          </button>
+                          <button
                             style={styles.btnGenerate}
                             onClick={() => openModal(card.id)}
                           >
-                            Generate
+                            Export
                           </button>
                           <select
                             style={styles.selectFormat}
@@ -617,6 +632,11 @@ export default function Reports() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* -------- In-App Report Viewer -------- */}
+      {viewingReport && (
+        <ReportViewer reportId={viewingReport} onClose={() => setViewingReport(null)} />
       )}
     </div>
   );
