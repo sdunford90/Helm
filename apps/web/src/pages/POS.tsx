@@ -241,17 +241,35 @@ export default function POS() {
 
   const loading = loadingProducts || loadingTxns;
 
-  const addToCart = (product: Product) => {
+  const addToCart = (product: Product, qty?: number) => {
+    const addQty = qty ?? 1;
+    if (addQty <= 0) return;
     setCart((prev) => {
       const existing = prev.find((i) => i.product.id === product.id);
-      if (existing) return prev.map((i) => i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
-      return [...prev, { product, quantity: 1 }];
+      if (existing) return prev.map((i) => i.product.id === product.id ? { ...i, quantity: i.quantity + addQty } : i);
+      return [...prev, { product, quantity: addQty }];
     });
   };
 
   const updateQty = (productId: string, delta: number) => {
-    setCart((prev) => prev.map((i) => i.product.id === productId ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i).filter((i) => i.quantity > 0));
+    setCart((prev) => prev.map((i) => i.product.id === productId ? { ...i, quantity: Math.max(0, Math.round((i.quantity + delta) * 1000) / 1000) } : i).filter((i) => i.quantity > 0));
   };
+
+  const setQtyAbsolute = (productId: string, newQty: number) => {
+    if (newQty <= 0) {
+      setCart((prev) => prev.filter((i) => i.product.id !== productId));
+    } else {
+      setCart((prev) => prev.map((i) => i.product.id === productId ? { ...i, quantity: Math.round(newQty * 1000) / 1000 } : i));
+    }
+  };
+
+  const formatQty = (qty: number): string => {
+    if (Number.isInteger(qty)) return qty.toString();
+    return qty.toFixed(3).replace(/0+$/, '');
+  };
+
+  const cartItemCount = cart.reduce((s, i) => s + i.quantity, 0);
+  const cartItemCountDisplay = Number.isInteger(cartItemCount) ? cartItemCount.toString() : cartItemCount.toFixed(3).replace(/0+$/, '');
 
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
   const tax = cart.reduce((s, i) => s + i.product.price * i.quantity * (i.product.taxRate / 100), 0);
@@ -323,7 +341,7 @@ export default function POS() {
           </div>
 
           <div style={st.cart}>
-            <div style={st.cartHeader}><ShoppingCart size={18} /> Cart ({cart.reduce((s, i) => s + i.quantity, 0)} items)</div>
+            <div style={st.cartHeader}><ShoppingCart size={18} /> Cart ({cartItemCountDisplay} items)</div>
             {cart.length === 0 ? (
               <div style={st.emptyCart}>
                 <ShoppingCart size={32} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
@@ -340,7 +358,33 @@ export default function POS() {
                     </div>
                     <div style={st.qtyControls}>
                       <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, -1)}><Minus size={14} /></button>
-                      <span style={{ ...st.mono, minWidth: '20px', textAlign: 'center' }}>{item.quantity}</span>
+                      {editingQtyId === item.product.id ? (
+                        <input
+                          style={{ ...st.mono, width: '56px', textAlign: 'center', padding: '2px 4px', fontSize: '14px', border: '1px solid #00D4FF', borderRadius: '4px', outline: 'none' }}
+                          type="number"
+                          step="any"
+                          autoFocus
+                          value={editingQtyValue}
+                          onChange={(e) => setEditingQtyValue(e.target.value)}
+                          onBlur={() => {
+                            const parsed = parseFloat(editingQtyValue);
+                            if (!isNaN(parsed) && parsed > 0) setQtyAbsolute(item.product.id, parsed);
+                            setEditingQtyId(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
+                            if (e.key === 'Escape') { setEditingQtyId(null); }
+                          }}
+                        />
+                      ) : (
+                        <span
+                          style={{ ...st.mono, minWidth: '28px', textAlign: 'center', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', background: '#F1F5F9' }}
+                          title="Click to edit quantity"
+                          onClick={() => { setEditingQtyId(item.product.id); setEditingQtyValue(item.quantity.toString()); }}
+                        >
+                          {formatQty(item.quantity)}
+                        </span>
+                      )}
                       <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, 1)}><Plus size={14} /></button>
                       <span style={{ ...st.mono, minWidth: '60px', textAlign: 'right' }}>${(item.product.price * item.quantity).toFixed(2)}</span>
                     </div>
