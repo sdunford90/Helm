@@ -25,7 +25,8 @@
     "resend": "^4.0.0",
     "twilio": "^5.0.0",
     "puppeteer": "^23.0.0",
-    "@anthropic-ai/sdk": "^0.30.0"
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@sentry/node": "^8.0.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
