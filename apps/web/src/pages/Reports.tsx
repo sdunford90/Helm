@@ -206,6 +206,7 @@ export default function Reports() {
   const [activeTab, setActiveTab] = useState<Tab>('library');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalReportId, setModalReportId] = useState<string | null>(null);
+  const { execute: generateReport, loading: generating } = useApi<any>('post', '/api/reports/generate');
   const [modalFormat, setModalFormat] = useState<ReportFormat>('PDF');
   const [modalDateFrom, setModalDateFrom] = useState('2026-03-01');
   const [modalDateTo, setModalDateTo] = useState('2026-03-25');
@@ -593,8 +594,22 @@ export default function Reports() {
               </div>
             )}
 
-            <button style={styles.btnGenerateModal} onClick={closeModal}>
-              Generate Report
+            <button
+              style={styles.btnGenerateModal}
+              disabled={generating}
+              onClick={async () => {
+                await generateReport({
+                  reportId: modalReportId,
+                  format: modalFormat,
+                  dateFrom: modalDateFrom,
+                  dateTo: modalDateTo,
+                  dock: modalDock,
+                  segment: modalSegment,
+                });
+                closeModal();
+              }}
+            >
+              {generating ? 'Generating...' : 'Generate Report'}
             </button>
           </div>
         </div>

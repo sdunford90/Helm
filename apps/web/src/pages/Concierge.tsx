@@ -180,13 +180,20 @@ export default function Concierge() {
   const [showModal, setShowModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null);
 
-  /* Derived stats */
-  const openRequests = MOCK_REQUESTS.filter((r) => !['Completed', 'Invoiced'].includes(r.status)).length;
-  const pendingQuotes = MOCK_REQUESTS.filter((r) => r.status === 'Submitted').length;
-  const completedMonth = MOCK_REQUESTS.filter((r) => r.status === 'Completed' || r.status === 'Invoiced').length;
-  const revenue = MOCK_REQUESTS.filter((r) => r.status === 'Invoiced' || r.status === 'Completed').reduce((sum, r) => sum + (r.quote || 0), 0);
+  const { data: apiRequests, loading: requestsLoading, error: requestsError } = useApi<ServiceRequest[]>('get', '/api/concierge', { immediate: true });
+  const { data: apiVendors, loading: vendorsLoading, error: vendorsError } = useApi<Vendor[]>('get', '/api/concierge/vendors', { immediate: true });
+  const createRequest = useApi<ServiceRequest>('post', '/api/concierge');
 
-  const filtered = MOCK_REQUESTS.filter((r) => {
+  const requests = apiRequests || MOCK_REQUESTS;
+  const vendors = apiVendors || MOCK_VENDORS;
+
+  /* Derived stats */
+  const openRequests = requests.filter((r) => !['Completed', 'Invoiced'].includes(r.status)).length;
+  const pendingQuotes = requests.filter((r) => r.status === 'Submitted').length;
+  const completedMonth = requests.filter((r) => r.status === 'Completed' || r.status === 'Invoiced').length;
+  const revenue = requests.filter((r) => r.status === 'Invoiced' || r.status === 'Completed').reduce((sum, r) => sum + (r.quote || 0), 0);
+
+  const filtered = requests.filter((r) => {
     if (statusFilter !== 'All' && r.status !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -200,6 +207,9 @@ export default function Concierge() {
     <div style={s.page}>
       <h1 style={s.title}>Concierge Services</h1>
       <hr style={s.divider} />
+
+      {(requestsLoading || vendorsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading concierge data...</div>}
+      {(requestsError || vendorsError) && <div style={{ textAlign: 'center', padding: '12px', color: '#B71C1C', marginBottom: '16px' }}>Failed to load concierge data. Showing cached data.</div>}
 
       {/* Stats */}
       <div style={s.statsRow}>
@@ -309,7 +319,7 @@ export default function Concierge() {
       {/* ── Vendor Directory Tab ── */}
       {tab === 'vendors' && (
         <div style={s.cardGrid}>
-          {MOCK_VENDORS.map((v) => (
+          {vendors.map((v) => (
             <div key={v.id} style={s.vendorCard}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
                 <div style={s.vendorName}>{v.name}</div>

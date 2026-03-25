@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Fuel as FuelIcon, Search, Plus, X, DollarSign,
   TrendingUp, Droplets, Truck, Edit2,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -108,7 +109,21 @@ const st: Record<string, React.CSSProperties> = {
 export default function Fuel() {
   const [tab, setTab] = useState<'sales' | 'pricing' | 'deliveries' | 'tanks'>('sales');
 
-  const todaySales = SALES.filter((s) => s.date.startsWith('2026-03-25'));
+  // API calls with fallback to mock data
+  const { data: apiFuelTypes, loading: loadingTypes } = useApi<FuelType[]>('get', '/api/fuel/types', { immediate: true });
+  const { data: apiSales, loading: loadingSales } = useApi<FuelSale[]>('get', '/api/fuel/sales', { immediate: true });
+  const { data: apiDeliveries, loading: loadingDeliveries } = useApi<Delivery[]>('get', '/api/fuel/deliveries', { immediate: true });
+  const { data: apiTankLevels } = useApi<FuelType[]>('get', '/api/fuel/tank-levels', { immediate: true });
+  const recordSale = useApi<FuelSale>('post', '/api/fuel/sales');
+
+  const fuelTypes = useMemo(() => apiFuelTypes ?? FUEL_TYPES, [apiFuelTypes]);
+  const sales = useMemo(() => apiSales ?? SALES, [apiSales]);
+  const deliveries = useMemo(() => apiDeliveries ?? DELIVERIES, [apiDeliveries]);
+  const tankData = useMemo(() => apiTankLevels ?? fuelTypes, [apiTankLevels, fuelTypes]);
+
+  const loading = loadingTypes || loadingSales || loadingDeliveries;
+
+  const todaySales = sales.filter((s) => s.date.startsWith('2026-03-25'));
   const todayGallons = todaySales.reduce((s, sale) => s + sale.gallons, 0);
   const todayRevenue = todaySales.reduce((s, sale) => s + sale.total, 0);
   const avgMargin = FUEL_TYPES.reduce((s, ft) => s + (ft.pricePerGal - ft.costPerGal), 0) / FUEL_TYPES.length;

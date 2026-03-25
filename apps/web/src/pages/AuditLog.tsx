@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   ScrollText, Search, Download, Filter, Eye, User,
   FileText, Clock, ChevronLeft, ChevronRight,
