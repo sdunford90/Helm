@@ -8,7 +8,8 @@ Helm is a full-stack marina management platform built as a TypeScript monorepo u
 ### Monorepo Structure
 - **apps/web** — Main marina management dashboard (React + Vite, port 5000)
 - **apps/api** — Backend REST API (Express + Prisma + TypeScript, port 3001)
-- **apps/portal** — Customer self-service portal (React + Vite, port 3002)
+- **apps/admin** — Platform admin panel (React + Vite, port 3003)
+- **apps/portal** — Customer self-service portal (React + Vite)
 - **apps/widgets** — Embeddable widgets (React + Vite)
 - **packages/shared-types** — Shared TypeScript types across apps
 - **packages/ui-kit** — Shared React UI component library
@@ -42,12 +43,19 @@ See `.env.example` for the full list. Key variables:
 5. Start web app: `pnpm --filter @helm/web dev` (port 5000)
 6. Start API: `pnpm --filter @helm/api dev` (port 3001)
 
-## Workflow
-- **Start application**: `pnpm --filter @helm/web dev` → runs on port 5000
+## Workflows
+- **Start application**: `pnpm --filter @helm/web dev` → port 5000 (marina dashboard)
+- **API Server**: `pnpm --filter @helm/api dev` → port 3001 (REST API)
+- **Admin App**: `pnpm --filter @helm/admin dev` → port 3003 (platform admin)
 
 ## Notes
 - The `workspace:*` protocol requires pnpm (not npm)
-- `packages/ui-kit/tsconfig.json` has been configured with `lib: ["ES2022", "DOM", "DOM.Iterable"]`
-- The `Concierge` icon from lucide-react was replaced with `Bell` in `AppLayout.tsx`
-- Prisma schema lives in `apps/api/prisma/schema.prisma`
+- Prisma is at v6.x — uses `$extends` query extensions (NOT deprecated `$use` middleware)
+- Prisma schema lives in `apps/api/prisma/schema.prisma`; use `npx prisma db push` (not migrations)
+- `apps/api/src/lib/stripe.ts` exports `stripe` as `Stripe | null` — guard with `requireStripe()` helper
+- Redis/BullMQ is optional — null when `REDIS_URL` is not set; API starts fine without it
+- `requirePlatformAdmin()` middleware skips Clerk auth in `NODE_ENV !== "production"` (dev bypass)
+- Default dev tenant: ID `77acef35-1a12-414b-a726-feea7a6193d9` ("Helm Marina")
+- `apps/admin/vite.config.ts` sets `host: '0.0.0.0'`, `strictPort: true`, `port: 3003`
+- `apps/admin/tsconfig.json` references `tsconfig.node.json` (both files present)
 - The app shows a Clerk auth error when `VITE_CLERK_PUBLISHABLE_KEY` is not set

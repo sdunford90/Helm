@@ -11,127 +11,142 @@ export interface TenantContext {
 export const tenantStore = new AsyncLocalStorage<TenantContext>();
 
 // --------------------------------------------------------------------------
-// Singleton PrismaClient with tenant-scoped query enforcement
+// Models that carry a tenantId column and must be scoped per request.
+// System-level tables (e.g. Tenant, SaasTier, Location) are excluded.
+// --------------------------------------------------------------------------
+const TENANT_SCOPED_MODELS = new Set([
+  "Slip",
+  "Customer",
+  "Invoice",
+  "Payment",
+  "Lead",
+  "LeadForm",
+  "WaitlistEntry",
+  "Boat",
+  "VesselSafetyRecord",
+  "DockWalk",
+  "DockWalkItem",
+  "PumpOut",
+  "POSTransaction",
+  "PosTransaction",
+  "PosLineItem",
+  "Product",
+  "Inventory",
+  "Shift",
+  "PurchaseOrder",
+  "Rental",
+  "RentalProduct",
+  "PricingRule",
+  "PricingCalendarOverride",
+  "DemandSurgeTier",
+  "AlgorithmicSuggestion",
+  "Reservation",
+  "CancellationPolicy",
+  "CancellationRule",
+  "Announcement",
+  "AnnouncementDelivery",
+  "User",
+  "RampTicket",
+  "FuelDispense",
+  "TransientBooking",
+  "ConciergeRequest",
+  "Contract",
+  "AuditLog",
+]);
+
+// --------------------------------------------------------------------------
+// Singleton PrismaClient with tenant-scoped query enforcement via $extends
 // --------------------------------------------------------------------------
 
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
-
-function createPrismaClient(): PrismaClient {
-  const client = new PrismaClient({
+function createPrismaClient() {
+  const base = new PrismaClient({
     log:
       process.env.NODE_ENV === "development"
-        ? ["query", "warn", "error"]
+        ? ["warn", "error"]
         : ["warn", "error"],
   });
 
-  // Middleware: automatically scope every query to the current tenant when a
-  // tenantId is present in the async-local store.  Models that don't carry a
-  // tenant_id column (e.g. system-level tables) are skipped gracefully by the
-  // database — Prisma will simply ignore unknown `where` fields at runtime
-  // when using raw queries, and the generated client will raise a type error
-  // at compile time so those cases must be handled explicitly below.
-  client.$use(async (params, next) => {
-    const ctx = tenantStore.getStore();
-    if (!ctx?.tenantId) {
-      return next(params);
-    }
+  return base.$extends({
+    query: {
+      $allModels: {
+        async $allOperations({
+          model,
+          operation,
+          args,
+          query,
+        }: {
+          model: string;
+          operation: string;
+          args: Record<string, unknown>;
+          query: (args: Record<string, unknown>) => Promise<unknown>;
+        }) {
+          const ctx = tenantStore.getStore();
 
-    const tenantId = ctx.tenantId;
+          // No tenant context, or model not scoped — pass through untouched
+          if (!ctx?.tenantId || !TENANT_SCOPED_MODELS.has(model)) {
+            return query(args);
+          }
 
-    // Models that are tenant-scoped.  If a model is NOT in this set the
-    // middleware passes through without modification — system tables like
-    // `processed_webhooks` are handled explicitly in their own service layer.
-    const tenantScopedModels = new Set([
-      "Slip",
-      "Customer",
-      "Invoice",
-      "Payment",
-      "Lead",
-      "LeadForm",
-      "WaitlistEntry",
-      "Boat",
-      "DockWalk",
-      "DockWalkItem",
-      "PumpOut",
-      "POSTransaction",
-      "Product",
-      "PosTransaction",
-      "PosLineItem",
-      "Inventory",
-      "Shift",
-      "PurchaseOrder",
-      "Rental",
-      "RentalProduct",
-      "PricingRule",
-      "PricingCalendarOverride",
-      "DemandSurgeTier",
-      "AlgorithmicSuggestion",
-      "Reservation",
-      "CancellationPolicy",
-      "CancellationRule",
-      "Announcement",
-      "AnnouncementDelivery",
-      "User",
-    ]);
+          const tenantId = ctx.tenantId;
+          const a = { ...(args ?? {}) } as Record<string, unknown>;
 
-    if (!params.model || !tenantScopedModels.has(params.model)) {
-      return next(params);
-    }
+          // ── Read operations: inject tenantId into where ──────────────────
+          if (
+            operation === "findUnique" ||
+            operation === "findUniqueOrThrow" ||
+            operation === "findFirst" ||
+            operation === "findFirstOrThrow" ||
+            operation === "findMany" ||
+            operation === "count" ||
+            operation === "aggregate" ||
+            operation === "groupBy"
+          ) {
+            a.where = { ...(a.where as object | undefined), tenantId };
+          }
 
-    // Inject tenant_id into reads
-    if (
-      params.action === "findUnique" ||
-      params.action === "findFirst" ||
-      params.action === "findMany" ||
-      params.action === "count" ||
-      params.action === "aggregate" ||
-      params.action === "groupBy"
-    ) {
-      params.args = params.args ?? {};
-      params.args.where = { ...params.args.where, tenant_id: tenantId };
-    }
+          // ── Create: inject tenantId into data ────────────────────────────
+          if (operation === "create") {
+            a.data = { ...(a.data as object | undefined), tenantId };
+          }
 
-    // Inject tenant_id into writes
-    if (params.action === "create") {
-      params.args = params.args ?? {};
-      params.args.data = { ...params.args.data, tenant_id: tenantId };
-    }
+          if (operation === "createMany") {
+            if (Array.isArray(a.data)) {
+              a.data = (a.data as Record<string, unknown>[]).map((d) => ({
+                ...d,
+                tenantId,
+              }));
+            } else {
+              a.data = { ...(a.data as object | undefined), tenantId };
+            }
+          }
 
-    if (params.action === "createMany") {
-      params.args = params.args ?? {};
-      if (Array.isArray(params.args.data)) {
-        params.args.data = params.args.data.map((d: Record<string, unknown>) => ({
-          ...d,
-          tenant_id: tenantId,
-        }));
-      } else {
-        params.args.data = { ...params.args.data, tenant_id: tenantId };
-      }
-    }
+          // ── Update / delete: scope where ─────────────────────────────────
+          if (
+            operation === "update" ||
+            operation === "updateMany" ||
+            operation === "delete" ||
+            operation === "deleteMany"
+          ) {
+            a.where = { ...(a.where as object | undefined), tenantId };
+          }
 
-    if (params.action === "update" || params.action === "updateMany") {
-      params.args = params.args ?? {};
-      params.args.where = { ...params.args.where, tenant_id: tenantId };
-    }
+          if (operation === "upsert") {
+            a.where = { ...(a.where as object | undefined), tenantId };
+            a.create = { ...(a.create as object | undefined), tenantId };
+          }
 
-    if (params.action === "delete" || params.action === "deleteMany") {
-      params.args = params.args ?? {};
-      params.args.where = { ...params.args.where, tenant_id: tenantId };
-    }
-
-    if (params.action === "upsert") {
-      params.args = params.args ?? {};
-      params.args.where = { ...params.args.where, tenant_id: tenantId };
-      params.args.create = { ...params.args.create, tenant_id: tenantId };
-    }
-
-    return next(params);
+          return query(a);
+        },
+      },
+    },
   });
-
-  return client;
 }
 
-export const prisma: PrismaClient = globalForPrisma.prisma ?? createPrismaClient();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const globalForPrisma = globalThis as unknown as { prisma: any };
+
+export const prisma: ReturnType<typeof createPrismaClient> =
+  globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
