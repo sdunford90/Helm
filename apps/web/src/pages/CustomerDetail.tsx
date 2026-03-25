@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
@@ -8,7 +9,7 @@ import {
 import CustomerForm from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Types ─────────────────────────────────────────── */
 
 interface CustomerDetail {
   id: string;
@@ -38,57 +39,10 @@ interface CustomerDetail {
   lifetimeValue: number;
 }
 
-const CUSTOMER: CustomerDetail = {
-  id: '1',
-  firstName: 'James',
-  lastName: 'Harborview',
-  email: 'james@harbor.com',
-  phone: '(555) 123-4567',
-  company: 'Harbor Industries LLC',
-  address: '123 Marina Drive\nCoastal City, FL 33101',
-  status: 'Active',
-  dob: '1978-06-15',
-  dlNumber: 'H123-456-78-901',
-  dlState: 'FL',
-  dlExpiry: '2027-06-15',
-  emergencyName: 'Linda Harborview',
-  emergencyRelationship: 'Spouse',
-  emergencyPhone: '(555) 111-2222',
-  emergencyEmail: 'linda@harbor.com',
-  taxExempt: false,
-  achBlocked: false,
-  created: '2024-03-15',
-  openInvoices: 1250.0,
-  credits: 200.0,
-  deposits: 3000.0,
-  totalBoats: 2,
-  activeContracts: 1,
-  lifetimeValue: 28500.0,
+const STATUS_MAP: Record<string, CustomerDetail['status']> = {
+  ACTIVE: 'Active', INACTIVE: 'Inactive', WAITLIST: 'Waitlist',
+  COLLECTIONS_HOLD: 'Collections Hold', SEASONAL: 'Seasonal',
 };
-
-const BOATS = [
-  { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92 },
-  { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78 },
-];
-
-const INVOICES = [
-  { id: 'INV-001', description: 'Monthly Slip Rental - March', amount: 850.0, status: 'Paid', date: '2025-03-01' },
-  { id: 'INV-002', description: 'Electric Meter - February', amount: 142.5, status: 'Paid', date: '2025-02-15' },
-  { id: 'INV-003', description: 'Monthly Slip Rental - April', amount: 850.0, status: 'Open', date: '2025-04-01' },
-  { id: 'INV-004', description: 'Pump-Out Service', amount: 45.0, status: 'Open', date: '2025-03-20' },
-  { id: 'INV-005', description: 'Late Fee', amount: 25.0, status: 'Overdue', date: '2025-01-15' },
-];
-
-const ACTIVITY = [
-  { date: '2025-03-20', action: 'Pump-out service completed', type: 'service' },
-  { date: '2025-03-15', action: 'Invoice INV-003 generated', type: 'billing' },
-  { date: '2025-03-01', action: 'Payment received - $850.00', type: 'payment' },
-  { date: '2025-02-20', action: 'Meter reading submitted: 1,240 kWh', type: 'meter' },
-  { date: '2025-02-15', action: 'Invoice INV-002 generated', type: 'billing' },
-  { date: '2025-02-01', action: 'Contract auto-renewed for 12 months', type: 'contract' },
-  { date: '2025-01-15', action: 'Insurance document uploaded', type: 'document' },
-  { date: '2024-12-20', action: 'Dock walk inspection - passed', type: 'inspection' },
-];
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -355,8 +309,85 @@ export default function CustomerDetailPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [showEdit, setShowEdit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [c, setCustomer] = useState<CustomerDetail | null>(null);
+  const [BOATS, setBoats] = useState<{ id: string; name: string; type: string; length: number; registration: string; compliance: number }[]>([]);
+  const [INVOICES, setInvoices] = useState<{ id: string; description: string; amount: number; status: string; date: string }[]>([]);
+  const [ACTIVITY, setActivity] = useState<{ date: string; action: string; type: string }[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const c = CUSTOMER; // In production, fetch by id
+  useEffect(() => {
+    if (!id) return;
+    Promise.allSettled([
+      api.get<Record<string, unknown>>(`/customers/${id}`),
+      api.get<{ timeline: Array<Record<string, unknown>> }>(`/customers/${id}/timeline`),
+      api.get<Record<string, unknown>>(`/customers/${id}/balance`),
+    ]).then(([custRes, timeRes, balRes]) => {
+      if (custRes.status === 'fulfilled') {
+        const d = custRes.value;
+        const customer = (d.customer ?? d) as Record<string, unknown>;
+        const boats = ((customer.boats ?? d.boats) as Array<Record<string, unknown>>) ?? [];
+        const invoices = ((customer.invoices ?? d.invoices) as Array<Record<string, unknown>>) ?? [];
+        const bal = balRes.status === 'fulfilled' ? balRes.value : {};
+
+        setCustomer({
+          id: customer.id as string,
+          firstName: (customer.firstName as string) ?? '',
+          lastName: (customer.lastName as string) ?? '',
+          email: (customer.email as string) ?? '',
+          phone: (customer.phone as string) ?? '',
+          company: (customer.company as string) ?? '',
+          address: (customer.address as string) ?? '',
+          status: STATUS_MAP[(customer.status as string)] ?? 'Active',
+          dob: (customer.dob as string) ?? '',
+          dlNumber: (customer.dlNumber as string) ?? '',
+          dlState: (customer.dlState as string) ?? '',
+          dlExpiry: (customer.dlExpiry as string) ?? '',
+          emergencyName: (customer.emergencyName as string) ?? '',
+          emergencyRelationship: (customer.emergencyRelationship as string) ?? '',
+          emergencyPhone: (customer.emergencyPhone as string) ?? '',
+          emergencyEmail: (customer.emergencyEmail as string) ?? '',
+          taxExempt: (customer.taxExempt as boolean) ?? false,
+          achBlocked: (customer.achBlocked as boolean) ?? false,
+          created: ((customer.createdAt as string) ?? '').slice(0, 10),
+          openInvoices: ((bal as Record<string, unknown>).openBalanceCents as number ?? 0) / 100,
+          credits: ((bal as Record<string, unknown>).creditsCents as number ?? 0) / 100,
+          deposits: ((bal as Record<string, unknown>).depositsCents as number ?? 0) / 100,
+          totalBoats: boats.length,
+          activeContracts: ((customer.contracts as unknown[]) ?? []).length,
+          lifetimeValue: ((bal as Record<string, unknown>).lifetimeValueCents as number ?? 0) / 100,
+        });
+
+        setBoats(boats.map((b) => ({
+          id: b.id as string,
+          name: b.name as string ?? '',
+          type: b.type as string ?? '',
+          length: b.lengthFeet as number ?? 0,
+          registration: b.registrationNumber as string ?? '',
+          compliance: 100,
+        })));
+
+        setInvoices(invoices.map((inv) => ({
+          id: inv.invoiceNumber as string ?? inv.id as string,
+          description: '',
+          amount: ((inv.totalCents as number) ?? 0) / 100,
+          status: (inv.status as string) === 'PAID' ? 'Paid' : (inv.status as string) === 'PAST_DUE' ? 'Overdue' : 'Open',
+          date: ((inv.issuedAt as string) ?? '').slice(0, 10),
+        })));
+      }
+
+      if (timeRes.status === 'fulfilled') {
+        setActivity((timeRes.value.timeline ?? []).map((t) => ({
+          date: ((t.createdAt as string) ?? '').slice(0, 10),
+          action: (t.action as string) ?? (t.description as string) ?? '',
+          type: (t.type as string) ?? 'service',
+        })));
+      }
+    }).finally(() => setLoading(false));
+  }, [id]);
+
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading customer...</div>;
+  if (!c) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Customer not found.</div>;
+
   const badgeStyle = statusBadgeColors[c.status];
 
   const tabs: { key: Tab; label: string }[] = [

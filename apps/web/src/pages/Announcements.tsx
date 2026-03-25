@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import {
   Megaphone,
   Plus,
@@ -38,28 +39,7 @@ interface Announcement {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
-const MOCK_ANNOUNCEMENTS: Announcement[] = [
-  {
-    id: '1', title: 'Marina Maintenance — Dock B', body: 'Dock B will be closed for maintenance March 28-30. Please relocate your vessel temporarily.',
-    channel: 'BOTH', isEmergency: false, sentAt: '2026-03-25 09:00', scheduledFor: null,
-    recipientCount: 45, deliveredCount: 42, openedCount: 28, failedCount: 3, createdBy: 'Sarah Chen',
-  },
-  {
-    id: '2', title: 'Storm Warning — Secure Your Vessel', body: 'A severe storm warning has been issued for tonight. Please secure all lines, remove canvas, and take necessary precautions.',
-    channel: 'BOTH', isEmergency: true, sentAt: '2026-03-24 14:30', scheduledFor: null,
-    recipientCount: 120, deliveredCount: 118, openedCount: 95, failedCount: 2, createdBy: 'Mike Torres',
-  },
-  {
-    id: '3', title: 'Spring Social — April 5th', body: 'Join us for our annual Spring Social! Food, music, and fun for the whole family. RSVP by April 1st.',
-    channel: 'EMAIL', isEmergency: false, sentAt: '2026-03-20 10:00', scheduledFor: null,
-    recipientCount: 120, deliveredCount: 115, openedCount: 67, failedCount: 5, createdBy: 'Sarah Chen',
-  },
-  {
-    id: '4', title: 'New Fuel Dock Hours', body: 'Starting April 1st, the fuel dock will be open 7am-7pm daily (extended from 8am-5pm).',
-    channel: 'EMAIL', isEmergency: false, sentAt: null, scheduledFor: '2026-03-28 08:00',
-    recipientCount: 120, deliveredCount: 0, openedCount: 0, failedCount: 0, createdBy: 'Sarah Chen',
-  },
-];
+/* Data will be fetched from API */
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -102,10 +82,42 @@ const CHANNEL_ICONS: Record<Channel, typeof Mail> = { EMAIL: Mail, SMS: MessageS
 /* ── Component ─────────────────────────────────────────── */
 
 export default function Announcements() {
+  const [MOCK_ANNOUNCEMENTS, setAnnouncements] = useState<Announcement[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showCompose, setShowCompose] = useState(false);
   const [channel, setChannel] = useState<Channel>('BOTH');
   const [isEmergency, setIsEmergency] = useState(false);
+
+  useEffect(() => {
+    api.get<{ announcements: Array<Record<string, unknown>> }>('/announcements')
+      .then((res) => {
+        setAnnouncements((res.announcements ?? []).map((a) => {
+          const deliveries = (a.deliveries as Array<Record<string, unknown>>) ?? [];
+          const deliveredCount = deliveries.filter((d) => d.status === 'DELIVERED' || d.status === 'OPENED').length;
+          const openedCount = deliveries.filter((d) => d.status === 'OPENED').length;
+          const failedCount = deliveries.filter((d) => d.status === 'FAILED').length;
+          return {
+            id: a.id as string,
+            title: (a.subject as string) ?? '',
+            body: (a.body as string) ?? '',
+            channel: (a.channels as Channel) ?? 'EMAIL',
+            isEmergency: (a.isEmergency as boolean) ?? false,
+            sentAt: (a.sentAt as string) ?? null,
+            scheduledFor: (a.scheduledAt as string) ?? null,
+            recipientCount: deliveries.length,
+            deliveredCount,
+            openedCount,
+            failedCount,
+            createdBy: (a.staffId as string) ?? '',
+          };
+        }));
+      })
+      .catch(() => setAnnouncements([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading announcements...</div>;
 
   const totalSent = MOCK_ANNOUNCEMENTS.filter((a) => a.sentAt).length;
   const totalRecipients = MOCK_ANNOUNCEMENTS.reduce((s, a) => s + a.recipientCount, 0);

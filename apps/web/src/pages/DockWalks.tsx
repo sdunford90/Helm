@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import {
   ClipboardCheck,
   Plus,
@@ -39,52 +40,7 @@ interface DockWalk {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
-const MOCK_WALKS: DockWalk[] = [
-  {
-    id: 'dw1', date: '2026-03-25', inspector: 'Sarah Chen', status: 'COMPLETED', totalItems: 12, violations: 2, needsAttention: 1,
-    items: [
-      { slipNumber: 'A-01', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'A-02', status: 'VIOLATION', violationType: 'Unsecured lines', notes: 'Dock lines frayed and loose', hasPhoto: true },
-      { slipNumber: 'A-03', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'A-04', status: 'NEEDS_ATTENTION', violationType: null, notes: 'Dock cleat showing wear', hasPhoto: true },
-      { slipNumber: 'B-01', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'B-02', status: 'VIOLATION', violationType: 'Expired fire extinguisher', notes: 'Ext. expired 01/2026', hasPhoto: true },
-      { slipNumber: 'B-03', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'B-04', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-01', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-02', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-03', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-04', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-    ],
-  },
-  {
-    id: 'dw2', date: '2026-03-22', inspector: 'Mike Torres', status: 'COMPLETED', totalItems: 12, violations: 1, needsAttention: 3,
-    items: [
-      { slipNumber: 'A-01', status: 'NEEDS_ATTENTION', violationType: null, notes: 'Power pedestal cover loose', hasPhoto: false },
-      { slipNumber: 'A-02', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'A-03', status: 'NEEDS_ATTENTION', violationType: null, notes: 'Water hose leaking', hasPhoto: true },
-      { slipNumber: 'A-04', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'B-01', status: 'VIOLATION', violationType: 'No registration displayed', notes: 'Vessel missing current reg sticker', hasPhoto: true },
-      { slipNumber: 'B-02', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'B-03', status: 'NEEDS_ATTENTION', violationType: null, notes: 'Slip bumper worn', hasPhoto: false },
-      { slipNumber: 'B-04', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-01', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-02', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-03', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-      { slipNumber: 'C-04', status: 'OK', violationType: null, notes: null, hasPhoto: false },
-    ],
-  },
-  {
-    id: 'dw3', date: '2026-03-18', inspector: 'Sarah Chen', status: 'COMPLETED', totalItems: 12, violations: 0, needsAttention: 0,
-    items: Array.from({ length: 12 }, (_, i) => ({
-      slipNumber: `${['A', 'B', 'C'][Math.floor(i / 4)]}-0${(i % 4) + 1}`,
-      status: 'OK' as ItemStatus,
-      violationType: null,
-      notes: null,
-      hasPhoto: false,
-    })),
-  },
-];
+/* Data will be fetched from API */
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -124,8 +80,42 @@ const STATUS_CONFIG: Record<ItemStatus, { bg: string; text: string; icon: typeof
 /* ── Component ─────────────────────────────────────────── */
 
 export default function DockWalks() {
+  const [MOCK_WALKS, setWalks] = useState<DockWalk[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedWalk, setSelectedWalk] = useState<DockWalk | null>(null);
   const [showNewWalk, setShowNewWalk] = useState(false);
+
+  useEffect(() => {
+    api.get<{ dockWalks: Array<Record<string, unknown>> }>('/dock-walks')
+      .then((res) => {
+        setWalks((res.dockWalks ?? []).map((dw) => {
+          const rawItems = (dw.items as Array<Record<string, unknown>>) ?? [];
+          const items: DockWalkItem[] = rawItems.map((item) => ({
+            slipNumber: ((item.slip as Record<string, unknown>)?.label as string) ?? (item.slipId as string) ?? '',
+            status: (item.status as ItemStatus) ?? 'OK',
+            violationType: (item.violationType as string) ?? null,
+            notes: (item.notes as string) ?? null,
+            hasPhoto: !!(item.photoUrl),
+          }));
+          const violations = items.filter((i) => i.status === 'VIOLATION').length;
+          const needsAttention = items.filter((i) => i.status === 'NEEDS_ATTENTION').length;
+          return {
+            id: dw.id as string,
+            date: ((dw.startedAt as string) ?? (dw.createdAt as string) ?? '').slice(0, 10),
+            inspector: (dw.inspectorName as string) ?? '',
+            status: (dw.status as string) ?? 'COMPLETED',
+            totalItems: items.length,
+            violations,
+            needsAttention,
+            items,
+          };
+        }));
+      })
+      .catch(() => setWalks([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading dock walks...</div>;
 
   const totalWalks = MOCK_WALKS.length;
   const totalViolations = MOCK_WALKS.reduce((s, w) => s + w.violations, 0);

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import {
   ShoppingCart,
   Search,
@@ -43,26 +44,7 @@ interface Transaction {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
-const MOCK_PRODUCTS: Product[] = [
-  { id: '1', name: 'Dock Line (20ft)', sku: 'DL-20', priceCents: 2499, category: 'Marine Supplies', inStock: 24 },
-  { id: '2', name: 'Fender (Medium)', sku: 'FN-MD', priceCents: 1899, category: 'Marine Supplies', inStock: 18 },
-  { id: '3', name: 'Sunscreen SPF 50', sku: 'SN-50', priceCents: 1299, category: 'Sun Care', inStock: 36 },
-  { id: '4', name: 'Bait (Shrimp, 1lb)', sku: 'BT-SH', priceCents: 899, category: 'Bait & Tackle', inStock: 15 },
-  { id: '5', name: 'Ice Bag (10lb)', sku: 'IC-10', priceCents: 499, category: 'Provisions', inStock: 50 },
-  { id: '6', name: 'Marina T-Shirt', sku: 'TS-MR', priceCents: 2499, category: 'Apparel', inStock: 42 },
-  { id: '7', name: 'Fishing Lure Set', sku: 'FL-ST', priceCents: 1599, category: 'Bait & Tackle', inStock: 22 },
-  { id: '8', name: 'Bottled Water (Case)', sku: 'BW-CS', priceCents: 1199, category: 'Provisions', inStock: 28 },
-  { id: '9', name: 'Boat Wash (32oz)', sku: 'BW-32', priceCents: 1499, category: 'Marine Supplies', inStock: 14 },
-  { id: '10', name: 'Life Jacket (Adult)', sku: 'LJ-AD', priceCents: 3999, category: 'Safety', inStock: 8 },
-];
-
-const MOCK_TRANSACTIONS: Transaction[] = [
-  { id: 'T001', date: '2026-03-25 14:32', items: 3, totalCents: 5697, method: 'Card', cashier: 'Sarah C.' },
-  { id: 'T002', date: '2026-03-25 13:15', items: 1, totalCents: 2499, method: 'Cash', cashier: 'Sarah C.' },
-  { id: 'T003', date: '2026-03-25 11:47', items: 5, totalCents: 8895, method: 'Card', cashier: 'Mike T.' },
-  { id: 'T004', date: '2026-03-25 10:22', items: 2, totalCents: 3998, method: 'Card', cashier: 'Mike T.' },
-  { id: 'T005', date: '2026-03-24 16:50', items: 4, totalCents: 6496, method: 'Cash', cashier: 'Sarah C.' },
-];
+/* Data will be fetched from API */
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -108,6 +90,39 @@ export default function POS() {
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [shiftOpen, setShiftOpen] = useState(true);
+  const [MOCK_PRODUCTS, setProducts] = useState<Product[]>([]);
+  const [MOCK_TRANSACTIONS, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.allSettled([
+      api.get<{ products: Array<Record<string, unknown>> }>('/pos/products'),
+      api.get<{ transactions: Array<Record<string, unknown>> }>('/pos/transactions'),
+    ]).then(([prodRes, txnRes]) => {
+      if (prodRes.status === 'fulfilled') {
+        setProducts((prodRes.value.products ?? []).map((p) => ({
+          id: p.id as string,
+          name: p.name as string,
+          sku: (p.sku as string) ?? '',
+          priceCents: (p.priceCents as number) ?? 0,
+          category: (p.category as string) ?? '',
+          inStock: (p.qtyOnHand as number) ?? 0,
+        })));
+      }
+      if (txnRes.status === 'fulfilled') {
+        setTransactions((txnRes.value.transactions ?? []).map((t) => ({
+          id: t.id as string,
+          date: ((t.createdAt as string) ?? '').replace('T', ' ').slice(0, 16),
+          items: (t.lineItemCount as number) ?? 0,
+          totalCents: (t.totalCents as number) ?? 0,
+          method: (t.paymentMethod as string) ?? '',
+          cashier: (t.cashierName as string) ?? '',
+        })));
+      }
+    }).finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading POS...</div>;
 
   const addToCart = (product: Product) => {
     setCart((prev) => {

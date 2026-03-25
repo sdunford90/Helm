@@ -33,6 +33,23 @@ import rampRouter from "./routes/ramp.js";
 import referralPartnersRouter from "./routes/referral-partners.js";
 import promoCodesRouter from "./routes/promo-codes.js";
 import purchaseOrdersRouter from "./routes/purchase-orders.js";
+import glAccountsRouter from "./routes/gl-accounts.js";
+import auditLogsRouter from "./routes/audit-logs.js";
+import apiKeysRouter from "./routes/api-keys.js";
+
+// --------------------------------------------------------------------------
+// Workers — import to start processing background jobs
+// --------------------------------------------------------------------------
+
+import "./jobs/billing-worker.js";
+import "./jobs/email-worker.js";
+import "./jobs/sms-worker.js";
+import "./jobs/qbo-sync-worker.js";
+import "./jobs/automation-worker.js";
+import "./jobs/deferred-revenue-worker.js";
+import { startRenewalWorker } from "./jobs/renewal-job.js";
+
+startRenewalWorker();
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -83,6 +100,9 @@ app.use("/api/ramp", rampRouter);
 app.use("/api/referral-partners", referralPartnersRouter);
 app.use("/api/promo-codes", promoCodesRouter);
 app.use("/api/purchase-orders", purchaseOrdersRouter);
+app.use("/api/gl-accounts", glAccountsRouter);
+app.use("/api/audit-logs", auditLogsRouter);
+app.use("/api/api-keys", apiKeysRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

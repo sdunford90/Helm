@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import { Download } from 'lucide-react';
 import { formatCents } from '../lib/format';
+import { api } from '../lib/api';
 
 /* ─── Types ─── */
 interface AgingRow {
@@ -10,20 +12,6 @@ interface AgingRow {
   days61to90: number;
   days90plus: number;
 }
-
-/* ─── Mock data ─── */
-const mockAgingData: AgingRow[] = [
-  { customer: 'Harbor Point Yacht Club', current: 304950, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'James T. Morrison', current: 133750, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Robert Chen', current: 101650, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Blue Horizon Charters', current: 577800, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Maria Gonzalez', current: 0, days1to30: 0, days31to60: 187250, days61to90: 0, days90plus: 0 },
-  { customer: 'Thomas Drake', current: 0, days1to30: 0, days31to60: 112350, days61to90: 0, days90plus: 0 },
-  { customer: 'Sunset Bay Holdings', current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 663400 },
-  { customer: 'Dockside Properties', current: 0, days1to30: 85000, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Anchor Bay Marina', current: 0, days1to30: 0, days31to60: 0, days61to90: 142500, days90plus: 0 },
-  { customer: 'Wavecrest Holdings', current: 0, days1to30: 67200, days31to60: 0, days61to90: 0, days90plus: 225000 },
-];
 
 /* ─── Helpers ─── */
 const rowTotal = (r: AgingRow) => r.current + r.days1to30 + r.days31to60 + r.days61to90 + r.days90plus;
@@ -50,9 +38,7 @@ const s: Record<string, React.CSSProperties> = {
     letterSpacing: '0.05em', marginBottom: '8px',
   },
   cardValue: { fontSize: '24px', fontWeight: 700, ...mono, lineHeight: 1.2 },
-  toolbar: {
-    display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '16px',
-  },
+  toolbar: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '16px' },
   exportBtn: {
     display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px',
     fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: '#FFFFFF',
@@ -78,6 +64,7 @@ const s: Record<string, React.CSSProperties> = {
     textAlign: 'right', ...mono, fontSize: '13px',
   },
   totalsRow: { backgroundColor: '#F2F4F6', fontWeight: 700 },
+  loading: { display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' },
 };
 
 const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; color: string }[] = [
@@ -89,7 +76,33 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 ];
 
 export default function ARaging() {
-  const grandTotal = mockAgingData.reduce((s, r) => s + rowTotal(r), 0);
+  const [agingData, setAgingData] = useState<AgingRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get<{ buckets: Record<string, number>; customers?: AgingRow[] }>('/reports/ar-aging')
+      .then((res) => {
+        if (res.customers && Array.isArray(res.customers)) {
+          setAgingData(res.customers);
+        } else if (res.buckets) {
+          // If only bucket totals returned, show as single row
+          setAgingData([{
+            customer: 'All Customers',
+            current: res.buckets.current ?? 0,
+            days1to30: res.buckets.days1to30 ?? 0,
+            days31to60: res.buckets.days31to60 ?? 0,
+            days61to90: res.buckets.days61to90 ?? 0,
+            days90plus: res.buckets.days90plus ?? 0,
+          }]);
+        }
+      })
+      .catch(() => setAgingData([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={s.loading}>Loading A/R aging...</div>;
+
+  const grandTotal = agingData.reduce((sum, r) => sum + rowTotal(r), 0);
 
   return (
     <div style={s.page}>
@@ -99,7 +112,7 @@ export default function ARaging() {
       {/* Summary Cards */}
       <div style={s.summaryRow}>
         {agingBuckets.map((b) => {
-          const val = colSum(mockAgingData, b.field);
+          const val = colSum(agingData, b.field);
           return (
             <div key={b.label} style={{ ...s.card, borderTop: `3px solid ${b.color}` }}>
               <div style={s.cardLabel as React.CSSProperties}>{b.label}</div>
@@ -130,38 +143,34 @@ export default function ARaging() {
             </tr>
           </thead>
           <tbody>
-            {mockAgingData.map((row, idx) => {
+            {agingData.map((row, idx) => {
               const total = rowTotal(row);
               return (
                 <tr key={row.customer} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
                   <td style={{ ...s.td, fontWeight: 500 }}>{row.customer}</td>
                   <td style={s.tdRight}>{row.current > 0 ? formatCents(row.current) : '--'}</td>
-                  <td style={{ ...s.tdRight, color: row.days1to30 > 0 ? '#856404' : '#0A2342' }}>
-                    {row.days1to30 > 0 ? formatCents(row.days1to30) : '--'}
-                  </td>
-                  <td style={{ ...s.tdRight, color: row.days31to60 > 0 ? '#E65100' : '#0A2342' }}>
-                    {row.days31to60 > 0 ? formatCents(row.days31to60) : '--'}
-                  </td>
-                  <td style={{ ...s.tdRight, color: row.days61to90 > 0 ? '#BF360C' : '#0A2342' }}>
-                    {row.days61to90 > 0 ? formatCents(row.days61to90) : '--'}
-                  </td>
-                  <td style={{ ...s.tdRight, color: row.days90plus > 0 ? '#B71C1C' : '#0A2342' }}>
-                    {row.days90plus > 0 ? formatCents(row.days90plus) : '--'}
-                  </td>
+                  <td style={{ ...s.tdRight, color: row.days1to30 > 0 ? '#856404' : '#0A2342' }}>{row.days1to30 > 0 ? formatCents(row.days1to30) : '--'}</td>
+                  <td style={{ ...s.tdRight, color: row.days31to60 > 0 ? '#E65100' : '#0A2342' }}>{row.days31to60 > 0 ? formatCents(row.days31to60) : '--'}</td>
+                  <td style={{ ...s.tdRight, color: row.days61to90 > 0 ? '#BF360C' : '#0A2342' }}>{row.days61to90 > 0 ? formatCents(row.days61to90) : '--'}</td>
+                  <td style={{ ...s.tdRight, color: row.days90plus > 0 ? '#B71C1C' : '#0A2342' }}>{row.days90plus > 0 ? formatCents(row.days90plus) : '--'}</td>
                   <td style={{ ...s.tdRight, fontWeight: 700 }}>{formatCents(total)}</td>
                 </tr>
               );
             })}
-            {/* Totals Row */}
-            <tr style={s.totalsRow}>
-              <td style={{ ...s.td, fontWeight: 700 }}>TOTAL</td>
-              <td style={{ ...s.tdRight, fontWeight: 700 }}>{formatCents(colSum(mockAgingData, 'current'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#856404' }}>{formatCents(colSum(mockAgingData, 'days1to30'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#E65100' }}>{formatCents(colSum(mockAgingData, 'days31to60'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#BF360C' }}>{formatCents(colSum(mockAgingData, 'days61to90'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, color: '#B71C1C' }}>{formatCents(colSum(mockAgingData, 'days90plus'))}</td>
-              <td style={{ ...s.tdRight, fontWeight: 700, fontSize: '14px' }}>{formatCents(grandTotal)}</td>
-            </tr>
+            {agingData.length === 0 && (
+              <tr><td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px' }}>No aging data available.</td></tr>
+            )}
+            {agingData.length > 0 && (
+              <tr style={s.totalsRow}>
+                <td style={{ ...s.td, fontWeight: 700 }}>TOTAL</td>
+                <td style={{ ...s.tdRight, fontWeight: 700 }}>{formatCents(colSum(agingData, 'current'))}</td>
+                <td style={{ ...s.tdRight, fontWeight: 700, color: '#856404' }}>{formatCents(colSum(agingData, 'days1to30'))}</td>
+                <td style={{ ...s.tdRight, fontWeight: 700, color: '#E65100' }}>{formatCents(colSum(agingData, 'days31to60'))}</td>
+                <td style={{ ...s.tdRight, fontWeight: 700, color: '#BF360C' }}>{formatCents(colSum(agingData, 'days61to90'))}</td>
+                <td style={{ ...s.tdRight, fontWeight: 700, color: '#B71C1C' }}>{formatCents(colSum(agingData, 'days90plus'))}</td>
+                <td style={{ ...s.tdRight, fontWeight: 700, fontSize: '14px' }}>{formatCents(grandTotal)}</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

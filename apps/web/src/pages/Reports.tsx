@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import {
   BarChart3,
   TrendingUp,
@@ -17,54 +18,14 @@ import {
 
 type ReportTab = 'overview' | 'revenue' | 'occupancy' | 'rentals' | 'ar-aging' | 'deferred';
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Data defaults ─────────────────────────────────────── */
 
-const REVENUE_BY_MONTH = [
-  { month: '2026-01', cents: 12450000 },
-  { month: '2026-02', cents: 13890000 },
-  { month: '2026-03', cents: 15670000 },
-];
-
-const REVENUE_BY_METHOD: Record<string, number> = {
-  CARD: 9850000,
-  ACH: 4200000,
-  CASH: 1120000,
-  CHARGE_TO_SLIP: 500000,
-};
-
-const AR_AGING = {
-  current: 4500000,
-  days1to30: 1250000,
-  days31to60: 450000,
-  days61to90: 180000,
-  days90plus: 95000,
-};
-
-const OCCUPANCY = {
-  totalSlips: 120,
-  occupied: 98,
-  vacant: 12,
-  maintenance: 6,
-  reserved: 4,
-  occupancyRate: 81.67,
-};
-
-const RENTAL_STATS = {
-  totalBookings: 156,
-  completedBookings: 128,
-  cancelledBookings: 18,
-  noShows: 10,
-  revenueCents: 2340000,
-  avgBookingCents: 18281,
-  npsScore: 72,
-};
-
-const DEFERRED = {
-  totalDeferredCents: 8500000,
-  totalRecognizedCents: 3200000,
-  totalRemainingCents: 5300000,
-  scheduleCount: 24,
-};
+const EMPTY_REVENUE_BY_MONTH: { month: string; cents: number }[] = [];
+const EMPTY_REVENUE_BY_METHOD: Record<string, number> = {};
+const EMPTY_AR = { current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 };
+const EMPTY_OCCUPANCY = { totalSlips: 0, occupied: 0, vacant: 0, maintenance: 0, reserved: 0, occupancyRate: 0 };
+const EMPTY_RENTAL = { totalBookings: 0, completedBookings: 0, cancelledBookings: 0, noShows: 0, revenueCents: 0, avgBookingCents: 0, npsScore: 0 };
+const EMPTY_DEFERRED = { totalDeferredCents: 0, totalRecognizedCents: 0, totalRemainingCents: 0, scheduleCount: 0 };
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -101,6 +62,67 @@ const fmt = (cents: number) => `$${(cents / 100).toLocaleString('en-US', { minim
 
 export default function Reports() {
   const [tab, setTab] = useState<ReportTab>('overview');
+  const [REVENUE_BY_MONTH, setRevenueByMonth] = useState(EMPTY_REVENUE_BY_MONTH);
+  const [REVENUE_BY_METHOD, setRevenueByMethod] = useState(EMPTY_REVENUE_BY_METHOD);
+  const [AR_AGING, setArAging] = useState(EMPTY_AR);
+  const [OCCUPANCY, setOccupancy] = useState(EMPTY_OCCUPANCY);
+  const [RENTAL_STATS, setRentalStats] = useState(EMPTY_RENTAL);
+  const [DEFERRED, setDeferred] = useState(EMPTY_DEFERRED);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.allSettled([
+      api.get<Record<string, unknown>>('/reports/revenue'),
+      api.get<Record<string, unknown>>('/reports/ar-aging'),
+      api.get<Record<string, unknown>>('/reports/occupancy'),
+      api.get<Record<string, unknown>>('/reports/rentals'),
+      api.get<Record<string, unknown>>('/reports/deferred-revenue'),
+    ]).then(([revRes, arRes, occRes, renRes, defRes]) => {
+      if (revRes.status === 'fulfilled') {
+        const d = revRes.value;
+        if (d.byMonth && Array.isArray(d.byMonth)) setRevenueByMonth(d.byMonth as typeof EMPTY_REVENUE_BY_MONTH);
+        if (d.byMethod && typeof d.byMethod === 'object') setRevenueByMethod(d.byMethod as Record<string, number>);
+      }
+      if (arRes.status === 'fulfilled') {
+        const d = arRes.value;
+        if (d.buckets) setArAging(d.buckets as typeof EMPTY_AR);
+      }
+      if (occRes.status === 'fulfilled') {
+        const d = occRes.value;
+        setOccupancy({
+          totalSlips: (d.total as number) ?? 0,
+          occupied: (d.occupied as number) ?? 0,
+          vacant: (d.vacant as number) ?? 0,
+          maintenance: (d.maintenance as number) ?? 0,
+          reserved: (d.reserved as number) ?? 0,
+          occupancyRate: (d.occupancyRate as number) ?? 0,
+        });
+      }
+      if (renRes.status === 'fulfilled') {
+        const d = renRes.value;
+        setRentalStats({
+          totalBookings: (d.totalBookings as number) ?? 0,
+          completedBookings: (d.completedBookings as number) ?? 0,
+          cancelledBookings: (d.cancelledBookings as number) ?? 0,
+          noShows: (d.noShows as number) ?? 0,
+          revenueCents: (d.revenueCents as number) ?? 0,
+          avgBookingCents: (d.avgBookingCents as number) ?? 0,
+          npsScore: (d.npsScore as number) ?? 0,
+        });
+      }
+      if (defRes.status === 'fulfilled') {
+        const d = defRes.value;
+        setDeferred({
+          totalDeferredCents: (d.totalDeferredCents as number) ?? 0,
+          totalRecognizedCents: (d.totalRecognizedCents as number) ?? 0,
+          totalRemainingCents: (d.totalRemainingCents as number) ?? 0,
+          scheduleCount: (d.scheduleCount as number) ?? 0,
+        });
+      }
+    }).finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading reports...</div>;
 
   const totalRevenue = REVENUE_BY_MONTH.reduce((s, m) => s + m.cents, 0);
   const totalAR = Object.values(AR_AGING).reduce((s, v) => s + v, 0);

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../lib/api';
 import {
   Ship,
   Plus,
@@ -44,25 +45,48 @@ interface Reservation {
   totalCents: number;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Data fetching hook ──────────────────────────────── */
 
-const MOCK_PRODUCTS: RentalProduct[] = [
-  { id: '1', name: '22ft Pontoon Boat', category: 'WATERCRAFT', hourlyRateCents: 15000, dailyRateCents: 60000, weeklyRateCents: 350000, totalQuantity: 4, availableQuantity: 2, utilizationPct: 50, isActive: true },
-  { id: '2', name: '16ft Fishing Boat', category: 'WATERCRAFT', hourlyRateCents: 8500, dailyRateCents: 35000, weeklyRateCents: 200000, totalQuantity: 6, availableQuantity: 4, utilizationPct: 33.33, isActive: true },
-  { id: '3', name: 'Jet Ski (Yamaha WaveRunner)', category: 'WATERCRAFT', hourlyRateCents: 12000, dailyRateCents: 45000, weeklyRateCents: null, totalQuantity: 8, availableQuantity: 3, utilizationPct: 62.5, isActive: true },
-  { id: '4', name: 'Kayak (Single)', category: 'EQUIPMENT', hourlyRateCents: 2500, dailyRateCents: 8000, weeklyRateCents: null, totalQuantity: 12, availableQuantity: 10, utilizationPct: 16.67, isActive: true },
-  { id: '5', name: 'Paddleboard', category: 'EQUIPMENT', hourlyRateCents: 2000, dailyRateCents: 6000, weeklyRateCents: null, totalQuantity: 8, availableQuantity: 6, utilizationPct: 25, isActive: true },
-  { id: '6', name: 'Dry Storage Unit (10x20)', category: 'STORAGE', hourlyRateCents: null, dailyRateCents: null, weeklyRateCents: 25000, totalQuantity: 20, availableQuantity: 5, utilizationPct: 75, isActive: true },
-];
+function useRentalsData() {
+  const [allProducts, setAllProducts] = useState<RentalProduct[]>([]);
+  const [allReservations, setAllReservations] = useState<Reservation[]>([]);
+  const [loading, setLoading] = useState(true);
 
-const MOCK_RESERVATIONS: Reservation[] = [
-  { id: 'r1', productName: '22ft Pontoon Boat', customerName: 'James Morrison', startDate: '2026-03-26', endDate: '2026-03-26', status: 'CONFIRMED', totalCents: 60000 },
-  { id: 'r2', productName: 'Jet Ski (Yamaha WaveRunner)', customerName: 'Linda Park', startDate: '2026-03-26', endDate: '2026-03-26', status: 'CHECKED_IN', totalCents: 12000 },
-  { id: 'r3', productName: '16ft Fishing Boat', customerName: 'Robert Chen', startDate: '2026-03-27', endDate: '2026-03-28', status: 'CONFIRMED', totalCents: 70000 },
-  { id: 'r4', productName: 'Kayak (Single)', customerName: 'Maria Santos', startDate: '2026-03-25', endDate: '2026-03-25', status: 'CHECKED_OUT', totalCents: 2500 },
-  { id: 'r5', productName: '22ft Pontoon Boat', customerName: 'David Kim', startDate: '2026-03-28', endDate: '2026-03-30', status: 'PENDING', totalCents: 180000 },
-  { id: 'r6', productName: 'Paddleboard', customerName: 'Susan Wright', startDate: '2026-03-24', endDate: '2026-03-24', status: 'CANCELLED', totalCents: 2000 },
-];
+  useEffect(() => {
+    Promise.allSettled([
+      api.get<{ products: Array<Record<string, unknown>> }>('/rentals/products'),
+      api.get<{ reservations: Array<Record<string, unknown>> }>('/rentals/reservations'),
+    ]).then(([prodRes, resRes]) => {
+      if (prodRes.status === 'fulfilled') {
+        setAllProducts((prodRes.value.products ?? []).map((p) => ({
+          id: p.id as string,
+          name: p.name as string,
+          category: (p.category as Category) ?? 'OTHER',
+          hourlyRateCents: (p.basePriceCents as number) ?? null,
+          dailyRateCents: (p.basePriceCents as number) ?? null,
+          weeklyRateCents: null,
+          totalQuantity: 1,
+          availableQuantity: p.active ? 1 : 0,
+          utilizationPct: 0,
+          isActive: (p.active as boolean) ?? true,
+        })));
+      }
+      if (resRes.status === 'fulfilled') {
+        setAllReservations((resRes.value.reservations ?? []).map((r) => ({
+          id: r.id as string,
+          productName: ((r.product as Record<string, unknown>)?.name as string) ?? '',
+          customerName: ((r.customer as Record<string, unknown>)?.firstName as string ?? '') + ' ' + ((r.customer as Record<string, unknown>)?.lastName as string ?? ''),
+          startDate: ((r.startDate as string) ?? '').slice(0, 10),
+          endDate: ((r.endDate as string) ?? '').slice(0, 10),
+          status: (r.status as ResStatus) ?? 'PENDING',
+          totalCents: (r.totalCents as number) ?? 0,
+        })));
+      }
+    }).finally(() => setLoading(false));
+  }, []);
+
+  return { allProducts, allReservations, loading };
+}
 
 /* ── Colors ────────────────────────────────────────────── */
 
@@ -131,19 +155,22 @@ const fmt = (cents: number | null) => cents != null ? `$${(cents / 100).toFixed(
 /* ── Component ─────────────────────────────────────────── */
 
 export default function Rentals() {
+  const { allProducts, allReservations, loading } = useRentalsData();
   const [tab, setTab] = useState<Tab>('products');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAddProduct, setShowAddProduct] = useState(false);
 
-  const products = MOCK_PRODUCTS.filter((p) => {
+  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' }}>Loading rentals...</div>;
+
+  const products = allProducts.filter((p) => {
     if (categoryFilter !== 'All' && p.category !== categoryFilter) return false;
     if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
-  const reservations = MOCK_RESERVATIONS.filter((r) => {
+  const reservations = allReservations.filter((r) => {
     if (statusFilter !== 'All' && r.status !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -152,9 +179,9 @@ export default function Rentals() {
     return true;
   });
 
-  const totalRevenue = MOCK_RESERVATIONS.filter((r) => r.status === 'CHECKED_OUT').reduce((s, r) => s + r.totalCents, 0);
-  const activeBookings = MOCK_RESERVATIONS.filter((r) => ['CONFIRMED', 'CHECKED_IN'].includes(r.status)).length;
-  const avgUtilization = MOCK_PRODUCTS.reduce((s, p) => s + p.utilizationPct, 0) / MOCK_PRODUCTS.length;
+  const totalRevenue = allReservations.filter((r) => r.status === 'CHECKED_OUT').reduce((s, r) => s + r.totalCents, 0);
+  const activeBookings = allReservations.filter((r) => ['CONFIRMED', 'CHECKED_IN'].includes(r.status)).length;
+  const avgUtilization = allProducts.length > 0 ? allProducts.reduce((s, p) => s + p.utilizationPct, 0) / allProducts.length : 0;
 
   return (
     <div style={s.page}>
@@ -166,17 +193,17 @@ export default function Rentals() {
         <div style={s.metricCard}>
           <p style={s.metricLabel}>Active Bookings</p>
           <p style={s.metricValue}>{activeBookings}</p>
-          <p style={s.metricSub}>{MOCK_RESERVATIONS.filter((r) => r.status === 'CHECKED_IN').length} checked in</p>
+          <p style={s.metricSub}>{allReservations.filter((r) => r.status === 'CHECKED_IN').length} checked in</p>
         </div>
         <div style={s.metricCard}>
           <p style={s.metricLabel}>Revenue (Completed)</p>
           <p style={s.metricValue}>{fmt(totalRevenue)}</p>
-          <p style={s.metricSub}>{MOCK_RESERVATIONS.filter((r) => r.status === 'CHECKED_OUT').length} completed</p>
+          <p style={s.metricSub}>{allReservations.filter((r) => r.status === 'CHECKED_OUT').length} completed</p>
         </div>
         <div style={s.metricCard}>
           <p style={s.metricLabel}>Fleet Size</p>
-          <p style={s.metricValue}>{MOCK_PRODUCTS.reduce((s, p) => s + p.totalQuantity, 0)}</p>
-          <p style={s.metricSub}>{MOCK_PRODUCTS.length} products</p>
+          <p style={s.metricValue}>{allProducts.reduce((s, p) => s + p.totalQuantity, 0)}</p>
+          <p style={s.metricSub}>{allProducts.length} products</p>
         </div>
         <div style={s.metricCard}>
           <p style={s.metricLabel}>Avg Utilization</p>

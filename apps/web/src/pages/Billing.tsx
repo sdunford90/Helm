@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   DollarSign,
@@ -11,38 +11,35 @@ import {
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
 import { formatCents, formatDate } from '../lib/format';
+import { api } from '../lib/api';
 
 /* ─── Types ─── */
-type InvoiceStatus = 'Draft' | 'Issued' | 'Paid' | 'Past Due' | 'Void' | 'Collections';
+type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PAID' | 'PAST_DUE' | 'VOID' | 'COLLECTIONS';
 
 interface Invoice {
   id: string;
-  number: string;
-  customer: string;
-  issued: string;
-  due: string;
+  invoiceNumber: string;
+  customer?: { firstName: string; lastName: string; company?: string | null };
+  customerId: string;
+  issuedAt: string | null;
+  dueDate: string | null;
   status: InvoiceStatus;
-  subtotal: number;
-  tax: number;
-  total: number;
-  balance: number;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  balanceCents: number;
 }
 
-/* ─── Mock data ─── */
-const mockInvoices: Invoice[] = [
-  { id: '1', number: 'INV-2026-0001', customer: 'Harbor Point Yacht Club', issued: '2026-03-01', due: '2026-03-31', status: 'Issued', subtotal: 285000, tax: 19950, total: 304950, balance: 304950 },
-  { id: '2', number: 'INV-2026-0002', customer: 'James T. Morrison', issued: '2026-03-03', due: '2026-04-02', status: 'Draft', subtotal: 125000, tax: 8750, total: 133750, balance: 133750 },
-  { id: '3', number: 'INV-2026-0003', customer: 'Coastal Marine LLC', issued: '2026-02-15', due: '2026-03-15', status: 'Paid', subtotal: 450000, tax: 31500, total: 481500, balance: 0 },
-  { id: '4', number: 'INV-2026-0004', customer: 'Maria Gonzalez', issued: '2026-01-10', due: '2026-02-09', status: 'Past Due', subtotal: 175000, tax: 12250, total: 187250, balance: 187250 },
-  { id: '5', number: 'INV-2026-0005', customer: 'Sunset Bay Holdings', issued: '2025-11-01', due: '2025-12-01', status: 'Collections', subtotal: 620000, tax: 43400, total: 663400, balance: 663400 },
-  { id: '6', number: 'INV-2026-0006', customer: 'Robert Chen', issued: '2026-03-10', due: '2026-04-09', status: 'Issued', subtotal: 95000, tax: 6650, total: 101650, balance: 101650 },
-  { id: '7', number: 'INV-2026-0007', customer: 'Windward Sailing Co.', issued: '2026-02-01', due: '2026-03-03', status: 'Void', subtotal: 310000, tax: 21700, total: 331700, balance: 0 },
-  { id: '8', number: 'INV-2026-0008', customer: 'Patricia Williams', issued: '2026-03-15', due: '2026-04-14', status: 'Paid', subtotal: 88000, tax: 6160, total: 94160, balance: 0 },
-  { id: '9', number: 'INV-2026-0009', customer: 'Blue Horizon Charters', issued: '2026-03-18', due: '2026-04-17', status: 'Issued', subtotal: 540000, tax: 37800, total: 577800, balance: 577800 },
-  { id: '10', number: 'INV-2026-0010', customer: 'Thomas Drake', issued: '2026-01-20', due: '2026-02-19', status: 'Past Due', subtotal: 210000, tax: 14700, total: 224700, balance: 112350 },
-];
+const STATUS_DISPLAY: Record<InvoiceStatus, string> = {
+  DRAFT: 'Draft',
+  ISSUED: 'Issued',
+  PAID: 'Paid',
+  PAST_DUE: 'Past Due',
+  VOID: 'Void',
+  COLLECTIONS: 'Collections',
+};
 
-const STATUS_ALL = ['All', 'Draft', 'Issued', 'Paid', 'Past Due', 'Void', 'Collections'] as const;
+const STATUS_ALL = ['All', 'DRAFT', 'ISSUED', 'PAID', 'PAST_DUE', 'VOID', 'COLLECTIONS'] as const;
 
 /* ─── Helpers ─── */
 function statusBadge(status: InvoiceStatus): React.CSSProperties {
@@ -56,12 +53,12 @@ function statusBadge(status: InvoiceStatus): React.CSSProperties {
     whiteSpace: 'nowrap',
   };
   switch (status) {
-    case 'Draft': return { ...base, backgroundColor: '#E2E8F0', color: '#64748B' };
-    case 'Issued': return { ...base, backgroundColor: '#0A2342', color: '#FFFFFF' };
-    case 'Paid': return { ...base, backgroundColor: '#E8F5E9', color: '#1B5E20' };
-    case 'Past Due': return { ...base, backgroundColor: '#FDECEA', color: '#B71C1C' };
-    case 'Void': return { ...base, backgroundColor: '#E2E8F0', color: '#94A3B8', textDecoration: 'line-through' };
-    case 'Collections': return { ...base, backgroundColor: '#B71C1C', color: '#FFFFFF' };
+    case 'DRAFT': return { ...base, backgroundColor: '#E2E8F0', color: '#64748B' };
+    case 'ISSUED': return { ...base, backgroundColor: '#0A2342', color: '#FFFFFF' };
+    case 'PAID': return { ...base, backgroundColor: '#E8F5E9', color: '#1B5E20' };
+    case 'PAST_DUE': return { ...base, backgroundColor: '#FDECEA', color: '#B71C1C' };
+    case 'VOID': return { ...base, backgroundColor: '#E2E8F0', color: '#94A3B8', textDecoration: 'line-through' };
+    case 'COLLECTIONS': return { ...base, backgroundColor: '#B71C1C', color: '#FFFFFF' };
     default: return base;
   }
 }
@@ -89,35 +86,52 @@ const styles: Record<string, React.CSSProperties> = {
   td: { padding: '12px 16px', borderBottom: '1px solid #E2E8F0', color: '#0A2342' },
   tdRight: { padding: '12px 16px', borderBottom: '1px solid #E2E8F0', color: '#0A2342', textAlign: 'right', ...mono, fontSize: '13px' },
   row: { cursor: 'pointer', transition: 'background-color 0.15s' },
+  loading: { display: 'flex', justifyContent: 'center', padding: '64px', color: '#64748B' },
 };
 
 export default function Billing() {
   const navigate = useNavigate();
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [search, setSearch] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  const filtered = mockInvoices.filter((inv) => {
+  useEffect(() => {
+    api.get<{ invoices: Invoice[] }>('/invoices')
+      .then((res) => setInvoices(res.invoices ?? []))
+      .catch(() => setInvoices([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const filtered = invoices.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
-    if (search && !inv.customer.toLowerCase().includes(search.toLowerCase()) && !inv.number.toLowerCase().includes(search.toLowerCase())) return false;
-    if (dateFrom && inv.issued < dateFrom) return false;
-    if (dateTo && inv.issued > dateTo) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const name = inv.customer ? `${inv.customer.firstName} ${inv.customer.lastName}` : '';
+      if (!name.toLowerCase().includes(q) && !inv.invoiceNumber.toLowerCase().includes(q)) return false;
+    }
+    if (dateFrom && inv.issuedAt && inv.issuedAt < dateFrom) return false;
+    if (dateTo && inv.issuedAt && inv.issuedAt > dateTo) return false;
     return true;
   });
 
-  const totalOutstanding = mockInvoices.reduce((s, i) => s + i.balance, 0);
-  const paidThisMonth = mockInvoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
-  const pastDue = mockInvoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
-  const credits = 4500; // mock credits
+  const totalOutstanding = invoices.reduce((s, i) => s + i.balanceCents, 0);
+  const paidThisMonth = invoices.filter((i) => i.status === 'PAID').reduce((s, i) => s + i.totalCents, 0);
+  const pastDue = invoices.filter((i) => i.status === 'PAST_DUE' || i.status === 'COLLECTIONS').reduce((s, i) => s + i.balanceCents, 0);
 
   const summaryCards = [
     { label: 'Total Outstanding', value: totalOutstanding, icon: DollarSign, color: totalOutstanding > 0 ? '#B71C1C' : '#0A2342' },
     { label: 'Paid This Month', value: paidThisMonth, icon: CheckCircle, color: '#1B5E20' },
     { label: 'Past Due (30+ days)', value: pastDue, icon: AlertTriangle, color: pastDue > 0 ? '#B71C1C' : '#0A2342' },
-    { label: 'Credits Available', value: credits, icon: CreditCard, color: '#0A2342' },
+    { label: 'Credits Available', value: 0, icon: CreditCard, color: '#0A2342' },
   ];
+
+  if (loading) {
+    return <div style={styles.loading}>Loading invoices...</div>;
+  }
 
   return (
     <div style={styles.page}>
@@ -146,7 +160,7 @@ export default function Billing() {
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
-            {STATUS_ALL.map((s) => <option key={s} value={s}>{s === 'All' ? 'All Statuses' : s}</option>)}
+            {STATUS_ALL.map((s) => <option key={s} value={s}>{s === 'All' ? 'All Statuses' : STATUS_DISPLAY[s as InvoiceStatus] ?? s}</option>)}
           </select>
         </div>
         <div style={styles.searchWrap}>
@@ -182,25 +196,28 @@ export default function Billing() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((inv, idx) => (
-              <tr
-                key={inv.id}
-                style={{ ...styles.row, backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}
-                onClick={() => navigate(`/billing/invoices/${inv.id}`)}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF'; }}
-              >
-                <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}>{inv.number}</td>
-                <td style={styles.td}>{inv.customer}</td>
-                <td style={styles.td}>{formatDate(inv.issued)}</td>
-                <td style={styles.td}>{formatDate(inv.due)}</td>
-                <td style={styles.td}><span style={statusBadge(inv.status)}>{inv.status}</span></td>
-                <td style={styles.tdRight}>{formatCents(inv.subtotal)}</td>
-                <td style={styles.tdRight}>{formatCents(inv.tax)}</td>
-                <td style={{ ...styles.tdRight, fontWeight: 600 }}>{formatCents(inv.total)}</td>
-                <td style={{ ...styles.tdRight, fontWeight: 600, color: inv.balance > 0 ? '#B71C1C' : '#1B5E20' }}>{formatCents(inv.balance)}</td>
-              </tr>
-            ))}
+            {filtered.map((inv, idx) => {
+              const customerName = inv.customer ? `${inv.customer.firstName} ${inv.customer.lastName}` : '—';
+              return (
+                <tr
+                  key={inv.id}
+                  style={{ ...styles.row, backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}
+                  onClick={() => navigate(`/billing/invoices/${inv.id}`)}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF'; }}
+                >
+                  <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}>{inv.invoiceNumber}</td>
+                  <td style={styles.td}>{customerName}</td>
+                  <td style={styles.td}>{inv.issuedAt ? formatDate(inv.issuedAt) : '—'}</td>
+                  <td style={styles.td}>{inv.dueDate ? formatDate(inv.dueDate) : '—'}</td>
+                  <td style={styles.td}><span style={statusBadge(inv.status)}>{STATUS_DISPLAY[inv.status]}</span></td>
+                  <td style={styles.tdRight}>{formatCents(inv.subtotalCents)}</td>
+                  <td style={styles.tdRight}>{formatCents(inv.taxCents)}</td>
+                  <td style={{ ...styles.tdRight, fontWeight: 600 }}>{formatCents(inv.totalCents)}</td>
+                  <td style={{ ...styles.tdRight, fontWeight: 600, color: inv.balanceCents > 0 ? '#B71C1C' : '#1B5E20' }}>{formatCents(inv.balanceCents)}</td>
+                </tr>
+              );
+            })}
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={9} style={{ ...styles.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
