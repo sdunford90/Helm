@@ -97,6 +97,31 @@ interface Invoice {
   date: string;
 }
 
+interface InsuranceRecord {
+  id: string;
+  boatId: string;
+  boatName: string;
+  provider: string;
+  policyNumber: string;
+  type: string;
+  coverage: number;
+  expiry: string;
+  status: 'Current' | 'Expiring Soon' | 'Expired';
+}
+
+const INSURANCE: InsuranceRecord[] = [
+  { id: 'INS-001', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48291', type: 'Hull & Liability', coverage: 250000, expiry: '2026-06-15', status: 'Current' },
+  { id: 'INS-002', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48292', type: 'Environmental Liability', coverage: 100000, expiry: '2026-06-15', status: 'Current' },
+  { id: 'INS-003', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77410', type: 'Hull & Liability', coverage: 120000, expiry: '2026-04-20', status: 'Expiring Soon' },
+  { id: 'INS-004', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77411', type: 'Pollution Liability', coverage: 50000, expiry: '2025-12-01', status: 'Expired' },
+];
+
+const insuranceStatusColors: Record<string, { bg: string; color: string }> = {
+  Current: { bg: '#E8F5E9', color: '#1B5E20' },
+  'Expiring Soon': { bg: '#FFF3CD', color: '#856404' },
+  Expired: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
 const ACTIVITY = [
   { date: '2025-03-20', action: 'Pump-out service completed', type: 'service' },
   { date: '2025-03-15', action: 'Invoice INV-003 generated', type: 'billing' },

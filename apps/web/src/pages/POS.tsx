@@ -225,6 +225,9 @@ export default function POS() {
   const [shiftFloat] = useState(100);
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [paymentModal, setPaymentModal] = useState<{ method: string } | null>(null);
+  const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
+  const [editingQtyValue, setEditingQtyValue] = useState('');
+  const [fuelQtyInputs, setFuelQtyInputs] = useState<Record<string, string>>({});
 
   // API calls with fallback to mock data
   const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });

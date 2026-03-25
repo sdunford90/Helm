@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight } from 'lucide-react';
+import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -17,6 +17,7 @@ interface Contract {
   end: string;
   status: ContractStatus;
   boat: string;
+  boatName: string;
   securityDeposit: number;
   autoRenew: boolean;
 }
@@ -24,13 +25,13 @@ interface Contract {
 /* ── Mock Data ─────────────────────────────────────────── */
 
 const MOCK_CONTRACTS: Contract[] = [
-  { id: '1', number: 'CTR-001', customer: 'James Harborview', slip: 'A-01', rate: 850, billingCycle: 'Monthly', start: '2024-03-15', end: '2025-03-14', status: 'Active', boat: 'Sea Spirit', securityDeposit: 1700, autoRenew: true },
-  { id: '2', number: 'CTR-002', customer: 'Maria Seabreeze', slip: 'A-02', rate: 750, billingCycle: 'Monthly', start: '2024-06-01', end: '2025-05-31', status: 'Active', boat: 'Coastal Dream', securityDeposit: 1500, autoRenew: true },
-  { id: '3', number: 'CTR-003', customer: 'David Tidewater', slip: 'B-01', rate: 1200, billingCycle: 'Monthly', start: '2024-01-05', end: '2025-01-04', status: 'Expired', boat: 'Tidewater Express', securityDeposit: 2400, autoRenew: false },
-  { id: '4', number: 'CTR-004', customer: 'Elena Windward', slip: 'C-01', rate: 3000, billingCycle: 'Seasonal', start: '2025-04-01', end: '2025-10-31', status: 'Active', boat: 'Windward', securityDeposit: 1500, autoRenew: false },
-  { id: '5', number: 'CTR-005', customer: 'Robert Dockside', slip: 'A-04', rate: 700, billingCycle: 'Monthly', start: '2025-05-01', end: '2026-04-30', status: 'Draft', boat: 'Dock Runner', securityDeposit: 1400, autoRenew: true },
-  { id: '6', number: 'CTR-006', customer: 'James Harborview', slip: 'A-01', rate: 900, billingCycle: 'Monthly', start: '2025-03-15', end: '2026-03-14', status: 'Renewed', boat: 'Sea Spirit', securityDeposit: 1700, autoRenew: true },
-  { id: '7', number: 'CTR-007', customer: 'Susan Baywatch', slip: 'B-03', rate: 950, billingCycle: 'Monthly', start: '2023-11-10', end: '2024-11-09', status: 'Terminated', boat: 'Bay Cruiser', securityDeposit: 1900, autoRenew: false },
+  { id: '1', number: 'CTR-001', customer: 'James Harborview', slip: 'A-01', rate: 850, billingCycle: 'Monthly', start: '2024-03-15', end: '2025-03-14', status: 'Active', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true },
+  { id: '2', number: 'CTR-002', customer: 'Maria Seabreeze', slip: 'A-02', rate: 750, billingCycle: 'Monthly', start: '2024-06-01', end: '2025-05-31', status: 'Active', boat: 'Coastal Dream', boatName: "Coastal Dream (32' Powerboat)", securityDeposit: 1500, autoRenew: true },
+  { id: '3', number: 'CTR-003', customer: 'David Tidewater', slip: 'B-01', rate: 1200, billingCycle: 'Monthly', start: '2024-01-05', end: '2025-01-04', status: 'Expired', boat: 'Tidewater Express', boatName: "Tidewater Express (42' Trawler)", securityDeposit: 2400, autoRenew: false },
+  { id: '4', number: 'CTR-004', customer: 'Elena Windward', slip: 'C-01', rate: 3000, billingCycle: 'Seasonal', start: '2025-04-01', end: '2025-10-31', status: 'Active', boat: 'Windward', boatName: "Windward (45' Sailboat)", securityDeposit: 1500, autoRenew: false },
+  { id: '5', number: 'CTR-005', customer: 'Robert Dockside', slip: 'A-04', rate: 700, billingCycle: 'Monthly', start: '2025-05-01', end: '2026-04-30', status: 'Draft', boat: 'Dock Runner', boatName: "Dock Runner (25' Runabout)", securityDeposit: 1400, autoRenew: true },
+  { id: '6', number: 'CTR-006', customer: 'James Harborview', slip: 'A-01', rate: 900, billingCycle: 'Monthly', start: '2025-03-15', end: '2026-03-14', status: 'Renewed', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true },
+  { id: '7', number: 'CTR-007', customer: 'Susan Baywatch', slip: 'B-03', rate: 950, billingCycle: 'Monthly', start: '2023-11-10', end: '2024-11-09', status: 'Terminated', boat: 'Bay Cruiser', boatName: "Bay Cruiser (30' Cabin Cruiser)", securityDeposit: 1900, autoRenew: false },
 ];
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -474,6 +475,7 @@ export default function Contracts() {
               <tr>
                 <th style={st.th}>Contract #</th>
                 <th style={st.th}>Customer</th>
+                <th style={st.th}>Boat</th>
                 <th style={st.th}>Slip</th>
                 <th style={st.th}>Rate</th>
                 <th style={st.th}>Billing</th>
@@ -491,6 +493,7 @@ export default function Contracts() {
                   <tr key={c.id}>
                     <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600, ...st.mono }}>{c.number}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{c.customer}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Ship size={14} color="#2E4A6B" />{c.boatName}</span></td>
                     <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{c.slip}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{fmt(c.rate)}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{c.billingCycle}</td>

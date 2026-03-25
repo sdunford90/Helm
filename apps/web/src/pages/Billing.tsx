@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
   DollarSign,
@@ -197,7 +197,7 @@ export default function Billing() {
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF'; }}
               >
-                <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}>{inv.number}</td>
+                <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}><Link to={'/billing/invoices/' + inv.id} style={{ color: '#00D4FF', fontWeight: 600, textDecoration: 'none' }}>{inv.number}</Link></td>
                 <td style={styles.td}>{inv.customer}</td>
                 <td style={styles.td}>{formatDate(inv.issued)}</td>
                 <td style={styles.td}>{formatDate(inv.due)}</td>

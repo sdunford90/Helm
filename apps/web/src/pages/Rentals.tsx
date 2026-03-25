@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
-  Star, Clock, Users, Filter, Eye,
+  Star, Clock, Users, Filter, Eye, ChevronLeft, ChevronRight, Info,
 } from 'lucide-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';

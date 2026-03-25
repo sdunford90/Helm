@@ -32,14 +32,6 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    label: 'CRM',
-    items: [
-      { path: '/leads', label: 'Leads', icon: UserPlus },
-      { path: '/waitlist', label: 'Waitlist', icon: List },
-      { path: '/customers', label: 'Customers', icon: Users },
-    ],
-  },
-  {
     label: 'Marina Operations',
     items: [
       { path: '/slips', label: 'Slips', icon: Anchor },
@@ -57,6 +49,14 @@ const NAV_SECTIONS = [
       { path: '/rentals', label: 'Rentals', icon: Ship },
       { path: '/pos', label: 'POS', icon: ShoppingCart },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
+    ],
+  },
+  {
+    label: 'CRM',
+    items: [
+      { path: '/leads', label: 'Leads', icon: UserPlus },
+      { path: '/waitlist', label: 'Waitlist', icon: List },
+      { path: '/customers', label: 'Customers', icon: Users },
     ],
   },
   {
