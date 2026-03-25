@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship } from 'lucide-react';
+import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -415,6 +415,219 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   );
 }
 
+/* ── Contract Detail / Transfer Modal ───────────────────── */
+
+const AVAILABLE_SLIPS = [
+  'A-03 (Vacant)', 'B-02 (Vacant)', 'B-03 (Vacant)', 'C-02 (Vacant)', 'C-03 (Vacant)',
+  'D-01 (Vacant)', 'D-02 (Vacant)', 'D-04 (Vacant)',
+];
+
+function ContractDetailModal({
+  contract,
+  onClose,
+  onTransfer,
+  onUpdate,
+}: {
+  contract: Contract;
+  onClose: () => void;
+  onTransfer: (contractId: string, newSlip: string, effectiveDate: string, notes: string) => void;
+  onUpdate: (id: string, changes: Partial<Contract>) => void;
+}) {
+  const [mode, setMode] = useState<'view' | 'edit' | 'transfer'>('view');
+
+  /* ── Edit state ── */
+  const [rate, setRate] = useState(String(contract.rate));
+  const [billingCycle, setBillingCycle] = useState(contract.billingCycle);
+  const [endDate, setEndDate] = useState(contract.end);
+  const [autoRenew, setAutoRenew] = useState(contract.autoRenew);
+  const [deposit, setDeposit] = useState(String(contract.securityDeposit));
+  const [status, setStatus] = useState<ContractStatus>(contract.status);
+  const [saving, setSaving] = useState(false);
+
+  /* ── Transfer state ── */
+  const [newSlip, setNewSlip] = useState('');
+  const [effectiveDate, setEffectiveDate] = useState('');
+  const [transferNotes, setTransferNotes] = useState('');
+  const [transferring, setTransferring] = useState(false);
+
+  const fmt = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
+
+  const handleSave = () => {
+    setSaving(true);
+    onUpdate(contract.id, {
+      rate: parseFloat(rate) || contract.rate,
+      billingCycle,
+      end: endDate,
+      autoRenew,
+      securityDeposit: parseFloat(deposit) || contract.securityDeposit,
+      status,
+    });
+    setSaving(false);
+    setMode('view');
+  };
+
+  const handleTransfer = () => {
+    if (!newSlip || !effectiveDate) return;
+    setTransferring(true);
+    onTransfer(contract.id, newSlip.split(' ')[0], effectiveDate, transferNotes);
+    setTransferring(false);
+    onClose();
+  };
+
+  const infoRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #F1F5F9', fontSize: '14px' };
+  const infoLabel: React.CSSProperties = { color: '#64748B', fontWeight: 600 };
+  const infoValue: React.CSSProperties = { color: '#0A2342', fontWeight: 500, textAlign: 'right' as const };
+  const sc = statusColors[contract.status];
+
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={{ ...st.modal, width: '680px' }} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ ...st.modalHeader, backgroundColor: '#0A2342' }}>
+          <div>
+            <h2 style={{ ...st.modalTitle, color: '#FFFFFF', fontSize: '18px' }}>{contract.number}</h2>
+            <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '2px' }}>{contract.customer} &middot; {contract.boatName}</div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {mode === 'view' && (
+              <>
+                <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }} onClick={() => setMode('edit')}>
+                  <Edit2 size={13} /> Edit
+                </button>
+                <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(0,212,255,0.5)', backgroundColor: 'rgba(0,212,255,0.15)', color: '#00D4FF', cursor: 'pointer' }} onClick={() => setMode('transfer')}>
+                  <Repeat size={13} /> Transfer Slip
+                </button>
+              </>
+            )}
+            <button style={{ ...st.closeBtn, color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
+          </div>
+        </div>
+
+        {/* ── View Mode ── */}
+        {mode === 'view' && (
+          <div style={{ padding: '24px 32px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color, border: sc.border ? `1px solid ${sc.border}` : 'none', fontSize: '13px', padding: '4px 14px' }}>{contract.status}</span>
+              <span style={{ fontSize: '13px', color: '#64748B' }}>Auto-Renew: <strong style={{ color: '#0A2342' }}>{contract.autoRenew ? 'Yes' : 'No'}</strong></span>
+            </div>
+            <div style={infoRow}><span style={infoLabel}>Slip</span><span style={{ ...infoValue, fontWeight: 700, fontSize: '15px' }}>{contract.slip}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Customer</span><span style={infoValue}>{contract.customer}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Boat</span><span style={infoValue}>{contract.boatName}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Billing Cycle</span><span style={infoValue}>{contract.billingCycle}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Rate</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace', fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{fmt(contract.rate)}/{contract.billingCycle === 'Monthly' ? 'mo' : contract.billingCycle === 'Annual' ? 'yr' : 'period'}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Start Date</span><span style={infoValue}>{contract.start}</span></div>
+            <div style={infoRow}><span style={infoLabel}>End Date</span><span style={infoValue}>{contract.end}</span></div>
+            <div style={{ ...infoRow, borderBottom: 'none' }}><span style={infoLabel}>Security Deposit</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{fmt(contract.securityDeposit)}</span></div>
+          </div>
+        )}
+
+        {/* ── Edit Mode ── */}
+        {mode === 'edit' && (
+          <>
+            <div style={st.modalBody}>
+              <div style={st.twoCol}>
+                <div style={st.field}>
+                  <label style={st.label}>Status</label>
+                  <select style={st.formSelect} value={status} onChange={(e) => setStatus(e.target.value as ContractStatus)}>
+                    <option value="Draft">Draft</option>
+                    <option value="Active">Active</option>
+                    <option value="Expiring">Expiring</option>
+                    <option value="Expired">Expired</option>
+                    <option value="Terminated">Terminated</option>
+                    <option value="Renewed">Renewed</option>
+                  </select>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Billing Cycle</label>
+                  <select style={st.formSelect} value={billingCycle} onChange={(e) => setBillingCycle(e.target.value)}>
+                    <option value="Monthly">Monthly</option>
+                    <option value="Quarterly">Quarterly</option>
+                    <option value="Semi-Annual">Semi-Annual</option>
+                    <option value="Annual">Annual</option>
+                    <option value="Seasonal">Seasonal</option>
+                  </select>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Rate ($/period)</label>
+                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Security Deposit</label>
+                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>End Date</label>
+                  <input style={st.input} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                </div>
+                <div style={{ ...st.field, justifyContent: 'flex-end' }}>
+                  <div style={{ ...st.toggleRow, marginTop: '24px' }} onClick={() => setAutoRenew(!autoRenew)}>
+                    {autoRenew ? <ToggleRight size={24} style={{ color: '#00D4FF' }} /> : <ToggleLeft size={24} style={{ color: '#CCC' }} />}
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Auto-Renew</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={st.modalFooter}>
+              <button style={st.cancelBtn} onClick={() => setMode('view')}>Cancel</button>
+              <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
+            </div>
+          </>
+        )}
+
+        {/* ── Transfer Mode ── */}
+        {mode === 'transfer' && (
+          <>
+            <div style={st.modalBody}>
+              <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD', marginBottom: '20px', fontSize: '13px', color: '#0369A1' }}>
+                Transferring contract <strong>{contract.number}</strong> from slip <strong>{contract.slip}</strong> to a new slip. The current contract will be ended on the effective date and a new contract will be created on the destination slip.
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px', padding: '16px', backgroundColor: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                <div style={{ textAlign: 'center' as const, flex: 1 }}>
+                  <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' }}>From Slip</div>
+                  <div style={{ fontSize: '22px', fontWeight: 700, color: '#0A2342' }}>{contract.slip}</div>
+                </div>
+                <ArrowRight size={24} color="#00D4FF" />
+                <div style={{ textAlign: 'center' as const, flex: 1 }}>
+                  <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' }}>To Slip</div>
+                  <div style={{ fontSize: '22px', fontWeight: 700, color: newSlip ? '#0A2342' : '#CBD5E1' }}>{newSlip ? newSlip.split(' ')[0] : '—'}</div>
+                </div>
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>New Slip *</label>
+                <select style={st.formSelect} value={newSlip} onChange={(e) => setNewSlip(e.target.value)}>
+                  <option value="">Select available slip...</option>
+                  {AVAILABLE_SLIPS.map((sl) => (
+                    <option key={sl} value={sl}>{sl}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>Effective Date *</label>
+                <input style={st.input} type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>Reason / Notes</label>
+                <textarea style={{ ...st.input, minHeight: '72px', resize: 'vertical' as const }} placeholder="Reason for transfer (e.g. upgraded to larger slip, maintenance on current slip...)" value={transferNotes} onChange={(e) => setTransferNotes(e.target.value)} />
+              </div>
+            </div>
+            <div style={st.modalFooter}>
+              <button style={st.cancelBtn} onClick={() => setMode('view')}>Back</button>
+              <button
+                style={{ ...st.saveBtn, opacity: (!newSlip || !effectiveDate || transferring) ? 0.5 : 1, display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={handleTransfer}
+                disabled={!newSlip || !effectiveDate || transferring}
+              >
+                <Repeat size={15} />
+                {transferring ? 'Transferring…' : 'Transfer Contract'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Component ──────────────────────────────────────── */
 
 export default function Contracts() {
@@ -423,11 +636,32 @@ export default function Contracts() {
   const [expiringFilter, setExpiringFilter] = useState('All');
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [viewingContract, setViewingContract] = useState<Contract | null>(null);
+  const [localContracts, setLocalContracts] = useState<Contract[]>([]);
 
   const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/api/contracts', { immediate: true });
   const createContract = useApi<Contract>('post', '/api/contracts');
+  const updateContractApi = useApi<Contract>('put', '/api/contracts/update');
+  const transferContractApi = useApi<Contract>('post', '/api/contracts/transfer');
 
-  const contracts = apiContracts || MOCK_CONTRACTS;
+  const contracts = localContracts.length > 0 ? localContracts : (apiContracts || MOCK_CONTRACTS);
+
+  const handleUpdate = (id: string, changes: Partial<Contract>) => {
+    const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);
+    setLocalContracts(updated);
+    if (viewingContract?.id === id) setViewingContract({ ...viewingContract, ...changes });
+    updateContractApi.execute({ body: { id, ...changes } }).catch(() => {});
+  };
+
+  const handleTransfer = (contractId: string, newSlip: string, effectiveDate: string, notes: string) => {
+    const orig = contracts.find((c) => c.id === contractId);
+    if (!orig) return;
+    const updated = contracts.map((c) =>
+      c.id === contractId ? { ...c, slip: newSlip, status: 'Active' as ContractStatus } : c
+    );
+    setLocalContracts(updated);
+    transferContractApi.execute({ body: { contractId, newSlip, effectiveDate, notes } }).catch(() => {});
+  };
 
   const now = new Date();
   const filtered = contracts.filter((c) => {
@@ -549,6 +783,7 @@ export default function Contracts() {
                     <td style={{ ...st.td, backgroundColor: rowBg }}>
                       <button
                         style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                        onClick={() => setViewingContract(c)}
                       >
                         View
                       </button>
@@ -577,6 +812,14 @@ export default function Contracts() {
       )}
 
       {showForm && <ContractFormModal onClose={() => setShowForm(false)} onSave={(data) => createContract.execute(data)} />}
+      {viewingContract && (
+        <ContractDetailModal
+          contract={viewingContract}
+          onClose={() => setViewingContract(null)}
+          onUpdate={handleUpdate}
+          onTransfer={handleTransfer}
+        />
+      )}
     </div>
   );
 }

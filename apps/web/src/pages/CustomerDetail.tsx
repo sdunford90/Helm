@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
-  Activity, Clock, User, AlertCircle,
+  Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
 } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
@@ -388,6 +388,235 @@ const s: Record<string, React.CSSProperties> = {
   },
 };
 
+/* ── Boat Modals ────────────────────────────────────────── */
+
+const modalOverlay: React.CSSProperties = { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 };
+const modalBox: React.CSSProperties = { backgroundColor: '#FFFFFF', borderRadius: '12px', width: '560px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.16)' };
+const mHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 28px 16px', borderBottom: '1px solid #E2E8F0' };
+const mTitle: React.CSSProperties = { fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 };
+const mBody: React.CSSProperties = { padding: '24px 28px' };
+const mFoot: React.CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: '12px', padding: '16px 28px 20px', borderTop: '1px solid #E2E8F0' };
+const mField: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' };
+const mLabel: React.CSSProperties = { fontSize: '13px', fontWeight: 600, color: '#0A2342' };
+const mInput: React.CSSProperties = { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', width: '100%' };
+const mSelect: React.CSSProperties = { ...mInput, background: '#FFFFFF', cursor: 'pointer' };
+const mCancelBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' };
+const mSaveBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' };
+const mTwoCol: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' };
+
+function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void }) {
+  const [name, setName] = useState(boat.name);
+  const [type, setType] = useState(boat.type);
+  const [length, setLength] = useState(String(boat.length));
+  const [registration, setRegistration] = useState(boat.registration);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = () => {
+    if (!name) return;
+    setSaving(true);
+    onSave({ ...boat, name, type, length: parseFloat(length) || boat.length, registration });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div style={modalOverlay} onClick={onClose}>
+      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+        <div style={mHead}>
+          <h2 style={mTitle}>Edit Boat</h2>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={mBody}>
+          <div style={mTwoCol}>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Vessel Name *</label>
+              <input style={mInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Vessel name" />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Type</label>
+              <select style={mSelect} value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="Sailboat">Sailboat</option>
+                <option value="Powerboat">Powerboat</option>
+                <option value="Trawler">Trawler</option>
+                <option value="Yacht">Yacht</option>
+                <option value="Runabout">Runabout</option>
+                <option value="Cabin Cruiser">Cabin Cruiser</option>
+                <option value="Catamaran">Catamaran</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Length (ft)</label>
+              <input style={mInput} type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder="e.g. 38" />
+            </div>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Registration #</label>
+              <input style={mInput} value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. FL-1234-AB" />
+            </div>
+          </div>
+        </div>
+        <div style={mFoot}>
+          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Partial<Boat>) => void }) {
+  const [name, setName] = useState('');
+  const [type, setType] = useState('Sailboat');
+  const [length, setLength] = useState('');
+  const [registration, setRegistration] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleSave = () => {
+    if (!name) { setErr('Vessel name is required.'); return; }
+    setSaving(true);
+    onSave({ name, type, length: parseFloat(length) || 0, registration });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div style={modalOverlay} onClick={onClose}>
+      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+        <div style={mHead}>
+          <h2 style={mTitle}>Add Boat</h2>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={mBody}>
+          {err && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
+          <div style={mTwoCol}>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Vessel Name *</label>
+              <input style={mInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Vessel name" />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Type</label>
+              <select style={mSelect} value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="Sailboat">Sailboat</option>
+                <option value="Powerboat">Powerboat</option>
+                <option value="Trawler">Trawler</option>
+                <option value="Yacht">Yacht</option>
+                <option value="Runabout">Runabout</option>
+                <option value="Cabin Cruiser">Cabin Cruiser</option>
+                <option value="Catamaran">Catamaran</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Length (ft)</label>
+              <input style={mInput} type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder="e.g. 38" />
+            </div>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Registration #</label>
+              <input style={mInput} value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. FL-1234-AB" />
+            </div>
+          </div>
+        </div>
+        <div style={mFoot}>
+          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Adding…' : 'Add Boat'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () => void }) {
+  const [slip, setSlip] = useState('');
+  const [billingCycle, setBillingCycle] = useState('Monthly');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [rate, setRate] = useState('');
+  const [deposit, setDeposit] = useState('');
+  const [autoRenew, setAutoRenew] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const createContract = useApi('post', '/api/contracts');
+
+  const handleSave = async () => {
+    if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
+    setErr('');
+    setSaving(true);
+    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } }).catch(() => {});
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div style={modalOverlay} onClick={onClose}>
+      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...mHead, backgroundColor: '#0A2342' }}>
+          <div>
+            <h2 style={{ ...mTitle, color: '#FFFFFF' }}>New Contract</h2>
+            <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '2px' }}>Vessel: {boat.name} ({boat.type} &middot; {boat.length}')</div>
+          </div>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={mBody}>
+          {err && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
+          <div style={mTwoCol}>
+            <div style={mField}>
+              <label style={mLabel}>Slip *</label>
+              <select style={mSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
+                <option value="">Select slip...</option>
+                <option value="A-01">A-01</option>
+                <option value="A-02">A-02</option>
+                <option value="A-03">A-03 (Vacant)</option>
+                <option value="A-04">A-04 (Reserved)</option>
+                <option value="B-01">B-01</option>
+                <option value="B-02">B-02 (Maintenance)</option>
+                <option value="B-03">B-03 (Vacant)</option>
+                <option value="C-01">C-01</option>
+                <option value="C-02">C-02 (Vacant)</option>
+                <option value="C-03">C-03 (Vacant)</option>
+              </select>
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Billing Cycle</label>
+              <select style={mSelect} value={billingCycle} onChange={(e) => setBillingCycle(e.target.value)}>
+                <option value="Monthly">Monthly</option>
+                <option value="Quarterly">Quarterly</option>
+                <option value="Semi-Annual">Semi-Annual</option>
+                <option value="Annual">Annual</option>
+                <option value="Seasonal">Seasonal</option>
+              </select>
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Start Date *</label>
+              <input style={mInput} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>End Date *</label>
+              <input style={mInput} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Rate ($/period) *</label>
+              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Security Deposit</label>
+              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none', marginTop: '4px' }} onClick={() => setAutoRenew(!autoRenew)}>
+            {autoRenew ? <ToggleRight size={24} style={{ color: '#00D4FF' }} /> : <ToggleLeft size={24} style={{ color: '#CCC' }} />}
+            <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Auto-Renew</span>
+          </div>
+        </div>
+        <div style={mFoot}>
+          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Creating…' : 'Create Contract'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Component ─────────────────────────────────────────── */
 
 type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
@@ -398,16 +627,34 @@ export default function CustomerDetailPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [showEdit, setShowEdit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [editingBoat, setEditingBoat] = useState<Boat | null>(null);
+  const [showAddBoat, setShowAddBoat] = useState(false);
+  const [newContractBoat, setNewContractBoat] = useState<Boat | null>(null);
+  const [localBoats, setLocalBoats] = useState<Boat[]>([]);
 
   // API calls
   const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
   const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
   const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
+  const updateBoatApi = useApi('put', '/api/boats/update');
+  const addBoatApi = useApi('post', '/api/boats');
 
   const c = apiCustomer || CUSTOMER; // Fallback to mock data
-  const boats = apiBoats || BOATS;
+  const rawBoats = apiBoats || BOATS;
+  const boats = localBoats.length > 0 ? localBoats : rawBoats;
   const invoices = apiInvoices || INVOICES;
+
+  const handleSaveBoat = (updated: Boat) => {
+    setLocalBoats(boats.map((b) => b.id === updated.id ? updated : b));
+    updateBoatApi.execute({ body: updated }).catch(() => {});
+  };
+
+  const handleAddBoat = (data: Partial<Boat>) => {
+    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', compliance: 100 };
+    setLocalBoats([...boats, newBoat]);
+    addBoatApi.execute({ body: { ...data, customerId: id } }).catch(() => {});
+  };
   const badgeStyle = statusBadgeColors[c.status];
 
   const tabs: { key: Tab; label: string }[] = [
@@ -506,6 +753,15 @@ export default function CustomerDetailPage() {
   /* ── Boats Tab ─── */
   const renderBoats = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {/* Add Boat button */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 18px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+          onClick={() => setShowAddBoat(true)}
+        >
+          <Plus size={15} /> Add Boat
+        </button>
+      </div>
       {boats.map((b) => {
         const cb = complianceBadge(b.compliance);
         const boatInsurance = INSURANCE.filter((ins) => ins.boatId === b.id);
@@ -520,9 +776,23 @@ export default function CustomerDetailPage() {
                   <div style={{ fontSize: '13px', color: '#64748B' }}>{b.type} &middot; {b.length}' &middot; {b.registration}</div>
                 </div>
               </div>
-              <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
-                Compliance: {b.compliance}%
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 14px', fontSize: '13px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' }}
+                  onClick={() => setEditingBoat(b)}
+                >
+                  <Edit size={13} /> Edit
+                </button>
+                <button
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 14px', fontSize: '13px', fontWeight: 600, color: '#FFFFFF', background: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                  onClick={() => setNewContractBoat(b)}
+                >
+                  <Plus size={13} /> New Contract
+                </button>
+                <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
+                  Compliance: {b.compliance}%
+                </span>
+              </div>
             </div>
             {/* Insurance Section */}
             <div style={{ padding: '20px 24px' }}>
@@ -587,10 +857,16 @@ export default function CustomerDetailPage() {
         <tbody>
           {invoices.map((inv, idx) => {
             const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-            const ib = invoiceStatusColors[inv.status];
+            const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
             return (
-              <tr key={inv.id}>
-                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono }}>{inv.id}</td>
+              <tr
+                key={inv.id}
+                style={{ cursor: 'pointer' }}
+                onClick={() => navigate(`/billing/invoices/${inv.id}`)}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
+              >
+                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
                 <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
                 <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
                 <td style={{ ...s.td, backgroundColor: rowBg }}>
@@ -731,6 +1007,28 @@ export default function CustomerDetailPage() {
             console.log('Merge into:', targetId, selections);
             setShowMerge(false);
           }}
+        />
+      )}
+
+      {editingBoat && (
+        <EditBoatModal
+          boat={editingBoat}
+          onClose={() => setEditingBoat(null)}
+          onSave={handleSaveBoat}
+        />
+      )}
+
+      {showAddBoat && (
+        <AddBoatModal
+          onClose={() => setShowAddBoat(false)}
+          onSave={handleAddBoat}
+        />
+      )}
+
+      {newContractBoat && (
+        <NewContractFromBoatModal
+          boat={newContractBoat}
+          onClose={() => setNewContractBoat(null)}
         />
       )}
     </div>
