@@ -94,7 +94,11 @@ export default function AuditLog() {
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const filtered = ENTRIES.filter((e) => {
+  // API call with fallback to mock
+  const { data: apiEntries, loading: entriesLoading } = useApi<AuditEntry[]>('get', '/api/audit-log', { immediate: true });
+  const entries = apiEntries ?? ENTRIES;
+
+  const filtered = entries.filter((e) => {
     if (typeFilter !== 'All' && e.recordType !== typeFilter) return false;
     if (actionFilter !== 'All' && e.action !== actionFilter) return false;
     if (userFilter !== 'All' && e.userName !== userFilter) return false;
@@ -106,18 +110,23 @@ export default function AuditLog() {
   const totalPages = Math.ceil(filtered.length / perPage);
   const paged = filtered.slice((page - 1) * perPage, page * perPage);
 
-  const todayCount = ENTRIES.filter((e) => e.timestamp.startsWith('2026-03-25')).length;
-  const uniqueUsers = new Set(ENTRIES.map((e) => e.userName)).size;
+  const todayCount = entries.filter((e) => e.timestamp.startsWith('2026-03-25')).length;
+  const uniqueUsers = new Set(entries.map((e) => e.userName)).size;
 
   return (
     <div style={st.page}>
       <h1 style={st.title}>Audit Log</h1>
       <hr style={st.divider} />
+      {entriesLoading && (
+        <div style={{ padding: '8px 16px', marginBottom: '16px', backgroundColor: 'rgba(0,212,255,0.08)', borderRadius: '8px', fontSize: '13px', color: '#64748B' }}>
+          Loading audit log...
+        </div>
+      )}
 
       <div style={st.statsRow}>
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Entries</div>
-          <div style={st.statValue}>{ENTRIES.length}</div>
+          <div style={st.statValue}>{entries.length}</div>
           <div style={st.statSub}>All time</div>
         </div>
         <div style={st.statCard}>
@@ -132,7 +141,7 @@ export default function AuditLog() {
         </div>
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Record Types</div>
-          <div style={st.statValue}>{new Set(ENTRIES.map((e) => e.recordType)).size}</div>
+          <div style={st.statValue}>{new Set(entries.map((e) => e.recordType)).size}</div>
           <div style={st.statSub}>Tracked entities</div>
         </div>
       </div>

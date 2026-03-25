@@ -447,7 +447,7 @@ export default function Concierge() {
                   <span style={s.fieldLabel}>Customer</span>
                   <select style={{ ...s.input, ...s.select }}>
                     <option value="">Select customer...</option>
-                    {Array.from(new Set(MOCK_REQUESTS.map((r) => r.customer))).map((c) => (
+                    {Array.from(new Set(requests.map((r) => r.customer))).map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
@@ -485,7 +485,7 @@ export default function Concierge() {
             </div>
             <div style={s.modalFooter}>
               <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} onClick={() => setShowModal(false)}>
+              <button style={s.primaryBtn} onClick={() => { createRequest.execute({}); setShowModal(false); }}>
                 <FileText size={16} /> Submit Request
               </button>
             </div>

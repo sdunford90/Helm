@@ -126,7 +126,7 @@ export default function Fuel() {
   const todaySales = sales.filter((s) => s.date.startsWith('2026-03-25'));
   const todayGallons = todaySales.reduce((s, sale) => s + sale.gallons, 0);
   const todayRevenue = todaySales.reduce((s, sale) => s + sale.total, 0);
-  const avgMargin = FUEL_TYPES.reduce((s, ft) => s + (ft.pricePerGal - ft.costPerGal), 0) / FUEL_TYPES.length;
+  const avgMargin = fuelTypes.reduce((s, ft) => s + (ft.pricePerGal - ft.costPerGal), 0) / fuelTypes.length;
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sales', label: 'Sales Log' },
@@ -160,8 +160,8 @@ export default function Fuel() {
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Tank Status</div>
-          <div style={st.statValue}>{FUEL_TYPES.every((ft) => ft.currentLevel / ft.tankCapacity > 0.25) ? 'Good' : 'Low'}</div>
-          <div style={st.statSub}>{FUEL_TYPES.filter((ft) => ft.currentLevel / ft.tankCapacity <= 0.25).length} tanks need refill</div>
+          <div style={st.statValue}>{fuelTypes.every((ft) => ft.currentLevel / ft.tankCapacity > 0.25) ? 'Good' : 'Low'}</div>
+          <div style={st.statSub}>{fuelTypes.filter((ft) => ft.currentLevel / ft.tankCapacity <= 0.25).length} tanks need refill</div>
         </div>
       </div>
 
@@ -193,7 +193,7 @@ export default function Fuel() {
                 </tr>
               </thead>
               <tbody>
-                {SALES.map((s, idx) => {
+                {sales.map((s, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={s.id}>
@@ -217,7 +217,7 @@ export default function Fuel() {
 
       {tab === 'pricing' && (
         <div style={st.pricingGrid}>
-          {FUEL_TYPES.map((ft) => (
+          {fuelTypes.map((ft) => (
             <div key={ft.id} style={st.priceCard}>
               <div style={st.priceLabel}><FuelIcon size={20} style={{ color: '#00D4FF' }} /> {ft.label}</div>
               <div style={st.priceRow}>
@@ -262,7 +262,7 @@ export default function Fuel() {
                 </tr>
               </thead>
               <tbody>
-                {DELIVERIES.map((d, idx) => {
+                {deliveries.map((d, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={d.id}>

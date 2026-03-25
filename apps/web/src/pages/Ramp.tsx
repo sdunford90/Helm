@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   Search,
   Plus,
@@ -153,13 +154,18 @@ export default function Ramp() {
   const [showModal, setShowModal] = useState(false);
   const [ticketTypeField, setTicketTypeField] = useState<TicketType>('Single Launch');
 
-  const todayTickets = MOCK_TICKETS.filter((t) => t.date === '2026-03-25');
+  // API calls with fallback to mock
+  const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/api/ramp', { immediate: true });
+  const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/api/ramp');
+  const tickets = apiTickets ?? MOCK_TICKETS;
+
+  const todayTickets = tickets.filter((t) => t.date === '2026-03-25');
   const launchesToday = todayTickets.length;
   const revenueToday = todayTickets.reduce((sum, t) => sum + t.amount, 0);
   const activePasses = MOCK_PASSES.filter((p) => p.status === 'Active').length;
   const peakHour = '7:00 - 8:00 AM';
 
-  const filteredAll = MOCK_TICKETS.filter((t) => {
+  const filteredAll = tickets.filter((t) => {
     if (typeFilter !== 'All' && t.ticketType !== typeFilter) return false;
     if (dateFrom && t.date < dateFrom) return false;
     if (dateTo && t.date > dateTo) return false;
@@ -429,8 +435,11 @@ export default function Ramp() {
             </div>
             <div style={s.modalFooter}>
               <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} onClick={() => setShowModal(false)}>
-                <Waves size={16} /> Record Launch
+              <button style={s.primaryBtn} disabled={creatingTicket} onClick={async () => {
+                await createTicket({ ticketType: ticketTypeField, amount: TICKET_RATES[ticketTypeField] });
+                setShowModal(false);
+              }}>
+                <Waves size={16} /> {creatingTicket ? 'Recording...' : 'Record Launch'}
               </button>
             </div>
           </div>
