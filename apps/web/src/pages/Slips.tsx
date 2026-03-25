@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Search, Plus, List, LayoutGrid, X,
 } from 'lucide-react';
@@ -436,6 +437,166 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
   );
 }
 
+/* ── Assign Slip Modal ──────────────────────────────────── */
+
+interface Customer { id: string; firstName: string; lastName: string; company: string | null; email: string; }
+
+function AssignSlipModal({ slip, onClose, onAssigned }: {
+  slip: Slip;
+  onClose: () => void;
+  onAssigned: (slipId: string, occupantName: string) => void;
+}) {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<Customer | null>(null);
+  const [contractType, setContractType] = useState<'Annual' | 'Monthly' | 'Transient'>('Annual');
+  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [rate, setRate] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    setLoading(true);
+    fetch('/api/customers?limit=200')
+      .then((r) => r.ok ? r.json() : { data: [] })
+      .then((res) => { setCustomers(res.data || res || []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const filtered = customers.filter((c) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      c.firstName?.toLowerCase().includes(q) ||
+      c.lastName?.toLowerCase().includes(q) ||
+      c.company?.toLowerCase().includes(q) ||
+      c.email?.toLowerCase().includes(q)
+    );
+  });
+
+  const displayName = (c: Customer) =>
+    c.company ? `${c.company} (${c.firstName} ${c.lastName})` : `${c.firstName} ${c.lastName}`;
+
+  const inp: React.CSSProperties = {
+    width: '100%', padding: '8px 12px', border: '1px solid #E2E8F0', borderRadius: 6,
+    fontSize: 13, color: '#0A2342', background: '#F8FAFC', boxSizing: 'border-box',
+  };
+  const lbl: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: '#64748B', marginBottom: 4, display: 'block' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}
+      onClick={onClose}>
+      <div style={{ background: '#FFF', borderRadius: 12, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}
+        onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0A2342' }}>Assign Slip {slip.number}</h3>
+            <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{slip.dock} · {slip.length}ft × {slip.width}ft</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Customer Search */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={lbl}>Select Customer *</label>
+          {selected ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(0,212,255,0.08)', border: '1px solid #00D4FF', borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: '#0A2342' }}>{displayName(selected)}</div>
+                <div style={{ fontSize: 12, color: '#64748B' }}>{selected.email}</div>
+              </div>
+              <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
+                <X size={16} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <input style={inp} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, company, or email…" autoFocus />
+              {loading && <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 6 }}>Loading customers…</div>}
+              {!loading && search && (
+                <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: 'auto', background: '#FFF', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
+                  {filtered.length === 0 ? (
+                    <div style={{ padding: '12px 14px', fontSize: 13, color: '#94A3B8' }}>No customers found</div>
+                  ) : filtered.slice(0, 8).map((c) => (
+                    <div key={c.id} onClick={() => { setSelected(c); setSearch(''); }} style={{
+                      padding: '10px 14px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #F1F5F9',
+                      color: '#0A2342',
+                    }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#F1F5F9'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#FFF'; }}>
+                      <div style={{ fontWeight: 600 }}>{displayName(c)}</div>
+                      <div style={{ fontSize: 11, color: '#94A3B8' }}>{c.email}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button onClick={() => navigate('/customers')} style={{ marginTop: 8, background: 'none', border: 'none', color: '#00D4FF', fontSize: 12, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+                + Add a new customer first
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Contract Type */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+          <div>
+            <label style={lbl}>Contract Type</label>
+            <select style={{ ...inp, cursor: 'pointer' }} value={contractType} onChange={(e) => setContractType(e.target.value as typeof contractType)}>
+              <option value="Annual">Annual</option>
+              <option value="Monthly">Monthly</option>
+              <option value="Transient">Transient / Daily</option>
+            </select>
+          </div>
+          <div>
+            <label style={lbl}>Start Date</label>
+            <input type="date" style={inp} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <label style={lbl}>{contractType === 'Transient' ? 'Daily Rate ($)' : 'Monthly Rate ($)'}</label>
+          <input style={inp} type="number" min="0" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="e.g. 450.00" />
+        </div>
+
+        <div style={{ padding: '12px 14px', background: '#FFF8EE', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, marginBottom: 20, fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
+          This will mark the slip as <strong>Occupied</strong> and create a draft contract in Contracts. You can complete all contract terms there.
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onClose} style={{ padding: '9px 18px', border: '1px solid #E2E8F0', borderRadius: 6, background: 'none', color: '#64748B', cursor: 'pointer', fontSize: 13 }}>
+            Cancel
+          </button>
+          <button
+            disabled={!selected || saving}
+            onClick={async () => {
+              if (!selected) return;
+              setSaving(true);
+              try {
+                await fetch(`/api/slips/${slip.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ status: 'OCCUPIED' }),
+                });
+              } catch { /* best-effort */ }
+              const name = displayName(selected);
+              onAssigned(slip.id, name);
+              onClose();
+            }}
+            style={{
+              padding: '9px 20px', background: '#0A2342', border: 'none', borderRadius: 6,
+              color: '#FFF', fontWeight: 600, cursor: selected && !saving ? 'pointer' : 'not-allowed',
+              fontSize: 13, opacity: selected ? 1 : 0.5,
+            }}
+          >{saving ? 'Saving…' : 'Assign Slip'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Slips() {
@@ -443,6 +604,7 @@ export default function Slips() {
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [selectedSlip, setSelectedSlip] = useState<Slip | null>(null);
+  const [showAssignModal, setShowAssignModal] = useState(false);
 
   const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
   const createSlip = useApi<Slip>('post', '/api/slips');
@@ -622,7 +784,7 @@ export default function Slips() {
             if (selectedSlip.status !== 'Vacant' && selectedSlip.status !== 'Reserved') {
               window.alert(`Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
             } else {
-              window.alert(`Assign slip ${selectedSlip.number} — navigate to Contracts to create a new slip contract.`);
+              setShowAssignModal(true);
             }
           }}
           onMaintenance={() => {
@@ -631,6 +793,18 @@ export default function Slips() {
               updateSlipLocally(selectedSlip.id, { status: 'Maintenance' });
               setSelectedSlip(null);
             }
+          }}
+        />
+      )}
+
+      {showAssignModal && selectedSlip && (
+        <AssignSlipModal
+          slip={selectedSlip}
+          onClose={() => setShowAssignModal(false)}
+          onAssigned={(slipId, occupantName) => {
+            updateSlipLocally(slipId, { status: 'Occupied', occupant: occupantName });
+            setShowAssignModal(false);
+            setSelectedSlip(null);
           }}
         />
       )}

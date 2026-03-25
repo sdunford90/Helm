@@ -487,8 +487,8 @@ const TenantDetail: React.FC = () => {
       {tab === 'locations' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)' }}>
-              Manage physical locations for this tenant (e.g. Main Dock, Fuel Dock, Rental Center).
+            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', maxWidth: 560, lineHeight: 1.5 }}>
+              A location can be an entirely separate marina property, or a different physical terminal / area within the same marina (e.g. Main Dock office, Fuel Dock kiosk, Rental Center). Each gets its own point-of-sale and reporting context.
             </div>
             <button onClick={() => { setEditingLoc(undefined); setShowLocModal(true); }} style={{
               padding: '8px 18px', background: '#00D4FF', border: 'none', borderRadius: 6,
