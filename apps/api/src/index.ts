@@ -26,6 +26,7 @@ import announcementsRouter from "./routes/announcements.js";
 import adminRouter from "./routes/admin.js";
 import onboardingRouter from "./routes/onboarding.js";
 import contractsRouter from "./routes/contracts.js";
+import settingsRouter from "./routes/settings.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -69,6 +70,7 @@ app.use("/api/announcements", announcementsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/contracts", contractsRouter);
+app.use("/api/settings", settingsRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)
