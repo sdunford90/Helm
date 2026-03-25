@@ -95,6 +95,51 @@ const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
 
 /* ── Main Component ─────────────────────────────────────── */
 
+/* ── GL Account Mapping Data ────────────────────────────── */
+
+const GL_ACCOUNTS = [
+  { code: '1010', name: 'Cash on Hand' },
+  { code: '1020', name: 'Stripe Clearing' },
+  { code: '1030', name: 'ACH Clearing' },
+  { code: '4100', name: 'Slip Revenue' },
+  { code: '4200', name: 'Electricity Revenue' },
+  { code: '4300', name: 'Rental Revenue' },
+  { code: '4400', name: 'Fuel Revenue' },
+  { code: '4500', name: 'Retail Revenue' },
+  { code: '4600', name: 'Transient Revenue' },
+  { code: '4700', name: 'Ramp Revenue' },
+  { code: '4800', name: 'Concierge Revenue' },
+];
+
+const REVENUE_MAPPING_DEFAULTS: { label: string; defaultGL: string }[] = [
+  { label: 'Dockage Revenue', defaultGL: '4100' },
+  { label: 'Electricity Revenue', defaultGL: '4200' },
+  { label: 'Rental Revenue', defaultGL: '4300' },
+  { label: 'Fuel Revenue', defaultGL: '4400' },
+  { label: 'Retail / POS Revenue', defaultGL: '4500' },
+  { label: 'Transient Revenue', defaultGL: '4600' },
+  { label: 'Ramp Revenue', defaultGL: '4700' },
+  { label: 'Concierge Revenue', defaultGL: '4800' },
+];
+
+interface PaymentTypeRow {
+  id: string;
+  name: string;
+  defaultGL: string;
+  availPOS: boolean;
+  availBilling: boolean;
+  active: boolean;
+}
+
+const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
+  { id: 'card', name: 'Card', defaultGL: '1020', availPOS: true, availBilling: true, active: true },
+  { id: 'ach', name: 'ACH', defaultGL: '1030', availPOS: true, availBilling: true, active: true },
+  { id: 'cash', name: 'Cash', defaultGL: '1010', availPOS: true, availBilling: false, active: true },
+  { id: 'check', name: 'Check', defaultGL: '1010', availPOS: false, availBilling: true, active: true },
+  { id: 'wire', name: 'Wire', defaultGL: '1030', availPOS: false, availBilling: true, active: false },
+  { id: 'charge', name: 'Charge to Slip', defaultGL: '1020', availPOS: true, availBilling: true, active: true },
+];
+
 export default function Settings() {
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'integrations' | 'team' | 'advanced'>('profile');
 
@@ -105,6 +150,16 @@ export default function Settings() {
 
   // Use API data when available, fall back to mock
   const teamMembers = apiTeam ?? TEAM;
+
+  // GL Account Mapping state
+  const [revenueMapping, setRevenueMapping] = useState<Record<string, string>>(
+    Object.fromEntries(REVENUE_MAPPING_DEFAULTS.map((r) => [r.label, r.defaultGL]))
+  );
+  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeRow[]>(PAYMENT_TYPE_DEFAULTS);
+
+  const updatePaymentType = (id: string, field: keyof PaymentTypeRow, value: any) => {
+    setPaymentTypes((prev) => prev.map((pt) => pt.id === id ? { ...pt, [field]: value } : pt));
+  };
 
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
@@ -318,6 +373,81 @@ export default function Settings() {
               ))}
             </div>
           </div>
+
+          {/* ── GL Account Mapping ────────────────────────── */}
+          <div style={{ marginTop: '8px', marginBottom: '32px' }}>
+            <h3 style={{ ...st.sectionTitle, fontSize: '20px', marginBottom: '20px' }}>GL Account Mapping</h3>
+
+            {/* Revenue Account Mapping */}
+            <div style={st.card}>
+              <h3 style={st.sectionTitle}>Revenue Account Mapping</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                {REVENUE_MAPPING_DEFAULTS.map((rev) => (
+                  <div key={rev.label} style={st.field}>
+                    <label style={st.label}>{rev.label}</label>
+                    <select
+                      style={st.select}
+                      value={revenueMapping[rev.label] || rev.defaultGL}
+                      onChange={(e) => setRevenueMapping((prev) => ({ ...prev, [rev.label]: e.target.value }))}
+                    >
+                      {GL_ACCOUNTS.filter((gl) => gl.code.startsWith('4')).map((gl) => (
+                        <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Payment Type Configuration */}
+            <div style={st.card}>
+              <h3 style={st.sectionTitle}>Payment Type Configuration</h3>
+              <div style={st.tableWrap}>
+                <table style={st.table}>
+                  <thead>
+                    <tr>
+                      <th style={st.th}>Payment Type</th>
+                      <th style={st.th}>GL Account</th>
+                      <th style={{ ...st.th, textAlign: 'center' }}>Available for POS</th>
+                      <th style={{ ...st.th, textAlign: 'center' }}>Available for Billing</th>
+                      <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paymentTypes.map((pt, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                      return (
+                        <tr key={pt.id}>
+                          <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{pt.name}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            <select
+                              style={{ ...st.select, width: '220px' }}
+                              value={pt.defaultGL}
+                              onChange={(e) => updatePaymentType(pt.id, 'defaultGL', e.target.value)}
+                            >
+                              {GL_ACCOUNTS.filter((gl) => gl.code.startsWith('1')).map((gl) => (
+                                <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
+                            <input type="checkbox" checked={pt.availPOS} onChange={(e) => updatePaymentType(pt.id, 'availPOS', e.target.checked)} />
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
+                            <input type="checkbox" checked={pt.availBilling} onChange={(e) => updatePaymentType(pt.id, 'availBilling', e.target.checked)} />
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
+                            <input type="checkbox" checked={pt.active} onChange={(e) => updatePaymentType(pt.id, 'active', e.target.checked)} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
           <button style={st.saveBtn} onClick={() => updateSettings({ tab: 'billing' })} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Billing Settings'}
           </button>

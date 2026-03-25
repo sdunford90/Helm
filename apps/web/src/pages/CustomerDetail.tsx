@@ -505,37 +505,69 @@ export default function CustomerDetailPage() {
 
   /* ── Boats Tab ─── */
   const renderBoats = () => (
-    <div style={s.tableWrap}>
-      <table style={s.table}>
-        <thead>
-          <tr>
-            <th style={s.th}>Name</th>
-            <th style={s.th}>Type</th>
-            <th style={s.th}>Length</th>
-            <th style={s.th}>Registration</th>
-            <th style={s.th}>Compliance</th>
-          </tr>
-        </thead>
-        <tbody>
-          {boats.map((b, idx) => {
-            const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-            const cb = complianceBadge(b.compliance);
-            return (
-              <tr key={b.id}>
-                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600 }}>{b.name}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>{b.type}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>{b.length}'</td>
-                <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{b.registration}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>
-                  <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
-                    {b.compliance}%
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {boats.map((b) => {
+        const cb = complianceBadge(b.compliance);
+        const boatInsurance = INSURANCE.filter((ins) => ins.boatId === b.id);
+        return (
+          <div key={b.id} style={{ ...s.card, padding: 0, overflow: 'hidden' }}>
+            {/* Boat Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <Ship size={20} color="#0A2342" />
+                <div>
+                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>{b.name}</div>
+                  <div style={{ fontSize: '13px', color: '#64748B' }}>{b.type} &middot; {b.length}' &middot; {b.registration}</div>
+                </div>
+              </div>
+              <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
+                Compliance: {b.compliance}%
+              </span>
+            </div>
+            {/* Insurance Section */}
+            <div style={{ padding: '20px 24px' }}>
+              <div style={{ ...s.cardTitle, marginBottom: '12px' }}><Shield size={14} /> Insurance Policies</div>
+              {boatInsurance.length > 0 ? (
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Policy #</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Provider</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Type</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Coverage</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Expiry</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {boatInsurance.map((ins, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+                      const isc = insuranceStatusColors[ins.status];
+                      return (
+                        <tr key={ins.id}>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontSize: '13px' }}>{ins.policyNumber}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.provider}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.type}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(ins.coverage)}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{ins.expiry}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            <span style={{ ...s.badge, backgroundColor: isc.bg, color: isc.color }}>{ins.status}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ padding: '16px 0', color: '#94A3B8', fontSize: '14px' }}>
+                  <AlertCircle size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                  No insurance on file for this vessel.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 

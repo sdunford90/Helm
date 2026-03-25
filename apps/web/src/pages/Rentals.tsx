@@ -103,6 +103,392 @@ const PROMO_CODES: PromoCode[] = [
   { id: '5', code: 'FLASHSALE', discount: 30, discountType: '%', validFrom: '2026-02-01', validTo: '2026-02-28', uses: 25, maxUses: 25, active: false },
 ];
 
+/* ── Availability Grid Types & Data ────────────────────── */
+
+type SlotStatus = 'available' | 'booked' | 'maintenance' | 'blocked';
+type TimeSlotKey = 'morning' | 'afternoon' | 'evening';
+
+interface AvailabilitySlot {
+  status: SlotStatus;
+  customerFirstName?: string;
+  reservationId?: string;
+  notes?: string;
+}
+
+interface DayAvailability {
+  morning: AvailabilitySlot;
+  afternoon: AvailabilitySlot;
+  evening: AvailabilitySlot;
+}
+
+const TIME_SLOT_LABELS: Record<TimeSlotKey, string> = {
+  morning: '8 AM – 12 PM',
+  afternoon: '12 PM – 4 PM',
+  evening: '4 PM – 8 PM',
+};
+
+const SLOT_STATUS_COLORS: Record<SlotStatus, { bg: string; color: string; label: string }> = {
+  available: { bg: '#DEF7EC', color: '#03543F', label: 'Available' },
+  booked: { bg: '#D6E8F4', color: '#0A2342', label: 'Booked' },
+  maintenance: { bg: '#FFF3CD', color: '#856404', label: 'Maintenance' },
+  blocked: { bg: '#E2E8F0', color: '#64748B', label: 'Blocked' },
+};
+
+const avail = (s: SlotStatus, name?: string, resId?: string, notes?: string): AvailabilitySlot => ({
+  status: s, customerFirstName: name, reservationId: resId, notes,
+});
+
+const FREE: DayAvailability = { morning: avail('available'), afternoon: avail('available'), evening: avail('available') };
+const MAINT_DAY: DayAvailability = { morning: avail('maintenance', undefined, undefined, 'Scheduled maintenance'), afternoon: avail('maintenance', undefined, undefined, 'Scheduled maintenance'), evening: avail('maintenance', undefined, undefined, 'Scheduled maintenance') };
+
+/** Generate 14 days of mock availability keyed by product id then ISO date string */
+function generateMockAvailability(): Record<string, Record<string, DayAvailability>> {
+  const today = new Date();
+  const dates: string[] = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  // Deterministic but varied bookings per product
+  const bookingPatterns: Record<string, Record<number, Partial<DayAvailability>>>[] = [
+    // Bay Cruiser 24 (id 1)
+    { '1': { 0: { morning: avail('booked', 'James', 'RES-1042'), afternoon: avail('available'), evening: avail('available') },
+             1: { morning: avail('available'), afternoon: avail('booked', 'Elena', 'RES-1052'), evening: avail('booked', 'Elena', 'RES-1052') },
+             2: { morning: avail('booked', 'Mike', 'RES-1060'), afternoon: avail('booked', 'Mike', 'RES-1060'), evening: avail('available') },
+             4: { morning: avail('booked', 'Carlos', 'RES-1065'), afternoon: avail('available'), evening: avail('booked', 'Priya', 'RES-1066') },
+             6: { morning: avail('booked', 'Sarah', 'RES-1070'), afternoon: avail('booked', 'Sarah', 'RES-1070'), evening: avail('booked', 'Sarah', 'RES-1070') },
+             7: { morning: avail('booked', 'Tom', 'RES-1071'), afternoon: avail('available'), evening: avail('available') },
+             9: { morning: avail('maintenance', undefined, undefined, 'Engine check'), afternoon: avail('maintenance', undefined, undefined, 'Engine check'), evening: avail('available') },
+             11: { morning: avail('booked', 'Amy', 'RES-1080'), afternoon: avail('booked', 'Amy', 'RES-1080'), evening: avail('available') },
+             13: { morning: avail('booked', 'Derek', 'RES-1085'), afternoon: avail('booked', 'Derek', 'RES-1085'), evening: avail('booked', 'Derek', 'RES-1085') },
+    } },
+    // Wave Runner Pro (id 2)
+    { '2': { 0: { morning: avail('booked', 'Maria', 'RES-1043'), afternoon: avail('available'), evening: avail('booked', 'Jake', 'RES-1053') },
+             1: { morning: avail('booked', 'Lisa', 'RES-1054'), afternoon: avail('booked', 'Lisa', 'RES-1054'), evening: avail('available') },
+             3: { morning: avail('available'), afternoon: avail('booked', 'Nathan', 'RES-1058'), evening: avail('booked', 'Nathan', 'RES-1058') },
+             5: { morning: avail('booked', 'Olivia', 'RES-1068'), afternoon: avail('booked', 'Olivia', 'RES-1068'), evening: avail('available') },
+             6: { morning: avail('booked', 'Ryan', 'RES-1072'), afternoon: avail('available'), evening: avail('booked', 'Zoe', 'RES-1073') },
+             8: { morning: avail('blocked', undefined, undefined, 'Private event'), afternoon: avail('blocked', undefined, undefined, 'Private event'), evening: avail('blocked', undefined, undefined, 'Private event') },
+             10: { morning: avail('booked', 'Grace', 'RES-1078'), afternoon: avail('available'), evening: avail('available') },
+             12: { morning: avail('booked', 'Leo', 'RES-1082'), afternoon: avail('booked', 'Leo', 'RES-1082'), evening: avail('booked', 'Leo', 'RES-1082') },
+    } },
+    // Harbor Explorer (id 3)
+    { '3': { 0: { morning: avail('available'), afternoon: avail('booked', 'Robert', 'RES-1044'), evening: avail('available') },
+             1: { morning: avail('booked', 'Tom', 'RES-1050'), afternoon: avail('available'), evening: avail('available') },
+             2: { morning: avail('booked', 'Jen', 'RES-1061'), afternoon: avail('booked', 'Jen', 'RES-1061'), evening: avail('available') },
+             5: { morning: avail('booked', 'Sam', 'RES-1069'), afternoon: avail('available'), evening: avail('booked', 'Kim', 'RES-1069b') },
+             7: { morning: avail('available'), afternoon: avail('booked', 'Alex', 'RES-1074'), evening: avail('available') },
+             10: { morning: avail('booked', 'Maya', 'RES-1079'), afternoon: avail('booked', 'Maya', 'RES-1079'), evening: avail('booked', 'Maya', 'RES-1079') },
+             12: { morning: avail('maintenance', undefined, undefined, 'Hull inspection'), afternoon: avail('maintenance', undefined, undefined, 'Hull inspection'), evening: avail('available') },
+    } },
+    // Sunset Sailor 28 (id 4)
+    { '4': { 1: { morning: avail('booked', 'Elena', 'RES-1045'), afternoon: avail('booked', 'Elena', 'RES-1045'), evening: avail('booked', 'Elena', 'RES-1045') },
+             3: { morning: avail('booked', 'Will', 'RES-1059'), afternoon: avail('available'), evening: avail('available') },
+             5: { morning: avail('available'), afternoon: avail('booked', 'Nora', 'RES-1067'), evening: avail('booked', 'Nora', 'RES-1067') },
+             8: { morning: avail('booked', 'Felix', 'RES-1075'), afternoon: avail('booked', 'Felix', 'RES-1075'), evening: avail('available') },
+             10: { morning: avail('blocked', undefined, undefined, 'Regatta event'), afternoon: avail('blocked', undefined, undefined, 'Regatta event'), evening: avail('available') },
+             13: { morning: avail('booked', 'Claire', 'RES-1086'), afternoon: avail('booked', 'Claire', 'RES-1086'), evening: avail('booked', 'Claire', 'RES-1086') },
+    } },
+    // Fishing Charter 30 (id 5) - in maintenance
+    { '5': { 0: MAINT_DAY, 1: MAINT_DAY, 2: MAINT_DAY, 3: MAINT_DAY, 4: MAINT_DAY,
+             5: { morning: avail('available'), afternoon: avail('available'), evening: avail('available') },
+             6: { morning: avail('booked', 'Pete', 'RES-1071b'), afternoon: avail('booked', 'Pete', 'RES-1071b'), evening: avail('available') },
+             7: { morning: avail('available'), afternoon: avail('booked', 'Amy', 'RES-1051'), evening: avail('available') },
+             9: { morning: avail('booked', 'Dan', 'RES-1077'), afternoon: avail('booked', 'Dan', 'RES-1077'), evening: avail('booked', 'Dan', 'RES-1077') },
+             11: { morning: avail('available'), afternoon: avail('booked', 'Rosa', 'RES-1081'), evening: avail('available') },
+    } },
+    // Paddleboard Classic (id 6)
+    { '6': { 0: { morning: avail('booked', 'Chloe', 'RES-1055'), afternoon: avail('available'), evening: avail('available') },
+             2: { morning: avail('booked', 'Hiro', 'RES-1062'), afternoon: avail('booked', 'Hiro', 'RES-1062'), evening: avail('available') },
+             3: { morning: avail('available'), afternoon: avail('available'), evening: avail('booked', 'Ava', 'RES-1063') },
+             6: { morning: avail('booked', 'Ben', 'RES-1070b'), afternoon: avail('available'), evening: avail('available') },
+             8: { morning: avail('available'), afternoon: avail('booked', 'Lily', 'RES-1076'), evening: avail('booked', 'Lily', 'RES-1076') },
+             11: { morning: avail('booked', 'Mia', 'RES-1081b'), afternoon: avail('available'), evening: avail('available') },
+             13: { morning: avail('booked', 'Owen', 'RES-1087'), afternoon: avail('booked', 'Owen', 'RES-1087'), evening: avail('available') },
+    } },
+    // Family Pontoon 28 (id 7)
+    { '7': { 2: { morning: avail('booked', 'Mike', 'RES-1048'), afternoon: avail('booked', 'Mike', 'RES-1048'), evening: avail('booked', 'Mike', 'RES-1048') },
+             4: { morning: avail('booked', 'Zara', 'RES-1064'), afternoon: avail('booked', 'Zara', 'RES-1064'), evening: avail('available') },
+             5: { morning: avail('available'), afternoon: avail('booked', 'Troy', 'RES-1068b'), evening: avail('booked', 'Troy', 'RES-1068b') },
+             7: { morning: avail('booked', 'Eve', 'RES-1074b'), afternoon: avail('booked', 'Eve', 'RES-1074b'), evening: avail('booked', 'Eve', 'RES-1074b') },
+             9: { morning: avail('maintenance', undefined, undefined, 'Seat repair'), afternoon: avail('maintenance', undefined, undefined, 'Seat repair'), evening: avail('maintenance', undefined, undefined, 'Seat repair') },
+             11: { morning: avail('booked', 'Nina', 'RES-1083'), afternoon: avail('available'), evening: avail('available') },
+             13: { morning: avail('booked', 'Luca', 'RES-1088'), afternoon: avail('booked', 'Luca', 'RES-1088'), evening: avail('available') },
+    } },
+    // Speed Demon X2 (id 8) - retired, all blocked
+    { '8': {} },
+  ];
+
+  const result: Record<string, Record<string, DayAvailability>> = {};
+  for (const patternMap of bookingPatterns) {
+    for (const [productId, dayOverrides] of Object.entries(patternMap)) {
+      result[productId] = {};
+      const isRetired = productId === '8';
+      for (let i = 0; i < dates.length; i++) {
+        if (isRetired) {
+          result[productId][dates[i]] = {
+            morning: avail('blocked', undefined, undefined, 'Retired'),
+            afternoon: avail('blocked', undefined, undefined, 'Retired'),
+            evening: avail('blocked', undefined, undefined, 'Retired'),
+          };
+        } else if (dayOverrides[i]) {
+          result[productId][dates[i]] = { ...FREE, ...dayOverrides[i] };
+        } else {
+          result[productId][dates[i]] = { ...FREE };
+        }
+      }
+    }
+  }
+  return result;
+}
+
+const MOCK_AVAILABILITY = generateMockAvailability();
+
+/** Count available slots today for a product */
+function countAvailableToday(productId: string): { available: number; total: number } {
+  const today = new Date().toISOString().slice(0, 10);
+  const day = MOCK_AVAILABILITY[productId]?.[today];
+  if (!day) return { available: 3, total: 3 };
+  let a = 0;
+  if (day.morning.status === 'available') a++;
+  if (day.afternoon.status === 'available') a++;
+  if (day.evening.status === 'available') a++;
+  return { available: a, total: 3 };
+}
+
+/* ── Availability Grid Component ───────────────────────── */
+
+function AvailabilityGrid({ products }: { products: RentalProduct[] }) {
+  const [selectedCell, setSelectedCell] = useState<{ productId: string; date: string; slot: TimeSlotKey } | null>(null);
+  const activeProducts = products.filter(p => p.status !== 'Retired');
+
+  const dates = useMemo(() => {
+    const today = new Date();
+    const result: Date[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      result.push(d);
+    }
+    return result;
+  }, []);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const formatDateHeader = (d: Date) => {
+    const day = d.toLocaleDateString('en-US', { weekday: 'short' });
+    const num = d.getDate();
+    const mon = d.toLocaleDateString('en-US', { month: 'short' });
+    return { day, num, mon };
+  };
+
+  const getDominantStatus = (day: DayAvailability): SlotStatus => {
+    const slots = [day.morning, day.afternoon, day.evening];
+    const counts: Record<SlotStatus, number> = { available: 0, booked: 0, maintenance: 0, blocked: 0 };
+    slots.forEach(s => counts[s.status]++);
+    if (counts.booked >= 2) return 'booked';
+    if (counts.maintenance >= 2) return 'maintenance';
+    if (counts.blocked >= 2) return 'blocked';
+    if (counts.booked > 0) return 'booked';
+    if (counts.maintenance > 0) return 'maintenance';
+    if (counts.blocked > 0) return 'blocked';
+    return 'available';
+  };
+
+  const getBookedName = (day: DayAvailability): string | undefined => {
+    if (day.morning.customerFirstName) return day.morning.customerFirstName;
+    if (day.afternoon.customerFirstName) return day.afternoon.customerFirstName;
+    if (day.evening.customerFirstName) return day.evening.customerFirstName;
+    return undefined;
+  };
+
+  const handleCellClick = useCallback((productId: string, dateStr: string, slot: TimeSlotKey) => {
+    setSelectedCell(prev =>
+      prev && prev.productId === productId && prev.date === dateStr && prev.slot === slot
+        ? null
+        : { productId, date: dateStr, slot }
+    );
+  }, []);
+
+  const selectedSlotData = useMemo(() => {
+    if (!selectedCell) return null;
+    const day = MOCK_AVAILABILITY[selectedCell.productId]?.[selectedCell.date];
+    if (!day) return null;
+    const slot = day[selectedCell.slot];
+    const product = products.find(p => p.id === selectedCell.productId);
+    return { ...slot, productName: product?.name ?? '', timeLabel: TIME_SLOT_LABELS[selectedCell.slot] };
+  }, [selectedCell, products]);
+
+  const gridSt = {
+    wrapper: { background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' } as React.CSSProperties,
+    scrollArea: { overflowX: 'auto', overflowY: 'visible', position: 'relative' } as React.CSSProperties,
+    table: { borderCollapse: 'collapse', fontSize: '13px', minWidth: '1200px', width: '100%' } as React.CSSProperties,
+    stickyTh: { position: 'sticky', left: 0, zIndex: 10, backgroundColor: '#0A2342', color: '#FFFFFF', padding: '10px 16px', fontWeight: 600, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'left', borderBottom: '2px solid #00D4FF', minWidth: '180px' } as React.CSSProperties,
+    dateTh: { padding: '6px 4px', fontSize: '11px', fontWeight: 600, backgroundColor: '#0A2342', color: '#FFFFFF', textAlign: 'center', borderBottom: '2px solid #00D4FF', minWidth: '80px', borderLeft: '1px solid rgba(255,255,255,0.1)' } as React.CSSProperties,
+    todayTh: { padding: '6px 4px', fontSize: '11px', fontWeight: 600, backgroundColor: '#0D2E52', color: '#00D4FF', textAlign: 'center', borderBottom: '2px solid #00D4FF', minWidth: '80px', borderLeft: '1px solid rgba(255,255,255,0.1)' } as React.CSSProperties,
+    stickyTd: { position: 'sticky', left: 0, zIndex: 5, backgroundColor: '#FFFFFF', padding: '10px 16px', fontWeight: 600, color: '#0A2342', borderBottom: '1px solid #E2E8F0', minWidth: '180px' } as React.CSSProperties,
+    cell: { padding: '4px 3px', borderBottom: '1px solid #E2E8F0', borderLeft: '1px solid #E2E8F0', textAlign: 'center', cursor: 'pointer', verticalAlign: 'top' } as React.CSSProperties,
+    todayCol: { backgroundColor: 'rgba(0, 212, 255, 0.06)' } as React.CSSProperties,
+    slotPill: { display: 'block', padding: '3px 4px', borderRadius: '3px', fontSize: '10px', fontWeight: 600, marginBottom: '2px', lineHeight: '1.3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', transition: 'opacity 0.15s', border: '1px solid transparent' } as React.CSSProperties,
+    legend: { display: 'flex', gap: '16px', alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #E2E8F0', flexWrap: 'wrap' } as React.CSSProperties,
+    legendItem: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#2E4A6B' } as React.CSSProperties,
+    legendDot: { width: '12px', height: '12px', borderRadius: '3px', flexShrink: 0 } as React.CSSProperties,
+    detailPopover: { position: 'fixed', zIndex: 1100, background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', padding: '20px', width: '300px', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' } as React.CSSProperties,
+    detailOverlay: { position: 'fixed', inset: 0, zIndex: 1050, backgroundColor: 'rgba(10,35,66,0.25)' } as React.CSSProperties,
+  };
+
+  return (
+    <div>
+      {/* Legend */}
+      <div style={{ ...gridSt.legend, border: '1px solid #E2E8F0', borderRadius: '8px', marginBottom: '16px', background: '#FFFFFF' }}>
+        <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342', marginRight: '8px' }}>Legend:</span>
+        {(Object.entries(SLOT_STATUS_COLORS) as [SlotStatus, typeof SLOT_STATUS_COLORS['available']][]).map(([key, val]) => (
+          <span key={key} style={gridSt.legendItem}>
+            <span style={{ ...gridSt.legendDot, backgroundColor: val.bg, border: `1px solid ${val.color}33` }} />
+            {val.label}
+          </span>
+        ))}
+        <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#64748B' }}>Click any slot for details</span>
+      </div>
+
+      <div style={gridSt.wrapper}>
+        <div style={gridSt.scrollArea}>
+          <table style={gridSt.table}>
+            <thead>
+              <tr>
+                <th style={gridSt.stickyTh}>Vessel / Product</th>
+                {dates.map(d => {
+                  const dStr = d.toISOString().slice(0, 10);
+                  const { day, num, mon } = formatDateHeader(d);
+                  const isToday = dStr === todayStr;
+                  const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                  return (
+                    <th key={dStr} style={{ ...(isToday ? gridSt.todayTh : gridSt.dateTh), ...(isWeekend && !isToday ? { color: '#94A3B8' } : {}) }}>
+                      <div>{day}</div>
+                      <div style={{ fontSize: '15px', fontWeight: 700, lineHeight: '1.2' }}>{num}</div>
+                      <div style={{ fontSize: '10px', fontWeight: 400, opacity: 0.8 }}>{mon}</div>
+                      {isToday && <div style={{ fontSize: '9px', background: '#00D4FF', color: '#0A2342', borderRadius: '3px', padding: '1px 4px', marginTop: '2px', fontWeight: 700 }}>TODAY</div>}
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {activeProducts.map((p, pIdx) => {
+                const rowBg = pIdx % 2 === 0 ? '#FFFFFF' : '#FAFBFC';
+                return (
+                  <tr key={p.id}>
+                    <td style={{ ...gridSt.stickyTd, backgroundColor: rowBg }}>
+                      <div>{p.name}</div>
+                      <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 400 }}>{p.type} &middot; {p.capacity} pax</div>
+                    </td>
+                    {dates.map(d => {
+                      const dStr = d.toISOString().slice(0, 10);
+                      const isToday = dStr === todayStr;
+                      const dayData = MOCK_AVAILABILITY[p.id]?.[dStr] ?? FREE;
+                      const slots: TimeSlotKey[] = ['morning', 'afternoon', 'evening'];
+                      return (
+                        <td key={dStr} style={{ ...gridSt.cell, backgroundColor: isToday ? `${rowBg === '#FFFFFF' ? 'rgba(0,212,255,0.04)' : 'rgba(0,212,255,0.07)'}` : rowBg }}>
+                          {slots.map(slotKey => {
+                            const slot = dayData[slotKey];
+                            const sc = SLOT_STATUS_COLORS[slot.status];
+                            const isSelected = selectedCell?.productId === p.id && selectedCell?.date === dStr && selectedCell?.slot === slotKey;
+                            return (
+                              <span
+                                key={slotKey}
+                                style={{
+                                  ...gridSt.slotPill,
+                                  backgroundColor: sc.bg,
+                                  color: sc.color,
+                                  ...(isSelected ? { border: `2px solid #00D4FF`, padding: '2px 3px' } : {}),
+                                }}
+                                title={`${TIME_SLOT_LABELS[slotKey]}: ${sc.label}${slot.customerFirstName ? ` - ${slot.customerFirstName}` : ''}${slot.notes ? ` (${slot.notes})` : ''}`}
+                                onClick={() => handleCellClick(p.id, dStr, slotKey)}
+                              >
+                                {slot.status === 'booked' && slot.customerFirstName
+                                  ? slot.customerFirstName
+                                  : slot.status === 'maintenance' ? 'Maint'
+                                  : slot.status === 'blocked' ? 'Blocked'
+                                  : '\u2713'}
+                              </span>
+                            );
+                          })}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Detail Popover */}
+      {selectedCell && selectedSlotData && (
+        <>
+          <div style={gridSt.detailOverlay} onClick={() => setSelectedCell(null)} />
+          <div style={gridSt.detailPopover}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{selectedSlotData.productName}</div>
+                <div style={{ fontSize: '13px', color: '#64748B' }}>{selectedCell.date} &middot; {selectedSlotData.timeLabel}</div>
+              </div>
+              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: '2px' }} onClick={() => setSelectedCell(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <span style={{
+                display: 'inline-block', padding: '4px 12px', borderRadius: '9999px', fontSize: '12px', fontWeight: 600,
+                backgroundColor: SLOT_STATUS_COLORS[selectedSlotData.status].bg,
+                color: SLOT_STATUS_COLORS[selectedSlotData.status].color,
+              }}>
+                {SLOT_STATUS_COLORS[selectedSlotData.status].label}
+              </span>
+            </div>
+            {selectedSlotData.customerFirstName && (
+              <div style={{ marginBottom: '8px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Customer</div>
+                <div style={{ fontSize: '14px', color: '#0A2342' }}>{selectedSlotData.customerFirstName}</div>
+              </div>
+            )}
+            {selectedSlotData.reservationId && (
+              <div style={{ marginBottom: '8px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Reservation</div>
+                <div style={{ fontSize: '14px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{selectedSlotData.reservationId}</div>
+              </div>
+            )}
+            {selectedSlotData.notes && (
+              <div style={{ marginBottom: '8px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Notes</div>
+                <div style={{ fontSize: '14px', color: '#0A2342' }}>{selectedSlotData.notes}</div>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+              {selectedSlotData.status === 'available' && (
+                <button style={{ padding: '6px 16px', fontSize: '13px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+                  <Plus size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> New Booking
+                </button>
+              )}
+              {selectedSlotData.status === 'booked' && (
+                <button style={{ padding: '6px 16px', fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: '#E0F7FF', border: '1px solid #B3E8FF', borderRadius: '6px', cursor: 'pointer' }}>
+                  View Reservation
+                </button>
+              )}
+              <button style={{ padding: '6px 16px', fontSize: '13px', fontWeight: 600, color: '#64748B', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', cursor: 'pointer' }} onClick={() => setSelectedCell(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Styles ─────────────────────────────────────────────── */
 
 const productStatusColors: Record<ProductStatus, { bg: string; color: string }> = {
@@ -282,7 +668,7 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Rentals() {
-  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('products');
+  const [tab, setTab] = useState<'products' | 'reservations' | 'pricing' | 'promos' | 'calendar' | 'simulator' | 'availability'>('products');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -309,6 +695,7 @@ export default function Rentals() {
 
   const tabs: { key: typeof tab; label: string }[] = [
     { key: 'products', label: 'Products' },
+    { key: 'availability', label: 'Availability' },
     { key: 'reservations', label: 'Reservations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
@@ -601,6 +988,9 @@ export default function Rentals() {
 
       {/* Price Simulator Tab */}
       {tab === 'simulator' && <PriceSimulator />}
+
+      {/* Availability Grid Tab */}
+      {tab === 'availability' && <AvailabilityGrid products={products} />}
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}
