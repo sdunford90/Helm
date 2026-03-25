@@ -34,7 +34,7 @@ type TimePeriod = 'Today' | 'This Week' | 'This Month' | 'This Quarter';
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('This Month');
-  const [activeTask, setActiveTask] = useState<null | { text: string; icon: React.ReactNode; urgent: boolean; detail: string; link: string; linkLabel: string }>(null);
+  const [hoveredBar, setHoveredBar] = useState<number | null>(null);
 
   // --- API Calls ---
   const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/api/reports/occupancy', { immediate: true });
@@ -305,66 +305,31 @@ const Dashboard: React.FC = () => {
   const maxRevenue = Math.max(...revenueData.map((d) => d.value));
 
   const transactions = [
-    { date: 'Mar 25', desc: 'Slip Rental - B12', customer: 'James Harlow', amount: '$2,450.00', status: 'Paid' },
-    { date: 'Mar 25', desc: 'POS Sale - Fuel', customer: 'Sarah Mitchell', amount: '$387.50', status: 'Completed' },
-    { date: 'Mar 24', desc: 'Invoice #1048', customer: 'Coastal Charters LLC', amount: '$6,800.00', status: 'Pending' },
-    { date: 'Mar 24', desc: 'Slip Rental - A05', customer: 'Robert Chen', amount: '$1,950.00', status: 'Paid' },
-    { date: 'Mar 23', desc: 'Maintenance Fee', customer: 'David Thompson', amount: '$425.00', status: 'Overdue' },
-    { date: 'Mar 23', desc: 'POS Sale - Ship Store', customer: 'Maria Garcia', amount: '$128.75', status: 'Completed' },
-    { date: 'Mar 22', desc: 'Invoice #1046', customer: 'Blue Water Excursions', amount: '$3,200.00', status: 'Paid' },
-    { date: 'Mar 22', desc: 'Rental Booking - C08', customer: "Kevin O\u2019Malley", amount: '$1,875.00', status: 'Pending' },
+    { id: '1049', date: 'Mar 25', desc: 'Slip Rental - B12', customer: 'James Harlow', amount: '$2,450.00', status: 'Paid', type: 'invoice' },
+    { id: 'pos-201', date: 'Mar 25', desc: 'POS Sale - Fuel', customer: 'Sarah Mitchell', amount: '$387.50', status: 'Completed', type: 'pos' },
+    { id: '1048', date: 'Mar 24', desc: 'Invoice #1048', customer: 'Coastal Charters LLC', amount: '$6,800.00', status: 'Pending', type: 'invoice' },
+    { id: '1047', date: 'Mar 24', desc: 'Slip Rental - A05', customer: 'Robert Chen', amount: '$1,950.00', status: 'Paid', type: 'invoice' },
+    { id: '1045', date: 'Mar 23', desc: 'Maintenance Fee', customer: 'David Thompson', amount: '$425.00', status: 'Overdue', type: 'invoice' },
+    { id: 'pos-200', date: 'Mar 23', desc: 'POS Sale - Ship Store', customer: 'Maria Garcia', amount: '$128.75', status: 'Completed', type: 'pos' },
+    { id: '1046', date: 'Mar 22', desc: 'Invoice #1046', customer: 'Blue Water Excursions', amount: '$3,200.00', status: 'Paid', type: 'invoice' },
+    { id: '1044', date: 'Mar 22', desc: 'Rental Booking - C08', customer: "Kevin O\u2019Malley", amount: '$1,875.00', status: 'Pending', type: 'invoice' },
   ];
 
   const tasks = [
-    {
-      text: '3 contracts expiring this week',
-      icon: <AlertTriangle size={16} color={colors.orange} />,
-      urgent: true,
-      detail: 'Contracts for slips A12, B07, and C19 expire within the next 7 days. Contact tenants to renew or vacate. Contracts that lapse without renewal may result in billing gaps.',
-      link: '/contracts',
-      linkLabel: 'View Contracts',
-    },
-    {
-      text: '2 insurance documents expiring',
-      icon: <AlertTriangle size={16} color={colors.orange} />,
-      urgent: true,
-      detail: 'James Harlow (Slip A12) and Coastal Charters LLC (Slip B14) have insurance certificates expiring within 30 days. Boaters must maintain valid coverage — follow up to collect updated certificates.',
-      link: '/contracts',
-      linkLabel: 'View Contracts',
-    },
-    {
-      text: '1 maintenance request pending',
-      icon: <Clock size={16} color={colors.cyan} />,
-      urgent: false,
-      detail: 'Maintenance request #312 on Dock C, Slip 08: dock cleat loose and needs replacement. Submitted yesterday by dock staff. Mark slip as Under Maintenance while repairs are completed.',
-      link: '/slips',
-      linkLabel: 'View Slips',
-    },
-    {
-      text: 'ACH return to review',
-      icon: <CreditCard size={16} color={colors.red} />,
-      urgent: true,
-      detail: 'An ACH payment of $1,200.00 from Patricia Nguyen (Slip D04) was returned with code R01 (insufficient funds). Review the payment, contact the customer, and re-initiate or switch to another payment method.',
-      link: '/billing',
-      linkLabel: 'View Billing',
-    },
-    {
-      text: 'Dock walk overdue (Dock C)',
-      icon: <Footprints size={16} color={colors.red} />,
-      urgent: true,
-      detail: 'Dock C was scheduled for its weekly inspection 3 days ago and has not been completed. Assign a dock staff member to perform the walk and log findings — especially slip C08 which has an open maintenance request.',
-      link: '/dock-walks',
-      linkLabel: 'Start Dock Walk',
-    },
+    { text: '3 contracts expiring this week', detail: 'James Harborview - Mar 30 · Elena Windward - Mar 28 · Tom Seaside - Mar 29', icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true, route: '/contracts' },
+    { text: '2 insurance documents expiring', detail: 'Elena Windward - Insurance expires Mar 28 · Sarah Mitchell - Insurance expires Mar 31', icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true, route: '/customers' },
+    { text: '1 maintenance request pending', detail: 'Dock C, Slip 08 - Cleat replacement requested by David Thompson', icon: <Clock size={16} color={colors.cyan} />, urgent: false, route: '/concierge' },
+    { text: 'ACH return to review', detail: 'Coastal Charters LLC - $6,800.00 returned Mar 24', icon: <CreditCard size={16} color={colors.red} />, urgent: true, route: '/billing' },
+    { text: 'Dock walk overdue (Dock C)', detail: 'Last completed Mar 20 - 5 days overdue', icon: <Footprints size={16} color={colors.red} />, urgent: true, route: '/dock-walks' },
   ];
 
   const quickActions = [
-    { label: 'New Invoice', icon: <Plus size={18} /> },
-    { label: 'Add Customer', icon: <UserPlus size={18} /> },
-    { label: 'Start Dock Walk', icon: <Footprints size={18} /> },
-    { label: 'Record Payment', icon: <CreditCard size={18} /> },
-    { label: 'Send Announcement', icon: <Megaphone size={18} /> },
-    { label: 'Generate Report', icon: <BarChart3 size={18} /> },
+    { label: 'New Invoice', icon: <Plus size={18} />, route: '/billing' },
+    { label: 'Add Customer', icon: <UserPlus size={18} />, route: '/customers' },
+    { label: 'Start Dock Walk', icon: <Footprints size={18} />, route: '/dock-walks' },
+    { label: 'Record Payment', icon: <CreditCard size={18} />, route: '/billing' },
+    { label: 'Send Announcement', icon: <Megaphone size={18} />, route: '/announcements' },
+    { label: 'Generate Report', icon: <BarChart3 size={18} />, route: '/reports' },
   ];
 
   const docks = [
@@ -375,16 +340,16 @@ const Dashboard: React.FC = () => {
   ];
 
   const activityFeed = [
-    { time: '9:42 AM', text: 'Payment of $2,450.00 received from James Harlow', type: 'payment', link: '/billing' },
-    { time: '9:15 AM', text: 'Contract signed by Coastal Charters LLC (Slip B14)', type: 'contract', link: '/contracts' },
-    { time: '8:58 AM', text: "Lead converted: Kevin O\u2019Malley \u2192 Active Customer", type: 'lead', link: '/customers' },
-    { time: '8:30 AM', text: 'Dock walk completed for Dock A by Mike Reynolds', type: 'dockwalk', link: '/dock-walks' },
-    { time: 'Yesterday 4:45 PM', text: 'Maintenance request #312 submitted for Dock C, Slip 08', type: 'maintenance', link: '/slips' },
-    { time: 'Yesterday 3:20 PM', text: 'Invoice #1048 sent to Coastal Charters LLC', type: 'invoice', link: '/billing' },
-    { time: 'Yesterday 2:10 PM', text: 'Insurance document uploaded by Sarah Mitchell', type: 'document', link: '/contracts' },
-    { time: 'Yesterday 11:30 AM', text: 'POS transaction: $387.50 fuel sale to Sarah Mitchell', type: 'payment', link: '/pos' },
-    { time: 'Yesterday 10:15 AM', text: 'New lead: Patricia Nguyen \u2014 interested in 40ft slip', type: 'lead', link: '/leads' },
-    { time: 'Yesterday 9:00 AM', text: 'Automated rent reminders sent (12 recipients)', type: 'system', link: '/billing' },
+    { time: '9:42 AM', text: 'Payment of $2,450.00 received from James Harlow', type: 'payment' },
+    { time: '9:15 AM', text: 'Contract signed by Coastal Charters LLC (Slip B14)', type: 'contract' },
+    { time: '8:58 AM', text: "Lead converted: Kevin O\u2019Malley \u2192 Active Customer", type: 'lead' },
+    { time: '8:30 AM', text: 'Dock walk completed for Dock A by Mike Reynolds', type: 'dockwalk' },
+    { time: 'Yesterday 4:45 PM', text: 'Maintenance request #312 submitted for Dock C, Slip 08', type: 'maintenance' },
+    { time: 'Yesterday 3:20 PM', text: 'Invoice #1048 sent to Coastal Charters LLC', type: 'invoice' },
+    { time: 'Yesterday 2:10 PM', text: 'Insurance document uploaded by Sarah Mitchell', type: 'document' },
+    { time: 'Yesterday 11:30 AM', text: 'POS transaction: $387.50 fuel sale to Sarah Mitchell', type: 'payment' },
+    { time: 'Yesterday 10:15 AM', text: 'New lead: Patricia Nguyen \u2014 interested in 40ft slip', type: 'lead' },
+    { time: 'Yesterday 9:00 AM', text: 'Automated rent reminders sent (12 recipients)', type: 'system' },
   ];
 
   const activityDot = (type: string): string => {
@@ -428,7 +393,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         <hr style={gradientDividerStyle} />
-        <p style={subtitleStyle}>Good morning &mdash; Tuesday, March 25, 2026</p>
+        <p style={subtitleStyle}>Good morning &mdash; Tuesday, March 25, 2026 &nbsp;|&nbsp; Showing data for: <strong>{timePeriod}</strong></p>
       </div>
 
       {/* KPI Cards */}
@@ -480,6 +445,7 @@ const Dashboard: React.FC = () => {
               {revenueData.map((d, i) => {
                 const pct = (d.value / maxRevenue) * 100;
                 const isCurrentMonth = i === revenueData.length - 1;
+                const isHovered = hoveredBar === i;
                 return (
                   <div
                     key={d.month}
@@ -490,8 +456,30 @@ const Dashboard: React.FC = () => {
                       alignItems: 'center',
                       height: '100%',
                       justifyContent: 'flex-end',
+                      position: 'relative',
                     }}
+                    onMouseEnter={() => setHoveredBar(i)}
+                    onMouseLeave={() => setHoveredBar(null)}
                   >
+                    {isHovered && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '-8px',
+                          backgroundColor: colors.navy,
+                          color: colors.white,
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          zIndex: 10,
+                          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                        }}
+                      >
+                        ${d.value.toLocaleString()}
+                      </div>
+                    )}
                     <span
                       style={{
                         fontSize: '11px',
@@ -509,9 +497,11 @@ const Dashboard: React.FC = () => {
                         height: `${pct}%`,
                         backgroundColor: isCurrentMonth ? colors.cyan : colors.navy,
                         borderRadius: '6px 6px 0 0',
-                        opacity: isCurrentMonth ? 1 : 0.7,
-                        transition: 'height 0.3s ease',
+                        opacity: isHovered ? 1 : (isCurrentMonth ? 1 : 0.7),
+                        transition: 'height 0.3s ease, opacity 0.15s ease, transform 0.15s ease',
                         minHeight: '8px',
+                        transform: isHovered ? 'scaleX(1.08)' : 'scaleX(1)',
+                        cursor: 'pointer',
                       }}
                     />
                     <span
@@ -574,6 +564,15 @@ const Dashboard: React.FC = () => {
                     key={i}
                     style={{
                       backgroundColor: i % 2 === 0 ? colors.white : colors.lightGray,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease',
+                    }}
+                    onClick={() => navigate(t.type === 'pos' ? '/pos' : `/billing/invoices/${t.id}`)}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'rgba(0, 212, 255, 0.06)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = i % 2 === 0 ? colors.white : colors.lightGray;
                     }}
                   >
                     <td style={tableCellStyle}>{t.date}</td>
@@ -613,7 +612,6 @@ const Dashboard: React.FC = () => {
               {tasks.map((task, i) => (
                 <div
                   key={i}
-                  onClick={() => setActiveTask(task)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -626,53 +624,23 @@ const Dashboard: React.FC = () => {
                     border: task.urgent
                       ? '1px solid rgba(245, 158, 11, 0.2)'
                       : `1px solid ${colors.border}`,
-                    cursor: 'pointer',
-                    transition: 'box-shadow 0.15s',
                   }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
                 >
                   {task.icon}
-                  <span style={{ fontSize: '14px', color: colors.navy, fontWeight: 500, flex: 1 }}>
+                  <span
+                    style={{
+                      fontSize: '14px',
+                      color: colors.navy,
+                      fontWeight: 500,
+                      flex: 1,
+                    }}
+                  >
                     {task.text}
                   </span>
                   <ChevronRight size={16} color={colors.gray} />
                 </div>
               ))}
             </div>
-
-            {/* Task Detail Modal */}
-            {activeTask && (
-              <div
-                style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}
-                onClick={() => setActiveTask(null)}
-              >
-                <div
-                  style={{ background: '#FFF', borderRadius: 12, padding: 28, maxWidth: 460, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
-                    <div style={{ paddingTop: 2 }}>{activeTask.icon}</div>
-                    <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: colors.navy, lineHeight: 1.3 }}>
-                      {activeTask.text}
-                    </h3>
-                  </div>
-                  <p style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, margin: '0 0 20px' }}>
-                    {activeTask.detail}
-                  </p>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                    <button
-                      onClick={() => setActiveTask(null)}
-                      style={{ padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: 6, background: 'none', color: '#64748B', cursor: 'pointer', fontSize: 13 }}
-                    >Dismiss</button>
-                    <button
-                      onClick={() => { setActiveTask(null); navigate(activeTask.link); }}
-                      style={{ padding: '8px 18px', background: colors.navy, border: 'none', borderRadius: 6, color: '#FFF', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}
-                    >{activeTask.linkLabel}</button>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Weather Widget */}
@@ -939,29 +907,46 @@ const Dashboard: React.FC = () => {
             {activityFeed.map((item, i) => (
               <div
                 key={i}
-                onClick={() => navigate(item.link)}
                 style={{
                   display: 'flex',
                   gap: '12px',
                   padding: '10px 0',
-                  borderBottom: i < activityFeed.length - 1 ? `1px solid ${colors.border}` : 'none',
-                  cursor: 'pointer',
-                  borderRadius: 4,
+                  borderBottom:
+                    i < activityFeed.length - 1 ? `1px solid ${colors.border}` : 'none',
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = colors.lightGray; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '2px' }}>
-                  <Circle size={10} fill={activityDot(item.type)} color={activityDot(item.type)} />
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    paddingTop: '2px',
+                  }}
+                >
+                  <Circle
+                    size={10}
+                    fill={activityDot(item.type)}
+                    color={activityDot(item.type)}
+                  />
                   {i < activityFeed.length - 1 && (
-                    <div style={{ width: '1px', flex: 1, backgroundColor: colors.border, marginTop: '4px' }} />
+                    <div
+                      style={{
+                        width: '1px',
+                        flex: 1,
+                        backgroundColor: colors.border,
+                        marginTop: '4px',
+                      }}
+                    />
                   )}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '13px', color: colors.navy, lineHeight: 1.4 }}>{item.text}</div>
-                  <div style={{ fontSize: '11px', color: colors.gray, marginTop: '2px' }}>{item.time}</div>
+                  <div style={{ fontSize: '13px', color: colors.navy, lineHeight: 1.4 }}>
+                    {item.text}
+                  </div>
+                  <div style={{ fontSize: '11px', color: colors.gray, marginTop: '2px' }}>
+                    {item.time}
+                  </div>
                 </div>
-                <ChevronRight size={14} color={colors.gray} style={{ alignSelf: 'center', flexShrink: 0 }} />
               </div>
             ))}
           </div>
