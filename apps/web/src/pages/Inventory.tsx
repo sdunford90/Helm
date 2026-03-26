@@ -147,7 +147,7 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
   const categories = ['Fuel', 'Provisions', 'Bait & Tackle', 'Marine Supplies', 'Apparel', 'Boat Parts'];
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>{isEdit ? 'Edit Product' : 'Add Product'}</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -211,7 +211,7 @@ function CreatePOModal({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState('');
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Create Purchase Order</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Purchase order created!</div>}
         <div style={st.modalBody}>
@@ -238,7 +238,7 @@ function StartCountModal({ onClose }: { onClose: () => void }) {
   const [scope, setScope] = useState('All Products');
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Start Inventory Count</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         {started && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Inventory count started!</div>}
         <div style={st.modalBody}>
@@ -277,7 +277,7 @@ function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onC
   const [reason, setReason] = useState('');
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Manual Adjustment</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Adjustment saved!</div>}
         <div style={st.modalBody}>
@@ -313,7 +313,7 @@ function ReceivePOModal({ po, onClose }: { po: PurchaseOrder; onClose: () => voi
   const [notes, setNotes] = useState('');
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Receive PO — {po.poNumber}</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         {received && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>PO {po.poNumber} marked as received!</div>}
         <div style={st.modalBody}>
@@ -387,10 +387,10 @@ export default function Inventory() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Inventory Management</h1>
+      <h1 style={st.title} className="helm-page-title">Inventory Management</h1>
       <hr style={st.divider} />
 
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Total Products</div>
           <div style={st.statValue}>{products.length}</div>
@@ -413,20 +413,20 @@ export default function Inventory() {
         </div>
       </div>
 
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>{t.label}</button>)}
       </div>
 
       {/* Products */}
       {tab === 'products' && (<>
-        <div style={st.filterBar}>
+        <div style={st.filterBar} className="helm-filter-bar">
           <div style={st.searchWrap}><Search size={16} style={st.searchIcon} /><input style={st.searchInput} placeholder="Search name, SKU, barcode..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <select style={st.select} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}><input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} /> Low Stock Only</label>
           <button style={st.outlineBtn} onClick={() => toast.success('Print Labels', 'Sending ' + filteredProducts.length + ' labels to printer...')}><Printer size={14} /> Print Labels</button>
           <button style={st.addBtn} onClick={() => { setEditingProduct(null); setModal('addProduct'); }}><Plus size={16} /> Add Product</button>
         </div>
-        <div style={st.tableWrap}>
+        <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead><tr>
               <th style={st.th}>SKU</th><th style={st.th}>Barcode</th><th style={st.th}>Name</th><th style={st.th}>Category</th>
@@ -465,8 +465,8 @@ export default function Inventory() {
 
       {/* Purchase Orders */}
       {tab === 'po' && (<>
-        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('createPO')}><Plus size={16} /> Create PO</button></div>
-        <div style={st.tableWrap}><table style={st.table}><thead><tr>
+        <div style={st.filterBar} className="helm-filter-bar"><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('createPO')}><Plus size={16} /> Create PO</button></div>
+        <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>PO #</th><th style={st.th}>Vendor</th><th style={st.th}>Items</th><th style={st.th}>Total Cost</th><th style={st.th}>Expected</th><th style={st.th}>Created</th><th style={st.th}>Status</th><th style={st.th}>Actions</th>
         </tr></thead><tbody>
           {POS_DATA.map((po, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = poStatusColors[po.status]; return (
@@ -491,8 +491,8 @@ export default function Inventory() {
 
       {/* Counts */}
       {tab === 'counts' && (<>
-        <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('startCount')}><ClipboardCheck size={16} /> Start Count</button></div>
-        <div style={st.tableWrap}><table style={st.table}><thead><tr>
+        <div style={st.filterBar} className="helm-filter-bar"><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => setModal('startCount')}><ClipboardCheck size={16} /> Start Count</button></div>
+        <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Count #</th><th style={st.th}>Date</th><th style={st.th}>Started By</th><th style={st.th}>Products</th><th style={st.th}>Discrepancies</th><th style={st.th}>Status</th>
         </tr></thead><tbody>
           {COUNTS.map((c, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; return (
@@ -510,11 +510,11 @@ export default function Inventory() {
 
       {/* Adjustments */}
       {tab === 'adjustments' && (<>
-        <div style={st.filterBar}>
+        <div style={st.filterBar} className="helm-filter-bar">
           <div style={st.searchWrap}><Search size={16} style={st.searchIcon} /><input style={st.searchInput} placeholder="Search product..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <button style={st.addBtn} onClick={() => setModal('adjustment')}><Plus size={16} /> Manual Adjustment</button>
         </div>
-        <div style={st.tableWrap}><table style={st.table}><thead><tr>
+        <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Date</th><th style={st.th}>Product</th><th style={st.th}>SKU</th><th style={st.th}>Type</th><th style={st.th}>Qty Change</th><th style={st.th}>Before</th><th style={st.th}>After</th><th style={st.th}>Staff</th><th style={st.th}>Notes</th>
         </tr></thead><tbody>
           {ADJUSTMENTS.map((a, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const tc = adjTypeColors[a.type]; return (
@@ -540,7 +540,7 @@ export default function Inventory() {
           <div style={st.statCard}><div style={st.statLabel}>Total Retail Value</div><div style={st.statValue}>{fmt(products.reduce((s, p) => s + p.qoh * p.priceCents, 0))}</div></div>
           <div style={st.statCard}><div style={st.statLabel}>Potential Margin</div><div style={st.statValue}>{totalValue > 0 ? ((products.reduce((s, p) => s + p.qoh * p.priceCents, 0) - totalValue) / products.reduce((s, p) => s + p.qoh * p.priceCents, 0) * 100).toFixed(1) : '0'}%</div></div>
         </div>
-        <div style={st.tableWrap}><table style={st.table}><thead><tr>
+        <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Category</th><th style={st.th}>Products</th><th style={st.th}>Total Units</th><th style={st.th}>Cost Value</th><th style={st.th}>Retail Value</th><th style={st.th}>Margin %</th>
         </tr></thead><tbody>
           {Array.from(new Set(products.map((p) => p.category))).map((cat, idx) => {

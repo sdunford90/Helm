@@ -877,7 +877,7 @@ export default function CustomerDetailPage() {
 
   /* ── Billing Tab ─── */
   const renderBilling = () => (
-    <div style={s.tableWrap}>
+    <div style={s.tableWrap} className="helm-table-wrap">
       <table style={s.table}>
         <thead>
           <tr>
@@ -975,7 +975,7 @@ export default function CustomerDetailPage() {
       <hr style={s.divider} />
 
       {/* Tab Navigation */}
-      <div style={s.tabs}>
+      <div style={s.tabs} className="helm-tabs">
         {tabs.map((t) => (
           <button
             key={t.key}

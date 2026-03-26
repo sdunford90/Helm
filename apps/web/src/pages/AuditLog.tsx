@@ -115,7 +115,7 @@ export default function AuditLog() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Audit Log</h1>
+      <h1 style={st.title} className="helm-page-title">Audit Log</h1>
       <hr style={st.divider} />
       {entriesLoading && (
         <div style={{ padding: '8px 16px', marginBottom: '16px', backgroundColor: 'rgba(0,212,255,0.08)', borderRadius: '8px', fontSize: '13px', color: '#64748B' }}>
@@ -123,7 +123,7 @@ export default function AuditLog() {
         </div>
       )}
 
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Entries</div>
           <div style={st.statValue}>{entries.length}</div>
@@ -146,7 +146,7 @@ export default function AuditLog() {
         </div>
       </div>
 
-      <div style={st.filterBar}>
+      <div style={st.filterBar} className="helm-filter-bar">
         <div style={st.searchWrap}>
           <Search size={16} style={st.searchIcon} />
           <input style={st.searchInput} placeholder="Search descriptions, record IDs, users..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -163,7 +163,7 @@ export default function AuditLog() {
         <button style={st.exportBtn}><Download size={14} /> Export CSV</button>
       </div>
 
-      <div style={st.tableWrap}>
+      <div style={st.tableWrap} className="helm-table-wrap">
         <table style={st.table}>
           <thead>
             <tr>
@@ -210,7 +210,7 @@ export default function AuditLog() {
       </div>
 
       {selectedEntry && (
-        <div style={st.detailPanel}>
+        <div style={st.detailPanel} className="helm-detail-panel">
           <div style={st.detailHeader}>
             <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 }}>Audit Entry</h2>
             <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B', padding: '4px' }} onClick={() => setSelectedEntry(null)}>✕</button>

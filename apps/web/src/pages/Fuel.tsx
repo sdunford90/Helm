@@ -129,7 +129,7 @@ function RecordSaleModal({ fuelTypes, onClose, onSave }: { fuelTypes: FuelType[]
   const total = ft ? parseFloat(gallons || '0') * ft.pricePerGal : 0;
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Record Fuel Sale</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         <div style={st.modalBody}>
           <div style={st.field}><label style={st.label}>Customer / Vessel</label><input style={st.input} value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Name or slip # (leave blank for walk-up)" /></div>
@@ -186,7 +186,7 @@ function LogDeliveryModal({ fuelTypes, onClose, onSave }: { fuelTypes: FuelType[
   const ft = fuelTypes.find((f) => f.id === fuelTypeId);
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}><h2 style={st.modalTitle}>Log Fuel Delivery</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
         <div style={st.modalBody}>
           <div style={st.field}><label style={st.label}>Supplier *</label><input style={st.input} value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Gulf Coast Petroleum" /></div>
@@ -307,12 +307,12 @@ export default function Fuel() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Fuel Management</h1>
+      <h1 style={st.title} className="helm-page-title">Fuel Management</h1>
       <hr style={st.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading fuel data...</div>}
 
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Gallons Sold Today</div>
           <div style={st.statValue}>{todayGallons.toFixed(1)}</div>
@@ -335,7 +335,7 @@ export default function Fuel() {
         </div>
       </div>
 
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => (
           <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>{t.label}</button>
         ))}
@@ -343,11 +343,11 @@ export default function Fuel() {
 
       {tab === 'sales' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ flex: 1 }} />
             <button style={st.addBtn} onClick={() => setModal('recordSale')}><Plus size={16} /> Record Sale</button>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -419,11 +419,11 @@ export default function Fuel() {
 
       {tab === 'deliveries' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ flex: 1 }} />
             <button style={st.addBtn} onClick={() => setModal('logDelivery')}><Truck size={16} /> Log Delivery</button>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>

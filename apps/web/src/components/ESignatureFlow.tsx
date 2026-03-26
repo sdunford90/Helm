@@ -383,7 +383,7 @@ export default function ESignatureFlow({
 
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={st.header}>
           <div>

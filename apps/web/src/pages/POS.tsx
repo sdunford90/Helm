@@ -140,7 +140,7 @@ function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (nam
   const [float, setFloat] = useState('100.00');
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Open Shift</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -188,7 +188,7 @@ function PaymentModal({
 
   return (
     <div style={st.overlay} onClick={done ? undefined : onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Payment — {method}</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -402,7 +402,7 @@ export default function POS() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Point of Sale</h1>
+      <h1 style={st.title} className="helm-page-title">Point of Sale</h1>
       <hr style={st.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading POS data...</div>}
@@ -427,7 +427,7 @@ export default function POS() {
       )}
 
       {/* Tabs */}
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => (
           <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>
             {t.label}
@@ -531,7 +531,7 @@ export default function POS() {
       {/* Transactions */}
       {tab === 'transactions' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ ...st.searchWrap, flex: 1 }}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search transactions..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -541,7 +541,7 @@ export default function POS() {
             <input style={st.input} type="date" defaultValue="2026-03-25" />
           </div>
           <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '12px' }}>Click a transaction number to recall it to the sale screen.</p>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>

@@ -127,13 +127,13 @@ export default function Billing() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>Billing</h1>
+      <h1 style={styles.title} className="helm-page-title">Billing</h1>
       <hr style={styles.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
 
       {/* Summary Cards */}
-      <div style={styles.summaryRow}>
+      <div style={styles.summaryRow} className="helm-stats-grid">
         {summaryCards.map((c) => (
           <div key={c.label} style={styles.summaryCard}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
@@ -146,7 +146,7 @@ export default function Billing() {
       </div>
 
       {/* Filter Bar */}
-      <div style={styles.filterBar}>
+      <div style={styles.filterBar} className="helm-filter-bar">
         <div style={{ position: 'relative' }}>
           <Filter size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' }} />
           <select
@@ -174,7 +174,7 @@ export default function Billing() {
       </div>
 
       {/* Invoice Table */}
-      <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #CCCCCC', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+      <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #CCCCCC', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
         <table style={styles.table}>
           <thead>
             <tr>

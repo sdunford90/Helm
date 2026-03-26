@@ -288,7 +288,7 @@ export default function PortfolioDashboard() {
   return (
     <div style={s.page}>
       <div style={s.headerRow}>
-        <h1 style={s.title}>Portfolio Overview</h1>
+        <h1 style={s.title} className="helm-page-title">Portfolio Overview</h1>
         <select
           style={s.select}
           value={selectedProperty}
@@ -303,7 +303,7 @@ export default function PortfolioDashboard() {
       <hr style={s.divider} />
 
       {/* Aggregate KPIs */}
-      <div style={s.kpiGrid}>
+      <div style={s.kpiGrid} className="helm-stats-grid">
         <div style={s.kpiCard}>
           <div style={s.kpiLabel}>Total Slips</div>
           <div style={s.kpiValue}>{totals.slips}</div>

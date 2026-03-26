@@ -689,7 +689,7 @@ export default function ReportViewer({ reportId, onClose }: ReportViewerProps) {
   return (
     <ReportContext.Provider value={{ navigate: (to) => { onClose(); navigate(to); }, dateFrom, dateTo }}>
       <div style={s.overlay} onClick={onClose}>
-        <div style={s.panel} onClick={(e) => e.stopPropagation()}>
+        <div style={s.panel} className="helm-detail-panel" onClick={(e) => e.stopPropagation()}>
           <div style={s.header}>
             <div>
               <h2 style={s.headerTitle}>{meta.title}</h2>

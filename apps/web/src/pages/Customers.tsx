@@ -201,13 +201,13 @@ export default function Customers() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>Customers</h1>
+      <h1 style={styles.title} className="helm-page-title">Customers</h1>
       <hr style={styles.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
 
       {/* Filter Bar */}
-      <div style={styles.filterBar}>
+      <div style={styles.filterBar} className="helm-filter-bar">
         <select
           style={styles.select}
           value={statusFilter}
@@ -259,7 +259,7 @@ export default function Customers() {
 
       {/* Data Table */}
       {filtered.length > 0 ? (
-        <div style={styles.tableWrap}>
+        <div style={styles.tableWrap} className="helm-table-wrap">
           <table style={styles.table}>
             <thead>
               <tr>

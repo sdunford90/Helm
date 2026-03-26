@@ -133,7 +133,7 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
 
   return (
     <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={s.header}>
           <h2 style={s.headerTitle}>Record Payment</h2>

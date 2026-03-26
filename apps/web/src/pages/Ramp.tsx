@@ -179,11 +179,11 @@ export default function Ramp() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Launch Ramp</h1>
+      <h1 style={s.title} className="helm-page-title">Launch Ramp</h1>
       <hr style={s.divider} />
 
       {/* Stats */}
-      <div style={s.statsRow}>
+      <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Launches Today</div>
           <div style={s.statValue}>{launchesToday}</div>
@@ -203,7 +203,7 @@ export default function Ramp() {
       </div>
 
       {/* Tabs */}
-      <div style={s.tabs}>
+      <div style={s.tabs} className="helm-tabs">
         <button style={tab === 'today' ? s.tabActive : s.tab} onClick={() => setTab('today')}>Today's Activity</button>
         <button style={tab === 'all' ? s.tabActive : s.tab} onClick={() => setTab('all')}>All Tickets</button>
         <button style={tab === 'passes' ? s.tabActive : s.tab} onClick={() => setTab('passes')}>Seasonal Passes</button>
@@ -212,7 +212,7 @@ export default function Ramp() {
       {/* ── Today's Activity Tab ── */}
       {tab === 'today' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <Activity size={16} style={{ color: '#00D4FF' }} />
             <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Live Activity Log — March 25, 2026</span>
             <div style={s.spacer} />
@@ -270,7 +270,7 @@ export default function Ramp() {
       {/* ── All Tickets Tab ── */}
       {tab === 'all' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <div style={s.searchWrap}>
               <Search size={16} style={s.searchIcon} />
               <input style={s.searchInput} placeholder="Search tickets..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -339,7 +339,7 @@ export default function Ramp() {
       {/* ── Seasonal Passes Tab ── */}
       {tab === 'passes' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <BadgeCheck size={16} style={{ color: '#00D4FF' }} />
             <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Seasonal Pass Holders</span>
             <div style={s.spacer} />
@@ -382,7 +382,7 @@ export default function Ramp() {
       {/* ── New Ticket Modal ── */}
       {showModal && (
         <div style={s.overlay} onClick={() => setShowModal(false)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>New Ramp Ticket</h2>
               <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>

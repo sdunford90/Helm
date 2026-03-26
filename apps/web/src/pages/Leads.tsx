@@ -325,13 +325,13 @@ export default function Leads() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Leads</h1>
+      <h1 style={s.title} className="helm-page-title">Leads</h1>
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
 
       {/* Filter Bar */}
-      <div style={s.filterBar}>
+      <div style={s.filterBar} className="helm-filter-bar">
         <select
           style={s.select}
           value={stageFilter}

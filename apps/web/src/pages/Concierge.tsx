@@ -244,13 +244,13 @@ export default function Concierge() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Concierge Services</h1>
+      <h1 style={s.title} className="helm-page-title">Concierge Services</h1>
       <hr style={s.divider} />
 
       {(requestsLoading || vendorsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading concierge data...</div>}
 
       {/* Stats */}
-      <div style={s.statsRow}>
+      <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Open Requests</div>
           <div style={s.statValue}>{openRequests}</div>
@@ -270,7 +270,7 @@ export default function Concierge() {
       </div>
 
       {/* Tabs */}
-      <div style={s.tabs}>
+      <div style={s.tabs} className="helm-tabs">
         <button style={tab === 'requests' ? s.tabActive : s.tab} onClick={() => setTab('requests')}>All Requests</button>
         <button style={tab === 'vendors' ? s.tabActive : s.tab} onClick={() => setTab('vendors')}>Vendor Directory</button>
       </div>
@@ -278,7 +278,7 @@ export default function Concierge() {
       {/* ── All Requests Tab ── */}
       {tab === 'requests' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <div style={s.searchWrap}>
               <Search size={16} style={s.searchIcon} />
               <input style={s.searchInput} placeholder="Search requests..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -474,7 +474,7 @@ export default function Concierge() {
       {/* ── New Request Modal ── */}
       {showModal && (
         <div style={s.overlay} onClick={() => { setShowModal(false); resetNewRequestForm(); }}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>New Service Request</h2>
               <button style={s.closeBtn} onClick={() => { setShowModal(false); resetNewRequestForm(); }}><X size={20} /></button>

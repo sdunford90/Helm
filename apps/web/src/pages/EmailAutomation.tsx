@@ -168,10 +168,10 @@ export default function EmailAutomation() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Email Automation</h1>
+      <h1 style={st.title} className="helm-page-title">Email Automation</h1>
       <hr style={st.divider} />
 
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Active Rules</div>
           <div style={st.statValue}>{activeRules}</div>
@@ -194,15 +194,15 @@ export default function EmailAutomation() {
         </div>
       </div>
 
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>{t.label}</button>)}
       </div>
 
       {/* Rules */}
       {tab === 'rules' && (
         <>
-          <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => toast.info('Create Rule', 'Rule creation form opening...')}><Plus size={16} /> Create Rule</button></div>
-          <div style={st.tableWrap}><table style={st.table}><thead><tr>
+          <div style={st.filterBar} className="helm-filter-bar"><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => toast.info('Create Rule', 'Rule creation form opening...')}><Plus size={16} /> Create Rule</button></div>
+          <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
             <th style={st.th}>Name</th><th style={st.th}>Trigger</th><th style={st.th}>Category</th><th style={st.th}>Template</th><th style={st.th}>Channels</th><th style={st.th}>Delay</th><th style={st.th}>Status</th><th style={st.th}>Actions</th>
           </tr></thead><tbody>
             {rules.map((r, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const cc = catColors[r.category] || catColors.Billing; return (
@@ -233,7 +233,7 @@ export default function EmailAutomation() {
       {/* Templates */}
       {tab === 'templates' && (
         <>
-          <div style={st.filterBar}><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => toast.info('Create Template', 'Template editor opening...')}><Plus size={16} /> Create Template</button></div>
+          <div style={st.filterBar} className="helm-filter-bar"><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => toast.info('Create Template', 'Template editor opening...')}><Plus size={16} /> Create Template</button></div>
           <div style={st.templateGrid}>
             {TEMPLATES.map((t) => { const cc = catColors[t.category] || catColors.Billing; return (
               <div key={t.id} style={st.templateCard}>
@@ -263,12 +263,12 @@ export default function EmailAutomation() {
       {/* Send Log */}
       {tab === 'log' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <select style={st.select} value={logStatusFilter} onChange={(e) => setLogStatusFilter(e.target.value)}>
               <option value="All">All Statuses</option><option>Delivered</option><option>Opened</option><option>Bounced</option><option>Failed</option>
             </select>
           </div>
-          <div style={st.tableWrap}><table style={st.table}><thead><tr>
+          <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
             <th style={st.th}>Date</th><th style={st.th}>Recipient</th><th style={st.th}>Email / Phone</th><th style={st.th}>Template</th><th style={st.th}>Trigger</th><th style={st.th}>Channel</th><th style={st.th}>Status</th><th style={st.th}>Opened</th>
           </tr></thead><tbody>
             {SEND_LOG.filter((l) => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = statusColors[l.status]; return (

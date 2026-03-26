@@ -167,7 +167,7 @@ export default function ChartOfAccounts() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Chart of Accounts</h1>
+      <h1 style={s.title} className="helm-page-title">Chart of Accounts</h1>
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading accounts...</div>}
@@ -176,7 +176,7 @@ export default function ChartOfAccounts() {
         <button style={s.addBtn}><Plus size={16} /> Add Account</button>
       </div>
 
-      <div style={s.tableWrap}>
+      <div style={s.tableWrap} className="helm-table-wrap">
         <table style={s.table}>
           <thead>
             <tr>

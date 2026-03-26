@@ -119,10 +119,10 @@ export default function RentRoll() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Rent Roll</h1>
+      <h1 style={st.title} className="helm-page-title">Rent Roll</h1>
       <hr style={st.divider} />
 
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Total Monthly Rent</div>
           <div style={st.statValue}>{fmt(totalMonthly)}</div>
@@ -151,7 +151,7 @@ export default function RentRoll() {
         </div>
       </div>
 
-      <div style={st.filterBar}>
+      <div style={st.filterBar} className="helm-filter-bar">
         <div style={st.searchWrap}>
           <Search size={16} style={st.searchIcon} />
           <input style={st.searchInput} placeholder="Search tenant, slip, boat..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -174,7 +174,7 @@ export default function RentRoll() {
         <button style={st.exportBtn} onClick={() => { setExportMsg('Excel'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'Excel' ? 'Downloaded!' : 'Excel'}</button>
       </div>
 
-      <div style={st.tableWrap}>
+      <div style={st.tableWrap} className="helm-table-wrap">
         <table style={st.table}>
           <thead>
             <tr>

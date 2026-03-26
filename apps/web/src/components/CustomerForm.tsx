@@ -237,7 +237,7 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
 
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
           <h2 style={styles.title}>{initial ? 'Edit Customer' : 'Add Customer'}</h2>
           <button style={styles.closeBtn} onClick={onClose}><X size={20} /></button>

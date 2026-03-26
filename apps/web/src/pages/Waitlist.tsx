@@ -398,13 +398,13 @@ export default function Waitlist() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Waitlist</h1>
+      <h1 style={s.title} className="helm-page-title">Waitlist</h1>
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
 
       {/* Stats Row */}
-      <div style={s.statsRow}>
+      <div style={s.statsRow} className="helm-stats-grid">
         {STATUSES.map((status) => (
           <div key={status} style={s.statCard}>
             <div style={s.statLabel}>{status}</div>
@@ -414,7 +414,7 @@ export default function Waitlist() {
       </div>
 
       {/* Filter Bar */}
-      <div style={s.filterBar}>
+      <div style={s.filterBar} className="helm-filter-bar">
         <select
           style={s.select}
           value={slipFilter}
@@ -556,7 +556,7 @@ export default function Waitlist() {
       {/* Add to Waitlist Modal */}
       {showAddModal && (
         <div style={s.overlay} onClick={() => setShowAddModal(false)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>Add to Waitlist</h2>
               <button style={s.closeBtn} onClick={() => setShowAddModal(false)}><X size={20} /></button>
@@ -583,7 +583,7 @@ export default function Waitlist() {
       {/* Detail Modal */}
       {selectedEntry && (
         <div style={s.overlay} onClick={() => setSelectedEntry(null)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <div>
                 <h2 style={s.modalTitle}>

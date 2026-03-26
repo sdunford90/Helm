@@ -98,13 +98,13 @@ export default function ARaging() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>A/R Aging</h1>
+      <h1 style={s.title} className="helm-page-title">A/R Aging</h1>
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading aging data...</div>}
 
       {/* Summary Cards */}
-      <div style={s.summaryRow}>
+      <div style={s.summaryRow} className="helm-stats-grid">
         {agingBuckets.map((b) => {
           const val = colSum(agingData, b.field);
           return (
@@ -123,7 +123,7 @@ export default function ARaging() {
       </div>
 
       {/* Aging Table */}
-      <div style={s.tableWrap}>
+      <div style={s.tableWrap} className="helm-table-wrap">
         <table style={s.table}>
           <thead>
             <tr>

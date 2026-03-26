@@ -98,7 +98,7 @@ export default function HelpCenter() {
   return (
     <>
       <div style={st.overlay} onClick={() => setIsOpen(false)} />
-      <div style={st.panel}>
+      <div style={st.panel} className="helm-detail-panel">
         <div style={st.header}>
           <h2 style={st.headerTitle}><BookOpen size={20} /> Help Center</h2>
           <button style={st.closeBtn} onClick={() => setIsOpen(false)}><X size={20} /></button>

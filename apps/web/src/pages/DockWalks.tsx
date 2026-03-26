@@ -186,7 +186,7 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (wa
 
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Start Dock Walk</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -254,7 +254,7 @@ function ViolationDetail({ violation, onClose, onResolved }: {
   };
 
   return (
-    <div style={st.detailPanel}>
+    <div style={st.detailPanel} className="helm-detail-panel">
       <div style={st.detailHeader}>
         <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 }}>{violation.number}</h2>
         <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -346,13 +346,13 @@ export default function DockWalks() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Dock Walks</h1>
+      <h1 style={st.title} className="helm-page-title">Dock Walks</h1>
       <hr style={st.divider} />
 
       {(walksLoading || violationsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading dock walks...</div>}
 
       {/* Stats */}
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Walks</div>
           <div style={st.statValue}>{walks.length}</div>
@@ -376,7 +376,7 @@ export default function DockWalks() {
       </div>
 
       {/* Tabs */}
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => (
           <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>
             {t.label}
@@ -387,7 +387,7 @@ export default function DockWalks() {
       {/* Walk History */}
       {tab === 'history' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={st.searchWrap}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search walks..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -396,7 +396,7 @@ export default function DockWalks() {
               <ClipboardCheck size={16} /> Start New Walk
             </button>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -442,7 +442,7 @@ export default function DockWalks() {
       {/* Violations */}
       {tab === 'violations' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={st.searchWrap}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search violations..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -460,7 +460,7 @@ export default function DockWalks() {
               <option>Resolved</option>
             </select>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -517,11 +517,11 @@ export default function DockWalks() {
       {/* Pump-Outs */}
       {tab === 'pumpouts' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ flex: 1 }} />
             <button style={st.addBtn}><Droplets size={16} /> Log Pump-Out</button>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>

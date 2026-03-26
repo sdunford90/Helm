@@ -402,14 +402,14 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
 
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>New Contract</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
           {error && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{error}</div>}
-          <div style={st.twoCol}>
+          <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Customer *</label>
               <select style={st.formSelect} value={customer} onChange={(e) => handleCustomerChange(e.target.value)}>
@@ -625,7 +625,7 @@ function ContractDetailModal({
         {mode === 'edit' && (
           <>
             <div style={st.modalBody}>
-              <div style={st.twoCol}>
+              <div style={st.twoCol} className="helm-form-grid">
                 <div style={st.field}>
                   <label style={st.label}>Status</label>
                   <select style={st.formSelect} value={status} onChange={(e) => setStatus(e.target.value as ContractStatus)}>
@@ -668,7 +668,7 @@ function ContractDetailModal({
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid #E2E8F0' }}>
                 <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px' }}>GL / Billing Mapping</div>
-                <div style={st.twoCol}>
+                <div style={st.twoCol} className="helm-form-grid">
                   <div style={{ ...st.field, gridColumn: '1 / -1' }}>
                     <label style={st.label}>Billing Item</label>
                     <select style={st.formSelect} value={billingItemId} onChange={(e) => setBillingItemId(e.target.value)}>
@@ -864,13 +864,13 @@ export default function Contracts() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Contracts</h1>
+      <h1 style={st.title} className="helm-page-title">Contracts</h1>
       <hr style={st.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading contracts...</div>}
 
       {/* Filter Bar */}
-      <div style={st.filterBar}>
+      <div style={st.filterBar} className="helm-filter-bar">
         <select style={st.select} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="All">All Statuses</option>
           <option value="Draft">Draft</option>
@@ -924,7 +924,7 @@ export default function Contracts() {
 
       {/* Data Table */}
       {filtered.length > 0 ? (
-        <div style={st.tableWrap}>
+        <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead>
               <tr>

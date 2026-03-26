@@ -329,12 +329,12 @@ export default function Settings() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Settings</h1>
+      <h1 style={st.title} className="helm-page-title">Settings</h1>
       <hr style={st.divider} />
 
       {savedMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{savedMsg}</div>}
 
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => {
           const Icon = t.icon;
           return (
@@ -349,7 +349,7 @@ export default function Settings() {
       {tab === 'profile' && (
         <div style={st.card}>
           <h3 style={st.sectionTitle}><Building2 size={20} /> Marina Profile</h3>
-          <div style={st.formGrid}>
+          <div style={st.formGrid} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Marina Name</label>
               <input style={st.input} defaultValue="Bayshore Marina" />
@@ -453,7 +453,7 @@ export default function Settings() {
           </div>
           <div style={st.card}>
             <h3 style={st.sectionTitle}>Invoice Header</h3>
-            <div style={st.formGrid}>
+            <div style={st.formGrid} className="helm-form-grid">
               <div style={st.field}>
                 <label style={st.label}>Company Display Name</label>
                 <input style={st.input} defaultValue="Bayshore Marina LLC" />
@@ -475,7 +475,7 @@ export default function Settings() {
         <>
           <div style={st.card}>
             <h3 style={st.sectionTitle}><CreditCard size={20} /> Payment Terms</h3>
-            <div style={st.formGrid}>
+            <div style={st.formGrid} className="helm-form-grid">
               <div style={st.field}>
                 <label style={st.label}>Default Payment Terms</label>
                 <select style={st.select} defaultValue="30">
@@ -505,7 +505,7 @@ export default function Settings() {
           </div>
           <div style={st.card}>
             <h3 style={st.sectionTitle}>Invoice Numbering</h3>
-            <div style={st.formGrid}>
+            <div style={st.formGrid} className="helm-form-grid">
               <div style={st.field}>
                 <label style={st.label}>Prefix</label>
                 <input style={st.input} defaultValue="INV-" />
@@ -561,7 +561,7 @@ export default function Settings() {
             {/* Payment Type Configuration */}
             <div style={st.card}>
               <h3 style={st.sectionTitle}>Payment Type Configuration</h3>
-              <div style={st.tableWrap}>
+              <div style={st.tableWrap} className="helm-table-wrap">
                 <table style={st.table}>
                   <thead>
                     <tr>
@@ -664,7 +664,7 @@ export default function Settings() {
 
           {/* ── Dockage Rates ── */}
           {catalogSection === 'dockage' && (
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>
@@ -741,7 +741,7 @@ export default function Settings() {
 
           {/* ── Rental Products ── */}
           {catalogSection === 'rentals' && (
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>
@@ -821,7 +821,7 @@ export default function Settings() {
 
           {/* ── POS Items ── */}
           {catalogSection === 'pos' && (
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>
@@ -912,7 +912,7 @@ export default function Settings() {
 
           {/* ── Service Fees ── */}
           {catalogSection === 'fees' && (
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>
@@ -1011,7 +1011,7 @@ export default function Settings() {
 
           <div style={{ ...st.card, marginTop: '24px' }}>
             <h3 style={st.sectionTitle}><Webhook size={20} /> Webhook Endpoints</h3>
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>
@@ -1092,7 +1092,7 @@ export default function Settings() {
             </div>
           )}
 
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -1232,7 +1232,7 @@ export default function Settings() {
         <>
           <div style={st.card}>
             <h3 style={st.sectionTitle}><Globe size={20} /> Custom Domain</h3>
-            <div style={st.formGrid}>
+            <div style={st.formGrid} className="helm-form-grid">
               <div style={st.field}>
                 <label style={st.label}>Custom Domain</label>
                 <input style={st.input} placeholder="marina.yourdomain.com" defaultValue="app.bayshoremarina.com" />
@@ -1248,7 +1248,7 @@ export default function Settings() {
 
           <div style={st.card}>
             <h3 style={st.sectionTitle}><Key size={20} /> API Keys</h3>
-            <div style={st.tableWrap}>
+            <div style={st.tableWrap} className="helm-table-wrap">
               <table style={st.table}>
                 <thead>
                   <tr>

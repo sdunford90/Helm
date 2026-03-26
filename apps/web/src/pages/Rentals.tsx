@@ -598,7 +598,7 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
 
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Add Rental Product</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -608,7 +608,7 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
             <label style={st.label}>Product Name *</label>
             <input style={st.input} placeholder="e.g. Bay Cruiser 24" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </div>
-          <div style={st.twoCol}>
+          <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Type *</label>
               <select style={{ ...st.input, cursor: 'pointer' }} value={type} onChange={(e) => setType(e.target.value)}>
@@ -670,7 +670,7 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const showMsg = (msg: string) => { setActionMsg(msg); setTimeout(() => { setActionMsg(null); onClose(); }, 1500); };
   return (
-    <div style={st.detailPanel}>
+    <div style={st.detailPanel} className="helm-detail-panel">
       <div style={st.detailHeader}>
         <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', margin: 0 }}>{res.number}</h2>
         <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -931,13 +931,13 @@ export default function Rentals() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Rentals</h1>
+      <h1 style={st.title} className="helm-page-title">Rentals</h1>
       <hr style={st.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading rentals...</div>}
 
       {/* Stats */}
-      <div style={st.statsRow}>
+      <div style={st.statsRow} className="helm-stats-grid">
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Products</div>
           <div style={st.statValue}>{products.length}</div>
@@ -961,7 +961,7 @@ export default function Rentals() {
       </div>
 
       {/* Tabs */}
-      <div style={st.tabs}>
+      <div style={st.tabs} className="helm-tabs">
         {tabs.map((t) => (
           <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}) }} onClick={() => setTab(t.key)}>
             {t.label}
@@ -972,14 +972,14 @@ export default function Rentals() {
       {/* Products Tab */}
       {tab === 'products' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={st.searchWrap}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search products..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <button style={st.addBtn} onClick={() => setShowAdd(true)}><Plus size={16} /> Add Product</button>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -1050,7 +1050,7 @@ export default function Rentals() {
       {/* Reservations Tab */}
       {tab === 'reservations' && (
         <>
-          <div style={st.filterBar}>
+          <div style={st.filterBar} className="helm-filter-bar">
             <div style={st.searchWrap}>
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search reservations..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -1065,7 +1065,7 @@ export default function Rentals() {
               <option>No Show</option>
             </select>
           </div>
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -1154,7 +1154,7 @@ export default function Rentals() {
                 <div style={{ fontSize: '14px', color: '#64748B' }}>Configure dynamic pricing rules applied to rental products.</div>
                 <button style={{ ...st.addBtn }} onClick={() => toast.info('Coming Soon', 'Pricing rule form will open here')}><Plus size={16} /> Add Rule</button>
               </div>
-              <div style={st.tableWrap}>
+              <div style={st.tableWrap} className="helm-table-wrap">
                 <table style={st.table}>
                   <thead><tr>
                     <th style={st.th}>Rule Name</th><th style={st.th}>Applies To</th><th style={st.th}>Type</th>
@@ -1191,7 +1191,7 @@ export default function Rentals() {
                 <div style={{ fontSize: '14px', color: '#64748B' }}>Manage promotional discount codes for rental bookings.</div>
                 <button style={{ ...st.addBtn }} onClick={() => toast.info('Coming Soon', 'Promo code form will open here')}><Plus size={16} /> Add Promo Code</button>
               </div>
-              <div style={st.tableWrap}>
+              <div style={st.tableWrap} className="helm-table-wrap">
                 <table style={st.table}>
                   <thead><tr>
                     <th style={st.th}>Code</th><th style={st.th}>Discount</th><th style={st.th}>Valid From</th>

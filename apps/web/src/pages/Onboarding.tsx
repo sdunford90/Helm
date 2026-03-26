@@ -834,7 +834,7 @@ export default function Onboarding() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <h1 style={styles.h1}>Set Up Your Marina</h1>
+        <h1 style={styles.h1} className="helm-page-title">Set Up Your Marina</h1>
         {renderProgress()}
         {step === 1 && renderStep1()}
         {step === 2 && renderStep2()}

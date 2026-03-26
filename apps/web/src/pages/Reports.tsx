@@ -267,7 +267,7 @@ export default function Reports() {
   return (
     <div style={styles.page}>
       {/* Header */}
-      <h1 style={styles.title}>Reports</h1>
+      <h1 style={styles.title} className="helm-page-title">Reports</h1>
       <hr style={styles.divider} />
 
       {/* Tabs */}
@@ -349,7 +349,7 @@ export default function Reports() {
 
       {/* -------- Recent Reports -------- */}
       {activeTab === 'recent' && (
-        <div style={styles.tableWrap}>
+        <div style={styles.tableWrap} className="helm-table-wrap">
           <div style={styles.tableHeader}>
             <h3 style={styles.tableTitle}>Recently Generated Reports</h3>
           </div>
@@ -406,7 +406,7 @@ export default function Reports() {
       {/* -------- Scheduled Reports -------- */}
       {activeTab === 'scheduled' && (
         <div>
-          <div style={styles.tableWrap}>
+          <div style={styles.tableWrap} className="helm-table-wrap">
             <div style={styles.tableHeader}>
               <h3 style={styles.tableTitle}>Scheduled Reports</h3>
               <button style={styles.btnPrimary} onClick={() => toast.info('Coming Soon', 'Schedule form will open here')}>
@@ -486,7 +486,7 @@ export default function Reports() {
       {/* -------- Generate Report Modal -------- */}
       {modalOpen && (
         <div style={styles.overlay} onClick={closeModal}>
-          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={styles.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
               <h2 style={styles.modalTitle}>
                 {selectedReport

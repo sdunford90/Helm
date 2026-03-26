@@ -220,13 +220,13 @@ export default function Transient() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Transient Bookings</h1>
+      <h1 style={s.title} className="helm-page-title">Transient Bookings</h1>
       <hr style={s.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading bookings...</div>}
 
       {/* Stats */}
-      <div style={s.statsRow}>
+      <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Active Guests</div>
           <div style={s.statValue}>{activeGuests}</div>
@@ -246,7 +246,7 @@ export default function Transient() {
       </div>
 
       {/* Tabs */}
-      <div style={s.tabs}>
+      <div style={s.tabs} className="helm-tabs">
         <button style={tab === 'current' ? s.tabActive : s.tab} onClick={() => setTab('current')}>Current Guests</button>
         <button style={tab === 'all' ? s.tabActive : s.tab} onClick={() => setTab('all')}>All Bookings</button>
         <button style={tab === 'calendar' ? s.tabActive : s.tab} onClick={() => setTab('calendar')}>Calendar</button>
@@ -255,7 +255,7 @@ export default function Transient() {
       {/* ── Current Guests Tab ── */}
       {tab === 'current' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <div style={s.spacer} />
             <button style={s.primaryBtn} onClick={() => setShowModal(true)}>
               <Plus size={16} /> New Booking
@@ -330,7 +330,7 @@ export default function Transient() {
       {/* ── All Bookings Tab ── */}
       {tab === 'all' && (
         <>
-          <div style={s.filterBar}>
+          <div style={s.filterBar} className="helm-filter-bar">
             <div style={s.searchWrap}>
               <Search size={16} style={s.searchIcon} />
               <input style={s.searchInput} placeholder="Search bookings..." value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -416,7 +416,7 @@ export default function Transient() {
       {/* ── New Booking Modal ── */}
       {showModal && (
         <div style={s.overlay} onClick={() => setShowModal(false)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>New Transient Booking</h2>
               <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>

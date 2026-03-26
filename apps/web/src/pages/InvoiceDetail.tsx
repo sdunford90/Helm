@@ -349,7 +349,7 @@ export default function InvoiceDetail() {
       {/* Line Items */}
       <div style={st.section}>
         <div style={st.sectionTitle}><FileText size={18} /> Line Items</div>
-        <div style={st.tableWrap}>
+        <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead>
               <tr>
@@ -417,7 +417,7 @@ export default function InvoiceDetail() {
             No payments recorded.
           </div>
         ) : (
-          <div style={st.tableWrap}>
+          <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
@@ -453,7 +453,7 @@ export default function InvoiceDetail() {
       {/* GL Entries */}
       <div style={st.section}>
         <div style={st.sectionTitle}><BookOpen size={18} /> Journal Entries</div>
-        <div style={st.tableWrap}>
+        <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead>
               <tr>

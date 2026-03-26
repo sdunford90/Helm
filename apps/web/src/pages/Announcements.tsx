@@ -418,11 +418,11 @@ export default function Announcements() {
   return (
     <div style={styles.page}>
       {/* Header */}
-      <h1 style={styles.title}>Announcements</h1>
+      <h1 style={styles.title} className="helm-page-title">Announcements</h1>
       <hr style={styles.divider} />
 
       {/* Stats Row */}
-      <div style={styles.summaryRow}>
+      <div style={styles.summaryRow} className="helm-stats-grid">
         <div style={styles.summaryCard}>
           <div style={styles.summaryIcon}><Send size={22} /></div>
           <div style={styles.summaryLabel}>Total Sent</div>
@@ -461,7 +461,7 @@ export default function Announcements() {
       {/* ─── All Announcements Tab ─── */}
       {activeTab === 'all' && (
         <div>
-          <div style={styles.filterBar}>
+          <div style={styles.filterBar} className="helm-filter-bar">
             <div style={styles.searchWrap}>
               <Search size={16} style={styles.searchIcon} />
               <input
@@ -535,7 +535,7 @@ export default function Announcements() {
 
       {/* ─── Compose Tab ─── */}
       {activeTab === 'compose' && (
-        <div style={styles.formGrid}>
+        <div style={styles.formGrid} className="helm-form-grid">
           {/* Left: Form */}
           <div style={styles.formSection}>
             {sendSuccess && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{composeSchedule ? 'Announcement scheduled!' : 'Announcement sent!'}</div>}
@@ -685,7 +685,7 @@ export default function Announcements() {
       {/* ─── Delivery Log Tab ─── */}
       {activeTab === 'delivery' && (
         <div>
-          <div style={styles.filterBar}>
+          <div style={styles.filterBar} className="helm-filter-bar">
             <Filter size={16} style={{ color: '#64748B' }} />
             <select
               style={styles.select}
@@ -863,7 +863,7 @@ export default function Announcements() {
           {/* Send Log sub-tab */}
           {autoTab === 'log' && (
             <>
-              <div style={styles.filterBar}>
+              <div style={styles.filterBar} className="helm-filter-bar">
                 <select style={styles.select} value={logStatusFilter} onChange={e => setLogStatusFilter(e.target.value)}>
                   <option value="All">All Statuses</option>
                   <option>Delivered</option><option>Opened</option><option>Bounced</option><option>Failed</option>

@@ -410,7 +410,7 @@ const Dashboard: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <LayoutDashboard size={28} color={colors.navy} />
-            <h1 style={titleStyle}>Dashboard</h1>
+            <h1 style={titleStyle} className="helm-page-title">Dashboard</h1>
           </div>
           <div style={periodSelectorStyle}>
             {periods.map((p) => (
@@ -429,7 +429,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* KPI Cards */}
-      <div style={kpiGridStyle}>
+      <div style={kpiGridStyle} className="helm-stats-grid">
         {kpis.map((kpi, i) => (
           <div key={i} style={kpiCardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -456,7 +456,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Two-column layout */}
-      <div style={twoColStyle}>
+      <div style={twoColStyle} className="helm-form-grid">
         {/* Left Column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           {/* Revenue Chart */}
@@ -1026,7 +1026,7 @@ const Dashboard: React.FC = () => {
           style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.4)', zIndex: 900 }}
           onClick={() => setTaskDrawer(null)}
         />
-        <div style={{
+        <div className="helm-detail-panel" style={{
           position: 'fixed', top: 0, right: 0, width: '400px', height: '100vh',
           backgroundColor: colors.white, boxShadow: '-4px 0 20px rgba(0,0,0,0.12)',
           zIndex: 1000, overflowY: 'auto', display: 'flex', flexDirection: 'column',

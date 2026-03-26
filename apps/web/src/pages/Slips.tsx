@@ -378,14 +378,14 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
   };
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Add Slip</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
         {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Slip saved successfully!</div>}
         <div style={st.modalBody}>
-          <div style={st.twoCol}>
+          <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Slip Number *</label>
               <input style={st.input} placeholder="e.g. A-05" />
@@ -484,7 +484,7 @@ function EditSlipModal({ slip, onClose, onSave }: {
 
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Edit Slip {slip.number}</h2>
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
@@ -495,7 +495,7 @@ function EditSlipModal({ slip, onClose, onSave }: {
           </div>
         )}
         <div style={st.modalBody}>
-          <div style={st.twoCol}>
+          <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Slip Number *</label>
               <input style={st.input} value={number} onChange={(e) => setNumber(e.target.value)} />
@@ -764,7 +764,7 @@ export default function Slips() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title}>Slips</h1>
+      <h1 style={st.title} className="helm-page-title">Slips</h1>
       <hr style={st.divider} />
 
       {actionMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{actionMsg}</div>}
@@ -772,7 +772,7 @@ export default function Slips() {
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading slips...</div>}
 
       {/* Filter Bar */}
-      <div style={st.filterBar}>
+      <div style={st.filterBar} className="helm-filter-bar">
         <div style={st.viewToggle}>
           <button
             style={{
@@ -813,7 +813,7 @@ export default function Slips() {
 
       {/* List View */}
       {view === 'list' && (
-        <div style={st.tableWrap}>
+        <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead>
               <tr>
