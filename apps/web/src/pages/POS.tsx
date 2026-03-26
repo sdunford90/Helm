@@ -289,7 +289,6 @@ export default function POS() {
   const [paymentModal, setPaymentModal] = useState<{ method: string } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
-  const [fuelQtyInputs, setFuelQtyInputs] = useState<Record<string, string>>({});
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
   const [achEnabled, setAchEnabled] = useState(true);
 
@@ -446,48 +445,17 @@ export default function POS() {
               <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <div style={st.prodGrid}>
-              {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => {
-                const isFuel = p.category === 'Fuel';
-                return (
+              {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
                   <div key={p.id} style={st.prodCard}
-                    onClick={() => { if (!isFuel) addToCart(p); }}
+                    onClick={() => addToCart(p)}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}>
                     <Package size={24} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
                     <div style={st.prodName}>{p.name}</div>
                     <div style={st.prodPrice}>${p.price.toFixed(2)}</div>
                     <div style={st.prodCat}>{p.category}</div>
-                    {isFuel && (
-                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => e.stopPropagation()}>
-                        <label style={{ fontSize: '12px', fontWeight: 600, color: '#64748B' }}>Qty:</label>
-                        <input
-                          style={{ width: '60px', padding: '4px 6px', fontSize: '13px', border: '1px solid #CCC', borderRadius: '4px', textAlign: 'center', fontFamily: '"JetBrains Mono", monospace' }}
-                          type="number"
-                          step="any"
-                          placeholder="0.000"
-                          value={fuelQtyInputs[p.id] || ''}
-                          onChange={(e) => setFuelQtyInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const qty = parseFloat(fuelQtyInputs[p.id] || '0');
-                              if (qty > 0) { addToCart(p, qty); setFuelQtyInputs((prev) => ({ ...prev, [p.id]: '' })); }
-                            }
-                          }}
-                        />
-                        <button
-                          style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 600, background: '#0A2342', color: '#FFF', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-                          onClick={() => {
-                            const qty = parseFloat(fuelQtyInputs[p.id] || '0');
-                            if (qty > 0) { addToCart(p, qty); setFuelQtyInputs((prev) => ({ ...prev, [p.id]: '' })); }
-                          }}
-                        >
-                          Add
-                        </button>
-                      </div>
-                    )}
                   </div>
-                );
-              })}
+              ))}
             </div>
           </div>
 
