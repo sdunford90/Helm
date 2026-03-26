@@ -220,11 +220,34 @@ export default function AppLayout() {
     : 'H';
   const [currentLocation, setCurrentLocation] = useState(LOCATIONS[0].id);
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const selectedLocation = LOCATIONS.find((l) => l.id === currentLocation) || LOCATIONS[0];
+
+  // Close sidebar on route change (mobile)
+  const closeSidebar = () => setSidebarOpen(false);
 
   return (
     <div style={styles.container}>
-      <nav style={styles.sidebar}>
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          onClick={closeSidebar}
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.5)', zIndex: 199, display: 'none' } as React.CSSProperties}
+          className="helm-sidebar-overlay"
+        />
+      )}
+      <style>{`
+        @media (max-width: 768px) {
+          .helm-sidebar-overlay { display: block !important; }
+          .helm-sidebar { transform: translateX(${sidebarOpen ? '0' : '-100%'}) !important; transition: transform 0.25s ease; }
+          .helm-main { margin-left: 0 !important; width: 100% !important; }
+          .helm-hamburger { display: flex !important; }
+          .helm-topbar { padding-left: 16px !important; padding-right: 16px !important; }
+          .helm-content { padding: 16px !important; }
+          .helm-location-picker { display: none !important; }
+        }
+      `}</style>
+      <nav style={styles.sidebar} className="helm-sidebar">
         <div style={styles.logo}>HELM</div>
         {NAV_SECTIONS.map((section) => {
           const visibleItems = section.items.filter((item) => {
@@ -241,6 +264,7 @@ export default function AppLayout() {
                   <Link
                     key={item.path}
                     to={item.path}
+                    onClick={closeSidebar}
                     style={{
                       ...styles.navItem,
                       ...(isActive ? styles.navItemActive : {}),
@@ -256,13 +280,22 @@ export default function AppLayout() {
         })}
       </nav>
 
-      <div style={styles.main}>
-        <header style={styles.topBar}>
-          <div style={styles.breadcrumb}>
-            {getPageTitle(location.pathname)}
+      <div style={styles.main} className="helm-main">
+        <header style={styles.topBar} className="helm-topbar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="helm-hamburger"
+              style={{ display: 'none', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, borderRadius: '6px', border: '1px solid #E2E8F0', background: '#FFFFFF', cursor: 'pointer', color: '#0A2342', flexShrink: 0 }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+            </button>
+            <div style={styles.breadcrumb}>
+              {getPageTitle(location.pathname)}
+            </div>
           </div>
           <div style={styles.topRight}>
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative' }} className="helm-location-picker">
               <button
                 onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}
                 style={{
@@ -337,7 +370,7 @@ export default function AppLayout() {
             <div style={styles.avatar}>{initials}</div>
           </div>
         </header>
-        <main style={styles.content}>
+        <main style={styles.content} className="helm-content">
           <Outlet />
         </main>
       </div>
