@@ -450,6 +450,125 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
   );
 }
 
+/* ── Edit Slip Modal ────────────────────────────────────── */
+
+function EditSlipModal({ slip, onClose, onSave }: {
+  slip: Slip;
+  onClose: () => void;
+  onSave: (updates: Partial<Slip>) => void;
+}) {
+  const [number, setNumber] = useState(slip.number);
+  const [dock, setDock] = useState(slip.dock);
+  const [length, setLength] = useState(String(slip.length));
+  const [beam, setBeam] = useState(String(slip.beam));
+  const [draft, setDraft] = useState(String(slip.draft));
+  const [height, setHeight] = useState(String(slip.height));
+  const [type, setType] = useState(slip.type);
+  const [power, setPower] = useState(slip.power);
+  const [electricityMode, setElectricityMode] = useState(slip.electricityMode);
+  const [status, setStatus] = useState<SlipStatus>(slip.status);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    const updates: Partial<Slip> = {
+      number, dock, type, power, electricityMode, status,
+      length: parseFloat(length) || slip.length,
+      beam: parseFloat(beam) || slip.beam,
+      draft: parseFloat(draft) || slip.draft,
+      height: parseFloat(height) || slip.height,
+    };
+    onSave(updates);
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose(); }, 1200);
+  };
+
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>Edit Slip {slip.number}</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
+        {saved && (
+          <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>
+            Changes saved!
+          </div>
+        )}
+        <div style={st.modalBody}>
+          <div style={st.twoCol}>
+            <div style={st.field}>
+              <label style={st.label}>Slip Number *</label>
+              <input style={st.input} value={number} onChange={(e) => setNumber(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Dock *</label>
+              <select style={st.select} value={dock} onChange={(e) => setDock(e.target.value)}>
+                <option value="A">Dock A</option>
+                <option value="B">Dock B</option>
+                <option value="C">Dock C</option>
+                <option value="D">Dock D</option>
+              </select>
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Length (ft)</label>
+              <input style={st.input} type="number" value={length} onChange={(e) => setLength(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Beam (ft)</label>
+              <input style={st.input} type="number" value={beam} onChange={(e) => setBeam(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Draft (ft)</label>
+              <input style={st.input} type="number" value={draft} onChange={(e) => setDraft(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Height (ft)</label>
+              <input style={st.input} type="number" value={height} onChange={(e) => setHeight(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Type</label>
+              <select style={st.select} value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="Open">Open</option>
+                <option value="Covered">Covered</option>
+              </select>
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Power</label>
+              <select style={st.select} value={power} onChange={(e) => setPower(e.target.value)}>
+                <option value="30A">30A</option>
+                <option value="50A">50A</option>
+                <option value="30A/50A">30A/50A</option>
+                <option value="50A/100A">50A/100A</option>
+              </select>
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Electricity Mode</label>
+              <select style={st.select} value={electricityMode} onChange={(e) => setElectricityMode(e.target.value)}>
+                <option value="Metered">Metered</option>
+                <option value="Flat Rate">Flat Rate</option>
+                <option value="Included">Included</option>
+              </select>
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Status</label>
+              <select style={st.select} value={status} onChange={(e) => setStatus(e.target.value as SlipStatus)}>
+                <option value="Vacant">Vacant</option>
+                <option value="Occupied">Occupied</option>
+                <option value="Reserved">Reserved</option>
+                <option value="Maintenance">Maintenance</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.saveBtn} onClick={handleSave}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Assign Slip Modal ──────────────────────────────────── */
 
 interface Customer { id: string; firstName: string; lastName: string; company: string | null; email: string; }
@@ -621,6 +740,7 @@ export default function Slips() {
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const showAction = (msg: string) => { setActionMsg(msg); setTimeout(() => setActionMsg(null), 2000); };
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
 
   const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
   const createSlip = useApi<Slip>('post', '/api/slips');
@@ -802,9 +922,7 @@ export default function Slips() {
             meterReadings: selectedSlip.meterReadings,
           }}
           onClose={() => setSelectedSlip(null)}
-          onEdit={() => {
-            toast.info('Edit Slip', `Edit slip ${selectedSlip.number} — full slip editing coming soon.`);
-          }}
+          onEdit={() => setShowEditModal(true)}
           onAssign={() => {
             if (selectedSlip.status !== 'Vacant' && selectedSlip.status !== 'Reserved') {
               toast.warning('Cannot Assign', `Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
@@ -817,6 +935,18 @@ export default function Slips() {
               updateSlipLocally(selectedSlip.id, { status: 'Maintenance' });
               setSelectedSlip(null);
             });
+          }}
+        />
+      )}
+
+      {showEditModal && selectedSlip && (
+        <EditSlipModal
+          slip={selectedSlip}
+          onClose={() => setShowEditModal(false)}
+          onSave={(updates) => {
+            updateSlipLocally(selectedSlip.id, updates);
+            setSelectedSlip((prev) => prev ? { ...prev, ...updates } : prev);
+            showAction(`Slip ${selectedSlip.number} updated successfully.`);
           }}
         />
       )}
