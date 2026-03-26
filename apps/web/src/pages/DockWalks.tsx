@@ -418,7 +418,7 @@ export default function DockWalks() {
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{w.number}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{w.date}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{w.inspector}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{w.docks.map((d) => `Dock ${d}`).join(', ')}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{(w.docks ?? []).map((d) => `Dock ${d}`).join(', ')}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center', ...st.mono }}>{w.slipsChecked}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
                         <span style={{ ...st.mono, color: w.violations > 0 ? '#C2410C' : '#03543F', fontWeight: 600 }}>{w.violations}</span>

@@ -27,7 +27,9 @@ import {
   BarChart3,
   Activity,
   MapPin,
+  X,
 } from 'lucide-react';
+import InvoiceForm from '../components/InvoiceForm';
 
 type TimePeriod = 'Today' | 'This Week' | 'This Month' | 'This Quarter';
 
@@ -35,6 +37,8 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('This Month');
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [taskDrawer, setTaskDrawer] = useState<{ title: string; items: { label: string; sub: string; urgent: boolean }[] } | null>(null);
 
   // --- API Calls ---
   const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/api/reports/occupancy', { immediate: true });
@@ -315,16 +319,43 @@ const Dashboard: React.FC = () => {
     { id: '1044', date: 'Mar 22', desc: 'Rental Booking - C08', customer: "Kevin O\u2019Malley", amount: '$1,875.00', status: 'Pending', type: 'invoice' },
   ];
 
-  const tasks = [
-    { text: '3 contracts expiring this week', detail: 'James Harborview - Mar 30 · Elena Windward - Mar 28 · Tom Seaside - Mar 29', icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true, route: '/contracts' },
-    { text: '2 insurance documents expiring', detail: 'Elena Windward - Insurance expires Mar 28 · Sarah Mitchell - Insurance expires Mar 31', icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true, route: '/customers' },
+  const tasks: {
+    text: string; detail: string; icon: React.ReactNode; urgent: boolean;
+    route?: string;
+    drawer?: { title: string; items: { label: string; sub: string; urgent: boolean }[] };
+  }[] = [
+    {
+      text: '3 contracts expiring this week',
+      detail: 'James Harborview - Mar 30 · Elena Windward - Mar 28 · Tom Seaside - Mar 29',
+      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
+      drawer: {
+        title: 'Expiring Contracts',
+        items: [
+          { label: 'Elena Windward', sub: 'Expires Mar 28 — Slip A-12', urgent: true },
+          { label: 'Tom Seaside', sub: 'Expires Mar 29 — Slip B-03', urgent: true },
+          { label: 'James Harborview', sub: 'Expires Mar 30 — Slip C-07', urgent: true },
+        ],
+      },
+    },
+    {
+      text: '2 insurance documents expiring',
+      detail: 'Elena Windward - Insurance expires Mar 28 · Sarah Mitchell - Insurance expires Mar 31',
+      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
+      drawer: {
+        title: 'Expiring Insurance',
+        items: [
+          { label: 'Elena Windward', sub: 'Insurance expires Mar 28 — Action required', urgent: true },
+          { label: 'Sarah Mitchell', sub: 'Insurance expires Mar 31 — Reminder sent', urgent: false },
+        ],
+      },
+    },
     { text: '1 maintenance request pending', detail: 'Dock C, Slip 08 - Cleat replacement requested by David Thompson', icon: <Clock size={16} color={colors.cyan} />, urgent: false, route: '/concierge' },
     { text: 'ACH return to review', detail: 'Coastal Charters LLC - $6,800.00 returned Mar 24', icon: <CreditCard size={16} color={colors.red} />, urgent: true, route: '/billing' },
     { text: 'Dock walk overdue (Dock C)', detail: 'Last completed Mar 20 - 5 days overdue', icon: <Footprints size={16} color={colors.red} />, urgent: true, route: '/dock-walks' },
   ];
 
-  const quickActions = [
-    { label: 'New Invoice', icon: <Plus size={18} />, route: '/billing' },
+  const quickActions: { label: string; icon: React.ReactNode; route?: string; action?: () => void }[] = [
+    { label: 'New Invoice', icon: <Plus size={18} />, action: () => setShowInvoiceModal(true) },
     { label: 'Add Customer', icon: <UserPlus size={18} />, route: '/customers' },
     { label: 'Start Dock Walk', icon: <Footprints size={18} />, route: '/dock-walks' },
     { label: 'Record Payment', icon: <CreditCard size={18} />, route: '/billing' },
@@ -367,6 +398,7 @@ const Dashboard: React.FC = () => {
   };
 
   return (
+    <>
     <div style={pageStyle}>
       {apiLoading && (
         <div style={{ padding: '8px 16px', marginBottom: '16px', backgroundColor: 'rgba(0,212,255,0.08)', borderRadius: '8px', fontSize: '13px', color: colors.darkGray }}>
@@ -612,7 +644,7 @@ const Dashboard: React.FC = () => {
               {tasks.map((task, i) => (
                 <div
                   key={i}
-                  onClick={() => navigate(task.route)}
+                  onClick={() => task.drawer ? setTaskDrawer(task.drawer) : navigate(task.route!)}
                   style={{
                     display: 'flex',
                     alignItems: 'flex-start',
@@ -770,7 +802,7 @@ const Dashboard: React.FC = () => {
                     (e.currentTarget as HTMLButtonElement).style.borderColor = colors.border;
                     (e.currentTarget as HTMLButtonElement).style.backgroundColor = colors.white;
                   }}
-                  onClick={() => navigate(action.route)}
+                  onClick={() => action.action ? action.action() : navigate(action.route!)}
                 >
                   <span style={{ color: colors.cyan }}>{action.icon}</span>
                   {action.label}
@@ -977,6 +1009,64 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
     </div>
+
+    {/* Invoice Modal */}
+    {showInvoiceModal && (
+      <InvoiceForm
+        onClose={() => setShowInvoiceModal(false)}
+        onSaveDraft={() => setShowInvoiceModal(false)}
+        onFinalize={() => setShowInvoiceModal(false)}
+      />
+    )}
+
+    {/* Task Drawer */}
+    {taskDrawer && (
+      <>
+        <div
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.4)', zIndex: 900 }}
+          onClick={() => setTaskDrawer(null)}
+        />
+        <div style={{
+          position: 'fixed', top: 0, right: 0, width: '400px', height: '100vh',
+          backgroundColor: colors.white, boxShadow: '-4px 0 20px rgba(0,0,0,0.12)',
+          zIndex: 1000, overflowY: 'auto', display: 'flex', flexDirection: 'column',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px', borderBottom: `1px solid ${colors.border}` }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: colors.navy }}>{taskDrawer.title}</h2>
+              <div style={{ fontSize: '13px', color: colors.gray, marginTop: '4px' }}>{taskDrawer.items.length} items require attention</div>
+            </div>
+            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: colors.darkGray, padding: '4px' }} onClick={() => setTaskDrawer(null)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
+            {taskDrawer.items.map((item, i) => (
+              <div key={i} style={{
+                padding: '16px', borderRadius: '8px',
+                backgroundColor: item.urgent ? 'rgba(245,158,11,0.06)' : colors.lightGray,
+                border: item.urgent ? '1px solid rgba(245,158,11,0.3)' : `1px solid ${colors.border}`,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <AlertTriangle size={14} color={item.urgent ? colors.orange : colors.gray} />
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: colors.navy }}>{item.label}</span>
+                </div>
+                <div style={{ fontSize: '13px', color: colors.darkGray, marginLeft: '22px' }}>{item.sub}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: '16px', borderTop: `1px solid ${colors.border}` }}>
+            <button
+              style={{ width: '100%', padding: '10px', fontSize: '14px', fontWeight: 600, color: colors.white, backgroundColor: colors.navy, border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+              onClick={() => { setTaskDrawer(null); navigate(taskDrawer.title.includes('Contract') ? '/contracts' : '/customers'); }}
+            >
+              View All in {taskDrawer.title.includes('Contract') ? 'Contracts' : 'Customers'}
+            </button>
+          </div>
+        </div>
+      </>
+    )}
+    </>
   );
 };
 
