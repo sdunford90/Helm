@@ -228,8 +228,8 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // --- Data (API with fallback to mock) ---
-  const mockKpis = [
+  // --- KPI metadata; values are merged from API below ---
+  const kpiDefinitions = [
     {
       label: 'Occupancy Rate',
       value: '87%',
@@ -281,7 +281,7 @@ const Dashboard: React.FC = () => {
   ];
 
   // Merge API data into KPIs when available
-  const kpis = mockKpis.map((kpi) => {
+  const kpis = kpiDefinitions.map((kpi) => {
     if (kpi.label === 'Occupancy Rate' && occupancyData) {
       return { ...kpi, value: `${occupancyData.rate ?? kpi.value}`, sub: occupancyData.sub ?? kpi.sub, trendText: occupancyData.trendText ?? kpi.trendText };
     }

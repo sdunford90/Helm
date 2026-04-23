@@ -31,26 +31,6 @@ interface RentRollEntry {
   lastPaymentAmount: number;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
-
-const MOCK_RENT_ROLL: RentRollEntry[] = [
-  { id: '1', slipNumber: 'A-01', dock: 'A', tenantName: 'James Harborview', boatName: 'Sea Spirit', boatLength: 38, contractStart: '2024-03-15', contractEnd: '2025-03-14', billingCycle: 'Monthly', monthlyRate: 2450, annualRate: 29400, electricityMode: 'Metered', electricityCharge: 148, depositHeld: 2450, balance: 0, status: 'Active', autoRenew: true, daysLeft: 354, lastPaymentDate: '2026-03-01', lastPaymentAmount: 2598 },
-  { id: '2', slipNumber: 'A-02', dock: 'A', tenantName: 'Maria Seabreeze', boatName: 'Coastal Dream', boatLength: 32, contractStart: '2024-06-01', contractEnd: '2025-05-31', billingCycle: 'Monthly', monthlyRate: 1950, annualRate: 23400, electricityMode: 'Flat Rate', electricityCharge: 75, depositHeld: 1950, balance: 0, status: 'Active', autoRenew: true, daysLeft: 432, lastPaymentDate: '2026-03-01', lastPaymentAmount: 2025 },
-  { id: '3', slipNumber: 'A-03', dock: 'A', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '4', slipNumber: 'A-04', dock: 'A', tenantName: 'Robert Dockside', boatName: 'Harbor Light', boatLength: 28, contractStart: '2025-11-01', contractEnd: '2026-04-30', billingCycle: 'Monthly', monthlyRate: 1650, annualRate: 19800, electricityMode: 'Metered', electricityCharge: 92, depositHeld: 1650, balance: 1742, status: 'Expiring', autoRenew: false, daysLeft: 36, lastPaymentDate: '2026-02-01', lastPaymentAmount: 1742 },
-  { id: '5', slipNumber: 'A-05', dock: 'A', tenantName: 'Tom Seaside', boatName: 'Mariner II', boatLength: 35, contractStart: '2025-01-01', contractEnd: '2026-12-31', billingCycle: 'Quarterly', monthlyRate: 2200, annualRate: 26400, electricityMode: 'Metered', electricityCharge: 125, depositHeld: 2200, balance: 0, status: 'Active', autoRenew: true, daysLeft: 646, lastPaymentDate: '2026-01-01', lastPaymentAmount: 6975 },
-  { id: '6', slipNumber: 'B-01', dock: 'B', tenantName: 'David Tidewater', boatName: 'Tidewater Express', boatLength: 48, contractStart: '2024-01-05', contractEnd: '2027-01-04', billingCycle: 'Annual', monthlyRate: 4200, annualRate: 50400, electricityMode: 'Metered', electricityCharge: 252, depositHeld: 4200, balance: 0, status: 'Active', autoRenew: true, daysLeft: 650, lastPaymentDate: '2026-01-05', lastPaymentAmount: 50400 },
-  { id: '7', slipNumber: 'B-02', dock: 'B', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '8', slipNumber: 'B-03', dock: 'B', tenantName: 'Coastal Charters LLC', boatName: 'Charter One', boatLength: 45, contractStart: '2025-06-01', contractEnd: '2026-05-31', billingCycle: 'Monthly', monthlyRate: 3800, annualRate: 45600, electricityMode: 'Flat Rate', electricityCharge: 150, depositHeld: 3800, balance: 3950, status: 'Active', autoRenew: true, daysLeft: 432, lastPaymentDate: '2026-02-01', lastPaymentAmount: 3950 },
-  { id: '9', slipNumber: 'B-04', dock: 'B', tenantName: 'Blue Water Excursions', boatName: 'Blue Wave', boatLength: 52, contractStart: '2025-03-01', contractEnd: '2026-02-28', billingCycle: 'Monthly', monthlyRate: 4500, annualRate: 54000, electricityMode: 'Metered', electricityCharge: 310, depositHeld: 4500, balance: 0, status: 'Expired', autoRenew: false, daysLeft: -25, lastPaymentDate: '2026-02-01', lastPaymentAmount: 4810 },
-  { id: '10', slipNumber: 'C-01', dock: 'C', tenantName: 'Elena Windward', boatName: 'Windward', boatLength: 28, contractStart: '2025-04-01', contractEnd: '2025-10-31', billingCycle: 'Monthly', monthlyRate: 1200, annualRate: 14400, electricityMode: 'Flat Rate', electricityCharge: 50, depositHeld: 1200, balance: 0, status: 'Active', autoRenew: false, daysLeft: 220, lastPaymentDate: '2026-03-01', lastPaymentAmount: 1250 },
-  { id: '11', slipNumber: 'C-02', dock: 'C', tenantName: 'Mike Anchorage', boatName: 'Bayrunner', boatLength: 26, contractStart: '2025-07-01', contractEnd: '2026-06-30', billingCycle: 'Monthly', monthlyRate: 1100, annualRate: 13200, electricityMode: 'Metered', electricityCharge: 68, depositHeld: 1100, balance: 0, status: 'Active', autoRenew: true, daysLeft: 462, lastPaymentDate: '2026-03-01', lastPaymentAmount: 1168 },
-  { id: '12', slipNumber: 'C-03', dock: 'C', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '13', slipNumber: 'C-04', dock: 'C', tenantName: 'Lisa Bayfront', boatName: 'Sunset Chaser', boatLength: 30, contractStart: '2025-01-01', contractEnd: '2026-06-30', billingCycle: 'Quarterly', monthlyRate: 1350, annualRate: 16200, electricityMode: 'Metered', electricityCharge: 85, depositHeld: 1350, balance: 0, status: 'Active', autoRenew: true, daysLeft: 462, lastPaymentDate: '2026-01-01', lastPaymentAmount: 4305 },
-  { id: '14', slipNumber: 'C-05', dock: 'C', tenantName: 'Amy Portview', boatName: 'Portside', boatLength: 24, contractStart: '2026-01-01', contractEnd: '2026-12-31', billingCycle: 'Monthly', monthlyRate: 950, annualRate: 11400, electricityMode: 'Flat Rate', electricityCharge: 40, depositHeld: 950, balance: 990, status: 'Active', autoRenew: false, daysLeft: 646, lastPaymentDate: '2026-02-01', lastPaymentAmount: 990 },
-  { id: '15', slipNumber: 'C-06', dock: 'C', tenantName: 'Sarah Coastline', boatName: 'Tideline', boatLength: 22, contractStart: '2025-09-01', contractEnd: '2026-08-31', billingCycle: 'Monthly', monthlyRate: 850, annualRate: 10200, electricityMode: 'Metered', electricityCharge: 55, depositHeld: 850, balance: 0, status: 'Active', autoRenew: true, daysLeft: 524, lastPaymentDate: '2026-03-01', lastPaymentAmount: 905 },
-];
-
 /* ── Styles ─────────────────────────────────────────────── */
 
 const st: Record<string, React.CSSProperties> = {
@@ -94,8 +74,8 @@ export default function RentRoll() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
-  const { data: apiData } = useApi<RentRollEntry[]>('get', '/api/reports/rent-roll', { immediate: true });
-  const entries = apiData || MOCK_RENT_ROLL;
+  const { data: apiData, loading } = useApi<RentRollEntry[]>('get', '/api/reports/rent-roll', { immediate: true });
+  const entries = apiData || [];
 
   const filtered = entries.filter((e) => {
     if (dockFilter !== 'All' && e.dock !== dockFilter) return false;
@@ -196,6 +176,11 @@ export default function RentRoll() {
             </tr>
           </thead>
           <tbody>
+            {filtered.length === 0 && !loading && (
+              <tr>
+                <td colSpan={15} style={{ padding: '48px 16px', textAlign: 'center', color: '#94A3B8' }}>No rent roll entries yet.</td>
+              </tr>
+            )}
             {filtered.map((e, idx) => {
               const rowBg = e.status === 'Vacant' ? '#F9FAFB' : e.status === 'Expiring' ? '#FFFBEB' : idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
               const sc = statusColors[e.status];

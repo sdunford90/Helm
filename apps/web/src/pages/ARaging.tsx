@@ -12,20 +12,6 @@ interface AgingRow {
   days90plus: number;
 }
 
-/* ─── Mock data ─── */
-const mockAgingData: AgingRow[] = [
-  { customer: 'Harbor Point Yacht Club', current: 304950, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'James T. Morrison', current: 133750, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Robert Chen', current: 101650, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Blue Horizon Charters', current: 577800, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Maria Gonzalez', current: 0, days1to30: 0, days31to60: 187250, days61to90: 0, days90plus: 0 },
-  { customer: 'Thomas Drake', current: 0, days1to30: 0, days31to60: 112350, days61to90: 0, days90plus: 0 },
-  { customer: 'Sunset Bay Holdings', current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 663400 },
-  { customer: 'Dockside Properties', current: 0, days1to30: 85000, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Anchor Bay Marina', current: 0, days1to30: 0, days31to60: 0, days61to90: 142500, days90plus: 0 },
-  { customer: 'Wavecrest Holdings', current: 0, days1to30: 67200, days31to60: 0, days61to90: 0, days90plus: 225000 },
-];
-
 /* ─── Helpers ─── */
 const rowTotal = (r: AgingRow) => r.current + r.days1to30 + r.days31to60 + r.days61to90 + r.days90plus;
 const colSum = (data: AgingRow[], field: keyof Omit<AgingRow, 'customer'>) =>
@@ -90,9 +76,8 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 ];
 
 export default function ARaging() {
-  // API call with fallback to mock data
   const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/api/reports/ar-aging', { immediate: true });
-  const agingData = apiAgingData ?? mockAgingData;
+  const agingData = apiAgingData ?? [];
 
   const grandTotal = agingData.reduce((s, r) => s + rowTotal(r), 0);
 
@@ -159,6 +144,13 @@ export default function ARaging() {
                 </tr>
               );
             })}
+            {agingData.length === 0 && !loading && (
+              <tr>
+                <td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                  No A/R aging data yet.
+                </td>
+              </tr>
+            )}
             {/* Totals Row */}
             <tr style={s.totalsRow}>
               <td style={{ ...s.td, fontWeight: 700 }}>TOTAL</td>

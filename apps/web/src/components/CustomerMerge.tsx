@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Search, ChevronRight, AlertTriangle, CheckCircle } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 
 interface MergeCustomer {
   id: string;
@@ -19,12 +20,6 @@ interface CustomerMergeProps {
   onClose: () => void;
   onMerge: (targetId: string, fieldSelections: Record<string, 'source' | 'target'>) => void;
 }
-
-const MOCK_TARGETS: MergeCustomer[] = [
-  { id: '2', name: 'Maria Seabreeze', email: 'maria@ocean.net', phone: '(555) 234-5678', company: 'Ocean LLC', address: '456 Bay Rd', status: 'Active', boats: 1, invoices: 3, payments: 8 },
-  { id: '3', name: 'Robert Dockside', email: 'rob@docks.com', phone: '(555) 345-6789', company: '', address: '789 Dock St', status: 'Waitlist', boats: 1, invoices: 1, payments: 2 },
-  { id: '4', name: 'Susan Baywatch', email: 'susan@bay.org', phone: '(555) 456-7890', company: 'Bay Corp', address: '321 Marina Ave', status: 'Inactive', boats: 0, invoices: 5, payments: 12 },
-];
 
 const MERGE_FIELDS = ['name', 'email', 'phone', 'company', 'address', 'status'] as const;
 type MergeField = typeof MERGE_FIELDS[number];
@@ -218,6 +213,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+interface ApiCustomer {
+  id: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  company?: string | null;
+  address?: string | null;
+  status?: string;
+}
+
 export default function CustomerMerge({ source, onClose, onMerge }: CustomerMergeProps) {
   const [step, setStep] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -231,12 +237,26 @@ export default function CustomerMerge({ source, onClose, onMerge }: CustomerMerg
     status: 'source',
   });
 
-  const filteredTargets = MOCK_TARGETS.filter(
+  const { data: apiCustomers } = useApi<ApiCustomer[]>('get', '/api/customers', { immediate: true });
+  const candidates: MergeCustomer[] = (apiCustomers ?? []).map((c) => ({
+    id: c.id,
+    name: `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim() || c.email || c.id,
+    email: c.email ?? '',
+    phone: c.phone ?? '',
+    company: c.company ?? '',
+    address: c.address ?? '',
+    status: c.status ?? '',
+    boats: 0,
+    invoices: 0,
+    payments: 0,
+  }));
+
+  const filteredTargets = candidates.filter(
     (c) => c.id !== source.id && c.name.toLowerCase().includes(searchTerm.toLowerCase()),
   );
 
   const getFieldValue = (customer: MergeCustomer, field: MergeField): string => {
-    return (customer as Record<string, unknown>)[field] as string || '(empty)';
+    return (customer as unknown as Record<string, unknown>)[field] as string || '(empty)';
   };
 
   const isConflict = (field: MergeField): boolean => {

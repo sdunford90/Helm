@@ -15,11 +15,8 @@ interface Ticket {
   submittedAt: string;
 }
 
-const MOCK_TICKETS: Ticket[] = [
-  { id: '1', subject: 'QBO sync not updating invoices', category: 'Integrations', status: 'In Progress', submittedAt: '2026-03-24' },
-  { id: '2', subject: 'How to set up seasonal pricing', category: 'Boat Rentals', status: 'Resolved', submittedAt: '2026-03-20' },
-  { id: '3', subject: 'Invoice PDF not showing logo', category: 'Billing & Payments', status: 'Open', submittedAt: '2026-03-25' },
-];
+// TODO(api): support tickets endpoint (post-MVP)
+const TICKETS: Ticket[] = [];
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -181,7 +178,10 @@ export default function HelpCenter() {
           {/* My Tickets Tab */}
           {tab === 'tickets' && (
             <>
-              {MOCK_TICKETS.map((t) => {
+              {TICKETS.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#94A3B8', padding: '32px 0' }}>No tickets yet.</div>
+              )}
+              {TICKETS.map((t) => {
                 const sc = ticketStatusColors[t.status];
                 return (
                   <div key={t.id} style={st.ticketCard}>

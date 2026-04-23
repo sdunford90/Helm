@@ -39,17 +39,6 @@ interface WaitlistEntry {
 const SLIP_TYPES: SlipType[] = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STATUSES: WaitlistStatus[] = ['Waiting', 'Notified', 'Hold', 'Accepted', 'Expired'];
 
-const MOCK_ENTRIES: WaitlistEntry[] = [
-  { id: '1', position: 1, firstName: 'Richard', lastName: 'Brennan', email: 'rbrennan@email.com', phone: '(555) 111-2222', slipType: 'Annual', boatLength: 34, desiredDate: '2026-04-01', status: 'Waiting', dateAdded: '2026-02-15', notes: 'Prefers Dock A, end slip if possible.' },
-  { id: '2', position: 2, firstName: 'Catherine', lastName: 'Yao', email: 'cyao@email.com', phone: '(555) 222-3333', slipType: 'Annual', boatLength: 28, desiredDate: '2026-04-15', status: 'Waiting', dateAdded: '2026-02-18', notes: 'Current member at rival marina, looking to switch.' },
-  { id: '3', position: 3, firstName: 'Dennis', lastName: 'Murphy', email: 'dmurphy@email.com', phone: '(555) 333-4444', slipType: 'Liveaboard', boatLength: 42, desiredDate: '2026-05-01', status: 'Notified', dateAdded: '2026-01-20', notes: 'Notified about C-01 opening. Awaiting response.' },
-  { id: '4', position: 4, firstName: 'Lisa', lastName: 'Patel', email: 'lpatel@email.com', phone: '(555) 444-5555', slipType: 'Seasonal', boatLength: 26, desiredDate: '2026-06-01', status: 'Hold', dateAdded: '2026-02-01', notes: 'On hold — deciding between seasonal and annual.' },
-  { id: '5', position: 5, firstName: 'George', lastName: 'Huang', email: 'ghuang@email.com', phone: '(555) 555-6666', slipType: 'Annual', boatLength: 38, desiredDate: '2026-04-01', status: 'Accepted', dateAdded: '2025-12-10', notes: 'Accepted B-07 slip. Converting to customer.' },
-  { id: '6', position: 6, firstName: 'Megan', lastName: 'Torres', email: 'mtorres@email.com', phone: '(555) 666-7777', slipType: 'Transient', boatLength: 22, desiredDate: '2026-03-15', status: 'Expired', dateAdded: '2025-11-05', notes: 'Did not respond within 14-day window.' },
-  { id: '7', position: 7, firstName: 'Brian', lastName: 'Carter', email: 'bcarter@email.com', phone: '(555) 777-8888', slipType: 'Annual', boatLength: 30, desiredDate: '2026-05-01', status: 'Waiting', dateAdded: '2026-03-01', notes: 'New inquiry from website form.' },
-  { id: '8', position: 8, firstName: 'Stephanie', lastName: 'Kim', email: 'skim@email.com', phone: '(555) 888-9999', slipType: 'Seasonal', boatLength: 24, desiredDate: '2026-06-15', status: 'Waiting', dateAdded: '2026-03-05', notes: 'Summer season only.' },
-];
-
 /* ── Status Colors ─────────────────────────────────────── */
 
 const STATUS_COLORS: Record<WaitlistStatus, { bg: string; text: string }> = {
@@ -353,7 +342,7 @@ export default function Waitlist() {
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [search, setSearch] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<WaitlistEntry | null>(null);
-  const [entries, setEntries] = useState<WaitlistEntry[]>(MOCK_ENTRIES);
+  const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addSaved, setAddSaved] = useState(false);
 

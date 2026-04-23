@@ -140,117 +140,14 @@ const avail = (s: SlotStatus, name?: string, resId?: string, notes?: string): Av
 });
 
 const FREE: DayAvailability = { morning: avail('available'), afternoon: avail('available'), evening: avail('available') };
-const MAINT_DAY: DayAvailability = { morning: avail('maintenance', undefined, undefined, 'Scheduled maintenance'), afternoon: avail('maintenance', undefined, undefined, 'Scheduled maintenance'), evening: avail('maintenance', undefined, undefined, 'Scheduled maintenance') };
 
-/** Generate 14 days of mock availability keyed by product id then ISO date string */
-function generateMockAvailability(): Record<string, Record<string, DayAvailability>> {
-  const today = new Date();
-  const dates: string[] = [];
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  // Deterministic but varied bookings per product
-  const bookingPatterns: Record<string, Record<number, Partial<DayAvailability>>>[] = [
-    // Bay Cruiser 24 (id 1)
-    { '1': { 0: { morning: avail('booked', 'James', 'RES-1042'), afternoon: avail('available'), evening: avail('available') },
-             1: { morning: avail('available'), afternoon: avail('booked', 'Elena', 'RES-1052'), evening: avail('booked', 'Elena', 'RES-1052') },
-             2: { morning: avail('booked', 'Mike', 'RES-1060'), afternoon: avail('booked', 'Mike', 'RES-1060'), evening: avail('available') },
-             4: { morning: avail('booked', 'Carlos', 'RES-1065'), afternoon: avail('available'), evening: avail('booked', 'Priya', 'RES-1066') },
-             6: { morning: avail('booked', 'Sarah', 'RES-1070'), afternoon: avail('booked', 'Sarah', 'RES-1070'), evening: avail('booked', 'Sarah', 'RES-1070') },
-             7: { morning: avail('booked', 'Tom', 'RES-1071'), afternoon: avail('available'), evening: avail('available') },
-             9: { morning: avail('maintenance', undefined, undefined, 'Engine check'), afternoon: avail('maintenance', undefined, undefined, 'Engine check'), evening: avail('available') },
-             11: { morning: avail('booked', 'Amy', 'RES-1080'), afternoon: avail('booked', 'Amy', 'RES-1080'), evening: avail('available') },
-             13: { morning: avail('booked', 'Derek', 'RES-1085'), afternoon: avail('booked', 'Derek', 'RES-1085'), evening: avail('booked', 'Derek', 'RES-1085') },
-    } },
-    // Wave Runner Pro (id 2)
-    { '2': { 0: { morning: avail('booked', 'Maria', 'RES-1043'), afternoon: avail('available'), evening: avail('booked', 'Jake', 'RES-1053') },
-             1: { morning: avail('booked', 'Lisa', 'RES-1054'), afternoon: avail('booked', 'Lisa', 'RES-1054'), evening: avail('available') },
-             3: { morning: avail('available'), afternoon: avail('booked', 'Nathan', 'RES-1058'), evening: avail('booked', 'Nathan', 'RES-1058') },
-             5: { morning: avail('booked', 'Olivia', 'RES-1068'), afternoon: avail('booked', 'Olivia', 'RES-1068'), evening: avail('available') },
-             6: { morning: avail('booked', 'Ryan', 'RES-1072'), afternoon: avail('available'), evening: avail('booked', 'Zoe', 'RES-1073') },
-             8: { morning: avail('blocked', undefined, undefined, 'Private event'), afternoon: avail('blocked', undefined, undefined, 'Private event'), evening: avail('blocked', undefined, undefined, 'Private event') },
-             10: { morning: avail('booked', 'Grace', 'RES-1078'), afternoon: avail('available'), evening: avail('available') },
-             12: { morning: avail('booked', 'Leo', 'RES-1082'), afternoon: avail('booked', 'Leo', 'RES-1082'), evening: avail('booked', 'Leo', 'RES-1082') },
-    } },
-    // Harbor Explorer (id 3)
-    { '3': { 0: { morning: avail('available'), afternoon: avail('booked', 'Robert', 'RES-1044'), evening: avail('available') },
-             1: { morning: avail('booked', 'Tom', 'RES-1050'), afternoon: avail('available'), evening: avail('available') },
-             2: { morning: avail('booked', 'Jen', 'RES-1061'), afternoon: avail('booked', 'Jen', 'RES-1061'), evening: avail('available') },
-             5: { morning: avail('booked', 'Sam', 'RES-1069'), afternoon: avail('available'), evening: avail('booked', 'Kim', 'RES-1069b') },
-             7: { morning: avail('available'), afternoon: avail('booked', 'Alex', 'RES-1074'), evening: avail('available') },
-             10: { morning: avail('booked', 'Maya', 'RES-1079'), afternoon: avail('booked', 'Maya', 'RES-1079'), evening: avail('booked', 'Maya', 'RES-1079') },
-             12: { morning: avail('maintenance', undefined, undefined, 'Hull inspection'), afternoon: avail('maintenance', undefined, undefined, 'Hull inspection'), evening: avail('available') },
-    } },
-    // Sunset Sailor 28 (id 4)
-    { '4': { 1: { morning: avail('booked', 'Elena', 'RES-1045'), afternoon: avail('booked', 'Elena', 'RES-1045'), evening: avail('booked', 'Elena', 'RES-1045') },
-             3: { morning: avail('booked', 'Will', 'RES-1059'), afternoon: avail('available'), evening: avail('available') },
-             5: { morning: avail('available'), afternoon: avail('booked', 'Nora', 'RES-1067'), evening: avail('booked', 'Nora', 'RES-1067') },
-             8: { morning: avail('booked', 'Felix', 'RES-1075'), afternoon: avail('booked', 'Felix', 'RES-1075'), evening: avail('available') },
-             10: { morning: avail('blocked', undefined, undefined, 'Regatta event'), afternoon: avail('blocked', undefined, undefined, 'Regatta event'), evening: avail('available') },
-             13: { morning: avail('booked', 'Claire', 'RES-1086'), afternoon: avail('booked', 'Claire', 'RES-1086'), evening: avail('booked', 'Claire', 'RES-1086') },
-    } },
-    // Fishing Charter 30 (id 5) - in maintenance
-    { '5': { 0: MAINT_DAY, 1: MAINT_DAY, 2: MAINT_DAY, 3: MAINT_DAY, 4: MAINT_DAY,
-             5: { morning: avail('available'), afternoon: avail('available'), evening: avail('available') },
-             6: { morning: avail('booked', 'Pete', 'RES-1071b'), afternoon: avail('booked', 'Pete', 'RES-1071b'), evening: avail('available') },
-             7: { morning: avail('available'), afternoon: avail('booked', 'Amy', 'RES-1051'), evening: avail('available') },
-             9: { morning: avail('booked', 'Dan', 'RES-1077'), afternoon: avail('booked', 'Dan', 'RES-1077'), evening: avail('booked', 'Dan', 'RES-1077') },
-             11: { morning: avail('available'), afternoon: avail('booked', 'Rosa', 'RES-1081'), evening: avail('available') },
-    } },
-    // Paddleboard Classic (id 6)
-    { '6': { 0: { morning: avail('booked', 'Chloe', 'RES-1055'), afternoon: avail('available'), evening: avail('available') },
-             2: { morning: avail('booked', 'Hiro', 'RES-1062'), afternoon: avail('booked', 'Hiro', 'RES-1062'), evening: avail('available') },
-             3: { morning: avail('available'), afternoon: avail('available'), evening: avail('booked', 'Ava', 'RES-1063') },
-             6: { morning: avail('booked', 'Ben', 'RES-1070b'), afternoon: avail('available'), evening: avail('available') },
-             8: { morning: avail('available'), afternoon: avail('booked', 'Lily', 'RES-1076'), evening: avail('booked', 'Lily', 'RES-1076') },
-             11: { morning: avail('booked', 'Mia', 'RES-1081b'), afternoon: avail('available'), evening: avail('available') },
-             13: { morning: avail('booked', 'Owen', 'RES-1087'), afternoon: avail('booked', 'Owen', 'RES-1087'), evening: avail('available') },
-    } },
-    // Family Pontoon 28 (id 7)
-    { '7': { 2: { morning: avail('booked', 'Mike', 'RES-1048'), afternoon: avail('booked', 'Mike', 'RES-1048'), evening: avail('booked', 'Mike', 'RES-1048') },
-             4: { morning: avail('booked', 'Zara', 'RES-1064'), afternoon: avail('booked', 'Zara', 'RES-1064'), evening: avail('available') },
-             5: { morning: avail('available'), afternoon: avail('booked', 'Troy', 'RES-1068b'), evening: avail('booked', 'Troy', 'RES-1068b') },
-             7: { morning: avail('booked', 'Eve', 'RES-1074b'), afternoon: avail('booked', 'Eve', 'RES-1074b'), evening: avail('booked', 'Eve', 'RES-1074b') },
-             9: { morning: avail('maintenance', undefined, undefined, 'Seat repair'), afternoon: avail('maintenance', undefined, undefined, 'Seat repair'), evening: avail('maintenance', undefined, undefined, 'Seat repair') },
-             11: { morning: avail('booked', 'Nina', 'RES-1083'), afternoon: avail('available'), evening: avail('available') },
-             13: { morning: avail('booked', 'Luca', 'RES-1088'), afternoon: avail('booked', 'Luca', 'RES-1088'), evening: avail('available') },
-    } },
-    // Speed Demon X2 (id 8) - retired, all blocked
-    { '8': {} },
-  ];
-
-  const result: Record<string, Record<string, DayAvailability>> = {};
-  for (const patternMap of bookingPatterns) {
-    for (const [productId, dayOverrides] of Object.entries(patternMap)) {
-      result[productId] = {};
-      const isRetired = productId === '8';
-      for (let i = 0; i < dates.length; i++) {
-        if (isRetired) {
-          result[productId][dates[i]] = {
-            morning: avail('blocked', undefined, undefined, 'Retired'),
-            afternoon: avail('blocked', undefined, undefined, 'Retired'),
-            evening: avail('blocked', undefined, undefined, 'Retired'),
-          };
-        } else if (dayOverrides[i]) {
-          result[productId][dates[i]] = { ...FREE, ...dayOverrides[i] };
-        } else {
-          result[productId][dates[i]] = { ...FREE };
-        }
-      }
-    }
-  }
-  return result;
-}
-
-const MOCK_AVAILABILITY = generateMockAvailability();
+// TODO(api): wire to /api/rentals/availability
+const AVAILABILITY: Record<string, Record<string, DayAvailability>> = {};
 
 /** Count available slots today for a product */
 function countAvailableToday(productId: string): { available: number; total: number } {
   const today = new Date().toISOString().slice(0, 10);
-  const day = MOCK_AVAILABILITY[productId]?.[today];
+  const day = AVAILABILITY[productId]?.[today];
   if (!day) return { available: 3, total: 3 };
   let a = 0;
   if (day.morning.status === 'available') a++;
@@ -317,7 +214,7 @@ function AvailabilityGrid({ products, onViewReservation }: { products: RentalPro
 
   const selectedSlotData = useMemo(() => {
     if (!selectedCell) return null;
-    const day = MOCK_AVAILABILITY[selectedCell.productId]?.[selectedCell.date];
+    const day = AVAILABILITY[selectedCell.productId]?.[selectedCell.date];
     if (!day) return null;
     const slotKey: TimeSlotKey = selectedCell.slot;
     const slot: AvailabilitySlot = day[slotKey];
@@ -391,7 +288,7 @@ function AvailabilityGrid({ products, onViewReservation }: { products: RentalPro
                     {dates.map((d: Date) => {
                       const dStr = d.toISOString().slice(0, 10);
                       const isToday = dStr === todayStr;
-                      const dayData = MOCK_AVAILABILITY[p.id]?.[dStr] ?? FREE;
+                      const dayData = AVAILABILITY[p.id]?.[dStr] ?? FREE;
                       const slots: TimeSlotKey[] = ['morning', 'afternoon', 'evening'];
                       return (
                         <td key={dStr} style={{ ...gridSt.cell, backgroundColor: isToday ? `${rowBg === '#FFFFFF' ? 'rgba(0,212,255,0.04)' : 'rgba(0,212,255,0.07)'}` : rowBg }}>

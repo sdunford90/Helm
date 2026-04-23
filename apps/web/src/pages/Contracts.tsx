@@ -63,18 +63,6 @@ const BILLING_ITEMS = [
   { id: 'BI-008', label: 'Covered Slip Premium' },
 ];
 
-/* ── Mock Data ─────────────────────────────────────────── */
-
-const MOCK_CONTRACTS: Contract[] = [
-  { id: '1', number: 'CTR-001', customer: 'James Harborview', customerEmail: 'james@harborview.com', slip: 'A-01', rate: 850, billingCycle: 'Monthly', start: '2024-03-15', end: '2025-03-14', status: 'Active', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true, signatureStatus: 'signed' },
-  { id: '2', number: 'CTR-002', customer: 'Maria Seabreeze', customerEmail: 'maria@seabreeze.com', slip: 'A-02', rate: 750, billingCycle: 'Monthly', start: '2024-06-01', end: '2025-05-31', status: 'Active', boat: 'Coastal Dream', boatName: "Coastal Dream (32' Powerboat)", securityDeposit: 1500, autoRenew: true, signatureStatus: 'pending' },
-  { id: '3', number: 'CTR-003', customer: 'David Tidewater', customerEmail: 'david@tidewater.com', slip: 'B-01', rate: 1200, billingCycle: 'Monthly', start: '2024-01-05', end: '2025-01-04', status: 'Expired', boat: 'Tidewater Express', boatName: "Tidewater Express (42' Trawler)", securityDeposit: 2400, autoRenew: false, signatureStatus: 'signed' },
-  { id: '4', number: 'CTR-004', customer: 'Elena Windward', customerEmail: 'elena@windward.com', slip: 'C-01', rate: 3000, billingCycle: 'Seasonal', start: '2025-04-01', end: '2025-10-31', status: 'Active', boat: 'Windward', boatName: "Windward (45' Sailboat)", securityDeposit: 1500, autoRenew: false, signatureStatus: null },
-  { id: '5', number: 'CTR-005', customer: 'Robert Dockside', customerEmail: 'robert@dockside.com', slip: 'A-04', rate: 700, billingCycle: 'Monthly', start: '2025-05-01', end: '2026-04-30', status: 'Draft', boat: 'Dock Runner', boatName: "Dock Runner (25' Runabout)", securityDeposit: 1400, autoRenew: true, signatureStatus: null },
-  { id: '6', number: 'CTR-006', customer: 'James Harborview', customerEmail: 'james@harborview.com', slip: 'A-01', rate: 900, billingCycle: 'Monthly', start: '2025-03-15', end: '2026-03-14', status: 'Renewed', boat: 'Sea Spirit', boatName: "Sea Spirit (38' Sailboat)", securityDeposit: 1700, autoRenew: true, signatureStatus: 'signed' },
-  { id: '7', number: 'CTR-007', customer: 'Susan Baywatch', customerEmail: 'susan@baywatch.com', slip: 'B-03', rate: 950, billingCycle: 'Monthly', start: '2023-11-10', end: '2024-11-09', status: 'Terminated', boat: 'Bay Cruiser', boatName: "Bay Cruiser (30' Cabin Cruiser)", securityDeposit: 1900, autoRenew: false, signatureStatus: null },
-];
-
 /* ── Styles ─────────────────────────────────────────────── */
 
 const statusColors: Record<ContractStatus, { bg: string; color: string; border?: string }> = {
@@ -337,14 +325,8 @@ const DOCKAGE_PRODUCTS = [
   { id: 'prod-6', name: '45ft Covered Premium', rate: 3000, label: '45ft Covered Premium - $3,000/mo' },
 ];
 
-const CUSTOMER_BOATS: Record<string, { id: string; name: string }[]> = {
-  'james-harborview': [{ id: 'b1', name: "Sea Spirit (38' Sailboat)" }],
-  'maria-seabreeze': [{ id: 'b2', name: "Coastal Dream (32' Powerboat)" }],
-  'robert-dockside': [{ id: 'b3', name: "Dock Runner (25' Runabout)" }],
-  'susan-baywatch': [{ id: 'b4', name: "Bay Cruiser (30' Cabin Cruiser)" }],
-  'david-tidewater': [{ id: 'b5', name: "Tidewater Express (42' Trawler)" }],
-  'elena-windward': [{ id: 'b6', name: "Windward (45' Sailboat)" }],
-};
+// TODO(api): fetch boats by customer
+const CUSTOMER_BOATS: Record<string, { id: string; name: string }[]> = {};
 
 /* ── Contract Form Modal ─────────────────────────────────── */
 
@@ -771,7 +753,7 @@ export default function Contracts() {
   const updateContractApi = useApi<Contract>('put', '/api/contracts/update');
   const transferContractApi = useApi<Contract>('post', '/api/contracts/transfer');
 
-  const contracts = localContracts.length > 0 ? localContracts : (apiContracts || MOCK_CONTRACTS);
+  const contracts = localContracts.length > 0 ? localContracts : (apiContracts || []);
 
   const handleUpdate = (id: string, changes: Partial<Contract>) => {
     const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);

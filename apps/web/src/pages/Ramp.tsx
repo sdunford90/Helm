@@ -57,29 +57,6 @@ const TICKET_RATES: Record<TicketType, number> = {
   'Seasonal Pass': 0,
 };
 
-const MOCK_TICKETS: RampTicket[] = [
-  { id: '1', ticketNumber: 'RM-4001', time: '06:15 AM', date: '2026-03-25', customerName: 'Frank Delaney', isGuest: false, boatReg: 'FL-3821-AB', licensePlate: 'ABC 1234', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Credit Card' },
-  { id: '2', ticketNumber: 'RM-4002', time: '06:42 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'GA-1155-CD', licensePlate: 'XYZ 5678', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Cash' },
-  { id: '3', ticketNumber: 'RM-4003', time: '07:10 AM', date: '2026-03-25', customerName: 'Walter Hughes', isGuest: false, boatReg: 'FL-9082-EF', licensePlate: 'WAL 9012', ticketType: 'Seasonal Pass', amount: 0, status: 'Completed', payment: 'Season Pass #SP-201' },
-  { id: '4', ticketNumber: 'RM-4004', time: '07:35 AM', date: '2026-03-25', customerName: 'Sarah Nguyen', isGuest: false, boatReg: 'FL-4410-GH', licensePlate: 'SRN 3456', ticketType: 'Daily Pass', amount: 45, status: 'Active', payment: 'Credit Card' },
-  { id: '5', ticketNumber: 'RM-4005', time: '08:00 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'SC-7722-IJ', licensePlate: 'OUT 7890', ticketType: 'Single Launch', amount: 25, status: 'Active', payment: 'Cash' },
-  { id: '6', ticketNumber: 'RM-4006', time: '08:25 AM', date: '2026-03-25', customerName: 'Marcus Bell', isGuest: false, boatReg: 'FL-5567-KL', licensePlate: 'MBL 1122', ticketType: 'Seasonal Pass', amount: 0, status: 'Active', payment: 'Season Pass #SP-204' },
-  { id: '7', ticketNumber: 'RM-4007', time: '08:50 AM', date: '2026-03-25', customerName: 'Patricia Coleman', isGuest: false, boatReg: 'FL-2298-MN', licensePlate: 'PCL 3344', ticketType: 'Single Launch', amount: 25, status: 'Active', payment: 'Credit Card' },
-  { id: '8', ticketNumber: 'RM-4008', time: '09:15 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'AL-8833-OP', licensePlate: 'VIS 5566', ticketType: 'Daily Pass', amount: 45, status: 'Active', payment: 'Credit Card' },
-  { id: '9', ticketNumber: 'RM-3990', time: '03:30 PM', date: '2026-03-24', customerName: 'James O\'Brien', isGuest: false, boatReg: 'FL-6640-QR', licensePlate: 'JOB 7788', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Cash' },
-  { id: '10', ticketNumber: 'RM-3991', time: '04:10 PM', date: '2026-03-24', customerName: 'Diane Kowalski', isGuest: false, boatReg: 'FL-1199-ST', licensePlate: 'DKW 9900', ticketType: 'Seasonal Pass', amount: 0, status: 'Completed', payment: 'Season Pass #SP-203' },
-  { id: '11', ticketNumber: 'RM-3985', time: '10:00 AM', date: '2026-03-23', customerName: 'Guest', isGuest: true, boatReg: 'NC-5544-UV', licensePlate: 'TMP 1111', ticketType: 'Single Launch', amount: 25, status: 'Void', payment: 'Refunded' },
-  { id: '12', ticketNumber: 'RM-3986', time: '11:20 AM', date: '2026-03-23', customerName: 'Carlos Rivera', isGuest: false, boatReg: 'FL-7788-WX', licensePlate: 'CRV 2233', ticketType: 'Daily Pass', amount: 45, status: 'Completed', payment: 'Credit Card' },
-];
-
-const MOCK_PASSES: SeasonalPass[] = [
-  { id: '1', passNumber: 'SP-201', customer: 'Walter Hughes', phone: '(555) 201-0001', email: 'whughes@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 34, status: 'Active' },
-  { id: '2', passNumber: 'SP-202', customer: 'Linda Prescott', phone: '(555) 202-0002', email: 'lprescott@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 22, status: 'Active' },
-  { id: '3', passNumber: 'SP-203', customer: 'Diane Kowalski', phone: '(555) 203-0003', email: 'dkowalski@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 41, status: 'Active' },
-  { id: '4', passNumber: 'SP-204', customer: 'Marcus Bell', phone: '(555) 204-0004', email: 'mbell@email.com', startDate: '2026-03-01', endDate: '2026-10-31', launchesUsed: 8, status: 'Active' },
-  { id: '5', passNumber: 'SP-185', customer: 'Raymond Foster', phone: '(555) 205-0005', email: 'rfoster@email.com', startDate: '2025-01-01', endDate: '2025-12-31', launchesUsed: 52, status: 'Expired' },
-];
-
 const TICKET_STATUS_COLORS: Record<TicketStatus, { bg: string; text: string }> = {
   Active: { bg: '#E8F5E9', text: '#1B5E20' },
   Completed: { bg: '#D6E8F4', text: '#0A2342' },
@@ -154,15 +131,17 @@ export default function Ramp() {
   const [showModal, setShowModal] = useState(false);
   const [ticketTypeField, setTicketTypeField] = useState<TicketType>('Single Launch');
 
-  // API calls with fallback to mock
   const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/api/ramp', { immediate: true });
   const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/api/ramp');
-  const tickets = apiTickets ?? MOCK_TICKETS;
+  // TODO(api): seasonal passes endpoint
+  const apiPasses: SeasonalPass[] | null = null as SeasonalPass[] | null;
+  const tickets: RampTicket[] = apiTickets ?? [];
+  const passes: SeasonalPass[] = apiPasses ?? [];
 
   const todayTickets = tickets.filter((t) => t.date === '2026-03-25');
   const launchesToday = todayTickets.length;
   const revenueToday = todayTickets.reduce((sum, t) => sum + t.amount, 0);
-  const activePasses = MOCK_PASSES.filter((p) => p.status === 'Active').length;
+  const activePasses = passes.filter((p) => p.status === 'Active').length;
   const peakHour = '7:00 - 8:00 AM';
 
   const filteredAll = tickets.filter((t) => {
@@ -358,7 +337,14 @@ export default function Ramp() {
                 </tr>
               </thead>
               <tbody>
-                {MOCK_PASSES.map((p, idx) => (
+                {passes.length === 0 && (
+                  <tr>
+                    <td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                      No seasonal passes yet.
+                    </td>
+                  </tr>
+                )}
+                {passes.map((p, idx) => (
                   <tr key={p.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
                     <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.passNumber}</td>
                     <td style={{ ...s.td, fontWeight: 600 }}>{p.customer}</td>

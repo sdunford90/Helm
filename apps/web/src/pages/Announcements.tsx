@@ -64,47 +64,6 @@ interface Template {
   body: string;
 }
 
-/* ─── Mock Data ─── */
-const mockAnnouncements: Announcement[] = [
-  { id: '1', subject: 'Hurricane Season Preparation Notice', channels: ['Email', 'SMS', 'Push'], audience: 'All Customers', sentDate: '2026-03-20', delivered: 342, opened: 289, status: 'Sent' },
-  { id: '2', subject: 'March Billing Statements Available', channels: ['Email', 'In-App'], audience: 'Active Only', sentDate: '2026-03-15', delivered: 298, opened: 245, status: 'Sent' },
-  { id: '3', subject: 'Dock C Maintenance - March 28-30', channels: ['Email', 'SMS'], audience: 'By Dock', sentDate: '2026-03-18', delivered: 47, opened: 41, status: 'Sent' },
-  { id: '4', subject: 'Spring Boat Show & Marina Open House', channels: ['Email', 'Push', 'In-App'], audience: 'All Customers', sentDate: '2026-04-01', delivered: 0, opened: 0, status: 'Scheduled' },
-  { id: '5', subject: 'Updated Marina Rules & Regulations', channels: ['Email'], audience: 'All Customers', sentDate: '2026-03-10', delivered: 350, opened: 198, status: 'Sent' },
-  { id: '6', subject: 'Weekend Weather Advisory - High Winds', channels: ['SMS', 'Push'], audience: 'Active Only', sentDate: '2026-03-22', delivered: 305, opened: 287, status: 'Sent' },
-  { id: '7', subject: 'New Fuel Dock Hours Starting April', channels: ['Email', 'In-App'], audience: 'All Customers', sentDate: '', delivered: 0, opened: 0, status: 'Draft' },
-  { id: '8', subject: 'Waitlist Update - Slips Available', channels: ['Email', 'SMS'], audience: 'Waitlist', sentDate: '2026-03-12', delivered: 24, opened: 22, status: 'Sent' },
-  { id: '9', subject: 'Annual Rate Adjustment Notice', channels: ['Email'], audience: 'Active Only', sentDate: '2026-03-08', delivered: 0, opened: 0, status: 'Failed' },
-  { id: '10', subject: 'Welcome Aboard - New Tenant Orientation', channels: ['Email', 'Push', 'In-App'], audience: 'Custom', sentDate: '2026-03-19', delivered: 12, opened: 10, status: 'Sent' },
-];
-
-const mockDeliveryLog: DeliveryRecord[] = [
-  { id: '1', announcement: 'Hurricane Season Preparation Notice', customer: 'James Harborview', channel: 'Email', sentAt: '2026-03-20 09:00', status: 'Opened', openedAt: '2026-03-20 09:15' },
-  { id: '2', announcement: 'Hurricane Season Preparation Notice', customer: 'Maria Seabreeze', channel: 'SMS', sentAt: '2026-03-20 09:00', status: 'Delivered', openedAt: null },
-  { id: '3', announcement: 'Hurricane Season Preparation Notice', customer: 'Robert Dockside', channel: 'Push', sentAt: '2026-03-20 09:01', status: 'Opened', openedAt: '2026-03-20 10:22' },
-  { id: '4', announcement: 'March Billing Statements Available', customer: 'Susan Baywatch', channel: 'Email', sentAt: '2026-03-15 08:00', status: 'Bounced', openedAt: null },
-  { id: '5', announcement: 'March Billing Statements Available', customer: 'David Tidewater', channel: 'Email', sentAt: '2026-03-15 08:00', status: 'Opened', openedAt: '2026-03-15 08:45' },
-  { id: '6', announcement: 'March Billing Statements Available', customer: 'Elena Windward', channel: 'In-App', sentAt: '2026-03-15 08:00', status: 'Opened', openedAt: '2026-03-15 12:30' },
-  { id: '7', announcement: 'Dock C Maintenance - March 28-30', customer: 'James Harborview', channel: 'Email', sentAt: '2026-03-18 10:00', status: 'Opened', openedAt: '2026-03-18 10:05' },
-  { id: '8', announcement: 'Dock C Maintenance - March 28-30', customer: 'Patricia Williams', channel: 'SMS', sentAt: '2026-03-18 10:00', status: 'Delivered', openedAt: null },
-  { id: '9', announcement: 'Weekend Weather Advisory - High Winds', customer: 'Robert Dockside', channel: 'SMS', sentAt: '2026-03-22 06:30', status: 'Delivered', openedAt: null },
-  { id: '10', announcement: 'Weekend Weather Advisory - High Winds', customer: 'Thomas Drake', channel: 'Push', sentAt: '2026-03-22 06:30', status: 'Failed', openedAt: null },
-  { id: '11', announcement: 'Updated Marina Rules & Regulations', customer: 'Maria Seabreeze', channel: 'Email', sentAt: '2026-03-10 14:00', status: 'Opened', openedAt: '2026-03-11 09:20' },
-  { id: '12', announcement: 'Updated Marina Rules & Regulations', customer: 'Blue Horizon Charters', channel: 'Email', sentAt: '2026-03-10 14:00', status: 'Delivered', openedAt: null },
-  { id: '13', announcement: 'Waitlist Update - Slips Available', customer: 'Robert Dockside', channel: 'Email', sentAt: '2026-03-12 11:00', status: 'Opened', openedAt: '2026-03-12 11:08' },
-  { id: '14', announcement: 'Annual Rate Adjustment Notice', customer: 'David Tidewater', channel: 'Email', sentAt: '2026-03-08 09:00', status: 'Failed', openedAt: null },
-  { id: '15', announcement: 'Welcome Aboard - New Tenant Orientation', customer: 'Elena Windward', channel: 'Email', sentAt: '2026-03-19 15:00', status: 'Opened', openedAt: '2026-03-19 15:12' },
-];
-
-const mockTemplates: Template[] = [
-  { id: '1', title: 'Weather Alert', description: 'Urgent weather notifications for approaching storms, high winds, or severe conditions affecting the marina.', icon: 'weather', subject: 'Weather Alert: [Condition] Expected', body: 'Dear Marina Tenants,\n\nThis is an urgent weather advisory. [Condition details] are expected in the area starting [date/time].\n\nPlease take the following precautions:\n- Secure all loose items on your vessel\n- Double-check mooring lines\n- Remove canvas and bimini tops if possible\n\nMarina staff will be monitoring conditions. Contact the dock office at (555) 000-0000 for assistance.\n\nStay safe,\nMarina Management' },
-  { id: '2', title: 'Billing Reminder', description: 'Monthly billing notifications, payment reminders, and account balance updates for slip holders.', icon: 'billing', subject: 'Your [Month] Billing Statement is Ready', body: 'Dear [Customer Name],\n\nYour monthly billing statement for [Month] is now available. Your current balance is $[amount].\n\nPayment is due by [due date]. You can pay online through your tenant portal or contact the marina office.\n\nThank you for your prompt payment.\n\nBest regards,\nMarina Billing Department' },
-  { id: '3', title: 'Maintenance Notice', description: 'Planned maintenance alerts for docks, utilities, facilities, and other marina infrastructure.', icon: 'maintenance', subject: 'Scheduled Maintenance: [Area] - [Dates]', body: 'Dear Tenants,\n\nPlease be advised that scheduled maintenance will take place in [area] from [start date] to [end date].\n\nWork details: [description]\n\nDuring this time, [impacts]. We apologize for any inconvenience and appreciate your patience.\n\nIf you have questions, please contact the dock office.\n\nThank you,\nMarina Operations' },
-  { id: '4', title: 'Event Invitation', description: 'Marina community events, social gatherings, boat shows, and seasonal celebrations.', icon: 'event', subject: 'You\'re Invited: [Event Name] on [Date]', body: 'Dear Marina Community,\n\nYou are cordially invited to [Event Name]!\n\nDate: [Date]\nTime: [Time]\nLocation: [Location]\n\n[Event description]\n\nPlease RSVP by [deadline] to reserve your spot. We look forward to seeing you there!\n\nCheers,\nMarina Events Team' },
-  { id: '5', title: 'Welcome Message', description: 'Onboarding message for new slip holders with essential marina information and contacts.', icon: 'welcome', subject: 'Welcome to [Marina Name]!', body: 'Dear [Customer Name],\n\nWelcome aboard! We\'re thrilled to have you as part of our marina community.\n\nHere are some essentials to get started:\n- Your slip assignment: [Slip #]\n- Gate code: [Code]\n- Office hours: Mon-Fri 8am-5pm, Sat 9am-1pm\n- Emergency contact: (555) 000-0000\n\nPlease review our Marina Rules & Regulations in your welcome packet.\n\nFair winds,\nMarina Management' },
-  { id: '6', title: 'Policy Update', description: 'Updates to marina rules, regulations, policies, and operational procedures.', icon: 'policy', subject: 'Important: Updated Marina [Policy Name]', body: 'Dear Tenants,\n\nWe are writing to inform you of updates to our [Policy Name], effective [date].\n\nKey changes include:\n- [Change 1]\n- [Change 2]\n- [Change 3]\n\nThe full updated policy is available at the marina office and on your tenant portal.\n\nIf you have any questions, please don\'t hesitate to reach out.\n\nThank you,\nMarina Management' },
-];
-
 /* ─── Automation Types & Data ─── */
 interface AutomationRule {
   id: string; name: string; trigger: string; triggerLabel: string;
@@ -254,12 +213,6 @@ function deliveryStatusBadge(status: DeliveryStatus): React.CSSProperties {
   }
 }
 
-const totalSent = mockAnnouncements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.delivered, 0);
-const totalOpened = mockAnnouncements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.opened, 0);
-const deliveryRate = totalSent > 0 ? Math.round((totalSent / (totalSent + 12)) * 100) : 0;
-const openRate = totalSent > 0 ? Math.round((totalOpened / totalSent) * 100) : 0;
-const thisMonth = mockAnnouncements.filter(a => a.sentDate.startsWith('2026-03')).length;
-
 /* ─── Styles ─── */
 const styles: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },
@@ -317,9 +270,20 @@ export default function Announcements() {
   // API calls
   const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/api/announcements', { immediate: true });
   const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
+  // TODO(api): global delivery log endpoint (currently only per-announcement /:id/deliveries)
+  const apiDeliveryLog: DeliveryRecord[] | null = null as DeliveryRecord[] | null;
+  // TODO(api): announcement templates endpoint
+  const apiTemplates: Template[] | null = null as Template[] | null;
 
-  // Use API data when available, fall back to mock
-  const announcements = apiAnnouncements ?? mockAnnouncements;
+  const announcements: Announcement[] = apiAnnouncements ?? [];
+  const deliveryLog: DeliveryRecord[] = apiDeliveryLog ?? [];
+  const templates: Template[] = apiTemplates ?? [];
+
+  const totalSent = announcements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.delivered, 0);
+  const totalOpened = announcements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.opened, 0);
+  const deliveryRate = totalSent > 0 ? Math.round((totalSent / (totalSent + 12)) * 100) : 0;
+  const openRate = totalSent > 0 ? Math.round((totalOpened / totalSent) * 100) : 0;
+  const thisMonth = announcements.filter(a => a.sentDate.startsWith('2026-03')).length;
 
   // Compose form state
   const [composeSubject, setComposeSubject] = useState('');
@@ -365,7 +329,7 @@ export default function Announcements() {
   });
 
   // Filtered delivery log
-  const filteredDelivery = mockDeliveryLog.filter(d => {
+  const filteredDelivery = deliveryLog.filter(d => {
     const matchesStatus = deliveryStatusFilter === 'All' || d.status === deliveryStatusFilter;
     return matchesStatus;
   });
@@ -667,9 +631,12 @@ export default function Announcements() {
       )}
 
       {/* ─── Templates Tab ─── */}
-      {activeTab === 'templates' && (
+      {activeTab === 'templates' && templates.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '48px 16px', color: '#94A3B8' }}>No templates yet.</div>
+      )}
+      {activeTab === 'templates' && templates.length > 0 && (
         <div style={styles.templateGrid}>
-          {mockTemplates.map(t => (
+          {templates.map(t => (
             <div key={t.id} style={styles.templateCard}>
               <div style={styles.templateIconWrap}>{templateIcon(t.icon)}</div>
               <h3 style={styles.templateTitle}>{t.title}</h3>

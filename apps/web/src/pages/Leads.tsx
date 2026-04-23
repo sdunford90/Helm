@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   UserPlus,
   Search,
@@ -41,19 +41,6 @@ interface Lead {
 
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
 const SOURCES: Source[] = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
-
-const MOCK_LEADS: Lead[] = [
-  { id: '1', firstName: 'James', lastName: 'Morrison', email: 'james@email.com', phone: '(555) 123-4567', stage: 'New', source: 'Website', slipType: 'Annual', boatLength: 32, assignedTo: 'Sarah Chen', createdAt: '2026-03-20', notes: 'Interested in 30-35ft slip' },
-  { id: '2', firstName: 'Linda', lastName: 'Park', email: 'linda.park@email.com', phone: '(555) 234-5678', stage: 'New', source: 'Referral', slipType: 'Seasonal', boatLength: 28, assignedTo: 'Mike Torres', createdAt: '2026-03-19', notes: 'Referred by member #412' },
-  { id: '3', firstName: 'Robert', lastName: 'Chen', email: 'rchen@email.com', phone: '(555) 345-6789', stage: 'Contacted', source: 'Walk-in', slipType: 'Annual', boatLength: 45, assignedTo: 'Sarah Chen', createdAt: '2026-03-18', notes: 'Large yacht, needs end slip' },
-  { id: '4', firstName: 'Maria', lastName: 'Santos', email: 'maria.s@email.com', phone: '(555) 456-7890', stage: 'Contacted', source: 'Website', slipType: 'Transient', boatLength: 24, assignedTo: 'Sarah Chen', createdAt: '2026-03-17', notes: 'Weekend visits only' },
-  { id: '5', firstName: 'David', lastName: 'Kim', email: 'dkim@email.com', phone: '(555) 567-8901', stage: 'Qualified', source: 'Phone', slipType: 'Annual', boatLength: 38, assignedTo: 'Mike Torres', createdAt: '2026-03-15', notes: 'Ready to tour the marina' },
-  { id: '6', firstName: 'Susan', lastName: 'Wright', email: 'swright@email.com', phone: '(555) 678-9012', stage: 'Qualified', source: 'Social Media', slipType: 'Liveaboard', boatLength: 42, assignedTo: 'Sarah Chen', createdAt: '2026-03-14', notes: 'Needs liveaboard permit info' },
-  { id: '7', firstName: 'Tom', lastName: 'Baker', email: 'tbaker@email.com', phone: '(555) 789-0123', stage: 'Proposal Sent', source: 'Website', slipType: 'Annual', boatLength: 36, assignedTo: 'Mike Torres', createdAt: '2026-03-12', notes: 'Sent annual rate sheet' },
-  { id: '8', firstName: 'Emily', lastName: 'Johnson', email: 'ejohnson@email.com', phone: '(555) 890-1234', stage: 'Won', source: 'Referral', slipType: 'Annual', boatLength: 30, assignedTo: 'Sarah Chen', createdAt: '2026-03-10', notes: 'Contract signed, awaiting deposit' },
-  { id: '9', firstName: 'Mark', lastName: 'Davis', email: 'mdavis@email.com', phone: '(555) 901-2345', stage: 'Lost', source: 'Website', slipType: 'Seasonal', boatLength: 26, assignedTo: 'Mike Torres', createdAt: '2026-03-08', notes: 'Chose competitor marina' },
-  { id: '10', firstName: 'Anna', lastName: 'Lee', email: 'alee@email.com', phone: '(555) 012-3456', stage: 'Proposal Sent', source: 'Walk-in', slipType: 'Transient', boatLength: 22, assignedTo: 'Sarah Chen', createdAt: '2026-03-11', notes: 'Short term stay inquiry' },
-];
 
 /* ── Stage Colors ──────────────────────────────────────── */
 
@@ -301,14 +288,18 @@ export default function Leads() {
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
-  const [localLeads, setLocalLeads] = useState<Lead[]>(MOCK_LEADS);
+  const [localLeads, setLocalLeads] = useState<Lead[]>([]);
 
   // API calls
   const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
   const createLeadApi = useApi<Lead>('post', '/api/leads');
   const updateLeadApi = useApi<Lead>('put', '/api/leads');
 
-  const leads = apiLeads || localLeads;
+  useEffect(() => {
+    if (apiLeads) setLocalLeads(apiLeads);
+  }, [apiLeads]);
+
+  const leads = localLeads;
 
   const filtered = leads.filter((l) => {
     if (stageFilter !== 'All' && l.stage !== stageFilter) return false;

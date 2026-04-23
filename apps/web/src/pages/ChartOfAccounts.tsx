@@ -14,43 +14,6 @@ interface GLAccount {
   qboLinked: boolean;
 }
 
-/* ─── Mock data ─── */
-const mockAccounts: GLAccount[] = [
-  // Assets
-  { id: '1', number: '1000', name: 'Operating Account', type: 'Asset', subType: 'Bank', qboLinked: true },
-  { id: '2', number: '1050', name: 'Stripe Clearing', type: 'Asset', subType: 'Bank', qboLinked: true },
-  { id: '3', number: '1200', name: 'Accounts Receivable', type: 'Asset', subType: 'Accounts Receivable', qboLinked: true },
-  { id: '4', number: '1300', name: 'Prepaid Expenses', type: 'Asset', subType: 'Other Current Asset', qboLinked: false },
-  { id: '5', number: '1500', name: 'Marina Infrastructure', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  { id: '6', number: '1510', name: 'Dock Equipment', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  { id: '7', number: '1600', name: 'Accumulated Depreciation', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  // Liabilities
-  { id: '8', number: '2000', name: 'Accounts Payable', type: 'Liability', subType: 'Accounts Payable', qboLinked: true },
-  { id: '9', number: '2100', name: 'Sales Tax Payable', type: 'Liability', subType: 'Other Current Liability', qboLinked: true },
-  { id: '10', number: '2200', name: 'Deferred Revenue', type: 'Liability', subType: 'Other Current Liability', qboLinked: true },
-  { id: '11', number: '2300', name: 'Customer Deposits', type: 'Liability', subType: 'Other Current Liability', qboLinked: false },
-  { id: '12', number: '2500', name: 'Long-Term Debt', type: 'Liability', subType: 'Long-Term Liability', qboLinked: true },
-  // Equity
-  { id: '13', number: '3000', name: 'Owner\'s Equity', type: 'Equity', subType: 'Equity', qboLinked: true },
-  { id: '14', number: '3100', name: 'Retained Earnings', type: 'Equity', subType: 'Equity', qboLinked: true },
-  // Revenue
-  { id: '15', number: '4000', name: 'Slip Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '16', number: '4100', name: 'Fuel Sales', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '17', number: '4200', name: 'Service Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '18', number: '4300', name: 'Boat Rental Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '19', number: '4400', name: 'Merchandise Sales', type: 'Revenue', subType: 'Income', qboLinked: false },
-  { id: '20', number: '4500', name: 'Late Fees', type: 'Revenue', subType: 'Other Income', qboLinked: true },
-  // Expenses
-  { id: '21', number: '5000', name: 'Cost of Fuel', type: 'Expense', subType: 'Cost of Goods Sold', qboLinked: true },
-  { id: '22', number: '6000', name: 'Payroll', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '23', number: '6100', name: 'Utilities', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '24', number: '6200', name: 'Insurance', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '25', number: '6300', name: 'Repairs & Maintenance', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '26', number: '6400', name: 'Office & Admin', type: 'Expense', subType: 'Expense', qboLinked: false },
-  { id: '27', number: '6500', name: 'Depreciation Expense', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '28', number: '6600', name: 'Payment Processing Fees', type: 'Expense', subType: 'Expense', qboLinked: true },
-];
-
 const accountTypes: AccountType[] = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'];
 
 const typeColors: Record<AccountType, { bg: string; text: string; border: string }> = {
@@ -125,9 +88,8 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export default function ChartOfAccounts() {
-  // API call with fallback to mock data
   const { data: apiAccounts, loading } = useApi<GLAccount[]>('get', '/api/reports/gl-summary', { immediate: true });
-  const [accounts, setAccounts] = useState<GLAccount[]>(mockAccounts);
+  const [accounts, setAccounts] = useState<GLAccount[]>([]);
 
   useEffect(() => {
     if (apiAccounts) setAccounts(apiAccounts);
@@ -269,6 +231,13 @@ export default function ChartOfAccounts() {
                 </Fragment>
               );
             })}
+            {accounts.length === 0 && !loading && (
+              <tr>
+                <td colSpan={6} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                  No accounts yet.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

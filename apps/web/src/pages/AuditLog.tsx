@@ -20,26 +20,6 @@ interface AuditEntry {
   ipAddress: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
-
-const ENTRIES: AuditEntry[] = [
-  { id: '1', timestamp: '2026-03-25 11:42:18', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Payment', recordId: 'pay-1042', action: 'CREATE', description: 'Payment of $2,450.00 received via Card', changedFields: 'status: → COMPLETED', ipAddress: '192.168.1.45' },
-  { id: '2', timestamp: '2026-03-25 11:30:05', userId: 'u2', userName: 'Jake Martinez', recordType: 'DockWalk', recordId: 'dw-0042', action: 'CREATE', description: 'Dock walk started for Dock A, B', ipAddress: '10.0.0.12' },
-  { id: '3', timestamp: '2026-03-25 10:15:33', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Invoice', recordId: 'inv-1048', action: 'STATUS_CHANGE', description: 'Invoice #1048 status changed', changedFields: 'status: DRAFT → ISSUED', ipAddress: '192.168.1.45' },
-  { id: '4', timestamp: '2026-03-25 09:42:11', userId: 'u2', userName: 'Jake Martinez', recordType: 'Customer', recordId: 'cust-204', action: 'UPDATE', description: 'Updated emergency contact info', changedFields: 'emergencyContact: {old} → {new}', ipAddress: '10.0.0.12' },
-  { id: '5', timestamp: '2026-03-25 09:15:00', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Contract', recordId: 'con-087', action: 'CREATE', description: 'New slip contract for Coastal Charters LLC (Slip B14)', ipAddress: '192.168.1.45' },
-  { id: '6', timestamp: '2026-03-24 16:45:22', userId: 'u3', userName: 'Maria Santos', recordType: 'DockWalkItem', recordId: 'dwi-312', action: 'CREATE', description: 'Violation logged: Electrical hazard at Slip B-01', ipAddress: '10.0.0.15' },
-  { id: '7', timestamp: '2026-03-24 15:20:44', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Lead', recordId: 'lead-445', action: 'STATUS_CHANGE', description: 'Lead stage changed for Kevin O\'Malley', changedFields: 'stage: QUALIFIED → WON', ipAddress: '192.168.1.45' },
-  { id: '8', timestamp: '2026-03-24 14:10:33', userId: 'u4', userName: 'Lisa Chen', recordType: 'GlEntry', recordId: 'gl-2048', action: 'CREATE', description: 'GL entry posted: Deferred revenue recognition $1,250.00', ipAddress: '192.168.1.50' },
-  { id: '9', timestamp: '2026-03-24 13:00:18', userId: 'u2', userName: 'Jake Martinez', recordType: 'Slip', recordId: 'slip-A03', action: 'STATUS_CHANGE', description: 'Slip A-03 status changed', changedFields: 'status: VACANT → RESERVED', ipAddress: '10.0.0.12' },
-  { id: '10', timestamp: '2026-03-24 11:30:05', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Customer', recordId: 'cust-189', action: 'UPDATE', description: 'Customer merge: Robert Dockside merged into primary record', changedFields: 'Merged records: cust-189 + cust-203', ipAddress: '192.168.1.45' },
-  { id: '11', timestamp: '2026-03-24 10:15:44', userId: 'u5', userName: 'Tom Anderson', recordType: 'PosTransaction', recordId: 'txn-3040', action: 'CREATE', description: 'POS sale: $52.37 (5 items) via Cash', ipAddress: '10.0.0.20' },
-  { id: '12', timestamp: '2026-03-24 09:00:00', userId: 'u1', userName: 'Sarah Dunford', recordType: 'Announcement', recordId: 'ann-028', action: 'CREATE', description: 'Announcement sent: "Weekend Marina Events" to 45 recipients', ipAddress: '192.168.1.45' },
-  { id: '13', timestamp: '2026-03-23 17:30:12', userId: 'u3', userName: 'Maria Santos', recordType: 'InsuranceRecord', recordId: 'ins-156', action: 'CREATE', description: 'Insurance document uploaded for vessel Sea Spirit', ipAddress: '10.0.0.15' },
-  { id: '14', timestamp: '2026-03-23 16:00:33', userId: 'u4', userName: 'Lisa Chen', recordType: 'Payment', recordId: 'pay-1039', action: 'STATUS_CHANGE', description: 'ACH return processed: R01 NSF', changedFields: 'status: COMPLETED → FAILED', ipAddress: '192.168.1.50' },
-  { id: '15', timestamp: '2026-03-23 14:22:11', userId: 'u2', userName: 'Jake Martinez', recordType: 'Reservation', recordId: 'res-1045', action: 'CREATE', description: 'Rental reservation created for Elena Windward — Sunset Sailor 28', ipAddress: '10.0.0.12' },
-];
-
 const RECORD_TYPES = ['All', 'Customer', 'Invoice', 'Payment', 'Contract', 'Lead', 'Slip', 'DockWalk', 'DockWalkItem', 'PosTransaction', 'Reservation', 'Announcement', 'GlEntry', 'InsuranceRecord'];
 const ACTIONS = ['All', 'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE'];
 const USERS = ['All', 'Sarah Dunford', 'Jake Martinez', 'Maria Santos', 'Lisa Chen', 'Tom Anderson'];
@@ -94,9 +74,8 @@ export default function AuditLog() {
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  // API call with fallback to mock
   const { data: apiEntries, loading: entriesLoading } = useApi<AuditEntry[]>('get', '/api/audit-log', { immediate: true });
-  const entries = apiEntries ?? ENTRIES;
+  const entries = apiEntries ?? [];
 
   const filtered = entries.filter((e) => {
     if (typeFilter !== 'All' && e.recordType !== typeFilter) return false;
@@ -177,6 +156,13 @@ export default function AuditLog() {
             </tr>
           </thead>
           <tbody>
+            {paged.length === 0 && !entriesLoading && (
+              <tr>
+                <td colSpan={7} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                  No audit log entries yet.
+                </td>
+              </tr>
+            )}
             {paged.map((e, idx) => {
               const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
               const ac = actionColors[e.action];

@@ -35,21 +35,6 @@ interface Slip {
   meterReadings: Array<{ date: string; kWh: number; amount: number }>;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
-
-const MOCK_SLIPS: Slip[] = [
-  { id: '1', number: 'A-01', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A/50A', electricityMode: 'Metered', status: 'Occupied', occupant: 'James Harborview', compliance: 95, occupantDetail: { name: 'James Harborview', boat: 'Sea Spirit (38\' Sailboat)', contractStart: '2024-03-15', contractEnd: '2025-03-14' }, meterReadings: [{ date: '2025-03-01', kWh: 1240, amount: 148.80 }, { date: '2025-02-01', kWh: 1080, amount: 129.60 }, { date: '2025-01-01', kWh: 920, amount: 110.40 }] },
-  { id: '2', number: 'A-02', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Maria Seabreeze', compliance: 88, occupantDetail: { name: 'Maria Seabreeze', boat: 'Coastal Dream (32\' Powerboat)', contractStart: '2024-06-01', contractEnd: '2025-05-31' }, meterReadings: [{ date: '2025-03-01', kWh: 800, amount: 75.00 }] },
-  { id: '3', number: 'A-03', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '4', number: 'A-04', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Reserved', occupant: 'Robert Dockside (pending)', compliance: 0, meterReadings: [] },
-  { id: '5', number: 'B-01', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A/100A', electricityMode: 'Metered', status: 'Occupied', occupant: 'David Tidewater', compliance: 62, occupantDetail: { name: 'David Tidewater', boat: 'Tidewater Express (48\' Yacht)', contractStart: '2024-01-05', contractEnd: '2025-01-04' }, meterReadings: [{ date: '2025-03-01', kWh: 2100, amount: 252.00 }, { date: '2025-02-01', kWh: 1950, amount: 234.00 }] },
-  { id: '6', number: 'B-02', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A', electricityMode: 'Flat Rate', status: 'Maintenance', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '7', number: 'B-03', dock: 'B', length: 45, beam: 14, draft: 9, height: 22, type: 'Open', power: '30A/50A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '8', number: 'C-01', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Elena Windward', compliance: 91, occupantDetail: { name: 'Elena Windward', boat: 'Windward (28\' Sailboat)', contractStart: '2025-04-01', contractEnd: '2025-10-31' }, meterReadings: [] },
-  { id: '9', number: 'C-02', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '10', number: 'C-03', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-];
-
 /* ── Styles ─────────────────────────────────────────────── */
 
 const statusColors: Record<SlipStatus, { bg: string; color: string; border?: string }> = {
@@ -746,7 +731,7 @@ export default function Slips() {
   const createSlip = useApi<Slip>('post', '/api/slips');
   const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
 
-  const slips = (apiSlips || MOCK_SLIPS).map((s) => ({ ...s, ...localOverrides[s.id] }));
+  const slips = (apiSlips || []).map((s) => ({ ...s, ...localOverrides[s.id] }));
 
   const updateSlipLocally = (id: string, patch: Partial<Slip>) => {
     setLocalOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -832,6 +817,11 @@ export default function Slips() {
               </tr>
             </thead>
             <tbody>
+              {filtered.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={12} style={{ padding: '48px 16px', textAlign: 'center', color: '#94A3B8' }}>No slips yet.</td>
+                </tr>
+              )}
               {filtered.map((sl, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                 const sc = statusColors[sl.status];

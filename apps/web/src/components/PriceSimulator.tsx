@@ -67,7 +67,7 @@ function simulate(products: SimProduct[], input: SimInput): SimResult {
   // 1. Base Rate
   steps.push({ num: stepNum++, name: 'Base Rate', applied: true, description: `$${(baseCents / 100).toFixed(2)}/hr x ${mult.toFixed(1)} = $${(running / 100).toFixed(2)}`, adjustmentCents: 0, runningTotalCents: running });
 
-  // 2. Calendar Override (mock: only July 4)
+  // 2. Calendar Override (only July 4)
   const isOverride = input.date === '2026-07-04';
   if (isOverride) {
     const overridePrice = Math.round(running * 1.4);

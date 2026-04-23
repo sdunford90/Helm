@@ -226,24 +226,27 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
             <input
               style={s.input}
               placeholder="Search for a customer..."
-              value={customer}
-              onChange={(e) => { setCustomer(e.target.value); setCustomerOpen(true); }}
+              value={customerName}
+              onChange={(e) => { setCustomerName(e.target.value); setCustomerId(''); setCustomerOpen(true); }}
               onFocus={() => setCustomerOpen(true)}
               onBlur={() => setTimeout(() => setCustomerOpen(false), 150)}
             />
-            {customerOpen && customer.length > 0 && filteredCustomers.length > 0 && (
+            {customerOpen && customerName.length > 0 && filteredCustomers.length > 0 && (
               <div style={s.customerDropdown as React.CSSProperties}>
-                {filteredCustomers.map((c) => (
-                  <div
-                    key={c}
-                    style={s.customerOption}
-                    onMouseDown={() => { setCustomer(c); setCustomerOpen(false); }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#D6E8F4'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
-                  >
-                    {c}
-                  </div>
-                ))}
+                {filteredCustomers.map((c) => {
+                  const name = customerDisplayName(c);
+                  return (
+                    <div
+                      key={c.id}
+                      style={s.customerOption}
+                      onMouseDown={() => { setCustomerId(c.id); setCustomerName(name); setCustomerOpen(false); }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#D6E8F4'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
+                    >
+                      {name}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

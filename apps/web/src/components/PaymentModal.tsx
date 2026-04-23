@@ -11,6 +11,7 @@ interface PaymentModalProps {
   customer: string;
   balanceDue: number; // cents
   onClose: () => void;
+  onSubmit?: (payment: Record<string, unknown>) => Promise<void> | void;
 }
 
 /* ─── Styles ─── */
@@ -105,7 +106,7 @@ const methods: { value: PaymentMethod; icon: typeof CreditCard; label: string }[
   { value: 'Charge to Slip', icon: Anchor, label: 'Charge to Slip' },
 ];
 
-export default function PaymentModal({ invoiceNumber, customer, balanceDue, onClose }: PaymentModalProps) {
+export default function PaymentModal({ invoiceNumber, customer, balanceDue, onClose, onSubmit }: PaymentModalProps) {
   const [method, setMethod] = useState<PaymentMethod>('Card');
   const [amount, setAmount] = useState((balanceDue / 100).toFixed(2));
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
@@ -113,15 +114,22 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
 
   const handleProcess = async () => {
     setStatus('processing');
+    const payload = {
+      invoiceNumber,
+      amountCents: Math.round(parseFloat(amount) * 100),
+      method: method === 'Card' ? 'CARD' : method === 'ACH' ? 'ACH' : method === 'Cash' ? 'CASH' : 'CHARGE_TO_SLIP',
+    };
     try {
-      const result = await recordPayment.execute({
-        invoiceNumber,
-        amountCents: Math.round(parseFloat(amount) * 100),
-        method: method === 'Card' ? 'CARD' : method === 'ACH' ? 'ACH' : method === 'Cash' ? 'CASH' : 'CHARGE_TO_SLIP',
-      });
-      setStatus(result ? 'success' : 'success'); // Fallback to success for mock mode
+      if (onSubmit) {
+        await onSubmit(payload);
+        setStatus('success');
+        return;
+      }
+      const result = await recordPayment.execute(payload);
+      if (result) setStatus('success');
+      else setStatus('error');
     } catch {
-      setStatus('success'); // Graceful fallback when API unavailable
+      setStatus('error');
     }
   };
 
@@ -201,11 +209,13 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
               <CheckCircle size={24} />
               Payment of {formatCents(Math.round(parseFloat(amount) * 100))} recorded successfully.
             </div>
-          ) : (
+          ) : status === 'error' ? (
             <div style={s.errorBox}>
               <AlertCircle size={24} />
-              Payment processing failed. Please try again.
+              {recordPayment.error ?? 'Payment processing failed. Please try again.'}
             </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '20px', color: '#2E4A6B' }}>Processing payment...</div>
           )}
         </div>
 
@@ -214,12 +224,16 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
           <button style={s.cancelBtn} onClick={onClose}>
             {status === 'idle' ? 'Cancel' : 'Close'}
           </button>
-          {status === 'idle' && (
+          {(status === 'idle' || status === 'processing') && (
             <button
-              style={method === 'Cash' || method === 'Charge to Slip' ? s.processBtnGreen : s.processBtn}
+              style={{
+                ...(method === 'Cash' || method === 'Charge to Slip' ? s.processBtnGreen : s.processBtn),
+                opacity: recordPayment.loading || status === 'processing' ? 0.7 : 1,
+              }}
               onClick={handleProcess}
+              disabled={recordPayment.loading || status === 'processing'}
             >
-              {buttonLabel}
+              {recordPayment.loading || status === 'processing' ? 'Processing...' : buttonLabel}
             </button>
           )}
         </div>

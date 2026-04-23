@@ -40,34 +40,6 @@ interface CustomerDetail {
   lifetimeValue: number;
 }
 
-const CUSTOMER: CustomerDetail = {
-  id: '1',
-  firstName: 'James',
-  lastName: 'Harborview',
-  email: 'james@harbor.com',
-  phone: '(555) 123-4567',
-  company: 'Harbor Industries LLC',
-  address: '123 Marina Drive\nCoastal City, FL 33101',
-  status: 'Active',
-  dob: '1978-06-15',
-  dlNumber: 'H123-456-78-901',
-  dlState: 'FL',
-  dlExpiry: '2027-06-15',
-  emergencyName: 'Linda Harborview',
-  emergencyRelationship: 'Spouse',
-  emergencyPhone: '(555) 111-2222',
-  emergencyEmail: 'linda@harbor.com',
-  taxExempt: false,
-  achBlocked: false,
-  created: '2024-03-15',
-  openInvoices: 1250.0,
-  credits: 200.0,
-  deposits: 3000.0,
-  totalBoats: 2,
-  activeContracts: 1,
-  lifetimeValue: 28500.0,
-};
-
 const BOATS: Boat[] = [
   { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92, make: 'Hunter', model: '380', year: '2018', beam: '12.5', draft: '5.5', height: '57', color: 'White', hin: 'HUN38001A818', mmsi: '338102847', engineType: 'Inboard Diesel', engineHp: '42', fuelType: 'Diesel' },
   { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78, make: 'Sea Ray', model: '280 Sundancer', year: '2020', beam: '9.5', draft: '2.8', height: '8.5', color: 'Blue/White', hin: 'SRAY2801B020', mmsi: '', engineType: 'Inboard Gas', engineHp: '260', fuelType: 'Gasoline' },
@@ -662,14 +634,24 @@ export default function CustomerDetailPage() {
   const [localBoats, setLocalBoats] = useState<Boat[]>([]);
 
   // API calls
-  const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
+  const { data: apiCustomer, loading, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
   const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
   const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
   const updateBoatApi = useApi('put', '/api/boats/update');
   const addBoatApi = useApi('post', '/api/boats');
 
-  const c = apiCustomer || CUSTOMER; // Fallback to mock data
+  if (!apiCustomer && loading) {
+    return (
+      <div style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>Loading customer...</div>
+    );
+  }
+  if (!apiCustomer) {
+    return (
+      <div style={{ padding: '48px', textAlign: 'center', color: '#B71C1C', fontSize: '16px', fontWeight: 600 }}>Customer not found.</div>
+    );
+  }
+  const c = apiCustomer;
   const rawBoats = apiBoats || BOATS;
   const boats = localBoats.length > 0 ? localBoats : rawBoats;
   const invoices = apiInvoices || INVOICES;

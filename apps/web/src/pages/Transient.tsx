@@ -36,21 +36,6 @@ interface Booking {
   payment: PaymentStatus;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
-
-const MOCK_BOOKINGS: Booking[] = [
-  { id: '1', bookingNumber: 'TB-1001', guestName: 'Robert Clarkson', email: 'rclarkson@email.com', phone: '(555) 101-2001', boatName: 'Sea Breeze', boatLength: 32, slip: 'T-01', checkIn: '2026-03-22', checkOut: '2026-03-25', nightlyRate: 85, status: 'Checked In', payment: 'Paid' },
-  { id: '2', bookingNumber: 'TB-1002', guestName: 'Maria Fontaine', email: 'mfontaine@email.com', phone: '(555) 102-2002', boatName: 'Windward Spirit', boatLength: 28, slip: 'T-02', checkIn: '2026-03-23', checkOut: '2026-03-26', nightlyRate: 75, status: 'Checked In', payment: 'Paid' },
-  { id: '3', bookingNumber: 'TB-1003', guestName: 'Thomas Benavides', email: 'tbenavides@email.com', phone: '(555) 103-2003', boatName: 'Reel Deal', boatLength: 36, slip: 'T-03', checkIn: '2026-03-20', checkOut: '2026-03-24', nightlyRate: 95, status: 'Overstay', payment: 'Partial' },
-  { id: '4', bookingNumber: 'TB-1004', guestName: 'Jennifer Albright', email: 'jalbright@email.com', phone: '(555) 104-2004', boatName: 'Lady Luck', boatLength: 24, slip: 'T-04', checkIn: '2026-03-25', checkOut: '2026-03-27', nightlyRate: 65, status: 'Booked', payment: 'Pending' },
-  { id: '5', bookingNumber: 'TB-1005', guestName: 'Daniel Marsh', email: 'dmarsh@email.com', phone: '(555) 105-2005', boatName: 'Poseidon\'s Trident', boatLength: 42, slip: 'T-05', checkIn: '2026-03-25', checkOut: '2026-03-30', nightlyRate: 110, status: 'Booked', payment: 'Paid' },
-  { id: '6', bookingNumber: 'TB-1006', guestName: 'Susan Whitaker', email: 'swhitaker@email.com', phone: '(555) 106-2006', boatName: 'Calm Waters', boatLength: 30, slip: 'T-06', checkIn: '2026-03-18', checkOut: '2026-03-22', nightlyRate: 80, status: 'Checked Out', payment: 'Paid' },
-  { id: '7', bookingNumber: 'TB-1007', guestName: 'Kevin Okafor', email: 'kokafor@email.com', phone: '(555) 107-2007', boatName: 'African Queen', boatLength: 38, slip: 'T-07', checkIn: '2026-03-19', checkOut: '2026-03-23', nightlyRate: 95, status: 'Overstay', payment: 'Pending' },
-  { id: '8', bookingNumber: 'TB-1008', guestName: 'Patricia Langley', email: 'plangley@email.com', phone: '(555) 108-2008', boatName: 'Blue Horizon', boatLength: 26, slip: 'T-08', checkIn: '2026-03-24', checkOut: '2026-03-26', nightlyRate: 70, status: 'Checked In', payment: 'Paid' },
-  { id: '9', bookingNumber: 'TB-1009', guestName: 'Andrew Gilmore', email: 'agilmore@email.com', phone: '(555) 109-2009', boatName: 'Wave Dancer', boatLength: 34, slip: 'T-09', checkIn: '2026-03-15', checkOut: '2026-03-18', nightlyRate: 85, status: 'Checked Out', payment: 'Paid' },
-  { id: '10', bookingNumber: 'TB-1010', guestName: 'Emily Stafford', email: 'estafford@email.com', phone: '(555) 110-2010', boatName: 'Starboard Dream', boatLength: 22, slip: 'T-10', checkIn: '2026-03-26', checkOut: '2026-03-28', nightlyRate: 60, status: 'Booked', payment: 'Pending' },
-];
-
 const STATUS_COLORS: Record<BookingStatus, { bg: string; text: string }> = {
   Booked: { bg: '#D6E8F4', text: '#0A2342' },
   'Checked In': { bg: '#E8F5E9', text: '#1B5E20' },
@@ -181,13 +166,13 @@ export default function Transient() {
       email: nbEmail,
       paymentMethod: nbPayment || 'Credit Card',
     };
-    setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || MOCK_BOOKINGS)]);
+    setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || [])]);
     resetBookingForm();
     setNbSaving(false);
     setShowModal(false);
   };
 
-  const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || MOCK_BOOKINGS);
+  const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || []);
 
   /* Derived */
   const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;

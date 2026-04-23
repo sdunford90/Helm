@@ -18,15 +18,6 @@ interface Customer {
   created: string;
 }
 
-const MOCK_CUSTOMERS: Customer[] = [
-  { id: '1', firstName: 'James', lastName: 'Harborview', email: 'james@harbor.com', phone: '(555) 123-4567', status: 'Active', boats: 2, balance: 1250.00, taxExempt: false, achBlocked: false, created: '2024-03-15' },
-  { id: '2', firstName: 'Maria', lastName: 'Seabreeze', email: 'maria@ocean.net', phone: '(555) 234-5678', status: 'Active', boats: 1, balance: 0, taxExempt: true, achBlocked: false, created: '2024-06-01' },
-  { id: '3', firstName: 'Robert', lastName: 'Dockside', email: 'rob@docks.com', phone: '(555) 345-6789', status: 'Waitlist', boats: 1, balance: 500.00, taxExempt: false, achBlocked: false, created: '2024-09-20' },
-  { id: '4', firstName: 'Susan', lastName: 'Baywatch', email: 'susan@bay.org', phone: '(555) 456-7890', status: 'Inactive', boats: 0, balance: 0, taxExempt: false, achBlocked: true, created: '2023-11-10' },
-  { id: '5', firstName: 'David', lastName: 'Tidewater', email: 'david@tide.com', phone: '(555) 567-8901', status: 'Collections Hold', boats: 1, balance: 4500.00, taxExempt: false, achBlocked: true, created: '2024-01-05' },
-  { id: '6', firstName: 'Elena', lastName: 'Windward', email: 'elena@wind.com', phone: '(555) 678-9012', status: 'Seasonal', boats: 1, balance: 750.00, taxExempt: false, achBlocked: false, created: '2025-04-01' },
-];
-
 const statusBadgeColors: Record<string, { bg: string; color: string; border?: string }> = {
   Active: { bg: '#E8F5E9', color: '#1B5E20' },
   Inactive: { bg: '#F2F4F6', color: '#64748B' },
@@ -182,7 +173,7 @@ export default function Customers() {
   const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/api/customers', { immediate: true });
   const createCustomerApi = useApi<Customer>('post', '/api/customers');
 
-  const customers = apiCustomers || MOCK_CUSTOMERS;
+  const customers = apiCustomers || [];
 
   const filtered = customers.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useApi } from '../hooks/useApi';
 import {
   X,
   Mail,
@@ -67,16 +68,6 @@ const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won'
 const SOURCES = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 const SLIP_TYPES = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STAFF = ['Sarah Chen', 'Mike Torres', 'Jessica Park', 'David Liu'];
-
-/* ── Mock Activity ────────────────────────────────────── */
-
-const MOCK_ACTIVITY: ActivityEvent[] = [
-  { id: '1', type: 'stage_change', description: 'Lead created — stage set to New', timestamp: '2026-03-20 09:15', user: 'System' },
-  { id: '2', type: 'email', description: 'Welcome email sent automatically', timestamp: '2026-03-20 09:16', user: 'System' },
-  { id: '3', type: 'note', description: 'Spoke with lead on phone, interested in annual slip for 32ft sailboat.', timestamp: '2026-03-21 14:30', user: 'Sarah Chen' },
-  { id: '4', type: 'stage_change', description: 'Stage changed from New to Contacted', timestamp: '2026-03-21 14:32', user: 'Sarah Chen' },
-  { id: '5', type: 'call', description: 'Follow-up call — scheduled marina tour for Saturday', timestamp: '2026-03-22 10:00', user: 'Sarah Chen' },
-];
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -338,7 +329,15 @@ function getActivityIcon(type: string) {
 
 export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
-  const [activities, setActivities] = useState<ActivityEvent[]>(MOCK_ACTIVITY);
+  const [activities, setActivities] = useState<ActivityEvent[]>([]);
+  const { data: apiActivity } = useApi<ActivityEvent[]>(
+    'get',
+    `/api/audit-log?recordType=Lead&recordId=${lead.id}`,
+    { immediate: !!lead.id }
+  );
+  useEffect(() => {
+    if (apiActivity) setActivities(apiActivity);
+  }, [apiActivity]);
   const [showConversion, setShowConversion] = useState(false);
   const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
   const [editData, setEditData] = useState<Lead>({ ...lead });
