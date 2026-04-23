@@ -54,112 +54,6 @@ interface InvoiceData {
   glEntries: GLEntry[];
 }
 
-/* ─── Mock data ─── */
-const mockInvoices: Record<string, InvoiceData> = {
-  '1': {
-    id: '1', number: 'INV-2026-0001', customer: 'Harbor Point Yacht Club',
-    status: 'Issued', issued: '2026-03-01', due: '2026-03-31', terms: 'Net 30',
-    lines: [
-      { description: 'Seasonal Slip Rental - Slip A-12 (40ft)', qty: 1, unitPrice: 185000, discount: 0, taxRate: 7 },
-      { description: 'Electricity Surcharge - March', qty: 1, unitPrice: 45000, discount: 0, taxRate: 7 },
-      { description: 'Pump-out Service', qty: 2, unitPrice: 27500, discount: 5000, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 17100 },
-      { name: 'County Tax (1%)', amount: 2850 },
-    ],
-    payments: [],
-    glEntries: [
-      { date: '2026-03-01', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0001', debit: 304950, credit: 0 },
-      { date: '2026-03-01', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 280000 },
-      { date: '2026-03-01', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 19950 },
-      { date: '2026-03-01', account: '4200 - Service Revenue', description: 'Service revenue', debit: 0, credit: 5000 },
-    ],
-  },
-  '3': {
-    id: '3', number: 'INV-2026-0003', customer: 'Coastal Marine LLC',
-    status: 'Paid', issued: '2026-02-15', due: '2026-03-15', terms: 'Net 30',
-    lines: [
-      { description: 'Annual Slip Lease - Slip C-08 (55ft)', qty: 1, unitPrice: 380000, discount: 0, taxRate: 7 },
-      { description: 'Wi-Fi Premium Package', qty: 12, unitPrice: 2500, discount: 0, taxRate: 7 },
-      { description: 'Dock Box Rental', qty: 1, unitPrice: 40000, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 27000 },
-      { name: 'County Tax (1%)', amount: 4500 },
-    ],
-    payments: [
-      { id: 'p1', date: '2026-03-10', method: 'ACH', amount: 481500, status: 'Completed' },
-    ],
-    glEntries: [
-      { date: '2026-02-15', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0003', debit: 481500, credit: 0 },
-      { date: '2026-02-15', account: '4000 - Slip Revenue', description: 'Slip lease revenue', debit: 0, credit: 450000 },
-      { date: '2026-02-15', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 31500 },
-      { date: '2026-03-10', account: '1000 - Operating Account', description: 'ACH Payment received', debit: 481500, credit: 0 },
-      { date: '2026-03-10', account: '1200 - Accounts Receivable', description: 'Payment applied', debit: 0, credit: 481500 },
-    ],
-  },
-  '4': {
-    id: '4', number: 'INV-2026-0004', customer: 'Maria Gonzalez',
-    status: 'Past Due', issued: '2026-01-10', due: '2026-02-09', terms: 'Net 30',
-    lines: [
-      { description: 'Monthly Slip Rental - Slip B-03 (32ft)', qty: 1, unitPrice: 125000, discount: 0, taxRate: 7 },
-      { description: 'Late Fee', qty: 1, unitPrice: 50000, discount: 0, taxRate: 0 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 7500 },
-      { name: 'County Tax (1%)', amount: 1250 },
-      { name: 'Municipal Fee (0.5%)', amount: 3500 },
-    ],
-    payments: [],
-    glEntries: [
-      { date: '2026-01-10', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0004', debit: 187250, credit: 0 },
-      { date: '2026-01-10', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 175000 },
-      { date: '2026-01-10', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 12250 },
-    ],
-  },
-  '10': {
-    id: '10', number: 'INV-2026-0010', customer: 'Thomas Drake',
-    status: 'Past Due', issued: '2026-01-20', due: '2026-02-19', terms: 'Net 30',
-    lines: [
-      { description: 'Monthly Slip Rental - Slip D-11 (45ft)', qty: 1, unitPrice: 155000, discount: 0, taxRate: 7 },
-      { description: 'Fuel - Diesel 50 gal', qty: 50, unitPrice: 1100, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 12600 },
-      { name: 'County Tax (1%)', amount: 2100 },
-    ],
-    payments: [
-      { id: 'p2', date: '2026-02-25', method: 'Card', amount: 112350, status: 'Completed' },
-    ],
-    glEntries: [
-      { date: '2026-01-20', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0010', debit: 224700, credit: 0 },
-      { date: '2026-01-20', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 210000 },
-      { date: '2026-01-20', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 14700 },
-      { date: '2026-02-25', account: '1000 - Operating Account', description: 'Card payment received', debit: 112350, credit: 0 },
-      { date: '2026-02-25', account: '1200 - Accounts Receivable', description: 'Partial payment applied', debit: 0, credit: 112350 },
-    ],
-  },
-};
-
-// Generate a default invoice for IDs not in mock data
-function getDefaultInvoice(id: string): InvoiceData {
-  return {
-    id, number: `INV-2026-000${id}`, customer: 'Sample Customer',
-    status: 'Issued', issued: '2026-03-15', due: '2026-04-14', terms: 'Net 30',
-    lines: [
-      { description: 'Slip Rental', qty: 1, unitPrice: 150000, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [{ name: 'State Sales Tax (7%)', amount: 10500 }],
-    payments: [],
-    glEntries: [
-      { date: '2026-03-15', account: '1200 - Accounts Receivable', description: `Invoice INV-2026-000${id}`, debit: 160500, credit: 0 },
-      { date: '2026-03-15', account: '4000 - Slip Revenue', description: 'Slip revenue', debit: 0, credit: 150000 },
-      { date: '2026-03-15', account: '2100 - Sales Tax Payable', description: 'Sales tax', debit: 0, credit: 10500 },
-    ],
-  };
-}
-
 /* ─── Helpers ─── */
 function statusBadge(status: InvoiceStatus): React.CSSProperties {
   const base: React.CSSProperties = {
@@ -273,15 +167,37 @@ export default function InvoiceDetail() {
   const navigate = useNavigate();
   const [showPayment, setShowPayment] = useState(false);
 
-  // API calls with fallback to mock data
   const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/api/invoices/${id}`, { immediate: true });
   const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/api/payments?invoiceId=${id}`, { immediate: true });
   const recordPayment = useApi<Payment>('post', '/api/payments');
 
-  const fallbackInvoice = mockInvoices[id || ''] || getDefaultInvoice(id || '0');
-  const invoice = apiInvoice
-    ? { ...apiInvoice, payments: apiPayments ?? apiInvoice.payments }
-    : fallbackInvoice;
+  const loading = loadingInvoice || loadingPayments;
+
+  if (!apiInvoice && !loading) {
+    return (
+      <div style={st.page}>
+        <button style={st.backBtn} onClick={() => navigate('/billing')}>
+          <ArrowLeft size={16} /> Back to Billing
+        </button>
+        <div style={{ textAlign: 'center', padding: '48px 16px', color: '#B71C1C', fontSize: '16px', fontWeight: 600 }}>
+          Invoice not found.
+        </div>
+      </div>
+    );
+  }
+
+  if (!apiInvoice) {
+    return (
+      <div style={st.page}>
+        <button style={st.backBtn} onClick={() => navigate('/billing')}>
+          <ArrowLeft size={16} /> Back to Billing
+        </button>
+        <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoice...</div>
+      </div>
+    );
+  }
+
+  const invoice: InvoiceData = { ...apiInvoice, payments: apiPayments ?? apiInvoice.payments };
 
   const lineTotal = (l: LineItem) => l.qty * l.unitPrice - l.discount;
   const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
@@ -299,8 +215,6 @@ export default function InvoiceDetail() {
       <button style={st.backBtn} onClick={() => navigate('/billing')}>
         <ArrowLeft size={16} /> Back to Billing
       </button>
-
-      {(loadingInvoice || loadingPayments) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoice...</div>}
 
       {/* Header */}
       <div style={st.headerRow}>

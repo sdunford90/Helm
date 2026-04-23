@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { X, Plus, Trash2, Save, Send } from 'lucide-react';
 import { formatCents } from '../lib/format';
+import { useApi } from '../hooks/useApi';
 
 /* ─── Types ─── */
 interface LineItem {
@@ -16,22 +17,6 @@ interface InvoiceFormProps {
   onSaveDraft?: (data: Record<string, unknown>) => void;
   onFinalize?: (data: Record<string, unknown>) => void;
 }
-
-/* ─── Mock customers ─── */
-const mockCustomers = [
-  'Harbor Point Yacht Club',
-  'James T. Morrison',
-  'Coastal Marine LLC',
-  'Maria Gonzalez',
-  'Sunset Bay Holdings',
-  'Robert Chen',
-  'Windward Sailing Co.',
-  'Patricia Williams',
-  'Blue Horizon Charters',
-  'Thomas Drake',
-  'Anchor Bay Marina',
-  'Lisa Park',
-];
 
 /* ─── Styles ─── */
 const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
@@ -140,8 +125,16 @@ function blankLine(): LineItem {
   return { id: nextId++, description: '', qty: 1, unitPrice: 0, taxRate: 7 };
 }
 
+interface CustomerOption {
+  id: string;
+  firstName: string;
+  lastName: string;
+  company?: string | null;
+}
+
 export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: InvoiceFormProps) {
-  const [customer, setCustomer] = useState('');
+  const [customerId, setCustomerId] = useState('');
+  const [customerName, setCustomerName] = useState('');
   const [customerOpen, setCustomerOpen] = useState(false);
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
@@ -149,8 +142,13 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const filteredCustomers = mockCustomers.filter((c) =>
-    c.toLowerCase().includes(customer.toLowerCase())
+  const { data: apiCustomers } = useApi<CustomerOption[]>('get', '/api/customers', { immediate: true });
+  const customers = apiCustomers ?? [];
+  const customerDisplayName = (c: CustomerOption) =>
+    c.company ?? `${c.firstName} ${c.lastName}`.trim();
+
+  const filteredCustomers = customers.filter((c) =>
+    customerDisplayName(c).toLowerCase().includes(customerName.toLowerCase())
   );
 
   const updateLine = useCallback((id: number, field: keyof LineItem, value: string | number) => {
@@ -172,7 +170,8 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const total = subtotal + totalTax;
 
   const buildPayload = () => ({
-    customer,
+    customerId,
+    customer: customerName,
     dueDate,
     notes,
     lines: lines.map((l) => ({
@@ -187,7 +186,7 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   });
 
   const validate = (): boolean => {
-    if (!customer.trim()) { setError('Please select a customer.'); return false; }
+    if (!customerName.trim()) { setError('Please select a customer.'); return false; }
     if (!dueDate) { setError('Please set a due date.'); return false; }
     if (lines.every((l) => !l.description.trim() && l.unitPrice === 0)) { setError('Please add at least one line item.'); return false; }
     setError('');

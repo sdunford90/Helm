@@ -29,20 +29,6 @@ interface Invoice {
   balance: number;
 }
 
-/* ─── Mock data ─── */
-const mockInvoices: Invoice[] = [
-  { id: '1', number: 'INV-2026-0001', customer: 'Harbor Point Yacht Club', issued: '2026-03-01', due: '2026-03-31', status: 'Issued', subtotal: 285000, tax: 19950, total: 304950, balance: 304950 },
-  { id: '2', number: 'INV-2026-0002', customer: 'James T. Morrison', issued: '2026-03-03', due: '2026-04-02', status: 'Draft', subtotal: 125000, tax: 8750, total: 133750, balance: 133750 },
-  { id: '3', number: 'INV-2026-0003', customer: 'Coastal Marine LLC', issued: '2026-02-15', due: '2026-03-15', status: 'Paid', subtotal: 450000, tax: 31500, total: 481500, balance: 0 },
-  { id: '4', number: 'INV-2026-0004', customer: 'Maria Gonzalez', issued: '2026-01-10', due: '2026-02-09', status: 'Past Due', subtotal: 175000, tax: 12250, total: 187250, balance: 187250 },
-  { id: '5', number: 'INV-2026-0005', customer: 'Sunset Bay Holdings', issued: '2025-11-01', due: '2025-12-01', status: 'Collections', subtotal: 620000, tax: 43400, total: 663400, balance: 663400 },
-  { id: '6', number: 'INV-2026-0006', customer: 'Robert Chen', issued: '2026-03-10', due: '2026-04-09', status: 'Issued', subtotal: 95000, tax: 6650, total: 101650, balance: 101650 },
-  { id: '7', number: 'INV-2026-0007', customer: 'Windward Sailing Co.', issued: '2026-02-01', due: '2026-03-03', status: 'Void', subtotal: 310000, tax: 21700, total: 331700, balance: 0 },
-  { id: '8', number: 'INV-2026-0008', customer: 'Patricia Williams', issued: '2026-03-15', due: '2026-04-14', status: 'Paid', subtotal: 88000, tax: 6160, total: 94160, balance: 0 },
-  { id: '9', number: 'INV-2026-0009', customer: 'Blue Horizon Charters', issued: '2026-03-18', due: '2026-04-17', status: 'Issued', subtotal: 540000, tax: 37800, total: 577800, balance: 577800 },
-  { id: '10', number: 'INV-2026-0010', customer: 'Thomas Drake', issued: '2026-01-20', due: '2026-02-19', status: 'Past Due', subtotal: 210000, tax: 14700, total: 224700, balance: 112350 },
-];
-
 const STATUS_ALL = ['All', 'Draft', 'Issued', 'Paid', 'Past Due', 'Void', 'Collections'] as const;
 
 /* ─── Helpers ─── */
@@ -100,10 +86,9 @@ export default function Billing() {
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  // API calls with fallback to mock data
   const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
   const createInvoiceApi = useApi<Invoice>('post', '/api/invoices');
-  const invoices = useMemo(() => apiInvoices ?? mockInvoices, [apiInvoices]);
+  const invoices = useMemo(() => apiInvoices ?? [], [apiInvoices]);
 
   const filtered = invoices.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
@@ -116,7 +101,8 @@ export default function Billing() {
   const totalOutstanding = invoices.reduce((s, i) => s + i.balance, 0);
   const paidThisMonth = invoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
   const pastDue = invoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
-  const credits = 4500; // mock credits
+  // TODO(api): customer credits balance endpoint
+  const credits = 0;
 
   const summaryCards = [
     { label: 'Total Outstanding', value: totalOutstanding, icon: DollarSign, color: totalOutstanding > 0 ? '#B71C1C' : '#0A2342' },
