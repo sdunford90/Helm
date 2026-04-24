@@ -1,17 +1,34 @@
 import { useState } from 'react';
-import { X, CreditCard, Building2, Banknote, Anchor, CheckCircle, AlertCircle } from 'lucide-react';
+import {
+  X,
+  CreditCard,
+  Plus,
+  Banknote,
+  Anchor,
+  CheckCircle,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
+import { getStripe } from '../lib/stripe.js';
+import {
+  CheckoutProvider,
+  PaymentElement,
+  useCheckout,
+} from '@stripe/react-stripe-js';
 
 /* ─── Types ─── */
-type PaymentMethod = 'Card' | 'ACH' | 'Cash' | 'Charge to Slip';
+type Step = 'choose' | 'card_on_file_result' | 'new_card' | 'simple_method_result';
+type Status = 'idle' | 'processing' | 'success' | 'error';
 
 interface PaymentModalProps {
+  invoiceId: string;
   invoiceNumber: string;
   customer: string;
   balanceDue: number; // cents
   onClose: () => void;
-  onSubmit?: (payment: Record<string, unknown>) => Promise<void> | void;
+  onPaid?: () => void;
 }
 
 /* ─── Styles ─── */
@@ -23,7 +40,7 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
   },
   modal: {
-    backgroundColor: '#FFFFFF', borderRadius: '8px', width: '520px',
+    backgroundColor: '#FFFFFF', borderRadius: '8px', width: '560px',
     boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
   },
   header: {
@@ -36,56 +53,43 @@ const s: Record<string, React.CSSProperties> = {
   closeBtn: {
     background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B', padding: '4px',
   },
-  body: { padding: '32px' },
+  body: { padding: '24px 32px' },
   summaryBox: {
-    backgroundColor: '#F7F9FB', borderRadius: '8px', padding: '20px', marginBottom: '24px',
-    border: '1px solid #E2E8F0',
+    backgroundColor: '#F7F9FB', borderRadius: '8px', padding: '16px',
+    border: '1px solid #E2E8F0', marginBottom: '20px',
   },
   summaryRow: {
-    display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#2E4A6B',
-    marginBottom: '8px',
+    display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#2E4A6B',
+    marginBottom: '6px',
   },
   summaryBalance: {
-    display: 'flex', justifyContent: 'space-between', fontSize: '18px', fontWeight: 700,
-    color: '#0A2342', borderTop: '1px solid #CCCCCC', paddingTop: '12px', marginTop: '4px',
+    display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 700,
+    color: '#0A2342', borderTop: '1px solid #CCCCCC', paddingTop: '10px', marginTop: '4px',
   },
-  label: {
-    display: 'block', fontSize: '13px', fontWeight: 600, color: '#2E4A6B',
-    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px',
-  },
-  methodGrid: {
-    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '24px',
-  },
+  methodList: { display: 'grid', gap: '10px' },
   methodBtn: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
-    padding: '16px 8px', borderRadius: '8px', border: '2px solid #CCCCCC',
-    backgroundColor: '#FFFFFF', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
-    color: '#2E4A6B', transition: 'border-color 0.15s, background-color 0.15s',
+    display: 'flex', alignItems: 'center', gap: '12px',
+    padding: '16px 20px', borderRadius: '8px', border: '1px solid #CCCCCC',
+    backgroundColor: '#FFFFFF', cursor: 'pointer', fontSize: '14px', fontWeight: 600,
+    color: '#0A2342', textAlign: 'left', transition: 'border-color 0.15s, background-color 0.15s',
+    width: '100%',
   },
-  methodBtnActive: {
-    borderColor: '#0A2342', backgroundColor: '#D6E8F4', color: '#0A2342',
+  methodBtnPrimary: {
+    backgroundColor: '#0A2342', color: '#FFFFFF', border: 'none',
   },
-  input: {
-    width: '100%', padding: '10px 14px', borderRadius: '6px', border: '1px solid #CCCCCC',
-    fontSize: '18px', color: '#0A2342', boxSizing: 'border-box', ...mono, fontWeight: 600,
-  },
+  methodLabel: { flex: 1 },
+  methodHint: { fontSize: '12px', fontWeight: 400, opacity: 0.7, marginTop: '2px' },
   footer: {
     display: 'flex', justifyContent: 'flex-end', gap: '12px',
-    padding: '24px 32px', borderTop: '1px solid #E2E8F0',
+    padding: '20px 32px', borderTop: '1px solid #E2E8F0',
   },
   cancelBtn: {
     padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#0A2342',
     backgroundColor: '#FFFFFF', border: '1px solid #CCCCCC', borderRadius: '6px', cursor: 'pointer',
   },
-  processBtn: {
-    display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '10px 24px',
-    fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342',
-    border: 'none', borderRadius: '6px', cursor: 'pointer',
-  },
-  processBtnGreen: {
-    display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '10px 24px',
-    fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#1B5E20',
-    border: 'none', borderRadius: '6px', cursor: 'pointer',
+  primaryBtn: {
+    padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF',
+    backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer',
   },
   successBox: {
     backgroundColor: '#E8F5E9', borderRadius: '8px', padding: '20px',
@@ -99,58 +103,91 @@ const s: Record<string, React.CSSProperties> = {
   },
 };
 
-const methods: { value: PaymentMethod; icon: typeof CreditCard; label: string }[] = [
-  { value: 'Card', icon: CreditCard, label: 'Card' },
-  { value: 'ACH', icon: Building2, label: 'ACH' },
-  { value: 'Cash', icon: Banknote, label: 'Cash' },
-  { value: 'Charge to Slip', icon: Anchor, label: 'Charge to Slip' },
-];
+/* ─── Main component ─── */
 
-export default function PaymentModal({ invoiceNumber, customer, balanceDue, onClose, onSubmit }: PaymentModalProps) {
-  const [method, setMethod] = useState<PaymentMethod>('Card');
-  const [amount, setAmount] = useState((balanceDue / 100).toFixed(2));
-  const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const recordPayment = useApi<unknown>('post', '/api/payments');
+export default function PaymentModal({
+  invoiceId,
+  invoiceNumber,
+  customer,
+  balanceDue,
+  onClose,
+  onPaid,
+}: PaymentModalProps) {
+  const [step, setStep] = useState<Step>('choose');
+  const [status, setStatus] = useState<Status>('idle');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
 
-  const handleProcess = async () => {
+  const chargeCardOnFile = useApi<{ status: string; requiresAction: boolean }>(
+    'post',
+    '/api/checkout/charge-card-on-file',
+  );
+  const createSession = useApi<{ clientSecret: string }>('post', '/api/checkout/invoice-session');
+  const recordSimplePayment = useApi('post', '/api/payments');
+
+  const handleCardOnFile = async () => {
     setStatus('processing');
-    const payload = {
-      invoiceNumber,
-      amountCents: Math.round(parseFloat(amount) * 100),
-      method: method === 'Card' ? 'CARD' : method === 'ACH' ? 'ACH' : method === 'Cash' ? 'CASH' : 'CHARGE_TO_SLIP',
-    };
-    try {
-      if (onSubmit) {
-        await onSubmit(payload);
-        setStatus('success');
-        return;
-      }
-      const result = await recordPayment.execute(payload);
-      if (result) setStatus('success');
-      else setStatus('error');
-    } catch {
+    const result = await chargeCardOnFile.execute({ invoiceId });
+    if (result && result.status === 'succeeded') {
+      setStatus('success');
+      setStep('card_on_file_result');
+      onPaid?.();
+    } else if (result && result.requiresAction) {
+      setErrorMessage('Card requires 3DS authentication. Use "New card" to complete.');
+      setStatus('error');
+      setStep('card_on_file_result');
+    } else {
+      setErrorMessage(chargeCardOnFile.error ?? 'Charge failed.');
+      setStatus('error');
+      setStep('card_on_file_result');
+    }
+  };
+
+  const handleNewCard = async () => {
+    setStatus('processing');
+    const result = await createSession.execute({
+      invoiceId,
+      returnPath: `/billing/invoices/${invoiceId}`,
+    });
+    if (result?.clientSecret) {
+      setCheckoutClientSecret(result.clientSecret);
+      setStep('new_card');
+      setStatus('idle');
+    } else {
+      setErrorMessage(createSession.error ?? 'Could not start checkout.');
       setStatus('error');
     }
   };
 
-  const buttonLabel = method === 'Card' || method === 'ACH'
-    ? 'Process via Stripe'
-    : method === 'Cash'
-      ? 'Record Cash Payment'
-      : 'Charge to Slip';
+  const handleSimpleMethod = async (method: 'CASH' | 'CHARGE_TO_SLIP') => {
+    setStatus('processing');
+    const result = await recordSimplePayment.execute({
+      invoiceId,
+      amountCents: balanceDue,
+      method,
+    });
+    if (result) {
+      setStatus('success');
+      setStep('simple_method_result');
+      onPaid?.();
+    } else {
+      setErrorMessage(recordSimplePayment.error ?? 'Payment failed.');
+      setStatus('error');
+      setStep('simple_method_result');
+    }
+  };
 
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
         <div style={s.header}>
           <h2 style={s.headerTitle}>Record Payment</h2>
-          <button style={s.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={s.closeBtn} onClick={onClose}>
+            <X size={20} />
+          </button>
         </div>
 
-        {/* Body */}
         <div style={s.body}>
-          {/* Invoice Summary */}
           <div style={s.summaryBox}>
             <div style={s.summaryRow}>
               <span>Invoice</span>
@@ -166,78 +203,141 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
             </div>
           </div>
 
-          {status === 'idle' ? (
-            <>
-              {/* Payment Method */}
-              <label style={s.label}>Payment Method</label>
-              <div style={s.methodGrid}>
-                {methods.map((m) => (
-                  <button
-                    key={m.value}
-                    style={{
-                      ...s.methodBtn,
-                      ...(method === m.value ? s.methodBtnActive : {}),
-                    } as React.CSSProperties}
-                    onClick={() => setMethod(m.value)}
-                  >
-                    <m.icon size={20} />
-                    {m.label}
-                  </button>
-                ))}
-              </div>
+          {step === 'choose' && (
+            <div style={s.methodList}>
+              <button
+                style={{ ...s.methodBtn, ...s.methodBtnPrimary }}
+                onClick={handleCardOnFile}
+                disabled={status === 'processing'}
+              >
+                {status === 'processing' ? <Loader2 size={20} /> : <CreditCard size={20} />}
+                <div style={s.methodLabel}>
+                  Charge card on file
+                  <div style={s.methodHint}>Instant — no form. POS-style.</div>
+                </div>
+              </button>
+              <button
+                style={s.methodBtn}
+                onClick={handleNewCard}
+                disabled={status === 'processing'}
+              >
+                <Plus size={20} />
+                <div style={s.methodLabel}>
+                  New card / ACH
+                  <div style={s.methodHint}>Enter new card or bank details.</div>
+                </div>
+              </button>
+              <button
+                style={s.methodBtn}
+                onClick={() => handleSimpleMethod('CASH')}
+                disabled={status === 'processing'}
+              >
+                <Banknote size={20} />
+                <div style={s.methodLabel}>Cash</div>
+              </button>
+              <button
+                style={s.methodBtn}
+                onClick={() => handleSimpleMethod('CHARGE_TO_SLIP')}
+                disabled={status === 'processing'}
+              >
+                <Anchor size={20} />
+                <div style={s.methodLabel}>Charge to slip</div>
+              </button>
+            </div>
+          )}
 
-              {/* Amount */}
-              <div style={{ marginBottom: '24px' }}>
-                <label style={s.label}>Amount</label>
-                <input
-                  style={s.input}
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                />
-                {parseFloat(amount) < balanceDue / 100 && parseFloat(amount) > 0 && (
-                  <div style={{ fontSize: '12px', color: '#856404', marginTop: '6px' }}>
-                    Partial payment -- remaining balance will be {formatCents(balanceDue - Math.round(parseFloat(amount) * 100))}
-                  </div>
-                )}
-              </div>
-            </>
-          ) : status === 'success' ? (
+          {step === 'card_on_file_result' && status === 'success' && (
             <div style={s.successBox}>
               <CheckCircle size={24} />
-              Payment of {formatCents(Math.round(parseFloat(amount) * 100))} recorded successfully.
+              Payment of {formatCents(balanceDue)} charged to card on file.
             </div>
-          ) : status === 'error' ? (
+          )}
+          {step === 'card_on_file_result' && status === 'error' && (
             <div style={s.errorBox}>
               <AlertCircle size={24} />
-              {recordPayment.error ?? 'Payment processing failed. Please try again.'}
+              {errorMessage}
             </div>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '20px', color: '#2E4A6B' }}>Processing payment...</div>
+          )}
+
+          {step === 'simple_method_result' && status === 'success' && (
+            <div style={s.successBox}>
+              <CheckCircle size={24} />
+              Payment recorded.
+            </div>
+          )}
+          {step === 'simple_method_result' && status === 'error' && (
+            <div style={s.errorBox}>
+              <AlertCircle size={24} />
+              {errorMessage}
+            </div>
+          )}
+
+          {step === 'new_card' && checkoutClientSecret && (
+            <CheckoutProvider
+              stripe={getStripe()}
+              options={{
+                fetchClientSecret: async () => checkoutClientSecret,
+              }}
+            >
+              <CheckoutPaymentForm onClose={onClose} onPaid={onPaid} />
+            </CheckoutProvider>
           )}
         </div>
 
-        {/* Footer */}
         <div style={s.footer}>
           <button style={s.cancelBtn} onClick={onClose}>
-            {status === 'idle' ? 'Cancel' : 'Close'}
+            {status === 'success' ? 'Close' : 'Cancel'}
           </button>
-          {(status === 'idle' || status === 'processing') && (
-            <button
-              style={{
-                ...(method === 'Cash' || method === 'Charge to Slip' ? s.processBtnGreen : s.processBtn),
-                opacity: recordPayment.loading || status === 'processing' ? 0.7 : 1,
-              }}
-              onClick={handleProcess}
-              disabled={recordPayment.loading || status === 'processing'}
-            >
-              {recordPayment.loading || status === 'processing' ? 'Processing...' : buttonLabel}
-            </button>
-          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ─── Embedded Checkout form (new card flow) ─── */
+
+function CheckoutPaymentForm({
+  onClose,
+  onPaid,
+}: {
+  onClose: () => void;
+  onPaid?: () => void;
+}) {
+  const checkout = useCheckout();
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    setError(null);
+    const result = await checkout.confirm();
+    if (result.type === 'error') {
+      setError(result.error.message);
+      setSubmitting(false);
+      return;
+    }
+    // Stripe redirects to return_url on success for redirect-required flows.
+    // Non-redirect flows fall through here.
+    onPaid?.();
+    onClose();
+  };
+
+  return (
+    <div>
+      <PaymentElement />
+      {error && (
+        <div style={{ ...s.errorBox, marginTop: '16px' }}>
+          <AlertCircle size={20} />
+          {error}
+        </div>
+      )}
+      <button
+        style={{ ...s.primaryBtn, marginTop: '16px', width: '100%' }}
+        onClick={handleConfirm}
+        disabled={submitting}
+      >
+        {submitting ? 'Processing...' : 'Pay'}
+      </button>
     </div>
   );
 }

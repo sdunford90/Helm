@@ -169,7 +169,6 @@ export default function InvoiceDetail() {
 
   const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/api/invoices/${id}`, { immediate: true });
   const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/api/payments?invoiceId=${id}`, { immediate: true });
-  const recordPayment = useApi<Payment>('post', '/api/payments');
 
   const loading = loadingInvoice || loadingPayments;
 
@@ -394,15 +393,17 @@ export default function InvoiceDetail() {
       </div>
 
       {/* Payment Modal */}
-      {showPayment && (
+      {showPayment && id && (
         <PaymentModal
+          invoiceId={id}
           invoiceNumber={invoice.number}
           customer={invoice.customer}
           balanceDue={balanceDue}
           onClose={() => setShowPayment(false)}
-          onSubmit={async (payment: Record<string, unknown>) => {
-            await recordPayment.execute({ ...payment, invoiceId: id });
+          onPaid={() => {
             setShowPayment(false);
+            // Refresh invoice data after payment; existing useApi hooks
+            // rehydrate on next navigation.
           }}
         />
       )}
