@@ -26,6 +26,11 @@ const InvoiceSessionSchema = z.object({
   invoiceId: z.string().uuid(),
   // Where Stripe should redirect after payment attempt. Must be an app URL.
   returnPath: z.string().min(1).default("/billing/invoices"),
+  // "elements" (default) returns a client_secret for embedded Payment Element
+  // rendering — used by the staff PaymentModal. "hosted" returns a Stripe-hosted
+  // page URL — used by the customer portal so we don't have to embed Elements
+  // in the portal too.
+  uiMode: z.enum(["elements", "hosted"]).default("elements"),
 });
 
 router.post(
@@ -33,7 +38,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const { invoiceId, returnPath } = InvoiceSessionSchema.parse(req.body);
+      const { invoiceId, returnPath, uiMode } = InvoiceSessionSchema.parse(req.body);
 
       const tenant = await prisma.tenant.findUnique({
         where: { id: tenantId },
@@ -82,51 +87,68 @@ router.post(
       // it and we'll persist the id via the checkout.session.completed webhook.
       const hasSavedCustomer = !!invoice.customer.stripeCustomerId;
 
-      const session = await requireStripe().checkout.sessions.create(
-        {
-          ui_mode: "elements",
-          mode: "payment",
-          customer: hasSavedCustomer
-            ? invoice.customer.stripeCustomerId!
-            : undefined,
-          customer_email: hasSavedCustomer
-            ? undefined
-            : invoice.customer.email ?? undefined,
-          customer_creation: hasSavedCustomer ? undefined : "always",
-          line_items: [
-            {
-              price_data: {
-                currency: "usd",
-                product_data: {
-                  name: `Invoice ${invoice.invoiceNumber}`,
-                },
-                unit_amount: invoice.balanceCents,
-              },
-              quantity: 1,
+      // Hosted mode returns a redirect URL (used by the portal). Elements
+      // mode returns a client_secret for the embedded Payment Element.
+      // Stripe requires different url params per mode: hosted expects
+      // success_url/cancel_url, elements expects return_url.
+      const commonParams = {
+        mode: "payment" as const,
+        customer: hasSavedCustomer
+          ? invoice.customer.stripeCustomerId!
+          : undefined,
+        customer_email: hasSavedCustomer
+          ? undefined
+          : invoice.customer.email ?? undefined,
+        customer_creation: hasSavedCustomer ? undefined : ("always" as const),
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: `Invoice ${invoice.invoiceNumber}` },
+              unit_amount: invoice.balanceCents,
             },
-          ],
-          payment_intent_data: {
-            application_fee_amount: applicationFee,
-            setup_future_usage: "off_session",
-            metadata: {
-              tenantId,
-              invoiceId: invoice.id,
-              customerId: invoice.customerId,
-            },
+            quantity: 1,
           },
+        ],
+        payment_intent_data: {
+          application_fee_amount: applicationFee,
+          setup_future_usage: "off_session" as const,
           metadata: {
             tenantId,
             invoiceId: invoice.id,
             customerId: invoice.customerId,
           },
-          return_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
         },
-        { stripeAccount: tenant.stripeAccountId },
-      );
+        metadata: {
+          tenantId,
+          invoiceId: invoice.id,
+          customerId: invoice.customerId,
+        },
+      };
+
+      const session =
+        uiMode === "hosted"
+          ? await requireStripe().checkout.sessions.create(
+              {
+                ...commonParams,
+                success_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${appUrl}/invoices/${invoice.id}?canceled=true`,
+              },
+              { stripeAccount: tenant.stripeAccountId },
+            )
+          : await requireStripe().checkout.sessions.create(
+              {
+                ...commonParams,
+                ui_mode: "elements",
+                return_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
+              },
+              { stripeAccount: tenant.stripeAccountId },
+            );
 
       res.json({
         clientSecret: session.client_secret,
         sessionId: session.id,
+        url: session.url, // populated only in hosted mode
       });
     } catch (err) {
       next(err);

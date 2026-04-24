@@ -10,8 +10,12 @@ import helmet from "helmet";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
+import { assertAuthConfigOrExit } from "./middleware/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { redisConnection, queues } from "./lib/queue.js";
+
+// Fail fast in production if Clerk keys aren't configured.
+assertAuthConfigOrExit();
 
 import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
@@ -47,6 +51,7 @@ import communicationPrefsRouter from "./routes/communication-prefs.js";
 import webhooksStripeRouter from "./routes/webhooks-stripe.js";
 import checkoutRouter from "./routes/checkout.js";
 import saasBillingRouter from "./routes/saas-billing.js";
+import portalRouter from "./routes/portal.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -111,6 +116,7 @@ app.use("/api/inventory", inventoryRouter);
 app.use("/api/communication-prefs", communicationPrefsRouter);
 app.use("/api/checkout", checkoutRouter);
 app.use("/api/saas-billing", saasBillingRouter);
+app.use("/api/portal", portalRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled
