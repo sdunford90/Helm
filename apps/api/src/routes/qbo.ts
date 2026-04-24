@@ -12,6 +12,7 @@ import {
   handleQboWebhook,
 } from "../services/qbo-sync.js";
 import crypto from "node:crypto";
+import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
 const router = Router();
 
@@ -28,15 +29,10 @@ router.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-
-      // Generate CSRF state token
-      const state = crypto.randomBytes(32).toString("hex");
-
-      // TODO: Store state in session/cache for validation on callback
-      // For now, embed tenantId in state for the callback to parse
-
+      // HMAC-signed state — stateless CSRF protection, verified on callback.
+      const state = issueOAuthState(tenantId);
       const authUrl = await getAuthorizationUrl(tenantId, state);
-      res.json({ url: authUrl, state });
+      res.json({ url: authUrl });
     } catch (err) {
       next(err);
     }
@@ -59,8 +55,19 @@ router.get(
 
       const { code, realmId, state } = CallbackSchema.parse(req.query);
 
-      // Extract tenantId from state (format: "tenantId:csrfToken")
-      const tenantId = state.split(":")[0] || req.tenantId!;
+      // Verify the HMAC-signed state. Rejects expired, tampered, or forged
+      // tokens. The tenantId comes FROM the verified state, not from the
+      // query string — an attacker must not be able to choose which tenant
+      // the callback binds to.
+      let tenantId: string;
+      try {
+        tenantId = verifyOAuthState(state).tenantId;
+      } catch (err) {
+        res.status(400).json({
+          error: err instanceof Error ? err.message : "Invalid state",
+        });
+        return;
+      }
 
       await handleCallback(code, realmId, tenantId);
 

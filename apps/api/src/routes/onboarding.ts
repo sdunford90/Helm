@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
+import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
 const router = Router();
 
@@ -247,6 +248,9 @@ router.post("/:tenantId/qbo", async (req, res, next) => {
     const clientId = process.env.QBO_CLIENT_ID;
     const redirectUri = `${process.env.APP_URL}/api/onboarding/${tenantId}/qbo/callback`;
     const scope = "com.intuit.quickbooks.accounting";
+    // Sign the state so an attacker who knows the tenantId can't forge the
+    // callback. Verified on the callback route.
+    const state = issueOAuthState(tenantId);
 
     const authUrl =
       `https://appcenter.intuit.com/connect/oauth2?` +
@@ -254,7 +258,7 @@ router.post("/:tenantId/qbo", async (req, res, next) => {
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&scope=${scope}` +
       `&response_type=code` +
-      `&state=${tenantId}`;
+      `&state=${encodeURIComponent(state)}`;
 
     res.json({ url: authUrl });
   } catch (err) {
@@ -268,7 +272,7 @@ router.post("/:tenantId/qbo", async (req, res, next) => {
 router.get("/:tenantId/qbo/callback", async (req, res, next) => {
   try {
     const { tenantId } = req.params;
-    const { code, realmId } = req.query;
+    const { code, realmId, state } = req.query;
 
     if (!code || typeof code !== "string") {
       res.status(400).json({ error: "Missing authorization code" });
@@ -276,6 +280,26 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
     }
     if (!realmId || typeof realmId !== "string") {
       res.status(400).json({ error: "Missing realmId" });
+      return;
+    }
+    if (!state || typeof state !== "string") {
+      res.status(400).json({ error: "Missing state" });
+      return;
+    }
+
+    // CSRF: verify the signed state matches this tenant before doing anything
+    // sensitive. Rejects expired tokens, bad signatures, and state from a
+    // different tenant's authorize call.
+    try {
+      const verified = verifyOAuthState(state);
+      if (verified.tenantId !== tenantId) {
+        res.status(400).json({ error: "State does not match tenant" });
+        return;
+      }
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : "Invalid state",
+      });
       return;
     }
 
