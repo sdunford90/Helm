@@ -28,6 +28,7 @@ const BYPASS_PREFIXES = [
   "/api/onboarding",
   "/api/auth/webhook",
   "/api/webhooks", // Stripe webhooks resolve tenant from event.account, not subdomain
+  "/api/email", // unsubscribe + Resend webhook — tenant comes from signed token or event payload
 ];
 
 function shouldBypass(path: string): boolean {

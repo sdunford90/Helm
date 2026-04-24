@@ -53,6 +53,7 @@ import checkoutRouter from "./routes/checkout.js";
 import saasBillingRouter from "./routes/saas-billing.js";
 import portalRouter from "./routes/portal.js";
 import chargebacksRouter from "./routes/chargebacks.js";
+import emailComplianceRouter from "./routes/email-compliance.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -68,10 +69,11 @@ const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 app.use(cors());
 app.use(helmet());
 
-// Stripe webhook routes MUST be mounted before express.json() so their raw
-// body is preserved for signature verification. The router itself applies
+// Webhook routes MUST be mounted before express.json() so their raw body
+// is preserved for signature verification. The routers themselves apply
 // express.raw({type:"application/json"}) on each webhook endpoint.
 app.use("/api/webhooks", webhooksStripeRouter);
+app.use("/api/email", emailComplianceRouter);
 
 app.use(express.json());
 

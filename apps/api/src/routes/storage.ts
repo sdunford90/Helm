@@ -1,6 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import { S3Client } from "@aws-sdk/client-s3";
 import { clerkAuth } from "../middleware/auth.js";
+import { appError } from "../middleware/error.js";
 import {
   getPresignedUploadUrl,
   getPresignedDownloadUrl,
@@ -8,6 +10,10 @@ import {
   getStorageUsage,
   enforceStorageQuota,
 } from "../lib/storage.js";
+import {
+  validatePresignRequest,
+  verifyUploadedFile,
+} from "../lib/file-validation.js";
 
 const router = Router();
 
@@ -43,6 +49,13 @@ router.post(
       const tenantId = req.tenantId!;
       const { category, filename, contentType } = PresignUploadSchema.parse(req.body);
 
+      // Whitelist content-type + extension per category. Rejects obvious
+      // mismatches before the client even gets a URL.
+      const validation = validatePresignRequest(category, filename, contentType);
+      if (!validation.ok) {
+        throw appError(validation.message, 400, validation.code);
+      }
+
       // Enforce storage quota (default 10 GB per tenant)
       const quotaBytes = 10 * 1024 * 1024 * 1024; // 10 GB
       const withinQuota = await enforceStorageQuota(tenantId, quotaBytes);
@@ -71,7 +84,65 @@ router.post(
         url: result.url,
         key: result.key,
         expiresIn: 900, // 15 minutes
+        maxBytes: validation.maxBytes,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// POST /verify-upload — Post-upload magic-byte check
+//
+// Call this after a successful PUT to the presigned URL. We download the
+// first 16 bytes of the object and check the magic signature matches the
+// declared content-type. If it fails, the caller should delete the object
+// and refuse to link it into the tenant's data.
+// --------------------------------------------------------------------------
+
+const VerifyUploadSchema = z.object({
+  key: z.string().min(1),
+  contentType: z.string().min(1),
+});
+
+router.post(
+  "/verify-upload",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { key, contentType } = VerifyUploadSchema.parse(req.body);
+
+      if (!key.startsWith(`${tenantId}/`)) {
+        throw appError("Access denied to this file", 403, "FORBIDDEN");
+      }
+
+      const r2 = new S3Client({
+        region: "auto",
+        endpoint: process.env.R2_ENDPOINT,
+        credentials: {
+          accessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+          secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+        },
+      });
+
+      const result = await verifyUploadedFile(
+        r2,
+        process.env.R2_BUCKET ?? "helm-files",
+        key,
+        contentType,
+      );
+      if (!result.ok) {
+        // Don't delete the object here — caller decides. Return 422 so
+        // the UI knows the upload is rejected.
+        res.status(422).json({
+          ok: false,
+          code: result.code,
+          error: result.message,
+        });
+        return;
+      }
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }
