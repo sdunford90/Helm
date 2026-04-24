@@ -10,10 +10,14 @@ import ConciergeRequests from './pages/ConciergeRequests';
 import WaitlistStatus from './pages/WaitlistStatus';
 import Announcements from './pages/Announcements';
 import Messages from './pages/Messages';
+import ThankYou from './pages/ThankYou';
 
 export default function App() {
   return (
     <Routes>
+      {/* Thank-you page is outside PortalLayout so it renders standalone
+          after a Stripe Checkout redirect. */}
+      <Route path="/thank-you" element={<ThankYou />} />
       <Route element={<PortalLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/invoices" element={<Invoices />} />

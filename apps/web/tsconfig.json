@@ -4,6 +4,7 @@
     "jsx": "react-jsx",
     "outDir": "dist",
     "rootDir": "src",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
       "@helm/ui-kit": ["../../../packages/ui-kit/src"],
       "@helm/shared-types": ["../../../packages/shared-types/src"]

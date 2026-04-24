@@ -17,6 +17,7 @@ import DockWalks from './pages/DockWalks';
 import Reports from './pages/Reports';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
+import SettingsBilling from './pages/SettingsBilling';
 import Onboarding from './pages/Onboarding';
 import Transient from './pages/Transient';
 import Ramp from './pages/Ramp';
@@ -64,6 +65,7 @@ function AppRoutes() {
         <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/billing" element={<SettingsBilling />} />
       </Route>
     </Routes>
   );
