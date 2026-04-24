@@ -11,6 +11,7 @@ import Billing from './pages/Billing';
 import InvoiceDetail from './pages/InvoiceDetail';
 import ARaging from './pages/ARaging';
 import ChartOfAccounts from './pages/ChartOfAccounts';
+import Disputes from './pages/Disputes';
 import Rentals from './pages/Rentals';
 import POS from './pages/POS';
 import DockWalks from './pages/DockWalks';
@@ -48,6 +49,7 @@ function AppRoutes() {
         <Route path="/billing/invoices/:id" element={<InvoiceDetail />} />
         <Route path="/billing/ar-aging" element={<ARaging />} />
         <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
+        <Route path="/billing/disputes" element={<Disputes />} />
         <Route
           path="/rentals"
           element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}

@@ -52,6 +52,7 @@ import webhooksStripeRouter from "./routes/webhooks-stripe.js";
 import checkoutRouter from "./routes/checkout.js";
 import saasBillingRouter from "./routes/saas-billing.js";
 import portalRouter from "./routes/portal.js";
+import chargebacksRouter from "./routes/chargebacks.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -117,6 +118,7 @@ app.use("/api/communication-prefs", communicationPrefsRouter);
 app.use("/api/checkout", checkoutRouter);
 app.use("/api/saas-billing", saasBillingRouter);
 app.use("/api/portal", portalRouter);
+app.use("/api/chargebacks", chargebacksRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled
