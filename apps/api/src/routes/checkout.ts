@@ -76,14 +76,23 @@ router.post(
         tenant.applicationFeeFixedCents,
       );
 
+      // setup_future_usage saves the payment method for later off-session use
+      // (the "Charge card on file" button). This requires a Stripe Customer;
+      // if the Helm Customer doesn't yet have one, tell Checkout to create
+      // it and we'll persist the id via the checkout.session.completed webhook.
+      const hasSavedCustomer = !!invoice.customer.stripeCustomerId;
+
       const session = await requireStripe().checkout.sessions.create(
         {
           ui_mode: "elements",
           mode: "payment",
-          customer: invoice.customer.stripeCustomerId ?? undefined,
-          customer_email: invoice.customer.stripeCustomerId
+          customer: hasSavedCustomer
+            ? invoice.customer.stripeCustomerId!
+            : undefined,
+          customer_email: hasSavedCustomer
             ? undefined
             : invoice.customer.email ?? undefined,
+          customer_creation: hasSavedCustomer ? undefined : "always",
           line_items: [
             {
               price_data: {
@@ -98,11 +107,17 @@ router.post(
           ],
           payment_intent_data: {
             application_fee_amount: applicationFee,
+            setup_future_usage: "off_session",
             metadata: {
               tenantId,
               invoiceId: invoice.id,
               customerId: invoice.customerId,
             },
+          },
+          metadata: {
+            tenantId,
+            invoiceId: invoice.id,
+            customerId: invoice.customerId,
           },
           return_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
         },

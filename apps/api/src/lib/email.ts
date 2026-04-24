@@ -184,6 +184,32 @@ export function expiryReminderHtml(params: {
   `);
 }
 
+export function saasInvoicePaymentFailedHtml(params: {
+  marinaName: string;
+  amountDue: string;
+  attemptCount: number;
+  portalUrl: string;
+}): string {
+  return layout(`
+    <h2 style="margin:0 0 8px;color:#d73a49;">Payment Failed — Action Required</h2>
+    <p>Hi ${params.marinaName},</p>
+    <p>We weren't able to charge your payment method for your Helm subscription.</p>
+    <table role="presentation" width="100%" style="margin:16px 0;border-collapse:collapse;">
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;font-weight:600;">Amount Due</td>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">${params.amountDue}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;font-weight:600;">Attempt</td>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">#${params.attemptCount}</td>
+      </tr>
+    </table>
+    <p>Stripe will automatically retry over the coming days. Update your payment method to avoid any interruption:</p>
+    <p style="text-align:center;">${btn(params.portalUrl, "Update Payment Method")}</p>
+    <p style="font-size:13px;color:#666;">Questions? Reply to this email and we'll help.</p>
+  `);
+}
+
 export function announcementHtml(params: {
   subject: string;
   body: string;

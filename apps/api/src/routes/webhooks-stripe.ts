@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma.js";
 import { checkAndMarkProcessed } from "../services/webhook.js";
 import { handleAchReturn } from "../services/ach-handler.js";
 import { postPayment } from "../services/gl-posting.js";
+import { sendEmail, saasInvoicePaymentFailedHtml } from "../lib/email.js";
 
 const router = Router();
 
@@ -89,6 +90,13 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
   }
 
   switch (event.type) {
+    case "checkout.session.completed":
+      // A connected-account Checkout Session completed — if it was an invoice
+      // payment and Checkout created a Stripe customer for us, persist the id
+      // back to the Helm Customer so subsequent off-session charges work.
+      await handleConnectCheckoutCompleted(event, tenantId);
+      break;
+
     case "payment_intent.succeeded":
       await handlePaymentIntentSucceeded(event, tenantId);
       break;
@@ -201,8 +209,9 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
     }
 
     case "invoice.payment_failed": {
-      // Grace policy: log and audit. Do NOT auto-lock the tenant; operators
-      // decide when to suspend. Mark gracePeriodStartedAt to track aging.
+      // Grace policy: log, audit, email — but do NOT auto-lock the tenant.
+      // Operators decide when to suspend. Mark gracePeriodStartedAt to track
+      // aging.
       const invoice = event.data.object as Stripe.Invoice;
       const customerId =
         typeof invoice.customer === "string"
@@ -211,7 +220,7 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
       if (customerId) {
         const tenant = await prisma.tenant.findFirst({
           where: { stripeCustomerId: customerId },
-          select: { id: true, gracePeriodStartedAt: true },
+          select: { id: true, name: true, gracePeriodStartedAt: true },
         });
         if (tenant) {
           await prisma.tenant.update({
@@ -233,7 +242,30 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
               },
             },
           });
-          // TODO(email): notify tenant admin via Resend.
+
+          // Email the tenant's MARINA_OWNER(s) so they know to update their
+          // card before a retry fails again.
+          const owners = await prisma.user.findMany({
+            where: { tenantId: tenant.id, role: "MARINA_OWNER" },
+            select: { email: true },
+          });
+          const toAddresses = owners
+            .map((u) => u.email)
+            .filter((e): e is string => !!e);
+          if (toAddresses.length > 0) {
+            const appUrl = process.env.APP_URL ?? "https://gethelm.com";
+            await sendEmail({
+              to: toAddresses,
+              subject: "Action required: payment failed on your Helm subscription",
+              html: saasInvoicePaymentFailedHtml({
+                marinaName: tenant.name,
+                amountDue: `$${(invoice.amount_due / 100).toFixed(2)}`,
+                attemptCount: invoice.attempt_count ?? 1,
+                portalUrl: `${appUrl}/settings/billing`,
+              }),
+              tags: [{ name: "event", value: "saas_payment_failed" }],
+            });
+          }
         }
       }
       break;
@@ -274,6 +306,30 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
 // ---------------------------------------------------------------------------
 // Per-event handlers
 // ---------------------------------------------------------------------------
+
+async function handleConnectCheckoutCompleted(
+  event: Stripe.Event,
+  tenantId: string | null,
+): Promise<void> {
+  if (!tenantId) return;
+  const session = event.data.object as Stripe.Checkout.Session;
+  const helmCustomerId = session.metadata?.customerId;
+  const stripeCustomerId =
+    typeof session.customer === "string"
+      ? session.customer
+      : session.customer?.id ?? null;
+  if (!helmCustomerId || !stripeCustomerId) return;
+
+  // Only update if the Helm Customer doesn't already have a stripeCustomerId.
+  await prisma.customer.updateMany({
+    where: {
+      id: helmCustomerId,
+      tenantId,
+      stripeCustomerId: null,
+    },
+    data: { stripeCustomerId },
+  });
+}
 
 async function handlePaymentIntentSucceeded(
   event: Stripe.Event,
