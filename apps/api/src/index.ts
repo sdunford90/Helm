@@ -39,6 +39,7 @@ import storageRouter from "./routes/storage.js";
 import inventoryRouter from "./routes/inventory.js";
 import communicationPrefsRouter from "./routes/communication-prefs.js";
 import webhooksStripeRouter from "./routes/webhooks-stripe.js";
+import checkoutRouter from "./routes/checkout.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -101,6 +102,7 @@ app.use("/api/qbo", qboRouter);
 app.use("/api/storage", storageRouter);
 app.use("/api/inventory", inventoryRouter);
 app.use("/api/communication-prefs", communicationPrefsRouter);
+app.use("/api/checkout", checkoutRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

@@ -22,6 +22,22 @@ export function requireStripe(): Stripe {
 }
 
 /**
+ * Compute the platform application fee (in cents) for a charge, using the
+ * tenant's negotiated per-transaction rate. Returns 0 when both components
+ * are unset so Stripe omits the fee.
+ *
+ *   total = ceil(amountCents * pctBps / 10_000) + fixedCents
+ */
+export function calculateApplicationFee(
+  amountCents: number,
+  pctBps: number,
+  fixedCents: number,
+): number {
+  const pct = Math.ceil((amountCents * pctBps) / 10_000);
+  return Math.max(0, pct + fixedCents);
+}
+
+/**
  * Create a PaymentIntent on a connected account with an application fee.
  * Kept for callers that haven't yet migrated to Checkout Sessions.
  */

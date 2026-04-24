@@ -254,6 +254,12 @@ model Tenant {
   brandingJson         Json?
   invoiceTemplateJson  Json?
   stripeAccountId      String?
+  stripeCustomerId     String?    // Helm's platform customer record for SaaS billing
+  stripeSubscriptionId String?    // active SaaS subscription on the platform account
+  // Per-tenant platform fee taken via Stripe Connect application_fee_amount.
+  // Negotiated individually. Total fee = ceil(amount * pctBps / 10000) + fixedCents.
+  applicationFeePctBps   Int @default(0)  // basis points (100 = 1%)
+  applicationFeeFixedCents Int @default(0)
   qboRealmId           String?
   timezone             String       @default("America/New_York")
   fiscalYearEnd        String       @default("12/31")
@@ -299,6 +305,7 @@ model SaasTier {
   achFeeRate         Float
   cardFeeRate        Float
   storageLimitGb     Int
+  stripePriceId      String? // Stripe recurring Price used for SaaS subscription checkout
 
   tenants Tenant[]
 

@@ -1,8 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import type Stripe from "stripe";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { stripe } from "../lib/stripe.js";
+import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
 import { v4 as uuid } from "uuid";
 
@@ -287,7 +288,11 @@ router.post(
       if (data.method === "CARD" || data.method === "ACH") {
         const tenant = await prisma.tenant.findUnique({
           where: { id: tenantId },
-          select: { stripeAccountId: true },
+          select: {
+            stripeAccountId: true,
+            applicationFeePctBps: true,
+            applicationFeeFixedCents: true,
+          },
         });
 
         if (!tenant?.stripeAccountId) {
@@ -306,12 +311,19 @@ router.post(
           );
         }
 
-        const paymentIntentParams: Record<string, unknown> = {
+        const applicationFee = calculateApplicationFee(
+          data.amountCents,
+          tenant.applicationFeePctBps,
+          tenant.applicationFeeFixedCents,
+        );
+
+        const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
           amount: data.amountCents,
           currency: "usd",
           customer: customer.stripeCustomerId,
           confirm: true,
           off_session: true,
+          application_fee_amount: applicationFee,
           metadata: {
             tenantId,
             customerId: data.customerId,
@@ -332,9 +344,13 @@ router.post(
           };
         }
 
-        const paymentIntent = await stripe.paymentIntents.create(
-          paymentIntentParams as Parameters<typeof stripe.paymentIntents.create>[0],
-          { stripeAccount: tenant.stripeAccountId },
+        const paymentIntent = await requireStripe().paymentIntents.create(
+          paymentIntentParams,
+          {
+            stripeAccount: tenant.stripeAccountId,
+            // idempotency on the invoice+amount pair guards retries.
+            idempotencyKey: `pay-${data.invoiceId ?? data.customerId}-${data.amountCents}`,
+          },
         );
 
         stripePaymentId = paymentIntent.id;
@@ -497,13 +513,16 @@ router.post(
         });
 
         if (tenant?.stripeAccountId) {
-          await stripe.refunds.create(
+          await requireStripe().refunds.create(
             {
               payment_intent: payment.stripePaymentId,
               amount: refundAmount,
               reason: "requested_by_customer",
             },
-            { stripeAccount: tenant.stripeAccountId },
+            {
+              stripeAccount: tenant.stripeAccountId,
+              idempotencyKey: `refund-${payment.id}-${refundAmount}`,
+            },
           );
         }
       }

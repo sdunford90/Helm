@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 /**
@@ -18,7 +17,7 @@ export async function checkAndMarkProcessed(
   tenantId: string | null = null,
 ): Promise<boolean> {
   return prisma.$transaction(
-    async (tx: Prisma.TransactionClient) => {
+    async (tx) => {
       const existing = await tx.processedWebhook.findUnique({
         where: { stripeEventId },
       });

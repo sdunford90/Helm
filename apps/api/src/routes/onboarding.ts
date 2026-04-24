@@ -64,9 +64,8 @@ router.post("/start", async (req, res, next) => {
         subdomain: data.subdomain,
         status: "ACTIVE",
         timezone: data.timezone,
-        fiscal_year_end: data.fiscalYearEnd,
-        settings: {},
-        branding: {},
+        fiscalYearEnd: data.fiscalYearEnd,
+        brandingJson: {},
       },
     });
 
@@ -77,10 +76,10 @@ router.post("/start", async (req, res, next) => {
     // Create admin user with MARINA_OWNER role
     const adminUser = await prisma.user.create({
       data: {
-        tenant_id: tenant.id,
+        tenantId: tenant.id,
         email: data.adminEmail,
-        first_name: data.adminFirstName,
-        last_name: data.adminLastName,
+        firstName: data.adminFirstName,
+        lastName: data.adminLastName,
         role: "MARINA_OWNER",
       },
     });
@@ -115,7 +114,7 @@ router.post("/:tenantId/branding", async (req, res, next) => {
     const tenant = await prisma.tenant.update({
       where: { id: tenantId },
       data: {
-        branding: {
+        brandingJson: {
           logo: data.logo ?? "",
           primaryColor: data.primaryColor ?? "#0A2342",
           marinaName: data.marinaName ?? "",
@@ -311,7 +310,7 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
     // Store realmId on tenant
     const tenant = await prisma.tenant.update({
       where: { id: tenantId },
-      data: { qbo_realm_id: realmId },
+      data: { qboRealmId: realmId as string },
     });
 
     res.json({ success: true, qboRealmId: realmId, tenant });

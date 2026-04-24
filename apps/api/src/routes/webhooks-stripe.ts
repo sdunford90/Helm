@@ -1,8 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import express from "express";
 import type Stripe from "stripe";
-import { Prisma } from "@prisma/client";
-
 import { requireStripe } from "../lib/stripe.js";
 import { prisma } from "../lib/prisma.js";
 import { checkAndMarkProcessed } from "../services/webhook.js";
@@ -206,7 +204,7 @@ async function handlePaymentIntentSucceeded(
   // nothing to do. ACH enters PENDING and is promoted to COMPLETED here.
   if (payment.status === "COMPLETED") return;
 
-  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+  await prisma.$transaction(async (tx) => {
     await tx.payment.update({
       where: { id: payment.id },
       data: { status: "COMPLETED" },
