@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
+import { clerkClient } from "@clerk/express";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
+import { seedChartOfAccounts } from "../services/tenant-provisioning.js";
 
 const router = Router();
 
@@ -25,6 +27,10 @@ const startSchema = z.object({
     .string()
     .regex(/^\d{2}-\d{2}$/, "Must be MM-DD format")
     .default("12-31"),
+  // When present, the backend creates a Clerk Organization linked to this
+  // tenant and adds the given Clerk user as its admin. The frontend /signup
+  // flow passes this; automated tests can omit it.
+  clerkUserId: z.string().optional(),
 });
 
 const brandingSchema = z.object({
@@ -74,7 +80,9 @@ router.post("/start", async (req, res, next) => {
     const schemaName = `tenant_${tenant.id.replace(/-/g, "_")}`;
     await prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
 
-    // Create admin user with MARINA_OWNER role
+    // Create admin user with MARINA_OWNER role. If the request came from an
+    // authenticated Clerk sign-up, link the clerkUserId so subsequent
+    // auth webhooks don't re-create the record.
     const adminUser = await prisma.user.create({
       data: {
         tenantId: tenant.id,
@@ -82,19 +90,60 @@ router.post("/start", async (req, res, next) => {
         firstName: data.adminFirstName,
         lastName: data.adminLastName,
         role: "MARINA_OWNER",
+        ...(data.clerkUserId ? { clerkUserId: data.clerkUserId } : {}),
       },
     });
 
-    // Setup steps checklist
+    // Create a Clerk Organization for this tenant when we have an
+    // authenticated user to anchor it to. The org's public_metadata.tenant_id
+    // is what the auth.ts webhooks use to correlate future sign-ups that
+    // join the org.
+    let clerkOrganizationId: string | null = null;
+    if (data.clerkUserId) {
+      try {
+        const org = await clerkClient.organizations.createOrganization({
+          name: data.marinaName,
+          createdBy: data.clerkUserId,
+          publicMetadata: { tenant_id: tenant.id },
+        });
+        clerkOrganizationId = org.id;
+      } catch (err) {
+        // Non-fatal: tenant is created, the owner can retry the Clerk link.
+        // Log with enough context for operators to diagnose.
+        console.error(
+          `[onboarding/start] Clerk org creation failed for tenant ${tenant.id}:`,
+          err,
+        );
+      }
+    }
+
+    // Seed the default chart of accounts. Idempotent — the UI can re-run the
+    // explicit /chart-of-accounts endpoint if this fails.
+    let chartSeeded = false;
+    try {
+      const result = await seedChartOfAccounts(prisma, tenant.id);
+      chartSeeded = result.created > 0;
+    } catch (err) {
+      console.error(
+        `[onboarding/start] Chart-of-accounts seed failed for tenant ${tenant.id}:`,
+        err,
+      );
+    }
+
     const setupSteps = {
       branding: { complete: false, label: "Configure branding" },
       stripe: { complete: false, label: "Connect Stripe account" },
       qbo: { complete: false, label: "Connect QuickBooks Online" },
-      chartOfAccounts: { complete: false, label: "Seed chart of accounts" },
+      chartOfAccounts: { complete: chartSeeded, label: "Seed chart of accounts" },
       twilio: { complete: false, label: "Provision phone number" },
     };
 
-    res.status(201).json({ tenant, adminUser, setupSteps });
+    res.status(201).json({
+      tenant,
+      adminUser,
+      clerkOrganizationId,
+      setupSteps,
+    });
   } catch (err) {
     if (err instanceof z.ZodError) {
       res.status(400).json({ error: "Validation failed", details: err.errors });
@@ -357,55 +406,12 @@ router.post("/:tenantId/chart-of-accounts", async (req, res, next) => {
       return;
     }
 
-    const defaultAccounts: Array<{
-      accountNumber: string;
-      name: string;
-      type: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
-      isDeferredRevenue?: boolean;
-    }> = [
-      // Asset accounts
-      { accountNumber: "1000", name: "Cash / Operating Bank", type: "ASSET" },
-      { accountNumber: "1010", name: "Stripe Clearing", type: "ASSET" },
-      { accountNumber: "1200", name: "Accounts Receivable", type: "ASSET" },
-      // Liability accounts — deferred revenue accounts flagged so rev-rec
-      // can pick them up when recognising over time.
-      { accountNumber: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY", isDeferredRevenue: true },
-      { accountNumber: "2110", name: "Deferred Revenue - Rentals", type: "LIABILITY", isDeferredRevenue: true },
-      { accountNumber: "2200", name: "Security Deposits Held", type: "LIABILITY" },
-      { accountNumber: "2210", name: "Customer Deposits", type: "LIABILITY" },
-      { accountNumber: "2300", name: "Tips Payable", type: "LIABILITY" },
-      { accountNumber: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
-      // Revenue accounts
-      { accountNumber: "4010", name: "Slip Revenue", type: "REVENUE" },
-      { accountNumber: "4020", name: "Transient Revenue", type: "REVENUE" },
-      { accountNumber: "4030", name: "Rental Revenue", type: "REVENUE" },
-      { accountNumber: "4040", name: "Damage Waiver Revenue", type: "REVENUE" },
-      { accountNumber: "4050", name: "Fuel Revenue", type: "REVENUE" },
-      { accountNumber: "4060", name: "Retail Revenue", type: "REVENUE" },
-      { accountNumber: "4070", name: "Ramp Revenue", type: "REVENUE" },
-      { accountNumber: "4080", name: "Concierge Revenue", type: "REVENUE" },
-      { accountNumber: "4090", name: "Pump-Out Revenue", type: "REVENUE" },
-      { accountNumber: "4100", name: "Electricity Revenue", type: "REVENUE" },
-      // Expense accounts
-      { accountNumber: "5000", name: "COGS", type: "EXPENSE" },
-      { accountNumber: "5100", name: "Payment Processing Fees", type: "EXPENSE" },
-    ];
-
-    const createdAccounts = await prisma.$transaction(
-      defaultAccounts.map((account) =>
-        prisma.glAccount.create({
-          data: {
-            tenantId,
-            accountNumber: account.accountNumber,
-            name: account.name,
-            type: account.type,
-            isDeferredRevenue: account.isDeferredRevenue ?? false,
-          },
-        }),
-      ),
-    );
-
-    res.status(201).json({ accounts: createdAccounts });
+    const result = await seedChartOfAccounts(prisma, tenantId);
+    const accounts = await prisma.glAccount.findMany({
+      where: { tenantId },
+      orderBy: { accountNumber: "asc" },
+    });
+    res.status(201).json({ accounts, created: result.created });
   } catch (err) {
     next(err);
   }

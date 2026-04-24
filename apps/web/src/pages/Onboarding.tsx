@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useAuth, useUser, SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react';
+import { useNavigate } from 'react-router-dom';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -286,16 +288,34 @@ function FocusInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
 const STEP_LABELS = ['Marina Details', 'Branding', 'Stripe Connect', 'QuickBooks', 'Review & Launch'];
 
 export default function Onboarding() {
+  return (
+    <>
+      <SignedOut>
+        <RedirectToSignIn redirectUrl="/onboarding" />
+      </SignedOut>
+      <SignedIn>
+        <OnboardingInner />
+      </SignedIn>
+    </>
+  );
+}
+
+function OnboardingInner() {
+  const { userId } = useAuth();
+  const { user } = useUser();
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Step 1 — Marina Details
+  // Step 1 — Marina Details (prefilled from the signed-in Clerk profile)
   const [marinaName, setMarinaName] = useState('');
   const [subdomain, setSubdomain] = useState('');
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminFirstName, setAdminFirstName] = useState('');
-  const [adminLastName, setAdminLastName] = useState('');
+  const [adminEmail, setAdminEmail] = useState(
+    user?.primaryEmailAddress?.emailAddress ?? '',
+  );
+  const [adminFirstName, setAdminFirstName] = useState(user?.firstName ?? '');
+  const [adminLastName, setAdminLastName] = useState(user?.lastName ?? '');
   const [timezone, setTimezone] = useState('America/New_York');
   const [fiscalYearEnd, setFiscalYearEnd] = useState('12-31');
 
@@ -339,6 +359,9 @@ export default function Onboarding() {
           adminLastName,
           timezone,
           fiscalYearEnd,
+          // Identifies the Clerk account doing the signup — the backend
+          // uses it to create a Clerk Organization tied to this tenant.
+          clerkUserId: userId ?? undefined,
         }),
       });
       if (!res.ok) {
@@ -438,7 +461,9 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      // Seed chart of accounts
+      // Chart of accounts was seeded during /start. Re-run here to cover the
+      // case where the initial seed failed mid-transaction — the endpoint is
+      // idempotent.
       const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/chart-of-accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -448,6 +473,8 @@ export default function Onboarding() {
         throw new Error(body.error ?? `Request failed (${res.status})`);
       }
       setLaunched(true);
+      // Hand the newly-provisioned marina off to the main dashboard.
+      setTimeout(() => navigate('/'), 800);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {

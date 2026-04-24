@@ -34,6 +34,7 @@ function AppRoutes() {
 
   return (
     <Routes>
+      <Route path="/signup" element={<Navigate to="/onboarding" replace />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route element={<AppLayout />}>
         <Route path="/" element={<Dashboard />} />
