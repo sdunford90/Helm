@@ -38,10 +38,22 @@ See `.env.example` for the full list. Key variables:
 ## Development Setup
 1. Install dependencies: `pnpm install`
 2. Build shared packages: `pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build`
-3. Generate Prisma client: `cd apps/api && npx prisma generate`
-4. Push DB schema: `cd apps/api && npx prisma db push`
+3. Generate Prisma client: `pnpm db:generate`
+4. Apply migrations: `pnpm db:migrate:deploy`  (or `pnpm db:migrate:dev` to create a new one after editing schema.prisma)
 5. Start web app: `pnpm --filter @helm/web dev` (port 5000)
 6. Start API: `pnpm --filter @helm/api dev` (port 3001)
+
+## Schema changes
+Versioned migrations live in `apps/api/prisma/migrations/`. Workflow:
+  - Edit `apps/api/prisma/schema.prisma`.
+  - Run `pnpm db:migrate:dev --name <change>` locally. Prisma generates a new
+    timestamped migration folder, applies it to your dev DB, and regenerates
+    the client.
+  - Commit both the schema edit and the new migration folder.
+  - CI and prod apply migrations via `prisma migrate deploy` (see
+    `Dockerfile.api` — runs before the server starts).
+  - Do NOT use `prisma db push` except on an isolated dev DB for quick
+    iteration; it doesn't record history and can't be rolled back.
 
 ## Workflows
 - **Start application**: `pnpm --filter @helm/web dev` → port 5000 (marina dashboard)
@@ -51,7 +63,7 @@ See `.env.example` for the full list. Key variables:
 ## Notes
 - The `workspace:*` protocol requires pnpm (not npm)
 - Prisma is at v6.x — uses `$extends` query extensions (NOT deprecated `$use` middleware)
-- Prisma schema lives in `apps/api/prisma/schema.prisma`; use `npx prisma db push` (not migrations)
+- Prisma schema lives in `apps/api/prisma/schema.prisma`; schema changes go through versioned migrations (see "Schema changes" above)
 - `apps/api/src/lib/stripe.ts` exports `stripe` as `Stripe | null` — guard with `requireStripe()` helper
 - Redis/BullMQ is optional — null when `REDIS_URL` is not set; API starts fine without it
 - `requirePlatformAdmin()` middleware skips Clerk auth in `NODE_ENV !== "production"` (dev bypass)

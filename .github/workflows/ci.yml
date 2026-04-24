@@ -45,6 +45,22 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: helm
+          POSTGRES_PASSWORD: helm
+          POSTGRES_DB: helm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://helm:helm@localhost:5432/helm_test?schema=public
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,6 +82,9 @@ jobs:
           restore-keys: |
             turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-
             turbo-${{ runner.os }}-
+
+      - name: Apply Prisma migrations
+        run: npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
 
       - name: Run tests
         run: npx turbo test
