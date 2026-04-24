@@ -3,6 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { createPaymentIntent } from "../lib/stripe.js";
+import { queues } from "../lib/queue.js";
 
 const router = Router();
 
@@ -297,10 +298,41 @@ router.put(
       const updated = await prisma.transientBooking.update({
         where: { id: req.params.id },
         data: { status: "OVERSTAY" },
-        include: { slip: true },
       });
+      const slip = await prisma.slip.findUnique({
+        where: { id: updated.slipId },
+        select: { slipNumber: true },
+      });
+      const slipNumber = slip?.slipNumber ?? "";
 
-      // TODO: Trigger overstay alert (email/SMS notification)
+      // Queue notifications — best-effort, don't fail the request if the
+      // queue is down (status transition has value on its own).
+      try {
+        if (updated.guestEmail) {
+          await queues.email.add("transient-overstay-guest", {
+            tenantId: updated.tenantId,
+            to: updated.guestEmail,
+            guestName: updated.guestName,
+            slipNumber,
+            expectedCheckOut: updated.checkOut,
+          });
+        }
+        if (updated.guestPhone) {
+          await queues.sms.add("transient-overstay-guest-sms", {
+            tenantId: updated.tenantId,
+            to: updated.guestPhone,
+            message: `Your slip ${slipNumber} checkout was ${updated.checkOut?.toDateString()}. Please contact the marina.`,
+          });
+        }
+        await queues.email.add("transient-overstay-staff", {
+          tenantId: updated.tenantId,
+          bookingId: updated.id,
+          slipNumber,
+          guestName: updated.guestName,
+        });
+      } catch (err) {
+        console.error("[transient] failed to queue overstay alerts:", err);
+      }
 
       res.json({ data: updated, alert: "OVERSTAY_TRIGGERED" });
     } catch (err) {
