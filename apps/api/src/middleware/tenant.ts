@@ -22,7 +22,13 @@ declare global {
 }
 
 /** Routes that should bypass tenant resolution. */
-const BYPASS_PREFIXES = ["/api/health", "/api/admin", "/api/onboarding", "/api/auth/webhook"];
+const BYPASS_PREFIXES = [
+  "/api/health",
+  "/api/admin",
+  "/api/onboarding",
+  "/api/auth/webhook",
+  "/api/webhooks", // Stripe webhooks resolve tenant from event.account, not subdomain
+];
 
 function shouldBypass(path: string): boolean {
   return BYPASS_PREFIXES.some((prefix) => path.startsWith(prefix));

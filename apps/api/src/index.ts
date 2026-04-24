@@ -38,6 +38,7 @@ import qboRouter from "./routes/qbo.js";
 import storageRouter from "./routes/storage.js";
 import inventoryRouter from "./routes/inventory.js";
 import communicationPrefsRouter from "./routes/communication-prefs.js";
+import webhooksStripeRouter from "./routes/webhooks-stripe.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -52,10 +53,17 @@ const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 
 app.use(cors());
 app.use(helmet());
+
+// Stripe webhook routes MUST be mounted before express.json() so their raw
+// body is preserved for signature verification. The router itself applies
+// express.raw({type:"application/json"}) on each webhook endpoint.
+app.use("/api/webhooks", webhooksStripeRouter);
+
 app.use(express.json());
 
 // Tenant resolution — attaches tenantId / tenant to every request
-// (bypasses /api/health and /api/admin automatically)
+// (bypasses /api/health, /api/admin, /api/onboarding, /api/auth/webhook,
+// /api/webhooks)
 app.use(tenantMiddleware);
 
 // --------------------------------------------------------------------------
