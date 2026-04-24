@@ -333,39 +333,49 @@ router.post("/:tenantId/chart-of-accounts", async (req, res, next) => {
       return;
     }
 
-    const defaultAccounts = [
+    const defaultAccounts: Array<{
+      accountNumber: string;
+      name: string;
+      type: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
+      isDeferredRevenue?: boolean;
+    }> = [
+      // Asset accounts
+      { accountNumber: "1000", name: "Cash / Operating Bank", type: "ASSET" },
+      { accountNumber: "1010", name: "Stripe Clearing", type: "ASSET" },
+      { accountNumber: "1200", name: "Accounts Receivable", type: "ASSET" },
+      // Liability accounts — deferred revenue accounts flagged so rev-rec
+      // can pick them up when recognising over time.
+      { accountNumber: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY", isDeferredRevenue: true },
+      { accountNumber: "2110", name: "Deferred Revenue - Rentals", type: "LIABILITY", isDeferredRevenue: true },
+      { accountNumber: "2200", name: "Security Deposits Held", type: "LIABILITY" },
+      { accountNumber: "2210", name: "Customer Deposits", type: "LIABILITY" },
+      { accountNumber: "2300", name: "Tips Payable", type: "LIABILITY" },
+      { accountNumber: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
       // Revenue accounts
-      { code: "4010", name: "Slip Revenue", type: "REVENUE" },
-      { code: "4020", name: "Transient Revenue", type: "REVENUE" },
-      { code: "4030", name: "Rental Revenue", type: "REVENUE" },
-      { code: "4040", name: "Damage Waiver Revenue", type: "REVENUE" },
-      { code: "4050", name: "Fuel Revenue", type: "REVENUE" },
-      { code: "4060", name: "Retail Revenue", type: "REVENUE" },
-      { code: "4070", name: "Ramp Revenue", type: "REVENUE" },
-      { code: "4080", name: "Concierge Revenue", type: "REVENUE" },
-      { code: "4090", name: "Pump-Out Revenue", type: "REVENUE" },
-      { code: "4100", name: "Electricity Revenue", type: "REVENUE" },
-      // Liability accounts
-      { code: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY" },
-      { code: "2110", name: "Deferred Revenue - Rentals", type: "LIABILITY" },
-      { code: "2200", name: "Security Deposits Held", type: "LIABILITY" },
-      { code: "2210", name: "Customer Deposits", type: "LIABILITY" },
-      { code: "2300", name: "Tips Payable", type: "LIABILITY" },
-      { code: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
+      { accountNumber: "4010", name: "Slip Revenue", type: "REVENUE" },
+      { accountNumber: "4020", name: "Transient Revenue", type: "REVENUE" },
+      { accountNumber: "4030", name: "Rental Revenue", type: "REVENUE" },
+      { accountNumber: "4040", name: "Damage Waiver Revenue", type: "REVENUE" },
+      { accountNumber: "4050", name: "Fuel Revenue", type: "REVENUE" },
+      { accountNumber: "4060", name: "Retail Revenue", type: "REVENUE" },
+      { accountNumber: "4070", name: "Ramp Revenue", type: "REVENUE" },
+      { accountNumber: "4080", name: "Concierge Revenue", type: "REVENUE" },
+      { accountNumber: "4090", name: "Pump-Out Revenue", type: "REVENUE" },
+      { accountNumber: "4100", name: "Electricity Revenue", type: "REVENUE" },
       // Expense accounts
-      { code: "5000", name: "COGS", type: "EXPENSE" },
+      { accountNumber: "5000", name: "COGS", type: "EXPENSE" },
+      { accountNumber: "5100", name: "Payment Processing Fees", type: "EXPENSE" },
     ];
 
-    const createdAccounts = await Promise.all(
+    const createdAccounts = await prisma.$transaction(
       defaultAccounts.map((account) =>
-        prisma.gLAccount.create({
+        prisma.glAccount.create({
           data: {
-            tenant_id: tenantId,
-            code: account.code,
+            tenantId,
+            accountNumber: account.accountNumber,
             name: account.name,
             type: account.type,
-            active: true,
-            balance_cents: 0,
+            isDeferredRevenue: account.isDeferredRevenue ?? false,
           },
         }),
       ),
@@ -390,26 +400,23 @@ router.get("/:tenantId/status", async (req, res, next) => {
       return;
     }
 
-    // Check branding
-    const branding = (tenant as Record<string, unknown>).branding as Record<string, unknown> | null;
+    const branding = tenant.brandingJson as Record<string, unknown> | null;
     const brandingComplete =
       !!branding && typeof branding === "object" && !!branding.marinaName;
 
-    // Check Stripe
     const stripeConnected = !!tenant.stripeAccountId;
+    const qboConnected = !!tenant.qboRealmId;
 
-    // Check QBO
-    const qboConnected = !!(tenant as Record<string, unknown>).qbo_realm_id;
-
-    // Check chart of accounts
-    const accountCount = await prisma.gLAccount.count({
-      where: { tenant_id: tenantId },
+    const accountCount = await prisma.glAccount.count({
+      where: { tenantId },
     });
     const chartOfAccountsSeeded = accountCount > 0;
 
-    // Check Twilio (phone provisioning) — look for a settings flag
-    const settings = (tenant as Record<string, unknown>).settings as Record<string, unknown> | null;
-    const twilioProvisioned = !!settings?.twilioPhoneNumber;
+    // Twilio provisioning flag is surfaced via tenant.brandingJson for now
+    // (tenant.settings doesn't exist as a column). Treat as incomplete when
+    // unset.
+    const twilioProvisioned =
+      !!branding && typeof branding === "object" && !!branding.twilioPhoneNumber;
 
     const checklist = {
       branding: {

@@ -69,7 +69,6 @@ jobs:
 
       - name: Run tests
         run: npx turbo test
-        continue-on-error: true
 
   build:
     name: Build

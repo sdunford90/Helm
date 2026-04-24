@@ -1,11 +1,17 @@
 import "dotenv/config";
 
+// Sentry must be initialised before importing any library it instruments.
+import { initSentry, setupSentryErrorHandler } from "./lib/sentry.js";
+initSentry();
+
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
+import { prisma } from "./lib/prisma.js";
+import { redisConnection, queues } from "./lib/queue.js";
 
 import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
@@ -107,17 +113,73 @@ app.use("/api/checkout", checkoutRouter);
 app.use("/api/saas-billing", saasBillingRouter);
 
 // --------------------------------------------------------------------------
-// Error handler (must be last)
+// Error handlers — Sentry goes BEFORE the app error handler so unhandled
+// errors get captured before they're converted to a 500 response.
 // --------------------------------------------------------------------------
 
+setupSentryErrorHandler(app);
 app.use(errorHandler);
 
 // --------------------------------------------------------------------------
-// Start server
+// Start server + graceful shutdown
 // --------------------------------------------------------------------------
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[helm-api] listening on port ${PORT}`);
+});
+
+// Grace window: orchestrators typically give SIGKILL 30s after SIGTERM.
+const SHUTDOWN_TIMEOUT_MS = 25_000;
+let shuttingDown = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[helm-api] received ${signal}, draining...`);
+
+  // Hard deadline so a hung dependency can't block the exit forever.
+  const killTimer = setTimeout(() => {
+    console.error("[helm-api] shutdown timed out, forcing exit");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  killTimer.unref();
+
+  // 1. Stop accepting new connections; keep existing in-flight requests.
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  }).catch((err) => console.error("[helm-api] server.close error:", err));
+
+  // 2. Close BullMQ queues so workers stop picking up new jobs.
+  try {
+    await Promise.all(Object.values(queues).map((q) => q.close()));
+  } catch (err) {
+    console.error("[helm-api] queue.close error:", err);
+  }
+
+  // 3. Close Redis.
+  try {
+    await redisConnection.quit();
+  } catch (err) {
+    console.error("[helm-api] redis.quit error:", err);
+  }
+
+  // 4. Close Prisma / Postgres.
+  try {
+    await prisma.$disconnect();
+  } catch (err) {
+    console.error("[helm-api] prisma.$disconnect error:", err);
+  }
+
+  console.log("[helm-api] shutdown complete");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+
+// Log — but don't crash on — unhandled rejections; Sentry will have captured them.
+process.on("unhandledRejection", (reason) => {
+  console.error("[helm-api] unhandledRejection:", reason);
 });
 
 export default app;
