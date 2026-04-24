@@ -1,6 +1,6 @@
 /// Helm Marina – Service Worker for Offline Dock Walks
 
-const CACHE_NAME = 'helm-app-shell-v3';
+const CACHE_NAME = 'helm-app-shell-v4';
 const APP_SHELL_ASSETS = [
   '/',
   '/manifest.json',

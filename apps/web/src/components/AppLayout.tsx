@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Outlet, useLocation, Link } from 'react-router-dom';
-import { useUser } from '@clerk/clerk-react';
+import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import { useModules } from '../context/ModulesContext';
 import {
@@ -213,15 +213,32 @@ function getPageTitle(pathname: string): string {
 
 export default function AppLayout() {
   const location = useLocation();
-  const { user } = useUser();
+  const { user, isLoaded } = useUser();
+  const { isSignedIn } = useAuth();
   const { modules } = useModules();
-  const initials = user
-    ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
-    : 'H';
   const [currentLocation, setCurrentLocation] = useState(LOCATIONS[0].id);
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const initials = user
+    ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
+    : '';
   const selectedLocation = LOCATIONS.find((l) => l.id === currentLocation) || LOCATIONS[0];
+
+  if (!isLoaded) {
+    return (
+      <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#F7F9FB' }}>
+        <div style={{ width: 260, backgroundColor: '#0A2342', flexShrink: 0, position: 'fixed', top: 0, left: 0, bottom: 0 }} />
+        <div style={{ marginLeft: 260, flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ height: 64, backgroundColor: '#FFFFFF', borderBottom: '1px solid #F2F4F6' }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return <RedirectToSignIn />;
+  }
 
   // Close sidebar on route change (mobile)
   const closeSidebar = () => setSidebarOpen(false);
