@@ -526,10 +526,10 @@ export default function Leads() {
           onClose={() => setSelectedLead(null)}
           onSave={(updated) => {
             if (updated.id) {
-              setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated : l));
+              setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated as Lead : l));
               updateLeadApi.execute(updated).then(() => refetchLeads());
             } else {
-              const newLead = { ...updated, id: String(Date.now()) };
+              const newLead = { ...updated, id: String(Date.now()) } as Lead;
               setLocalLeads((prev) => [newLead, ...prev]);
               createLeadApi.execute(newLead).then(() => refetchLeads());
             }

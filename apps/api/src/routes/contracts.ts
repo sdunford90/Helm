@@ -3,7 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -178,7 +178,7 @@ router.get(
 
       const where = {
         tenantId,
-        status: { in: ["ACTIVE", "EXPIRING"] as const },
+        status: { in: ["ACTIVE", "EXPIRING"] as ("ACTIVE" | "EXPIRING")[] },
         endDate: { gte: now, lte: cutoff },
       };
 

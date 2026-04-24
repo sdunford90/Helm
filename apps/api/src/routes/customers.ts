@@ -4,7 +4,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -290,7 +290,7 @@ router.post(
         data: {
           tenantId,
           ...data,
-        },
+        } as any,
       });
 
       await prisma.auditLog.create({
@@ -329,7 +329,7 @@ router.put(
 
       const updated = await prisma.customer.update({
         where: { id: req.params.id },
-        data,
+        data: data as any,
       });
 
       // Audit changed fields

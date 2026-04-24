@@ -216,14 +216,14 @@ export async function handleCallback(
     throw new Error(`QBO token exchange failed: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await response.json() as Record<string, unknown>;
 
   await storeTokens(
     tenantId,
-    data.access_token,
-    data.refresh_token,
+    data.access_token as string,
+    data.refresh_token as string,
     realmId,
-    data.expires_in,
+    data.expires_in as number,
   );
 
   await auditLog(tenantId, "QBO_CONNECTED", { realmId });
@@ -271,17 +271,17 @@ export async function refreshToken(tenantId: string): Promise<string> {
     throw new Error(`QBO token refresh failed: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await response.json() as Record<string, unknown>;
 
   await storeTokens(
     tenantId,
-    data.access_token,
-    data.refresh_token,
+    data.access_token as string,
+    data.refresh_token as string,
     tokens.realmId,
-    data.expires_in,
+    data.expires_in as number,
   );
 
-  return data.access_token;
+  return data.access_token as string;
 }
 
 // --------------------------------------------------------------------------

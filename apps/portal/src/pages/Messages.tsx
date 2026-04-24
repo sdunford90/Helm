@@ -135,7 +135,7 @@ export default function Messages() {
     }
   };
 
-  const s: Record<string, CSSProperties> = {
+  const s = {
     page: {
       padding: 32,
       maxWidth: 720,

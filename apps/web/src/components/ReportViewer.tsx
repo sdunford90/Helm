@@ -9,16 +9,16 @@ const useReport = () => useContext(ReportContext);
 
 /* ── Styles ─────────────────────────────────────────────── */
 
-const s: Record<string, React.CSSProperties> = {
-  overlay: { position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.55)', zIndex: 1200, display: 'flex', justifyContent: 'flex-end' },
-  panel: { width: '88vw', maxWidth: '1100px', height: '100vh', backgroundColor: '#F8FAFC', display: 'flex', flexDirection: 'column', boxShadow: '-8px 0 40px rgba(0,0,0,0.2)', overflowY: 'auto' },
+const s = {
+  overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10,35,66,0.55)', zIndex: 1200, display: 'flex', justifyContent: 'flex-end' as const },
+  panel: { width: '88vw', maxWidth: '1100px', height: '100vh', backgroundColor: '#F8FAFC', display: 'flex', flexDirection: 'column' as const, boxShadow: '-8px 0 40px rgba(0,0,0,0.2)', overflowY: 'auto' as const },
   header: { padding: '20px 28px', backgroundColor: '#0A2342', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 },
   headerTitle: { fontSize: '20px', fontWeight: 700, margin: 0, color: '#FFFFFF' },
   headerSub: { fontSize: '13px', color: '#94A3B8', marginTop: '2px' },
   headerActions: { display: 'flex', gap: '10px', alignItems: 'center' },
   actionBtn: { display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '7px 14px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(255,255,255,0.2)', backgroundColor: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' },
   closeBtn: { background: 'none', border: 'none', color: '#FFFFFF', cursor: 'pointer', padding: '4px', opacity: 0.8 },
-  body: { flex: 1, padding: '28px', overflowY: 'auto' },
+  body: { flex: 1, padding: '28px', overflowY: 'auto' as const },
   kpiRow: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '16px', marginBottom: '28px' },
   kpiCard: { background: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   kpiLabel: { fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '6px' },
@@ -45,9 +45,9 @@ const pct = (n: number) => `${n.toFixed(1)}%`;
 function useSortState<T extends object>(initial: T[], defaultKey: keyof T) {
   const [sortKey, setSortKey] = useState<keyof T>(defaultKey);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  const toggle = (key: keyof T) => {
-    if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else { setSortKey(key); setSortDir('asc'); }
+  const toggle = (key: string) => {
+    if ((key as keyof T) === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key as keyof T); setSortDir('asc'); }
   };
   const sorted = [...initial].sort((a, b) => {
     const av = a[sortKey]; const bv = b[sortKey];

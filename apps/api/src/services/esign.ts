@@ -47,9 +47,9 @@ export async function sendForSignature(
       data: {
         tenantId,
         action: "ESIGN_MAGIC_LINK",
-        entityType: "SIGNATURE_REQUEST",
-        entityId: requestId,
-        details: {
+        recordType: "SIGNATURE_REQUEST",
+        recordId: requestId,
+        changedFieldsJson: {
           signerEmail: request.signerEmail,
           signerName: request.signerName,
           subject: request.subject,
@@ -167,9 +167,9 @@ export async function sendForSignature(
     data: {
       tenantId,
       action: "ESIGN_SENT",
-      entityType: "SIGNATURE_REQUEST",
-      entityId: envelope.envelopeId,
-      details: {
+      recordType: "SIGNATURE_REQUEST",
+      recordId: envelope.envelopeId,
+      changedFieldsJson: {
         signerEmail: request.signerEmail,
         signerName: request.signerName,
         subject: request.subject,
@@ -264,7 +264,7 @@ export async function handleWebhook(payload: any, tenantId: string): Promise<voi
     }
 
     // Update contract status
-    await prisma.contract.updateMany({
+    await prisma.slipContract.updateMany({
       where: { tenantId, esignEnvelopeId: envelopeId },
       data: { status: "ACTIVE", signedAt: new Date(), signedDocumentUrl },
     });
@@ -273,36 +273,25 @@ export async function handleWebhook(payload: any, tenantId: string): Promise<voi
       data: {
         tenantId,
         action: "ESIGN_COMPLETED",
-        entityType: "SIGNATURE_REQUEST",
-        entityId: envelopeId,
-        details: { signedDocumentUrl },
+        recordType: "SIGNATURE_REQUEST",
+        recordId: envelopeId,
+        changedFieldsJson: { signedDocumentUrl },
       },
     });
   } else if (status === "declined") {
     // Update contract status
-    await prisma.contract.updateMany({
+    await prisma.slipContract.updateMany({
       where: { tenantId, esignEnvelopeId: envelopeId },
-      data: { status: "DECLINED" },
-    });
-
-    // Notify staff via internal notification
-    await prisma.notification.create({
-      data: {
-        tenantId,
-        type: "ESIGN_DECLINED",
-        title: "Signature Request Declined",
-        body: `Envelope ${envelopeId} was declined by the signer.`,
-        channel: "INTERNAL",
-      },
+      data: { status: "TERMINATED" },
     });
 
     await prisma.auditLog.create({
       data: {
         tenantId,
         action: "ESIGN_DECLINED",
-        entityType: "SIGNATURE_REQUEST",
-        entityId: envelopeId,
-        details: { declinedReason: payload.declineReason || payload.data?.declineReason },
+        recordType: "SIGNATURE_REQUEST",
+        recordId: envelopeId,
+        changedFieldsJson: { declinedReason: payload.declineReason || payload.data?.declineReason },
       },
     });
   }
@@ -319,7 +308,7 @@ export async function getSigningStatus(
 
   if (!config?.accountId) {
     // Fallback: check contract record for magic-link based signing
-    const contract = await prisma.contract.findFirst({
+    const contract = await prisma.slipContract.findFirst({
       where: { tenantId, esignEnvelopeId: requestId },
       select: { status: true, signedAt: true, signedDocumentUrl: true },
     });
@@ -395,18 +384,18 @@ export async function cancelSignatureRequest(
   }
 
   // Update local contract status
-  await prisma.contract.updateMany({
+  await prisma.slipContract.updateMany({
     where: { tenantId, esignEnvelopeId: requestId },
-    data: { status: "CANCELLED" },
+    data: { status: "TERMINATED" },
   });
 
   await prisma.auditLog.create({
     data: {
       tenantId,
       action: "ESIGN_CANCELLED",
-      entityType: "SIGNATURE_REQUEST",
-      entityId: requestId,
-      details: { cancelledBy: "staff" },
+      recordType: "SIGNATURE_REQUEST",
+      recordId: requestId,
+      changedFieldsJson: { cancelledBy: "staff" },
     },
   });
 }

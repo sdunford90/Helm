@@ -3,7 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -350,7 +350,7 @@ router.post(
           status: data.status,
           notes: data.notes ?? null,
           violationType: data.violationType ?? null,
-          photoUrls: data.photoUrls ?? null,
+          photoUrls: (data.photoUrls ?? null) as any,
           feeCents: data.feeCents ?? null,
         },
       });

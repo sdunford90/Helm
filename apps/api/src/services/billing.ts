@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { calculateTax } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
-import { stripe } from "../lib/stripe.js";
+import { stripe, requireStripe } from "../lib/stripe.js";
 
 // ---------------------------------------------------------------------------
 // Billing Engine Service
@@ -284,7 +284,7 @@ export async function generateRecurringInvoices(
             const chargeAmount = currentInvoice?.balanceCents ?? totalCents;
 
             if (chargeAmount > 0) {
-              const paymentIntent = await stripe.paymentIntents.create(
+              const paymentIntent = await requireStripe().paymentIntents.create(
                 {
                   amount: chargeAmount,
                   currency: "usd",

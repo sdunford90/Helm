@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { redisConnection } from "../lib/queue.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ---------------------------------------------------------------------------
 // GET /api/health

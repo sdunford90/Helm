@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 
-const router = Router();
+const router: Router = Router();
 
 // --------------------------------------------------------------------------
 // Validation schemas
@@ -44,7 +44,6 @@ router.post("/", async (req, res, next) => {
       data: {
         name: data.name,
         subdomain: data.subdomain,
-        settings: data.settings ?? {},
       },
     });
 

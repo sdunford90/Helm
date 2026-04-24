@@ -137,8 +137,8 @@ export async function runAlgorithmicPricing(tenantId: string): Promise<{ suggest
 
       // Clamp to floor and ceiling
       suggestedPrice = Math.max(
-        product.floorPriceCents,
-        Math.min(product.ceilingPriceCents, suggestedPrice),
+        product.floorPriceCents ?? 0,
+        Math.min(product.ceilingPriceCents ?? Infinity, suggestedPrice),
       );
 
       // 5. Only create suggestion if price differs from base by more than 10%

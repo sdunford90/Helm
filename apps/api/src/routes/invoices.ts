@@ -8,7 +8,7 @@ import { createDeferredSchedule } from "../services/deferred-revenue.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 

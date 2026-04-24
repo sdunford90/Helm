@@ -3,7 +3,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 

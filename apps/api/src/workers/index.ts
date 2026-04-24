@@ -98,7 +98,7 @@ const automationWorker = new Worker(
         console.log(`[automation-worker] Algorithmic pricing complete: ${result.suggestionsCreated} suggestions created`);
       } else {
         // If no specific tenant, run for all active tenants
-        const tenants = await prisma.tenant.findMany({ where: { active: true }, select: { id: true } });
+        const tenants = await prisma.tenant.findMany({ where: { status: 'ACTIVE' }, select: { id: true } });
         let totalSuggestions = 0;
         for (const tenant of tenants) {
           const result = await runAlgorithmicPricing(tenant.id);
@@ -113,8 +113,8 @@ const automationWorker = new Worker(
 
     // Look up customer contact info
     const customer = await prisma.customer.findFirst({
-      where: { id: customerId, tenant_id: tenantId },
-      select: { id: true, first_name: true, last_name: true, email: true, phone: true },
+      where: { id: customerId, tenantId },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
     });
 
     if (!customer) {
@@ -122,7 +122,7 @@ const automationWorker = new Worker(
       return;
     }
 
-    const name = [customer.first_name, customer.last_name].filter(Boolean).join(" ");
+    const name = [customer.firstName, customer.lastName].filter(Boolean).join(" ");
 
     switch (type) {
       case "ABANDONED_CART_1":

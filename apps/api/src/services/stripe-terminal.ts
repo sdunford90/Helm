@@ -1,4 +1,10 @@
-import { stripe } from "../lib/stripe.js";
+import { stripe as stripeClient } from "../lib/stripe.js";
+
+function getStripe() {
+  if (!stripeClient) throw new Error("Stripe is not configured. Set STRIPE_SECRET_KEY.");
+  return stripeClient;
+}
+const stripe = { get terminal() { return getStripe().terminal; }, get paymentIntents() { return getStripe().paymentIntents; }, get charges() { return getStripe().charges; } };
 
 // --------------------------------------------------------------------------
 // Stripe Terminal Integration for WisePOS E
@@ -23,7 +29,7 @@ export async function createConnectionToken(connectedAccountId: string): Promise
 export async function listReaders(connectedAccountId: string): Promise<any[]> {
   const readers = await stripe.terminal.readers.list(
     {
-      device_type: "wispos_e",
+      device_type: "wispos_e" as any,
       limit: 100,
     },
     { stripeAccount: connectedAccountId },
@@ -66,7 +72,7 @@ export async function createPaymentIntent(params: {
   }
 
   const paymentIntent = await stripe.paymentIntents.create(
-    paymentIntentParams as Parameters<typeof stripe.paymentIntents.create>[0],
+    paymentIntentParams as unknown as Parameters<typeof stripe.paymentIntents.create>[0],
     { stripeAccount: connectedAccountId },
   );
 

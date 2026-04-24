@@ -3,7 +3,7 @@ import { z } from "zod";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -91,7 +91,7 @@ router.get(
       const users =
         userIds.length > 0
           ? await prisma.user.findMany({
-              where: { id: { in: userIds }, tenant_id: tenantId },
+              where: { id: { in: userIds }, tenantId },
               select: { id: true, email: true, role: true },
             })
           : [];

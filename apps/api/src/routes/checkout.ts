@@ -6,7 +6,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 
-const router = Router();
+const router: Router = Router();
 
 // All checkout endpoints require an authenticated staff/customer session.
 router.use(...clerkAuth());

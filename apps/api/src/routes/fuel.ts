@@ -3,7 +3,7 @@ import { z } from "zod";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 router.use(...clerkAuth());
 

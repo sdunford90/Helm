@@ -103,7 +103,7 @@ export default function PortfolioDashboard() {
   );
   const chartMax = Math.max(...monthTotals) * 1.1;
 
-  const s: Record<string, CSSProperties> = {
+  const s = {
     page: {
       padding: 32,
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',

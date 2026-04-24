@@ -10,7 +10,7 @@ import {
   type AutomationTrigger,
 } from "../services/email-automation.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -154,7 +154,7 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
-      const rules = await prisma.automationRule.findMany({
+      const rules = await (prisma as any).automationRule.findMany({
         where: { tenantId },
         orderBy: { createdAt: "desc" },
         include: {
@@ -181,14 +181,14 @@ router.post(
       const data = CreateRuleSchema.parse(req.body);
 
       // Verify template exists
-      const template = await prisma.emailTemplate.findFirst({
+      const template = await (prisma as any).emailTemplate.findFirst({
         where: { id: data.templateId, tenantId },
       });
       if (!template) {
         throw appError("Template not found", 404, "TEMPLATE_NOT_FOUND");
       }
 
-      const rule = await prisma.automationRule.create({
+      const rule = await (prisma as any).automationRule.create({
         data: {
           tenantId,
           name: data.name,
@@ -233,7 +233,7 @@ router.put(
       const tenantId = req.tenantId!;
       const data = UpdateRuleSchema.parse(req.body);
 
-      const existing = await prisma.automationRule.findFirst({
+      const existing = await (prisma as any).automationRule.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!existing) {
@@ -242,7 +242,7 @@ router.put(
 
       // If changing template, verify it exists
       if (data.templateId) {
-        const template = await prisma.emailTemplate.findFirst({
+        const template = await (prisma as any).emailTemplate.findFirst({
           where: { id: data.templateId, tenantId },
         });
         if (!template) {
@@ -259,7 +259,7 @@ router.put(
       if (data.channels !== undefined) updateData.channels = data.channels;
       if (data.conditions !== undefined) updateData.conditions = data.conditions;
 
-      const updated = await prisma.automationRule.update({
+      const updated = await (prisma as any).automationRule.update({
         where: { id: req.params.id },
         data: updateData,
         include: {
@@ -295,14 +295,14 @@ router.delete(
     try {
       const tenantId = req.tenantId!;
 
-      const existing = await prisma.automationRule.findFirst({
+      const existing = await (prisma as any).automationRule.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!existing) {
         throw appError("Rule not found", 404, "NOT_FOUND");
       }
 
-      await prisma.automationRule.delete({
+      await (prisma as any).automationRule.delete({
         where: { id: req.params.id },
       });
 
@@ -336,7 +336,7 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
-      const templates = await prisma.emailTemplate.findMany({
+      const templates = await (prisma as any).emailTemplate.findMany({
         where: { tenantId },
         orderBy: [{ isDefault: "desc" }, { category: "asc" }, { name: "asc" }],
       });
@@ -357,7 +357,7 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateTemplateSchema.parse(req.body);
 
-      const template = await prisma.emailTemplate.create({
+      const template = await (prisma as any).emailTemplate.create({
         data: {
           tenantId,
           name: data.name,
@@ -396,7 +396,7 @@ router.put(
       const tenantId = req.tenantId!;
       const data = UpdateTemplateSchema.parse(req.body);
 
-      const existing = await prisma.emailTemplate.findFirst({
+      const existing = await (prisma as any).emailTemplate.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!existing) {
@@ -410,7 +410,7 @@ router.put(
       if (data.category !== undefined) updateData.category = data.category;
       if (data.variables !== undefined) updateData.variables = data.variables;
 
-      const updated = await prisma.emailTemplate.update({
+      const updated = await (prisma as any).emailTemplate.update({
         where: { id: req.params.id },
         data: updateData,
       });
@@ -441,7 +441,7 @@ router.delete(
     try {
       const tenantId = req.tenantId!;
 
-      const existing = await prisma.emailTemplate.findFirst({
+      const existing = await (prisma as any).emailTemplate.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!existing) {
@@ -457,7 +457,7 @@ router.delete(
       }
 
       // Check if any rules reference this template
-      const ruleCount = await prisma.automationRule.count({
+      const ruleCount = await (prisma as any).automationRule.count({
         where: { templateId: req.params.id, tenantId },
       });
       if (ruleCount > 0) {
@@ -468,7 +468,7 @@ router.delete(
         );
       }
 
-      await prisma.emailTemplate.delete({
+      await (prisma as any).emailTemplate.delete({
         where: { id: req.params.id },
       });
 
@@ -498,7 +498,7 @@ router.post(
     try {
       const tenantId = req.tenantId!;
 
-      const template = await prisma.emailTemplate.findFirst({
+      const template = await (prisma as any).emailTemplate.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!template) {
@@ -534,7 +534,7 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
-      const template = await prisma.emailTemplate.findFirst({
+      const template = await (prisma as any).emailTemplate.findFirst({
         where: { id: req.params.id, tenantId },
       });
       if (!template) {

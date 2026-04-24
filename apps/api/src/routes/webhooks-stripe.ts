@@ -8,7 +8,7 @@ import { handleAchReturn } from "../services/ach-handler.js";
 import { postPayment } from "../services/gl-posting.js";
 import { sendEmail, saasInvoicePaymentFailedHtml } from "../lib/email.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ---------------------------------------------------------------------------
 // Shared helper: parse + verify a webhook signature, then dispatch.

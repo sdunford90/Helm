@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Zap,
+  Megaphone,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 

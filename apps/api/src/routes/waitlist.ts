@@ -3,7 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -142,7 +142,7 @@ router.get(
       const tenantId = req.tenantId!;
 
       const entry = await prisma.waitlistEntry.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id as string, tenantId },
         include: {
           customer: {
             select: {
@@ -286,14 +286,14 @@ router.put(
       const data = UpdateWaitlistSchema.parse(req.body);
 
       const existing = await prisma.waitlistEntry.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id as string, tenantId },
       });
       if (!existing) {
         throw appError("Waitlist entry not found", 404, "NOT_FOUND");
       }
 
       const updated = await prisma.waitlistEntry.update({
-        where: { id: req.params.id },
+        where: { id: req.params.id as string },
         data,
       });
 
@@ -325,14 +325,14 @@ router.delete(
       const tenantId = req.tenantId!;
 
       const existing = await prisma.waitlistEntry.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id as string, tenantId },
       });
       if (!existing) {
         throw appError("Waitlist entry not found", 404, "NOT_FOUND");
       }
 
       const removed = await prisma.waitlistEntry.update({
-        where: { id: req.params.id },
+        where: { id: req.params.id as string },
         data: { status: "REMOVED" },
       });
 
@@ -451,7 +451,7 @@ router.put(
       const body = AcceptOfferSchema.parse(req.body);
 
       const entry = await prisma.waitlistEntry.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id as string, tenantId },
       });
 
       if (!entry) {
@@ -527,7 +527,7 @@ router.put(
 
         // Update waitlist entry
         const updatedEntry = await tx.waitlistEntry.update({
-          where: { id: req.params.id },
+          where: { id: req.params.id as string },
           data: { status: "ACCEPTED" },
         });
 
@@ -570,7 +570,7 @@ router.put(
       const tenantId = req.tenantId!;
 
       const entry = await prisma.waitlistEntry.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id as string, tenantId },
       });
 
       if (!entry) {
@@ -587,7 +587,7 @@ router.put(
 
       // Mark as expired
       const expired = await prisma.waitlistEntry.update({
-        where: { id: req.params.id },
+        where: { id: req.params.id as string },
         data: { status: "EXPIRED" },
       });
 

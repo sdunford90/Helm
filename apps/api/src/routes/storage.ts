@@ -9,7 +9,7 @@ import {
   enforceStorageQuota,
 } from "../lib/storage.js";
 
-const router = Router();
+const router: Router = Router();
 
 // All storage routes require authentication
 router.use(...clerkAuth());

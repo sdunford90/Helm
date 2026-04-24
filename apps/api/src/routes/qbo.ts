@@ -14,7 +14,7 @@ import {
 import crypto from "node:crypto";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
-const router = Router();
+const router: Router = Router();
 
 // All QBO routes require admin or manager role
 router.use(...clerkAuth());

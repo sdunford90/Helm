@@ -6,7 +6,7 @@ import { requireStripe } from "../lib/stripe.js";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 import { seedChartOfAccounts } from "../services/tenant-provisioning.js";
 
-const router = Router();
+const router: Router = Router();
 
 // --------------------------------------------------------------------------
 // Validation schemas

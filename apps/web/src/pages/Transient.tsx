@@ -158,13 +158,11 @@ export default function Transient() {
       slip: nbSlip,
       checkIn: nbCheckIn,
       checkOut: nbCheckOut || '',
-      nights,
-      rate,
-      total: nights * rate,
+      nightlyRate: rate,
       status: 'Booked',
       phone: nbPhone,
       email: nbEmail,
-      paymentMethod: nbPayment || 'Credit Card',
+      payment: 'Pending' as PaymentStatus,
     };
     setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || [])]);
     resetBookingForm();
@@ -200,7 +198,11 @@ export default function Transient() {
 
   const handleCheckOut = (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation();
-    setBookings(bookings.map((b) => (b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b)));
+    setLocalBookings((prev) =>
+      (prev.length > 0 ? prev : (apiBookings || [])).map((b) =>
+        b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b
+      )
+    );
   };
 
   return (

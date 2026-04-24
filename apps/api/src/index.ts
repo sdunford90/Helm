@@ -4,7 +4,7 @@ import "dotenv/config";
 import { initSentry, setupSentryErrorHandler } from "./lib/sentry.js";
 initSentry();
 
-import express from "express";
+import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
 
@@ -52,7 +52,7 @@ import saasBillingRouter from "./routes/saas-billing.js";
 // App initialisation
 // --------------------------------------------------------------------------
 
-const app = express();
+const app: Application = express();
 const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 
 // --------------------------------------------------------------------------

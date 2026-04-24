@@ -4,7 +4,7 @@ import { requirePlatformAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
 
-const router = Router();
+const router: Router = Router();
 
 // All admin routes require platform_admin role
 router.use(...requirePlatformAdmin());

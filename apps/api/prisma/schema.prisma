@@ -261,6 +261,10 @@ model Tenant {
   applicationFeePctBps   Int @default(0)  // basis points (100 = 1%)
   applicationFeeFixedCents Int @default(0)
   qboRealmId           String?
+  qboAccessToken       String?
+  qboRefreshToken      String?
+  qboTokenExpiresAt    DateTime?
+  qboConnectedAt       DateTime?
   timezone             String       @default("America/New_York")
   fiscalYearEnd        String       @default("12/31")
   saasTierId           String?
@@ -558,6 +562,9 @@ model SlipContract {
   earlyTerminationValue Float?
   qboItemId             String?
   renewalBatchId        String?
+  esignEnvelopeId       String?
+  signedAt              DateTime?
+  signedDocumentUrl     String?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
@@ -844,6 +851,29 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model EmailAutomationLog {
+  id              String    @id @default(uuid())
+  tenantId        String
+  ruleId          String?
+  templateId      String?
+  trigger         String
+  recipientEmail  String?
+  recipientPhone  String?
+  customerId      String?
+  channels        Json?
+  subject         String?
+  status          String    @default("QUEUED")
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  errorMessage    String?
+  resendMessageId String?
+  createdAt       DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, trigger])
+  @@map("email_automation_logs")
+}
+
 model CancellationPolicy {
   id              String  @id @default(uuid())
   tenantId        String
@@ -865,8 +895,12 @@ model RentalProduct {
   boatId               String?
   name                 String
   description          String?
+  category             String?
   durationType         String?
   basePriceCents       Int
+  hourlyRateCents      Int?
+  dailyRateCents       Int?
+  weeklyRateCents      Int?
   floorPriceCents      Int?
   ceilingPriceCents    Int?
   damageWaiverCents    Int?
@@ -1081,6 +1115,7 @@ model ConciergeRequest {
   approvedAt    DateTime?
   completedAt   DateTime?
   invoiceId     String?
+  createdAt     DateTime       @default(now())
 
   customer Customer        @relation(fields: [customerId], references: [id])
   vendor   ConciergeVendor? @relation(fields: [vendorId], references: [id])

@@ -7,7 +7,7 @@ import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
 import { v4 as uuid } from "uuid";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -418,7 +418,7 @@ router.post(
         // Update invoice balance if applicable
         if (invoice) {
           const newBalance = invoice.balanceCents - data.amountCents;
-          const newStatus = newBalance <= 0 ? "PAID" : invoice.status;
+          const newStatus = (newBalance <= 0 ? "PAID" : invoice.status) as "PAID" | "DRAFT" | "ISSUED" | "PAST_DUE" | "VOID" | "COLLECTIONS";
 
           await tx.invoice.update({
             where: { id: invoice.id },

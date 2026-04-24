@@ -2,9 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
-import { stripe } from "../lib/stripe.js";
+import { stripe, requireStripe } from "../lib/stripe.js";
 
-const router = Router();
+const router: Router = Router();
 
 // --------------------------------------------------------------------------
 // Zod schemas
@@ -373,7 +373,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
     // Create a Stripe Connect account if one doesn't exist
     let accountId = tenant.stripeAccountId;
     if (!accountId) {
-      const account = await stripe.accounts.create({ type: "standard" });
+      const account = await requireStripe().accounts.create({ type: "standard" });
       accountId = account.id;
       await prisma.tenant.update({
         where: { id: req.tenantId! },
@@ -381,7 +381,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
       });
     }
 
-    const accountLink = await stripe.accountLinks.create({
+    const accountLink = await requireStripe().accountLinks.create({
       account: accountId,
       refresh_url: `${process.env.APP_URL}/settings?section=stripe&refresh=true`,
       return_url: `${process.env.APP_URL}/settings?section=stripe&success=true`,

@@ -7,7 +7,7 @@ import {
   getExpiringCompliance,
 } from "../services/compliance.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 

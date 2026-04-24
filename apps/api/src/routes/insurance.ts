@@ -8,7 +8,7 @@ import {
   processInsuranceUpload,
 } from "../services/insurance-ai.js";
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -385,7 +385,7 @@ router.get(
         rawExtraction: "",
       };
 
-      const validation = await validateCoverage(extraction, tenantId);
+      const validation = await validateCoverage(extraction as any, tenantId);
 
       res.json({
         ...record,

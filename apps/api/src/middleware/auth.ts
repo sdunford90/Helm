@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { requireAuth, getAuth } from "@clerk/express";
 import { prisma } from "../lib/prisma.js";
 
@@ -29,7 +29,7 @@ declare global {
  * Wraps `requireAuth` from @clerk/express and then resolves the internal
  * user record, verifying that the user belongs to the current tenant.
  */
-export function clerkAuth() {
+export function clerkAuth(): RequestHandler[] {
   // ── Dev bypass: skip Clerk token verification in development ─────────────
   if (process.env.NODE_ENV !== "production") {
     return [
@@ -118,7 +118,7 @@ export function requireRole(...roles: string[]) {
  * Platform admin guard — checks for the special "platform_admin" role.
  * Used on /api/admin routes.
  */
-export function requirePlatformAdmin() {
+export function requirePlatformAdmin(): RequestHandler[] {
   return [
     requireAuth(),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -133,8 +133,8 @@ export function requirePlatformAdmin() {
 
         const user = await prisma.user.findFirst({
           where: {
-            clerk_id: clerkUserId,
-            role: "platform_admin",
+            clerkUserId,
+            role: "PLATFORM_ADMIN",
           },
         });
 

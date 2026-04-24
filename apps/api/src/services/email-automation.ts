@@ -512,7 +512,7 @@ export async function processAutomationTrigger(
   context: Record<string, any>,
 ): Promise<void> {
   // 1. Look up all enabled rules for this trigger + tenant
-  const rules = await prisma.automationRule.findMany({
+  const rules = await (prisma as any).automationRule.findMany({
     where: {
       tenantId,
       trigger,
@@ -574,7 +574,7 @@ async function processRule(
   }
 
   // 3. Resolve the template
-  const template = await prisma.emailTemplate.findFirst({
+  const template = await (prisma as any).emailTemplate.findFirst({
     where: { id: rule.templateId, tenantId },
   });
 

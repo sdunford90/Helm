@@ -42,7 +42,7 @@ const TIMEZONES = [
 // Inline styles
 // ---------------------------------------------------------------------------
 
-const styles: Record<string, React.CSSProperties> = {
+const styles = {
   page: {
     minHeight: '100vh',
     background: '#F1F5F9',
