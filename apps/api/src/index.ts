@@ -40,6 +40,7 @@ import inventoryRouter from "./routes/inventory.js";
 import communicationPrefsRouter from "./routes/communication-prefs.js";
 import webhooksStripeRouter from "./routes/webhooks-stripe.js";
 import checkoutRouter from "./routes/checkout.js";
+import saasBillingRouter from "./routes/saas-billing.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -103,6 +104,7 @@ app.use("/api/storage", storageRouter);
 app.use("/api/inventory", inventoryRouter);
 app.use("/api/communication-prefs", communicationPrefsRouter);
 app.use("/api/checkout", checkoutRouter);
+app.use("/api/saas-billing", saasBillingRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

@@ -151,25 +151,119 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
   if (!isNew) return;
 
   switch (event.type) {
-    case "checkout.session.completed":
-      // Fires when a tenant finishes onboarding to a Helm SaaS plan via
-      // Stripe Checkout. Wire to Tenant.saasTierId assignment when the SaaS
-      // subscription flow is implemented.
-      console.log(
-        `[stripe-webhook] platform checkout.session.completed: ${event.id}`,
-      );
+    case "checkout.session.completed": {
+      // Fires when a tenant completes Stripe Checkout for a SaaS subscription.
+      // Record the subscription id and tier on the tenant.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const tenantId = session.metadata?.tenantId ?? null;
+      const tierId = session.metadata?.tierId ?? null;
+      if (tenantId && session.subscription) {
+        await prisma.tenant.update({
+          where: { id: tenantId },
+          data: {
+            stripeSubscriptionId:
+              typeof session.subscription === "string"
+                ? session.subscription
+                : session.subscription.id,
+            ...(tierId ? { saasTierId: tierId } : {}),
+          },
+        });
+      }
       break;
+    }
 
     case "customer.subscription.created":
-    case "customer.subscription.updated":
-    case "customer.subscription.deleted":
+    case "customer.subscription.updated": {
+      const sub = event.data.object as Stripe.Subscription;
+      const tenantId = sub.metadata?.tenantId;
+      if (tenantId) {
+        await prisma.tenant.update({
+          where: { id: tenantId },
+          data: { stripeSubscriptionId: sub.id },
+        });
+      }
+      break;
+    }
+
+    case "customer.subscription.deleted": {
+      const sub = event.data.object as Stripe.Subscription;
+      const tenantId = sub.metadata?.tenantId;
+      if (tenantId) {
+        await prisma.tenant.update({
+          where: { id: tenantId },
+          data: {
+            stripeSubscriptionId: null,
+            saasTierId: null,
+          },
+        });
+      }
+      break;
+    }
+
+    case "invoice.payment_failed": {
+      // Grace policy: log and audit. Do NOT auto-lock the tenant; operators
+      // decide when to suspend. Mark gracePeriodStartedAt to track aging.
+      const invoice = event.data.object as Stripe.Invoice;
+      const customerId =
+        typeof invoice.customer === "string"
+          ? invoice.customer
+          : invoice.customer?.id;
+      if (customerId) {
+        const tenant = await prisma.tenant.findFirst({
+          where: { stripeCustomerId: customerId },
+          select: { id: true, gracePeriodStartedAt: true },
+        });
+        if (tenant) {
+          await prisma.tenant.update({
+            where: { id: tenant.id },
+            data: tenant.gracePeriodStartedAt
+              ? {}
+              : { gracePeriodStartedAt: new Date() },
+          });
+          await prisma.auditLog.create({
+            data: {
+              tenantId: tenant.id,
+              recordType: "Tenant",
+              recordId: tenant.id,
+              action: "SAAS_INVOICE_PAYMENT_FAILED",
+              changedFieldsJson: {
+                invoiceId: invoice.id,
+                amountDue: invoice.amount_due,
+                attemptCount: invoice.attempt_count,
+              },
+            },
+          });
+          // TODO(email): notify tenant admin via Resend.
+        }
+      }
+      break;
+    }
+
+    case "invoice.paid": {
+      // Clear any grace-period flag on the tenant when a subsequent invoice
+      // clears successfully.
+      const invoice = event.data.object as Stripe.Invoice;
+      const customerId =
+        typeof invoice.customer === "string"
+          ? invoice.customer
+          : invoice.customer?.id;
+      if (customerId) {
+        const tenant = await prisma.tenant.findFirst({
+          where: { stripeCustomerId: customerId },
+          select: { id: true, gracePeriodStartedAt: true },
+        });
+        if (tenant?.gracePeriodStartedAt) {
+          await prisma.tenant.update({
+            where: { id: tenant.id },
+            data: { gracePeriodStartedAt: null },
+          });
+        }
+      }
+      break;
+    }
+
     case "customer.subscription.trial_will_end":
-    case "invoice.paid":
-    case "invoice.payment_failed":
-      // Will update Tenant.status / saasTierId in the SaaS subscription step.
-      console.log(
-        `[stripe-webhook] platform ${event.type} for subscription lifecycle`,
-      );
+      // No trials today; noop.
       break;
 
     default:
