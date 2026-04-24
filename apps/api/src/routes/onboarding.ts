@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { stripe } from "../lib/stripe.js";
+import { requireStripe } from "../lib/stripe.js";
 
 const router = Router();
 
@@ -138,65 +138,94 @@ router.post("/:tenantId/branding", async (req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
-// POST /api/onboarding/:tenantId/stripe — Initiate Stripe Connect OAuth
+// POST /api/onboarding/:tenantId/stripe — Begin or resume Stripe onboarding
+// --------------------------------------------------------------------------
+// Uses Accounts v2 (Stripe's recommended API for new Connect platforms):
+//   - dashboard: "full"       → marina gets access to the real Stripe Dashboard
+//   - fees_collector: stripe  → marina pays Stripe processing fees directly
+//   - losses_collector: stripe → marina is liable for negative balances
+//   - merchant configuration + card_payments capability
+//
+// The marina pays Stripe fees and handles their own disputes/payouts.
+// Helm captures its cut per transaction via application_fee_amount.
+//
+// If Accounts v2 isn't yet enabled on the platform (request access in the
+// Stripe Dashboard under Connect > Platform setup), the create call will
+// error and the message is surfaced verbatim.
 // --------------------------------------------------------------------------
 router.post("/:tenantId/stripe", async (req, res, next) => {
   try {
     const { tenantId } = req.params;
 
-    // Verify tenant exists
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
     if (!tenant) {
       res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
       return;
     }
 
-    const clientId = process.env.STRIPE_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/onboarding/${tenantId}/stripe/callback`;
+    const s = requireStripe();
 
-    const oauthUrl =
-      `https://connect.stripe.com/oauth/authorize?` +
-      `response_type=code` +
-      `&client_id=${clientId}` +
-      `&scope=read_write` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&state=${tenantId}` +
-      `&stripe_landing=register`;
+    // If we don't have a connected account yet, create one.
+    let stripeAccountId = tenant.stripeAccountId;
+    if (!stripeAccountId) {
+      // Stripe's v2 Accounts API is reached via stripe.v2.core.accounts.
+      // The TypeScript SDK may mark this as unknown until v2 support ships;
+      // cast to call it.
+      const v2 = (s as unknown as {
+        v2: {
+          core: {
+            accounts: {
+              create: (params: Record<string, unknown>) => Promise<{ id: string }>;
+            };
+          };
+        };
+      }).v2;
 
-    res.json({ url: oauthUrl });
-  } catch (err) {
-    next(err);
-  }
-});
+      const account = await v2.core.accounts.create({
+        contact_email: req.body?.ownerEmail ?? undefined,
+        display_name: tenant.name,
+        dashboard: "full",
+        identity: {
+          country: req.body?.country ?? "us",
+          entity_type: req.body?.entityType ?? "company",
+          business_details: { registered_name: tenant.name },
+        },
+        configuration: {
+          merchant: {
+            capabilities: {
+              card_payments: { requested: true },
+            },
+          },
+        },
+        defaults: {
+          currency: "usd",
+          responsibilities: {
+            fees_collector: "stripe",
+            losses_collector: "stripe",
+          },
+          locales: ["en-US"],
+        },
+      });
 
-// --------------------------------------------------------------------------
-// GET /api/onboarding/:tenantId/stripe/callback — Stripe Connect callback
-// --------------------------------------------------------------------------
-router.get("/:tenantId/stripe/callback", async (req, res, next) => {
-  try {
-    const { tenantId } = req.params;
-    const { code } = req.query;
+      stripeAccountId = account.id;
 
-    if (!code || typeof code !== "string") {
-      res.status(400).json({ error: "Missing authorization code" });
-      return;
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { stripeAccountId },
+      });
     }
 
-    // Exchange authorization code for connected account ID
-    const response = await stripe.oauth.token({
-      grant_type: "authorization_code",
-      code,
+    // Hand the marina a hosted onboarding URL. AccountLinks accepts the v2
+    // account id; Stripe renders its own onboarding flow.
+    const appUrl = process.env.APP_URL ?? "http://localhost:5000";
+    const link = await s.accountLinks.create({
+      account: stripeAccountId,
+      refresh_url: `${appUrl}/settings/stripe?refresh=true`,
+      return_url: `${appUrl}/settings/stripe?success=true`,
+      type: "account_onboarding",
     });
 
-    const stripeAccountId = response.stripe_user_id;
-
-    // Store connected account ID on tenant
-    const tenant = await prisma.tenant.update({
-      where: { id: tenantId },
-      data: { stripe_account_id: stripeAccountId },
-    });
-
-    res.json({ success: true, stripeAccountId, tenant });
+    res.json({ url: link.url, stripeAccountId });
   } catch (err) {
     next(err);
   }
@@ -368,7 +397,7 @@ router.get("/:tenantId/status", async (req, res, next) => {
       !!branding && typeof branding === "object" && !!branding.marinaName;
 
     // Check Stripe
-    const stripeConnected = !!(tenant as Record<string, unknown>).stripe_account_id;
+    const stripeConnected = !!tenant.stripeAccountId;
 
     // Check QBO
     const qboConnected = !!(tenant as Record<string, unknown>).qbo_realm_id;

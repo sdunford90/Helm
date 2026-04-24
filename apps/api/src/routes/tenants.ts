@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
-import { stripe } from "../lib/stripe.js";
 
 const router = Router();
 
@@ -94,26 +93,12 @@ router.put("/:id", ...clerkAuth(), requireRole("admin"), async (req, res, next) 
 });
 
 // --------------------------------------------------------------------------
-// POST /api/tenants/:id/stripe/connect — initiate Stripe Connect OAuth
-// --------------------------------------------------------------------------
-router.post("/:id/stripe/connect", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
-  try {
-    const accountLink = await stripe.accountLinks.create({
-      account: req.params.id, // Will be the connected account id stored on tenant
-      refresh_url: `${process.env.APP_URL}/settings/stripe?refresh=true`,
-      return_url: `${process.env.APP_URL}/settings/stripe?success=true`,
-      type: "account_onboarding",
-    });
-
-    res.json({ url: accountLink.url });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// --------------------------------------------------------------------------
 // POST /api/tenants/:id/qbo/connect — initiate QuickBooks Online OAuth
 // --------------------------------------------------------------------------
+// NOTE: Stripe Connect onboarding now lives at
+// POST /api/onboarding/:tenantId/stripe (Accounts v2). The previous
+// AccountLinks call here passed the Helm tenant UUID instead of a Stripe
+// acct_… id and always 400'd.
 router.post("/:id/qbo/connect", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
   try {
     const clientId = process.env.QBO_CLIENT_ID;
