@@ -201,7 +201,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/ui-kit
       '@stripe/react-stripe-js':
-        specifier: ^3.9.0
+        specifier: ^3.10.0
         version: 3.10.0(@stripe/stripe-js@7.9.0)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@stripe/stripe-js':
         specifier: ^7.9.0

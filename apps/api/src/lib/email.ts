@@ -1,10 +1,16 @@
 import { Resend } from "resend";
 
 // --------------------------------------------------------------------------
-// Resend client
+// Resend client — lazily initialised so the API boots without the key set
 // --------------------------------------------------------------------------
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let _resend: Resend | null = null;
+function getResend(): Resend | null {
+  if (_resend) return _resend;
+  if (!process.env.RESEND_API_KEY) return null;
+  _resend = new Resend(process.env.RESEND_API_KEY);
+  return _resend;
+}
 
 // --------------------------------------------------------------------------
 // Core send helper
@@ -32,8 +38,14 @@ export async function sendEmail(
     options.from ||
     (marinaDomain ? `billing@${marinaDomain}` : "noreply@gethelm.com");
 
+  const client = getResend();
+  if (!client) {
+    console.warn("[email] RESEND_API_KEY not set — email not sent:", options.subject);
+    return null;
+  }
+
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await client.emails.send({
       from,
       to: Array.isArray(options.to) ? options.to : [options.to],
       subject: options.subject,
