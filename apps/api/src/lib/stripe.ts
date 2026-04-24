@@ -1,16 +1,18 @@
 import Stripe from "stripe";
 
+// Pinned to a known-tested Stripe API version. Bump deliberately after
+// reviewing the upgrade guide.
+export const STRIPE_API_VERSION = "2026-03-25.dahlia" as const;
+
 // Stripe is optional — routes that require it should check before use.
 export const stripe: Stripe | null = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, {
-      apiVersion: "2024-12-18.acacia" as Stripe.LatestApiVersion,
+      // Cast needed because the exact version type isn't exported as a named alias in v22.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      apiVersion: STRIPE_API_VERSION as any,
       typescript: true,
     })
   : null;
-
-// --------------------------------------------------------------------------
-// Helpers — each guard-checks that stripe is initialised
-// --------------------------------------------------------------------------
 
 export function requireStripe(): Stripe {
   if (!stripe) {
@@ -21,6 +23,7 @@ export function requireStripe(): Stripe {
 
 /**
  * Create a PaymentIntent on a connected account with an application fee.
+ * Kept for callers that haven't yet migrated to Checkout Sessions.
  */
 export async function createPaymentIntent(
   amount: number,
