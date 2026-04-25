@@ -1,0 +1,291 @@
+# Multi-Jurisdiction Sales Tax + ASC 606 Revenue Recognition
+
+## Context
+
+Two related decisions drive this plan:
+
+1. **Sales tax**: today's `services/tax-engine.ts` reads tax rates from a JSON
+   blob on `tenant.invoiceTemplateJson.taxRates` and only ever applies a
+   *single* rate per line item. Real US marinas owe state + county + city
+   sales tax stacked together (e.g. 6% FL state + 1% Hillsborough county =
+   7%) and have to file with each authority separately. We need a real
+   schema, additive stacking, per-Location origin assignment, per-jurisdiction
+   GL posting, and a report we can hand to a tax preparer.
+
+2. **Revenue recognition**: we are explicitly NOT migrating to Stripe Revenue
+   Recognition. Keep `services/deferred-revenue.ts`. Close the ASC 606 gaps
+   that block real accountant use: daily straight-line recognition (not just
+   monthly even-split), restatement / correction flow, and waterfall + period
+   summary reports.
+
+Both are P0/P1 items on the MVP backlog. Tax-by-jurisdiction is a launch
+blocker for any tenant whose state has anything other than a flat sales tax;
+ASC 606 polish is needed before the first audit-credible monthly close.
+
+## Constraints
+
+- Origin-based jurisdiction (the marina's Location), not destination-based.
+  Each Location has a stack of jurisdictions; same Location → same stack
+  for every customer.
+- OSS-first. No Avalara / TaxJar / Stripe Tax.
+- All mutations through versioned migrations (`pnpm db:migrate:dev`).
+- Backwards-compatible with existing invoices: keep `InvoiceLineItem.taxCents`
+  and `taxRate` populated as the sum / weighted-average so old reports keep
+  working.
+
+## Recommended approach
+
+### Tax — Phase 1
+
+**Schema** (`apps/api/prisma/schema.prisma`, new migration
+`<timestamp>_tax_jurisdictions`):
+
+```prisma
+enum JurisdictionKind { STATE COUNTY CITY SPECIAL }
+
+model TaxJurisdiction {
+  id        String           @id @default(uuid())
+  tenantId  String
+  code      String           // "FL", "FL-HILLSBOROUGH", "FL-TAMPA"
+  name      String
+  kind      JurisdictionKind
+  rates     TaxRate[]
+  locationLinks LocationTaxJurisdiction[]
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("tax_jurisdictions")
+}
+
+model TaxRate {
+  id              String   @id @default(uuid())
+  tenantId        String
+  jurisdictionId  String
+  category        String   // "general" | "slip_rental" | "electricity" | "fuel" | "retail"
+  ratePctBps      Int      // basis points: 600 = 6.00%
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+  glAccountId     String?  // separate Sales Tax Payable per jurisdiction
+  jurisdiction    TaxJurisdiction @relation(fields: [jurisdictionId], references: [id])
+  @@index([tenantId])
+  @@index([jurisdictionId, effectiveFrom])
+  @@map("tax_rates")
+}
+
+model LocationTaxJurisdiction {
+  id              String @id @default(uuid())
+  tenantId        String
+  locationId      String
+  jurisdictionId  String
+  sortOrder       Int    @default(0)
+  jurisdiction    TaxJurisdiction @relation(fields: [jurisdictionId], references: [id])
+  @@unique([locationId, jurisdictionId])
+  @@map("location_tax_jurisdictions")
+}
+
+model InvoiceLineItemTax {
+  id             String @id @default(uuid())
+  tenantId       String
+  lineItemId     String
+  jurisdictionId String
+  ratePctBps     Int
+  taxableCents   Int
+  taxCents       Int
+  lineItem       InvoiceLineItem @relation(fields: [lineItemId], references: [id])
+  @@index([tenantId])
+  @@index([jurisdictionId])
+  @@index([lineItemId])
+  @@map("invoice_line_item_tax")
+}
+```
+
+**Engine rewrite** (`apps/api/src/services/tax-engine.ts`):
+
+Public signature:
+```ts
+calculateTax({
+  tenantId: string;
+  locationId: string;
+  customerId: string;
+  asOfDate?: Date;
+  lineItems: TaxLineItem[];
+}): Promise<TaxResult>
+```
+
+Algorithm:
+1. Resolve jurisdictions for the Location via `LocationTaxJurisdiction`,
+   ordered by `sortOrder`.
+2. For each line item:
+   - Look up `TaxRate` rows for each jurisdiction matching:
+     `category === li.taxCategory` (with fallback to `"general"`),
+     `effectiveFrom <= asOfDate AND (effectiveTo IS NULL OR effectiveTo > asOfDate)`.
+   - Apply each rate **additively** to the same taxable base:
+     `taxCents += round(amountCents * ratePctBps / 10_000)`.
+   - Emit one `TaxBreakdown` per jurisdiction.
+3. Customer-level exempt check stays as today (`Customer.taxExempt` +
+   `exemptionExpiry`). Returns 0 across all jurisdictions if exempt.
+4. Total = sum of breakdowns. The `taxRate` field on the result becomes the
+   effective stacked rate (sum of all bps / 10_000) for backwards compat.
+
+**Billing integration** (`apps/api/src/services/billing.ts`):
+- Pass `locationId` to `calculateTax`. Source: `contract.slip.dock.locationId`
+  (chase the relation chain). Add `dockId` and `Dock.locationId` selects to
+  the existing `findMany` include block.
+- After invoice + line items insert in the existing transaction, also insert
+  `InvoiceLineItemTax` rows for each breakdown so the report can group by
+  jurisdiction without re-running the calculation.
+
+**GL posting** (`apps/api/src/services/gl-posting.ts`):
+- Modify `postInvoice` to take per-jurisdiction tax breakdown and credit
+  each jurisdiction's `glAccountId` separately (debit A/R total).
+- When `TaxRate.glAccountId` is null, fall back to a single
+  "Sales Tax Payable" account — keeps the system functional during transition.
+
+**Default GL seed update**
+(`apps/api/src/services/tenant-provisioning.ts`): replace the single
+`2400 Sales Tax Payable` with three:
+- `2401 State Sales Tax Payable`
+- `2402 County Sales Tax Payable`
+- `2403 City Sales Tax Payable`
+
+**Reporting**: `GET /api/reports/sales-tax?dateFrom=&dateTo=&locationId=`
+returns rows grouped by jurisdiction with taxable amount + tax owed.
+SQL: `SELECT jurisdictionId, SUM(taxableCents), SUM(taxCents) FROM
+invoice_line_item_tax JOIN invoice WHERE invoice.issuedDate BETWEEN
+:from AND :to GROUP BY jurisdictionId`. Lives in `routes/reports.ts`
+(existing file).
+
+**Admin UI** (`apps/web/src/pages/SettingsTaxRates.tsx`, new route
+`/settings/tax-rates`): three sections — Jurisdictions CRUD, Rates CRUD
+(filtered by selected jurisdiction), Location assignment (multi-select
+jurisdictions + ordering per Location). Backed by a new
+`apps/api/src/routes/tax.ts` router.
+
+### Rev rec — Phase 2 (ASC 606 gaps)
+
+**Schema**:
+```prisma
+enum RecognitionMethod { MONTHLY_EVEN DAILY_STRAIGHT_LINE }
+
+// Add to existing DeferredSchedule:
+//   recognitionMethod RecognitionMethod @default(MONTHLY_EVEN)
+
+model RevRecRestatement {
+  id              String   @id @default(uuid())
+  tenantId        String
+  originalEntryId String
+  newAmountCents  Int
+  reason          String
+  postedBy        String
+  postedAt        DateTime @default(now())
+  reversalGlJournalId String
+  newGlJournalId      String
+  @@index([tenantId])
+  @@map("rev_rec_restatements")
+}
+```
+
+**Engine additions** (`apps/api/src/services/deferred-revenue.ts`):
+
+1. `createDeferredSchedule` accepts `recognitionMethod`. For
+   `DAILY_STRAIGHT_LINE`, generate one entry per recognition period (still
+   monthly buckets for GL, but allocation = `round(totalCents *
+   daysInMonth / totalDays)` so February ≠ March in dollar terms.
+2. New `restateDeferredEntry({ entryId, newAmountCents, reason, postedBy })`:
+   - Post a reversal GL journal for the original amount.
+   - Post a new GL journal for `newAmountCents`.
+   - Insert `RevRecRestatement` linking both.
+   - Update the `DeferredEntry.amountCents` and the schedule's
+     `recognizedCents` accordingly.
+
+**Reports** (extend `routes/reports.ts`):
+- `GET /api/reports/rev-rec/waterfall?from=&to=` — month-by-month grid:
+  rows = invoices, columns = months, cells = recognized amount.
+- `GET /api/reports/rev-rec/period-summary?period=YYYY-MM` — recognized in
+  period, deferred opening balance, deferred closing balance, additions,
+  recognitions, restatements.
+
+**Cron**: schedule `recognizeDeferred(tenantId)` nightly via the existing
+BullMQ `renewals` queue (it already runs daily per tenant — add a second
+job kind there) OR a new `revrec` queue.
+
+## Critical files
+
+**Modify**:
+- `apps/api/prisma/schema.prisma` — five new models, one enum, schedule
+  field addition
+- `apps/api/src/services/tax-engine.ts` — full rewrite of `calculateTax`,
+  remove the JSON-blob `getTaxRates`
+- `apps/api/src/services/billing.ts:179-188, 199-220` — pass `locationId`,
+  persist `InvoiceLineItemTax`
+- `apps/api/src/services/gl-posting.ts:163-205` (`postInvoice`) — per-jurisdiction
+  posting
+- `apps/api/src/services/tenant-provisioning.ts:21-46` (`DEFAULT_GL_ACCOUNTS`)
+  — split sales tax accounts
+- `apps/api/src/services/deferred-revenue.ts` — daily straight-line +
+  restatement
+- `apps/api/src/routes/reports.ts` — three new endpoints
+- `apps/api/src/jobs/renewal-job.ts` — cron the rev-rec recognition job
+
+**New**:
+- `apps/api/prisma/migrations/<ts>_tax_jurisdictions/migration.sql`
+- `apps/api/prisma/migrations/<ts>_revrec_asc606/migration.sql`
+- `apps/api/src/routes/tax.ts` (admin CRUD for jurisdictions + rates +
+  Location links)
+- `apps/web/src/pages/SettingsTaxRates.tsx`
+- `apps/web/src/pages/ReportsSalesTax.tsx`
+- `apps/web/src/pages/ReportsRevRec.tsx`
+
+**Existing utilities to reuse**:
+- `seedChartOfAccounts` (`services/tenant-provisioning.ts`) — add the three
+  tax accounts there.
+- `appError` and the standardized error shape from `middleware/error.ts`.
+- `useApi` hook in web app for the new admin pages.
+
+## Verification
+
+1. **Tax engine unit tests** (`apps/api/tests/services/tax-engine.test.ts`):
+   - 6% state + 1% county + 0.5% city on $100 → expect $7.50 total,
+     3 breakdown rows summing exactly.
+   - Customer with `taxExempt=true` → 0 across all jurisdictions.
+   - Rate with `effectiveTo` in the past → ignored; new rate with
+     `effectiveFrom` today → applied.
+   - Category fallback: `slip_rental` rate exists for state, not for county →
+     county uses `general` rate.
+   - Rounding: ten line items at $0.99 with 7.5% should sum to the same
+     total whether computed line-by-line or in aggregate (off-by-cent test).
+
+2. **Rev rec unit tests** (`apps/api/tests/services/deferred-revenue.test.ts`):
+   - `DAILY_STRAIGHT_LINE` for $300 over Sept (30d): each Sept day gets $10;
+     for $300 over Feb (28d) and Mar (31d): Feb gets `28/59 * 300`, Mar gets
+     `31/59 * 300`, sum equals $300.
+   - `restateDeferredEntry` posts reversal + new GL journals; sum of GL
+     entries for the schedule still balances.
+
+3. **End-to-end**:
+   - Create a Location, attach 3 jurisdictions, set rates.
+   - Generate a recurring invoice via `generateRecurringInvoices`.
+   - Confirm: 3 `InvoiceLineItemTax` rows per taxable line, GL credits
+     3 separate liability accounts, total invoice tax matches sum.
+   - `GET /api/reports/sales-tax` returns 3 rows grouped by jurisdiction
+     with correct totals.
+   - Run nightly recognition job → confirm `RECOGNIZED` entries match
+     billing schedule, waterfall report renders matching numbers.
+   - Terminate the contract mid-cycle → confirm `washoutDeferred`
+     recognizes earned + washes out future without double-counting.
+
+4. **Migration safety**: drop the old `tenant.invoiceTemplateJson.taxRates`
+   read path only after a backfill script copies any existing JSON-config
+   rates into the new tables (one-time script in
+   `apps/api/prisma/seed/migrate-tax-rates.ts`).
+
+## Phasing
+
+**P0 (this work)**: tax schema + engine + breakdown persistence + per-jurisdiction
+GL + sales-tax report + admin UI. Migration + backfill script.
+
+**P1 (next round)**: rev rec daily straight-line + restatement + waterfall +
+period summary + nightly cron wiring.
+
+**P2 (post-MVP)**: per-jurisdiction customer exemption (govt buyer pays state
+not county), automatic period close (lock prior periods), Performance
+Obligation splitting on multi-PO invoices, multi-currency.
