@@ -889,4 +889,98 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/sales-tax ───────────────────────────────────────────────────
+//
+// Aggregates InvoiceLineItemTax rows (with jurisdiction info) for the given
+// date range.  Results are grouped by jurisdiction and include a grand-total
+// row for easy export.
+//
+// Query params: startDate, endDate (ISO 8601 date strings, inclusive)
+
+router.get("/sales-tax", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    // Pull all InvoiceLineItemTax rows for the period, joined via lineItem →
+    // invoice to filter by issuedDate.
+    const taxRows = await prisma.invoiceLineItemTax.findMany({
+      where: {
+        tenantId,
+        lineItem: {
+          invoice: {
+            issuedDate: { gte: startDate, lte: endDate },
+            status: { not: "VOID" },
+          },
+        },
+      },
+      include: {
+        jurisdiction: { select: { id: true, code: true, name: true, kind: true } },
+        lineItem: {
+          select: {
+            invoice: {
+              select: { id: true, invoiceNumber: true, issuedDate: true },
+            },
+          },
+        },
+      },
+    });
+
+    // Group by jurisdiction
+    type JurisdictionSummary = {
+      jurisdictionId: string;
+      code: string;
+      name: string;
+      kind: string;
+      invoiceCount: number;
+      taxableCents: number;
+      taxCents: number;
+    };
+
+    const byJurisdiction = new Map<string, JurisdictionSummary>();
+    const invoiceIds = new Set<string>();
+
+    for (const row of taxRows) {
+      const key = row.jurisdictionId;
+      invoiceIds.add(row.lineItem.invoice.id);
+
+      const existing = byJurisdiction.get(key);
+      if (existing) {
+        existing.taxableCents += row.taxableCents;
+        existing.taxCents += row.taxCents;
+        existing.invoiceCount += 1;
+      } else {
+        byJurisdiction.set(key, {
+          jurisdictionId: row.jurisdictionId,
+          code: row.jurisdiction.code,
+          name: row.jurisdiction.name,
+          kind: row.jurisdiction.kind,
+          invoiceCount: 1,
+          taxableCents: row.taxableCents,
+          taxCents: row.taxCents,
+        });
+      }
+    }
+
+    const jurisdictions = Array.from(byJurisdiction.values()).sort(
+      (a, b) => a.kind.localeCompare(b.kind) || a.code.localeCompare(b.code),
+    );
+
+    const totalTaxableCents = jurisdictions.reduce((s, j) => s + j.taxableCents, 0);
+    const totalTaxCents = jurisdictions.reduce((s, j) => s + j.taxCents, 0);
+
+    res.json({
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      totalInvoices: invoiceIds.size,
+      totalTaxableCents,
+      totalTaxCents,
+      jurisdictions,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
+

@@ -60,6 +60,7 @@ export async function generateRecurringInvoices(
         select: {
           id: true,
           slipNumber: true,
+          locationId: true,
           electricityMode: true,
           flatFeeCents: true,
           kwhRateCents: true,
@@ -176,16 +177,17 @@ export async function generateRecurringInvoices(
 
       if (lineItems.length === 0) continue;
 
-      // 3. Calculate tax
-      const taxResult = await calculateTax(
+      // 3. Calculate tax (multi-jurisdiction)
+      const taxResult = await calculateTax({
         tenantId,
-        contract.customerId,
-        lineItems.map((li) => ({
+        locationId: contract.slip.locationId,
+        customerId: contract.customerId,
+        lineItems: lineItems.map((li) => ({
           description: li.description,
           amountCents: li.unitPriceCents * li.quantity,
           taxCategory: li.taxCategory,
         })),
-      );
+      });
 
       // 4. Create invoice in a transaction
       const invoiceId = uuid();
@@ -242,13 +244,45 @@ export async function generateRecurringInvoices(
           include: { lineItems: true },
         });
 
-        // Post GL entries
+        // Persist per-jurisdiction tax breakdown rows for reporting
+        const lineItemTaxRows: {
+          id: string;
+          tenantId: string;
+          lineItemId: string;
+          jurisdictionId: string;
+          ratePctBps: number;
+          taxableCents: number;
+          taxCents: number;
+        }[] = [];
+
+        inv.lineItems.forEach((dbLi, idx) => {
+          const breakdowns = taxResult.items[idx]?.breakdowns ?? [];
+          for (const bd of breakdowns) {
+            lineItemTaxRows.push({
+              id: uuid(),
+              tenantId,
+              lineItemId: dbLi.id,
+              jurisdictionId: bd.jurisdictionId,
+              ratePctBps: bd.ratePctBps,
+              taxableCents: bd.taxableAmountCents,
+              taxCents: bd.taxCents,
+            });
+          }
+        });
+
+        if (lineItemTaxRows.length > 0) {
+          await tx.invoiceLineItemTax.createMany({ data: lineItemTaxRows });
+        }
+
+        // Post GL entries (with per-jurisdiction tax breakdowns)
+        const allBreakdowns = taxResult.items.flatMap((item) => item.breakdowns);
         await postInvoice(
           {
             id: inv.id,
             tenantId,
             totalCents: inv.totalCents,
             lineItems: inv.lineItems,
+            taxBreakdowns: allBreakdowns,
           },
           tx,
         );

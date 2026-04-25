@@ -87,6 +87,10 @@ const ACCOUNTS = {
   CASH: "1000",
   BANK: "1010",
   DEFERRED_REVENUE: "2400",
+  SALES_TAX_PAYABLE: "2400",
+  STATE_TAX_PAYABLE: "2401",
+  COUNTY_TAX_PAYABLE: "2402",
+  CITY_TAX_PAYABLE: "2403",
   SECURITY_DEPOSITS_HELD: "2300",
   SLIP_RENTAL_REVENUE: "4000",
   ELECTRICITY_REVENUE: "4100",
@@ -98,6 +102,14 @@ const ACCOUNTS = {
 // ---------------------------------------------------------------------------
 // Invoice posting
 // ---------------------------------------------------------------------------
+
+interface TaxBreakdownInput {
+  jurisdictionId: string;
+  jurisdictionCode: string;
+  kind: string;
+  taxCents: number;
+  glAccountId: string | null;
+}
 
 export async function postInvoice(
   invoice: {
@@ -111,6 +123,11 @@ export async function postInvoice(
       glAccountId?: string | null;
       isDeferred: boolean;
     }[];
+    /** Per-jurisdiction tax breakdowns from the tax engine. When provided,
+     *  revenue and tax are posted to separate accounts.  When absent (old
+     *  invoices / no location configured), the existing lumped behaviour is
+     *  preserved for backwards compat. */
+    taxBreakdowns?: TaxBreakdownInput[];
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
@@ -128,28 +145,86 @@ export async function postInvoice(
     description: `Invoice ${invoice.id} — A/R`,
   });
 
-  // Credit: Revenue (or deferred revenue) for each line item
-  for (const li of invoice.lineItems) {
-    const lineTotal = li.extendedCents + li.taxCents;
-    if (lineTotal === 0) continue;
+  const hasJurisdictionBreakdowns =
+    invoice.taxBreakdowns && invoice.taxBreakdowns.length > 0;
 
-    if (li.isDeferred && deferredAccountId) {
+  if (hasJurisdictionBreakdowns) {
+    // ── New path: separate revenue from tax liabilities ──────────────────
+    // Credit revenue accounts for extendedCents only (tax is posted separately)
+    for (const li of invoice.lineItems) {
+      if (li.extendedCents === 0) continue;
+
+      if (li.isDeferred && deferredAccountId) {
+        lines.push({
+          accountId: deferredAccountId,
+          debitCents: 0,
+          creditCents: li.extendedCents,
+          description: `Invoice ${invoice.id} — deferred revenue`,
+        });
+      } else {
+        const revenueAccountId = li.glAccountId
+          ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        lines.push({
+          accountId: revenueAccountId,
+          debitCents: 0,
+          creditCents: li.extendedCents,
+          description: `Invoice ${invoice.id} — revenue`,
+        });
+      }
+    }
+
+    // Credit per-jurisdiction Sales Tax Payable accounts
+    // Group by glAccountId so we don't issue one createMany entry per line item
+    const taxByAccount = new Map<string | null, number>();
+    for (const bd of invoice.taxBreakdowns!) {
+      const key = bd.glAccountId ?? null;
+      taxByAccount.set(key, (taxByAccount.get(key) ?? 0) + bd.taxCents);
+    }
+
+    for (const [glAccountId, taxCents] of taxByAccount) {
+      if (taxCents === 0) continue;
+
+      let taxAccountId: string;
+      if (glAccountId) {
+        // TaxRate has a specific GL account configured
+        taxAccountId = glAccountId;
+      } else {
+        // Fall back to 2400 Sales Tax Payable
+        taxAccountId = await getAccountByNumber(tenantId, ACCOUNTS.SALES_TAX_PAYABLE, tx).catch(async () =>
+          getAccountByNumber(tenantId, ACCOUNTS.STATE_TAX_PAYABLE, tx),
+        );
+      }
+
       lines.push({
-        accountId: deferredAccountId,
+        accountId: taxAccountId,
         debitCents: 0,
-        creditCents: lineTotal,
-        description: `Invoice ${invoice.id} — deferred revenue`,
+        creditCents: taxCents,
+        description: `Invoice ${invoice.id} — sales tax`,
       });
-    } else {
-      // Use the line item's GL account or fall back to general revenue
-      const revenueAccountId = li.glAccountId
-        ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
-      lines.push({
-        accountId: revenueAccountId,
-        debitCents: 0,
-        creditCents: lineTotal,
-        description: `Invoice ${invoice.id} — revenue`,
-      });
+    }
+  } else {
+    // ── Legacy path: lump revenue + tax together ─────────────────────────
+    for (const li of invoice.lineItems) {
+      const lineTotal = li.extendedCents + li.taxCents;
+      if (lineTotal === 0) continue;
+
+      if (li.isDeferred && deferredAccountId) {
+        lines.push({
+          accountId: deferredAccountId,
+          debitCents: 0,
+          creditCents: lineTotal,
+          description: `Invoice ${invoice.id} — deferred revenue`,
+        });
+      } else {
+        const revenueAccountId = li.glAccountId
+          ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        lines.push({
+          accountId: revenueAccountId,
+          debitCents: 0,
+          creditCents: lineTotal,
+          description: `Invoice ${invoice.id} — revenue`,
+        });
+      }
     }
   }
 

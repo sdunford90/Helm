@@ -1,79 +1,58 @@
 import { prisma } from "../lib/prisma.js";
 
 // ---------------------------------------------------------------------------
-// Sales Tax Engine
+// Multi-Jurisdiction Sales Tax Engine
 //
-// Tax rates are stored per-tenant in the gl_accounts / tenant config.  Until a
-// dedicated TaxRate model is added we store rates in a JSON config column or
-// use a lightweight in-memory lookup seeded from the database.  This module
-// provides the public API that invoice creation calls.
+// Tax rates live in TaxJurisdiction / TaxRate / LocationTaxJurisdiction tables.
+// A Location carries a stack of jurisdictions ordered by sortOrder.  Each line
+// item is taxed additively across every jurisdiction in the stack.
+//
+// Basis-point storage: 600 bps = 6.00%.  Integer arithmetic throughout.
 // ---------------------------------------------------------------------------
 
 export interface TaxLineItem {
+  id?: string;
   description: string;
   amountCents: number;
-  /** Tax category / class — e.g. "slip_rental", "electricity", "general" */
   taxCategory?: string;
 }
 
 export interface TaxBreakdown {
+  jurisdictionId: string;
+  jurisdictionCode: string;
+  jurisdictionName: string;
+  kind: string;
+  ratePctBps: number;
   taxableAmountCents: number;
-  taxRate: number;
   taxCents: number;
+  glAccountId: string | null;
+  taxRate: number;
   jurisdiction: string;
   category: string;
 }
 
+export interface TaxResultItem {
+  description: string;
+  taxRate: number;
+  taxCents: number;
+  breakdowns: TaxBreakdown[];
+}
+
 export interface TaxResult {
-  /** Total tax across all line items */
   totalTaxCents: number;
-  /** Per-item breakdown */
-  items: {
-    description: string;
-    taxRate: number;
-    taxCents: number;
-    breakdowns: TaxBreakdown[];
-  }[];
+  items: TaxResultItem[];
 }
 
-// Default tax rate when no tenant-specific config is found (0%)
-const DEFAULT_TAX_RATE = 0;
+const DEFAULT_TAX_RESULT = (lineItems: TaxLineItem[]): TaxResult => ({
+  totalTaxCents: 0,
+  items: lineItems.map((li) => ({
+    description: li.description,
+    taxRate: 0,
+    taxCents: 0,
+    breakdowns: [],
+  })),
+});
 
-/**
- * Retrieve configured tax rates for a tenant.
- *
- * In a production system these would come from a `tax_rates` table with
- * jurisdiction, category, effective dates, etc.  For now we look for a JSON
- * column on the tenant or fall back to a sensible default.
- */
-export async function getTaxRates(
-  tenantId: string,
-): Promise<{ jurisdiction: string; category: string; rate: number }[]> {
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: { invoiceTemplateJson: true },
-  });
-
-  // Convention: tenant.invoiceTemplateJson.taxRates is an array of
-  // { jurisdiction, category, rate } objects.
-  const cfg = tenant?.invoiceTemplateJson as Record<string, unknown> | null;
-  if (cfg && Array.isArray(cfg.taxRates)) {
-    return cfg.taxRates as {
-      jurisdiction: string;
-      category: string;
-      rate: number;
-    }[];
-  }
-
-  // Fallback — no configured rates, everything at 0%
-  return [
-    { jurisdiction: "default", category: "general", rate: DEFAULT_TAX_RATE },
-  ];
-}
-
-/**
- * Check whether a customer is tax-exempt and that the exemption has not expired.
- */
 export async function checkTaxExempt(
   customerId: string,
   tenantId: string,
@@ -83,80 +62,148 @@ export async function checkTaxExempt(
     select: { taxExempt: true, exemptionExpiry: true },
   });
 
-  if (!customer) return false;
-  if (!customer.taxExempt) return false;
-
-  // If there is an expiry date and it has passed, the exemption is invalid
-  if (customer.exemptionExpiry && customer.exemptionExpiry < new Date()) {
-    return false;
-  }
-
+  if (!customer?.taxExempt) return false;
+  if (customer.exemptionExpiry && customer.exemptionExpiry < new Date()) return false;
   return true;
 }
 
 /**
- * Calculate tax for a set of line items.
+ * Calculate tax for a set of line items using the jurisdiction stack
+ * assigned to the given Location.
  *
- * @param tenantId   - tenant scope
- * @param customerId - used for exemption check
- * @param lineItems  - items to tax
+ * Falls back gracefully to 0% when no location or no rates are configured.
  */
+export async function calculateTax(params: {
+  tenantId: string;
+  locationId?: string | null;
+  customerId: string;
+  asOfDate?: Date;
+  lineItems: TaxLineItem[];
+}): Promise<TaxResult>;
+
+/** Legacy 3-argument overload for backwards-compat with billing.ts callers. */
 export async function calculateTax(
   tenantId: string,
   customerId: string,
   lineItems: TaxLineItem[],
-): Promise<TaxResult> {
-  const isExempt = await checkTaxExempt(customerId, tenantId);
+): Promise<TaxResult>;
 
-  if (isExempt) {
-    return {
-      totalTaxCents: 0,
-      items: lineItems.map((li) => ({
-        description: li.description,
-        taxRate: 0,
-        taxCents: 0,
-        breakdowns: [],
-      })),
-    };
+export async function calculateTax(
+  paramsOrTenantId:
+    | {
+        tenantId: string;
+        locationId?: string | null;
+        customerId: string;
+        asOfDate?: Date;
+        lineItems: TaxLineItem[];
+      }
+    | string,
+  customerId?: string,
+  lineItems?: TaxLineItem[],
+): Promise<TaxResult> {
+  let tenantId: string;
+  let locationId: string | null | undefined;
+  let resolvedCustomerId: string;
+  let resolvedLineItems: TaxLineItem[];
+  let asOfDate: Date;
+
+  if (typeof paramsOrTenantId === "string") {
+    tenantId = paramsOrTenantId;
+    resolvedCustomerId = customerId!;
+    resolvedLineItems = lineItems!;
+    locationId = null;
+    asOfDate = new Date();
+  } else {
+    tenantId = paramsOrTenantId.tenantId;
+    locationId = paramsOrTenantId.locationId;
+    resolvedCustomerId = paramsOrTenantId.customerId;
+    resolvedLineItems = paramsOrTenantId.lineItems;
+    asOfDate = paramsOrTenantId.asOfDate ?? new Date();
   }
 
-  const rates = await getTaxRates(tenantId);
+  if (!resolvedLineItems.length) return DEFAULT_TAX_RESULT(resolvedLineItems);
+
+  const isExempt = await checkTaxExempt(resolvedCustomerId, tenantId);
+  if (isExempt) return DEFAULT_TAX_RESULT(resolvedLineItems);
+
+  // Load jurisdiction stack for the location, ordered by sortOrder
+  const locationLinks = locationId
+    ? await prisma.locationTaxJurisdiction.findMany({
+        where: { locationId, tenantId },
+        orderBy: { sortOrder: "asc" },
+        include: {
+          jurisdiction: {
+            include: {
+              rates: {
+                where: {
+                  tenantId,
+                  effectiveFrom: { lte: asOfDate },
+                  OR: [
+                    { effectiveTo: null },
+                    { effectiveTo: { gt: asOfDate } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+  if (!locationLinks.length) return DEFAULT_TAX_RESULT(resolvedLineItems);
 
   let totalTaxCents = 0;
 
-  const items = lineItems.map((li) => {
+  const items: TaxResultItem[] = resolvedLineItems.map((li) => {
     const category = li.taxCategory ?? "general";
+    const breakdowns: TaxBreakdown[] = [];
 
-    // Find matching rate — prefer category match, fall back to "general"
-    const matchingRate =
-      rates.find((r) => r.category === category) ??
-      rates.find((r) => r.category === "general") ??
-      rates[0];
+    for (const link of locationLinks) {
+      const { jurisdiction } = link;
+      const rates = jurisdiction.rates;
 
-    const rate = matchingRate?.rate ?? 0;
-    const taxCents = Math.round(li.amountCents * rate);
-    totalTaxCents += taxCents;
+      // Prefer exact category match, fall back to "general"
+      const rate =
+        rates.find((r) => r.category === category) ??
+        rates.find((r) => r.category === "general");
 
-    const breakdowns: TaxBreakdown[] =
-      rate > 0
-        ? [
-            {
-              taxableAmountCents: li.amountCents,
-              taxRate: rate,
-              taxCents,
-              jurisdiction: matchingRate?.jurisdiction ?? "default",
-              category,
-            },
-          ]
-        : [];
+      if (!rate || rate.ratePctBps === 0) continue;
+
+      const taxCents = Math.round((li.amountCents * rate.ratePctBps) / 10_000);
+
+      breakdowns.push({
+        jurisdictionId: jurisdiction.id,
+        jurisdictionCode: jurisdiction.code,
+        jurisdictionName: jurisdiction.name,
+        kind: jurisdiction.kind,
+        ratePctBps: rate.ratePctBps,
+        taxableAmountCents: li.amountCents,
+        taxCents,
+        glAccountId: rate.glAccountId,
+        taxRate: rate.ratePctBps / 10_000,
+        jurisdiction: jurisdiction.code,
+        category,
+      });
+    }
+
+    const itemTaxCents = breakdowns.reduce((s, b) => s + b.taxCents, 0);
+    const totalBps = breakdowns.reduce((s, b) => s + b.ratePctBps, 0);
+    totalTaxCents += itemTaxCents;
 
     return {
       description: li.description,
-      taxRate: rate,
-      taxCents,
+      taxRate: totalBps / 10_000,
+      taxCents: itemTaxCents,
       breakdowns,
     };
   });
 
   return { totalTaxCents, items };
+}
+
+/** Legacy helper — kept for any callers that still use it. */
+export async function getTaxRates(
+  tenantId: string,
+): Promise<{ jurisdiction: string; category: string; rate: number }[]> {
+  return [];
 }

@@ -29,6 +29,9 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   { accountNumber: "2210", name: "Customer Deposits", type: "LIABILITY" },
   { accountNumber: "2300", name: "Tips Payable", type: "LIABILITY" },
   { accountNumber: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
+  { accountNumber: "2401", name: "State Sales Tax Payable", type: "LIABILITY" },
+  { accountNumber: "2402", name: "County Sales Tax Payable", type: "LIABILITY" },
+  { accountNumber: "2403", name: "City Sales Tax Payable", type: "LIABILITY" },
   // Revenue
   { accountNumber: "4010", name: "Slip Revenue", type: "REVENUE" },
   { accountNumber: "4020", name: "Transient Revenue", type: "REVENUE" },
