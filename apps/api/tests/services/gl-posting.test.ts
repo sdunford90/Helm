@@ -20,11 +20,16 @@ beforeEach(async () => {
 
 describe('postInvoice', () => {
   it('creates balanced debit/credit GL entries for an invoice', async () => {
-    // Mock account lookups
+    // Mock account lookups.
+    // getDeferredRevenueAccountId makes two findFirst calls:
+    //   1. isDeferredRevenue = true  → null (no flagged account)
+    //   2. accountNumber '2100'      → null (not in test CoA either)
+    // Then postInvoice falls through to the revenue account lookup.
     mockPrisma.glAccount.findFirst
       .mockResolvedValueOnce({ id: 'acct-ar' })    // Accounts Receivable
-      .mockResolvedValueOnce(null)                   // Deferred Revenue (not found, catch)
-      .mockResolvedValueOnce({ id: 'acct-revenue' }); // General Revenue fallback
+      .mockResolvedValueOnce(null)                   // deferred flag query → not found
+      .mockResolvedValueOnce(null)                   // deferred fallback by number → not found
+      .mockResolvedValueOnce({ id: 'acct-revenue' }); // General Revenue (4500)
 
     mockPrisma.glEntry.createMany.mockResolvedValue({ count: 2 });
 

@@ -743,4 +743,30 @@ router.put("/notifications", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
   }
 });
 
+// ─── GET /settings/gl-accounts ───────────────────────────────────────────────
+// Flat list of tenant GL accounts for use in dropdowns.  Includes qboAccountId
+// so the frontend can show which accounts are already linked to QuickBooks.
+
+router.get("/gl-accounts", async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const accounts = await prisma.glAccount.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        accountNumber: true,
+        name: true,
+        type: true,
+        subType: true,
+        isDeferredRevenue: true,
+        qboAccountId: true,
+      },
+      orderBy: { accountNumber: "asc" },
+    });
+    res.json({ data: accounts });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

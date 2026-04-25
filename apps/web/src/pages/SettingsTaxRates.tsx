@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Loader2, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 const NAVY = '#0A2342';
@@ -23,9 +23,20 @@ const styles: Record<string, React.CSSProperties> = {
   label: { display: 'block', fontSize: 12, fontWeight: 600, color: '#2E4A6B', marginBottom: 4 },
   error: { color: '#DC2626', fontSize: 13, marginTop: 8 },
   emptyState: { textAlign: 'center' as const, padding: '40px 20px', color: '#94A3B8', fontSize: 14 },
+  qboBadge: { display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#E8F5E9', color: '#166534' },
+  hint: { fontSize: 11, color: '#94A3B8', marginTop: 3 },
 };
 
 type Kind = 'STATE' | 'COUNTY' | 'CITY' | 'SPECIAL';
+
+interface GlAccount {
+  id: string;
+  accountNumber: string;
+  name: string;
+  type: string;
+  isDeferredRevenue: boolean;
+  qboAccountId: string | null;
+}
 
 interface TaxRate {
   id: string;
@@ -57,6 +68,40 @@ function fmtBps(bps: number) {
 
 function fmtDate(d: string) {
   return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function GlAccountSelect({
+  accounts,
+  value,
+  onChange,
+  filterType,
+  placeholder = '— system default —',
+}: {
+  accounts: GlAccount[];
+  value: string;
+  onChange: (v: string) => void;
+  filterType?: string;
+  placeholder?: string;
+}) {
+  const filtered = filterType
+    ? accounts.filter(a => a.type.toUpperCase() === filterType.toUpperCase())
+    : accounts;
+
+  return (
+    <div>
+      <select style={styles.select} value={value} onChange={e => onChange(e.target.value)}>
+        <option value="">{placeholder}</option>
+        {filtered.map(a => (
+          <option key={a.id} value={a.id}>
+            {a.accountNumber} — {a.name}{a.qboAccountId ? ' ✓' : ''}
+          </option>
+        ))}
+      </select>
+      <div style={styles.hint}>
+        Accounts marked ✓ are linked to QuickBooks Online
+      </div>
+    </div>
+  );
 }
 
 interface AddJurisdictionFormProps {
@@ -109,20 +154,33 @@ function AddJurisdictionForm({ onSave, loading, error }: AddJurisdictionFormProp
 
 interface AddRateFormProps {
   jurisdictionId: string;
-  onSave: (data: { jurisdictionId: string; category: string; ratePctBps: number; effectiveFrom: string; effectiveTo: string | null }) => Promise<void>;
+  glAccounts: GlAccount[];
+  onSave: (data: {
+    jurisdictionId: string;
+    category: string;
+    ratePctBps: number;
+    effectiveFrom: string;
+    effectiveTo: string | null;
+    glAccountId: string | null;
+  }) => Promise<void>;
   loading: boolean;
 }
 
-function AddRateForm({ jurisdictionId, onSave, loading }: AddRateFormProps) {
+function AddRateForm({ jurisdictionId, glAccounts, onSave, loading }: AddRateFormProps) {
   const [category, setCategory] = useState('marina_services');
   const [ratePct, setRatePct] = useState('');
   const [effectiveFrom, setEffectiveFrom] = useState(new Date().toISOString().slice(0, 10));
   const [effectiveTo, setEffectiveTo] = useState('');
+  const [glAccountId, setGlAccountId] = useState('');
   const [open, setOpen] = useState(false);
 
   if (!open) {
     return (
-      <button style={{ ...styles.primaryBtn, fontSize: 12, padding: '6px 12px', marginTop: 8, background: '#2E4A6B' }} onClick={() => setOpen(true)} type="button">
+      <button
+        style={{ ...styles.primaryBtn, fontSize: 12, padding: '6px 12px', marginTop: 8, background: '#2E4A6B' }}
+        onClick={() => setOpen(true)}
+        type="button"
+      >
         <Plus size={12} /> Add Rate
       </button>
     );
@@ -137,10 +195,12 @@ function AddRateForm({ jurisdictionId, onSave, loading }: AddRateFormProps) {
       ratePctBps: bps,
       effectiveFrom: new Date(effectiveFrom).toISOString(),
       effectiveTo: effectiveTo ? new Date(effectiveTo).toISOString() : null,
+      glAccountId: glAccountId || null,
     });
     setOpen(false);
     setRatePct('');
     setEffectiveTo('');
+    setGlAccountId('');
   };
 
   return (
@@ -163,12 +223,33 @@ function AddRateForm({ jurisdictionId, onSave, loading }: AddRateFormProps) {
           <input style={styles.input} type="date" value={effectiveTo} onChange={e => setEffectiveTo(e.target.value)} />
         </div>
       </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label style={styles.label}>
+          GL Liability Account
+          <span style={{ fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>— where tax collected is credited</span>
+        </label>
+        <GlAccountSelect
+          accounts={glAccounts}
+          value={glAccountId}
+          onChange={setGlAccountId}
+          filterType="LIABILITY"
+          placeholder="— default (2400 Sales Tax Payable) —"
+        />
+      </div>
+
       <div style={{ display: 'flex', gap: 8 }}>
         <button style={styles.primaryBtn} type="submit" disabled={loading}>
           {loading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : null}
           Save Rate
         </button>
-        <button style={{ ...styles.dangerBtn, color: '#64748B', background: '#F1F5F9', border: '1px solid #E2E8F0' }} type="button" onClick={() => setOpen(false)}>Cancel</button>
+        <button
+          style={{ ...styles.dangerBtn, color: '#64748B', background: '#F1F5F9', border: '1px solid #E2E8F0' }}
+          type="button"
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </button>
       </div>
     </form>
   );
@@ -177,6 +258,7 @@ function AddRateForm({ jurisdictionId, onSave, loading }: AddRateFormProps) {
 export default function SettingsTaxRates() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  const glAccountsResp = useApi<{ data: GlAccount[] }>('get', '/api/settings/gl-accounts', { immediate: true });
   const jurisdictions = useApi<{ data: Jurisdiction[] }>('get', '/api/tax/jurisdictions', { immediate: true });
   const createJurisdiction = useApi<{ data: Jurisdiction }>('post', '/api/tax/jurisdictions');
   const deleteJurisdiction = useApi<void>('delete', '/api/tax/jurisdictions/:id');
@@ -184,6 +266,14 @@ export default function SettingsTaxRates() {
   const deleteRate = useApi<void>('delete', '/api/tax/rates/:id');
 
   const rows: Jurisdiction[] = jurisdictions.data?.data ?? [];
+  const glAccounts: GlAccount[] = glAccountsResp.data?.data ?? [];
+
+  const glAccountLabel = (id: string | null) => {
+    if (!id) return null;
+    const acct = glAccounts.find(a => a.id === id);
+    if (!acct) return id;
+    return `${acct.accountNumber} — ${acct.name}`;
+  };
 
   const handleAddJurisdiction = async (body: { code: string; name: string; kind: Kind }) => {
     await createJurisdiction.execute({ body });
@@ -196,7 +286,14 @@ export default function SettingsTaxRates() {
     jurisdictions.execute();
   };
 
-  const handleAddRate = async (body: { jurisdictionId: string; category: string; ratePctBps: number; effectiveFrom: string; effectiveTo: string | null }) => {
+  const handleAddRate = async (body: {
+    jurisdictionId: string;
+    category: string;
+    ratePctBps: number;
+    effectiveFrom: string;
+    effectiveTo: string | null;
+    glAccountId: string | null;
+  }) => {
     await createRate.execute({ body });
     jurisdictions.execute();
   };
@@ -266,25 +363,44 @@ export default function SettingsTaxRates() {
                           <th style={styles.th}>Rate</th>
                           <th style={styles.th}>Effective From</th>
                           <th style={styles.th}>Effective To</th>
+                          <th style={styles.th}>GL Liability Account</th>
                           <th style={styles.th}></th>
                         </tr>
                       </thead>
                       <tbody>
-                        {j.rates.map(r => (
-                          <tr key={r.id}>
-                            <td style={styles.td}>{r.category}</td>
-                            <td style={{ ...styles.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{fmtBps(r.ratePctBps)}</td>
-                            <td style={styles.td}>{fmtDate(r.effectiveFrom)}</td>
-                            <td style={{ ...styles.td, color: r.effectiveTo ? NAVY : '#94A3B8' }}>
-                              {r.effectiveTo ? fmtDate(r.effectiveTo) : 'Open-ended'}
-                            </td>
-                            <td style={{ ...styles.td, textAlign: 'right' }}>
-                              <button style={styles.dangerBtn} onClick={() => handleDeleteRate(r.id)} type="button">
-                                <Trash2 size={12} /> Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {j.rates.map(r => {
+                          const label = glAccountLabel(r.glAccountId);
+                          const acct = r.glAccountId ? glAccounts.find(a => a.id === r.glAccountId) : null;
+                          return (
+                            <tr key={r.id}>
+                              <td style={styles.td}>{r.category}</td>
+                              <td style={{ ...styles.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>
+                                {fmtBps(r.ratePctBps)}
+                              </td>
+                              <td style={styles.td}>{fmtDate(r.effectiveFrom)}</td>
+                              <td style={{ ...styles.td, color: r.effectiveTo ? NAVY : '#94A3B8' }}>
+                                {r.effectiveTo ? fmtDate(r.effectiveTo) : 'Open-ended'}
+                              </td>
+                              <td style={styles.td}>
+                                {label ? (
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 12 }}>{label}</span>
+                                    {acct?.qboAccountId && (
+                                      <span style={styles.qboBadge}><Link2 size={9} /> QBO</span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: '#94A3B8', fontSize: 12 }}>Default (2400)</span>
+                                )}
+                              </td>
+                              <td style={{ ...styles.td, textAlign: 'right' }}>
+                                <button style={styles.dangerBtn} onClick={() => handleDeleteRate(r.id)} type="button">
+                                  <Trash2 size={12} /> Remove
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   ) : (
@@ -292,6 +408,7 @@ export default function SettingsTaxRates() {
                   )}
                   <AddRateForm
                     jurisdictionId={j.id}
+                    glAccounts={glAccounts}
                     onSave={handleAddRate}
                     loading={createRate.loading}
                   />

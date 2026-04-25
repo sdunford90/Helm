@@ -81,12 +81,15 @@ async function getAccountByNumber(
   return account.id;
 }
 
-// Well-known account numbers (convention)
+// Well-known account numbers (convention).
+// Note: DEFERRED_REVENUE is the legacy fallback only — at runtime we prefer
+// resolving whichever account the tenant has flagged isDeferredRevenue = true
+// in their chart of accounts (see getDeferredRevenueAccountId below).
 const ACCOUNTS = {
   ACCOUNTS_RECEIVABLE: "1200",
   CASH: "1000",
   BANK: "1010",
-  DEFERRED_REVENUE: "2400",
+  DEFERRED_REVENUE_FALLBACK: "2100",
   SALES_TAX_PAYABLE: "2400",
   STATE_TAX_PAYABLE: "2401",
   COUNTY_TAX_PAYABLE: "2402",
@@ -98,6 +101,31 @@ const ACCOUNTS = {
   ACH_RETURN_FEE_REVENUE: "4600",
   TERMINATION_INCOME: "4700",
 } as const;
+
+/** Resolve the deferred-revenue liability account for a tenant.
+ *  Prefers the first account flagged isDeferredRevenue = true in their chart
+ *  (ordered by accountNumber so 2100 comes before 2110).  Falls back to the
+ *  hardcoded "2100" account number if none is flagged.  Returns null if
+ *  neither exists (caller falls through to revenue account). */
+async function getDeferredRevenueAccountId(
+  tenantId: string,
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string | null> {
+  const db = tx ?? prisma;
+  const flagged = await (db as typeof prisma).glAccount.findFirst({
+    where: { tenantId, isDeferredRevenue: true },
+    orderBy: { accountNumber: "asc" },
+    select: { id: true },
+  });
+  if (flagged) return flagged.id;
+
+  // Fallback: the default chart seeds 2100 as "Deferred Revenue - Slips"
+  const byNumber = await (db as typeof prisma).glAccount.findFirst({
+    where: { tenantId, accountNumber: ACCOUNTS.DEFERRED_REVENUE_FALLBACK },
+    select: { id: true },
+  });
+  return byNumber?.id ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Invoice posting
@@ -133,7 +161,7 @@ export async function postInvoice(
 ): Promise<string> {
   const { tenantId } = invoice;
   const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-  const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx).catch(() => null);
+  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
 
   const lines: GlLine[] = [];
 
@@ -521,7 +549,8 @@ export async function postDeferredRecognition(
 ): Promise<string> {
   const { tenantId } = entry;
 
-  const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx);
+  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
+  if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
   const revenueAccountId =
     entry.revenueAccountId ??
     (await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx));
@@ -594,7 +623,8 @@ export async function postEarlyTermination(
 
   // 2. Wash out remaining deferred revenue to revenue
   if (remainingDeferredCents > 0) {
-    const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx);
+    const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
+    if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
     const revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
 
     const jid = await postEntries(
