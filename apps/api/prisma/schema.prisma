@@ -541,6 +541,7 @@ model Slip {
   id              String          @id @default(uuid())
   tenantId        String
   dockId          String?
+  locationId      String?
   slipNumber      String
   lengthFt        Float
   beamFt          Float?
@@ -677,9 +678,10 @@ model InvoiceLineItem {
   sourceType    String?
   sourceId      String?
 
-  invoice           Invoice           @relation(fields: [invoiceId], references: [id])
-  glAccount         GlAccount?        @relation(fields: [glAccountId], references: [id])
+  invoice           Invoice              @relation(fields: [invoiceId], references: [id])
+  glAccount         GlAccount?           @relation(fields: [glAccountId], references: [id])
   deferredSchedules DeferredSchedule[]
+  taxBreakdowns     InvoiceLineItemTax[]
 
   @@map("invoice_line_items")
 }
@@ -1394,4 +1396,77 @@ model ApiKey {
 
   @@index([tenantId])
   @@map("api_keys")
+}
+
+// ─── Multi-Jurisdiction Sales Tax ────────────────────────────────────────────
+
+enum JurisdictionKind {
+  STATE
+  COUNTY
+  CITY
+  SPECIAL
+}
+
+model TaxJurisdiction {
+  id        String           @id @default(uuid())
+  tenantId  String
+  code      String
+  name      String
+  kind      JurisdictionKind
+
+  rates         TaxRate[]
+  locationLinks LocationTaxJurisdiction[]
+  lineItemTaxes InvoiceLineItemTax[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("tax_jurisdictions")
+}
+
+model TaxRate {
+  id             String    @id @default(uuid())
+  tenantId       String
+  jurisdictionId String
+  category       String
+  ratePctBps     Int
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  glAccountId    String?
+
+  jurisdiction TaxJurisdiction @relation(fields: [jurisdictionId], references: [id])
+
+  @@index([tenantId])
+  @@index([jurisdictionId, effectiveFrom])
+  @@map("tax_rates")
+}
+
+model LocationTaxJurisdiction {
+  id             String @id @default(uuid())
+  tenantId       String
+  locationId     String
+  jurisdictionId String
+  sortOrder      Int    @default(0)
+
+  jurisdiction TaxJurisdiction @relation(fields: [jurisdictionId], references: [id])
+
+  @@unique([locationId, jurisdictionId])
+  @@map("location_tax_jurisdictions")
+}
+
+model InvoiceLineItemTax {
+  id             String @id @default(uuid())
+  tenantId       String
+  lineItemId     String
+  jurisdictionId String
+  ratePctBps     Int
+  taxableCents   Int
+  taxCents       Int
+
+  lineItem     InvoiceLineItem @relation(fields: [lineItemId], references: [id])
+  jurisdiction TaxJurisdiction @relation(fields: [jurisdictionId], references: [id])
+
+  @@index([tenantId])
+  @@index([jurisdictionId])
+  @@index([lineItemId])
+  @@map("invoice_line_item_tax")
 }
