@@ -33,9 +33,10 @@ describe('GET /api/concierge/requests', () => {
 
 describe('POST /api/concierge/requests', () => {
   it('creates a concierge request', async () => {
-    const customer = buildCustomer();
+    const CUST_UUID = '00000000-0000-0000-0000-000000000001';
+    const customer = buildCustomer({ id: CUST_UUID });
     const req = buildConciergeRequest({
-      customerId: customer.id,
+      customerId: CUST_UUID,
       serviceType: 'Hull Cleaning',
       status: 'SUBMITTED',
     });
@@ -49,7 +50,7 @@ describe('POST /api/concierge/requests', () => {
     const res = await request(app)
       .post('/api/concierge/requests')
       .send({
-        customerId: customer.id,
+        customerId: CUST_UUID,
         serviceType: 'Hull Cleaning',
         urgency: 'NORMAL',
       });

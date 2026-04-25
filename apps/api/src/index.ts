@@ -131,61 +131,63 @@ setupSentryErrorHandler(app);
 app.use(errorHandler);
 
 // --------------------------------------------------------------------------
-// Start server + graceful shutdown
+// Start server + graceful shutdown (skipped when imported by the test runner)
 // --------------------------------------------------------------------------
 
-const server = app.listen(PORT, () => {
-  console.log(`[helm-api] listening on port ${PORT}`);
-});
+if (!process.env.VITEST) {
+  const server = app.listen(PORT, () => {
+    console.log(`[helm-api] listening on port ${PORT}`);
+  });
 
-// Grace window: orchestrators typically give SIGKILL 30s after SIGTERM.
-const SHUTDOWN_TIMEOUT_MS = 25_000;
-let shuttingDown = false;
+  // Grace window: orchestrators typically give SIGKILL 30s after SIGTERM.
+  const SHUTDOWN_TIMEOUT_MS = 25_000;
+  let shuttingDown = false;
 
-async function gracefulShutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[helm-api] received ${signal}, draining...`);
+  const gracefulShutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[helm-api] received ${signal}, draining...`);
 
-  // Hard deadline so a hung dependency can't block the exit forever.
-  const killTimer = setTimeout(() => {
-    console.error("[helm-api] shutdown timed out, forcing exit");
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS);
-  killTimer.unref();
+    // Hard deadline so a hung dependency can't block the exit forever.
+    const killTimer = setTimeout(() => {
+      console.error("[helm-api] shutdown timed out, forcing exit");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    killTimer.unref();
 
-  // 1. Stop accepting new connections; keep existing in-flight requests.
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()));
-  }).catch((err) => console.error("[helm-api] server.close error:", err));
+    // 1. Stop accepting new connections; keep existing in-flight requests.
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    }).catch((err) => console.error("[helm-api] server.close error:", err));
 
-  // 2. Close BullMQ queues so workers stop picking up new jobs.
-  try {
-    await Promise.all(Object.values(queues).map((q) => q.close()));
-  } catch (err) {
-    console.error("[helm-api] queue.close error:", err);
-  }
+    // 2. Close BullMQ queues so workers stop picking up new jobs.
+    try {
+      await Promise.all(Object.values(queues).map((q) => q.close()));
+    } catch (err) {
+      console.error("[helm-api] queue.close error:", err);
+    }
 
-  // 3. Close Redis.
-  try {
-    await redisConnection.quit();
-  } catch (err) {
-    console.error("[helm-api] redis.quit error:", err);
-  }
+    // 3. Close Redis.
+    try {
+      await redisConnection.quit();
+    } catch (err) {
+      console.error("[helm-api] redis.quit error:", err);
+    }
 
-  // 4. Close Prisma / Postgres.
-  try {
-    await prisma.$disconnect();
-  } catch (err) {
-    console.error("[helm-api] prisma.$disconnect error:", err);
-  }
+    // 4. Close Prisma / Postgres.
+    try {
+      await prisma.$disconnect();
+    } catch (err) {
+      console.error("[helm-api] prisma.$disconnect error:", err);
+    }
 
-  console.log("[helm-api] shutdown complete");
-  process.exit(0);
+    console.log("[helm-api] shutdown complete");
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 }
-
-process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 // Log — but don't crash on — unhandled rejections; Sentry will have captured them.
 process.on("unhandledRejection", (reason) => {

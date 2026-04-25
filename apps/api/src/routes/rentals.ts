@@ -305,10 +305,13 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
-      const products = await prisma.rentalProduct.findMany({
-        where: { tenantId },
-        orderBy: { name: "asc" },
-      });
+      const [products, total] = await Promise.all([
+        prisma.rentalProduct.findMany({
+          where: { tenantId },
+          orderBy: { name: "asc" },
+        }),
+        prisma.rentalProduct.count({ where: { tenantId } }),
+      ]);
 
       // Calculate available quantity for each product
       const now = new Date();
@@ -334,7 +337,7 @@ router.get(
         }),
       );
 
-      res.json({ data: productsWithAvailability });
+      res.json({ data: productsWithAvailability, pagination: { total } });
     } catch (err) {
       next(err);
     }
@@ -671,6 +674,29 @@ router.get(
         product: { id: product.id, name: product.name, totalQuantity: (product as any).totalQuantity },
         days,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /pricing-rules — List all pricing rules for tenant ─────────────────
+
+router.get(
+  "/pricing-rules",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const [rules, total] = await Promise.all([
+        (prisma as any).pricingRule.findMany({
+          where: { tenantId },
+          orderBy: { priority: "asc" },
+        }),
+        (prisma as any).pricingRule.count({ where: { tenantId } }),
+      ]);
+
+      res.json({ data: rules, pagination: { total } });
     } catch (err) {
       next(err);
     }

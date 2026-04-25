@@ -5,6 +5,7 @@ import {
   buildRentalProduct,
   buildRentalReservation,
   buildPricingRule,
+  buildCustomer,
 } from '../helpers.js';
 
 let app: any;
@@ -72,12 +73,14 @@ describe('GET /api/rentals/reservations', () => {
 
 describe('POST /api/rentals/reservations', () => {
   it('creates a reservation', async () => {
+    const customer = buildCustomer();
     const product = buildRentalProduct({ totalQuantity: 5 });
     const reservation = buildRentalReservation({
       rentalProductId: product.id,
       status: 'CONFIRMED',
     });
 
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
     mockPrisma.rentalProduct.findFirst.mockResolvedValue(product);
     mockPrisma.rentalReservation.findMany.mockResolvedValue([]);
     mockPrisma.rentalReservation.create.mockResolvedValue(reservation);

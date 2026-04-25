@@ -33,9 +33,10 @@ describe('GET /api/transient', () => {
 
 describe('POST /api/transient', () => {
   it('creates a transient booking', async () => {
-    const slip = buildSlip({ transientCapable: true });
+    const SLIP_UUID = '00000000-0000-0000-0000-000000000001';
+    const slip = buildSlip({ id: SLIP_UUID, transientCapable: true });
     const booking = buildTransientBooking({
-      slipId: slip.id,
+      slipId: SLIP_UUID,
       guestName: 'John Doe',
       status: 'BOOKED',
     });
@@ -49,7 +50,7 @@ describe('POST /api/transient', () => {
     const res = await request(app)
       .post('/api/transient')
       .send({
-        slipId: slip.id,
+        slipId: SLIP_UUID,
         guestName: 'John Doe',
         checkIn: new Date().toISOString(),
         rateCents: 7500,
@@ -63,13 +64,14 @@ describe('POST /api/transient', () => {
   });
 
   it('rejects booking on non-transient-capable slip', async () => {
-    const slip = buildSlip({ transientCapable: false });
+    const SLIP_UUID = '00000000-0000-0000-0000-000000000002';
+    const slip = buildSlip({ id: SLIP_UUID, transientCapable: false });
     mockPrisma.slip.findUnique.mockResolvedValue(slip);
 
     const res = await request(app)
       .post('/api/transient')
       .send({
-        slipId: slip.id,
+        slipId: SLIP_UUID,
         guestName: 'Jane Doe',
         checkIn: new Date().toISOString(),
         rateCents: 7500,

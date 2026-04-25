@@ -60,10 +60,11 @@ describe('POST /api/ramp/tickets', () => {
   });
 
   it('applies slip-holder discount when customer has active contract', async () => {
+    const CUST_UUID = '00000000-0000-0000-0000-000000000123';
     const ticket = buildRampTicket({
       ticketType: 'SINGLE_LAUNCH',
       amountCents: 0,
-      customerId: 'cust-123',
+      customerId: CUST_UUID,
     });
 
     mockPrisma.slipContract.findFirst.mockResolvedValue({
@@ -72,13 +73,13 @@ describe('POST /api/ramp/tickets', () => {
     });
     mockPrisma.rampTicket.create.mockResolvedValue({
       ...ticket,
-      customer: { id: 'cust-123' },
+      customer: { id: CUST_UUID },
     });
 
     const res = await request(app)
       .post('/api/ramp/tickets')
       .send({
-        customerId: 'cust-123',
+        customerId: CUST_UUID,
         ticketType: 'SINGLE_LAUNCH',
         amountCents: 2500,
       });

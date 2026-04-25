@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockPrisma } from '../setup.js';
 
+// Override the global mock from setup.ts — this test exercises the real implementation.
+vi.mock('../../src/services/gl-posting.js', async (importOriginal) => {
+  return await importOriginal();
+});
+
 let postInvoice: typeof import('../../src/services/gl-posting.js').postInvoice;
 let postPayment: typeof import('../../src/services/gl-posting.js').postPayment;
 let postManualJournalEntry: typeof import('../../src/services/gl-posting.js').postManualJournalEntry;

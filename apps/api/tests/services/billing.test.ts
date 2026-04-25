@@ -8,6 +8,14 @@ import {
   buildMeterReading,
 } from '../helpers.js';
 
+vi.mock('../../src/services/gl-posting.js', () => ({
+  postInvoice: vi.fn().mockResolvedValue(undefined),
+  postVoid: vi.fn().mockResolvedValue(undefined),
+  postPayment: vi.fn().mockResolvedValue(undefined),
+  postRefund: vi.fn().mockResolvedValue(undefined),
+  postManualJournalEntry: vi.fn().mockResolvedValue('je-test-id'),
+}));
+
 let generateRecurringInvoices: typeof import('../../src/services/billing.js').generateRecurringInvoices;
 let calculateElectricity: typeof import('../../src/services/billing.js').calculateElectricity;
 let applyCredits: typeof import('../../src/services/billing.js').applyCredits;
@@ -139,7 +147,8 @@ describe('calculateElectricity', () => {
       amountCents: 4200,
     });
 
-    mockPrisma.meterReading.findFirst.mockResolvedValue(reading);
+    mockPrisma.meterReading.findMany.mockResolvedValue([reading]);
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue([]);
 
     const result = await calculateElectricity('slip-1', 'tenant-1');
 
@@ -147,11 +156,11 @@ describe('calculateElectricity', () => {
     expect(result!.consumedKwh).toBe(350);
     expect(result!.rateCents).toBe(12);
     expect(result!.amountCents).toBe(4200);
-    expect(result!.meterReadingId).toBe(reading.id);
+    expect(result!.meterReadingIds[0]).toBe(reading.id);
   });
 
   it('returns null when no meter reading exists', async () => {
-    mockPrisma.meterReading.findFirst.mockResolvedValue(null);
+    mockPrisma.meterReading.findMany.mockResolvedValue([]);
 
     const result = await calculateElectricity('slip-1', 'tenant-1');
 

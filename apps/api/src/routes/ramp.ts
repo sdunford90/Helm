@@ -51,7 +51,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // GET /api/ramp/stats — Launch stats
 router.get(
   "/stats",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const now = new Date();
@@ -99,7 +99,7 @@ router.get(
 // GET /api/ramp/tickets — List tickets with filters
 router.get(
   "/tickets",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = ListTicketsQuerySchema.parse(req.query);
@@ -133,7 +133,7 @@ router.get(
 // GET /api/ramp/tickets/:id — Ticket detail
 router.get(
   "/tickets/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const ticket = await prisma.rampTicket.findUnique({
@@ -152,7 +152,7 @@ router.get(
 // POST /api/ramp/tickets — Create ticket
 router.post(
   "/tickets",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = CreateTicketSchema.parse(req.body);
@@ -211,7 +211,7 @@ router.post(
 // POST /api/ramp/passes/validate — Validate seasonal pass at POS scan
 router.post(
   "/passes/validate",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = ValidatePassSchema.parse(req.body);

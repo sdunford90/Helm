@@ -48,11 +48,13 @@ describe('GET /api/contracts', () => {
 
 describe('POST /api/contracts', () => {
   it('creates a contract with valid data', async () => {
-    const slip = buildSlip({ status: 'VACANT' });
-    const customer = buildCustomer();
+    const SLIP_ID = '00000000-1111-0000-0000-000000000001';
+    const CUST_ID = '00000000-2222-0000-0000-000000000002';
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT' });
+    const customer = buildCustomer({ id: CUST_ID });
     const contract = buildContract({
-      slipId: slip.id,
-      customerId: customer.id,
+      slipId: SLIP_ID,
+      customerId: CUST_ID,
       status: 'ACTIVE',
     });
 
@@ -71,8 +73,8 @@ describe('POST /api/contracts', () => {
     const res = await request(app)
       .post('/api/contracts')
       .send({
-        slipId: slip.id,
-        customerId: customer.id,
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
         startDate: '2025-01-01',
         rateCents: 150000,
       });
