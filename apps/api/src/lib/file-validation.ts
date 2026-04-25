@@ -1,4 +1,5 @@
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { scanBuffer } from "./clamd-client.js";
 
 // ---------------------------------------------------------------------------
 // File upload safety — pre-upload whitelist + post-upload magic-byte check
@@ -75,7 +76,9 @@ export interface ValidationFailure {
     | "CONTENT_TYPE_FORBIDDEN"
     | "EXTENSION_FORBIDDEN"
     | "SIZE_EXCEEDED"
-    | "MAGIC_MISMATCH";
+    | "MAGIC_MISMATCH"
+    | "AV_INFECTED"
+    | "AV_REQUIRED_BUT_SKIPPED";
   message: string;
 }
 
@@ -160,42 +163,56 @@ export async function verifyUploadedFile(
   key: string,
   declaredContentType: string,
 ): Promise<ValidationResult> {
-  // Text files don't have a magic signature.
-  if (/^text\//.test(declaredContentType)) {
-    return { ok: true, maxBytes: Number.POSITIVE_INFINITY };
+  // Fetch the full object once. We check magic bytes + AV in one pass so
+  // we don't pay for two GET requests. For very large files this could
+  // pull an LRU buffer cap; for the categories we accept (≤20 MB) the
+  // memory cost is fine.
+  const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+  const resp = await r2.send(cmd);
+  const bytes = Buffer.from(await resp.Body!.transformToByteArray());
+
+  // 1. Magic-byte check (skipped for text/* — no reliable signature).
+  if (!/^text\//.test(declaredContentType)) {
+    const matched = MAGIC_SIGS.find((sig) => matches(bytes, sig));
+    const declared = declaredContentType.toLowerCase();
+
+    if (!matched) {
+      return {
+        ok: false,
+        code: "MAGIC_MISMATCH",
+        message: "Uploaded file does not match any known safe format",
+      };
+    }
+    const familyMatch =
+      matched.mime === declared ||
+      (matched.name === "WEBP" && declared === "image/webp") ||
+      (matched.name === "JPEG" && (declared === "image/jpg" || declared === "image/jpeg"));
+    if (!familyMatch) {
+      return {
+        ok: false,
+        code: "MAGIC_MISMATCH",
+        message: `Declared ${declared} but file is ${matched.name}`,
+      };
+    }
   }
 
-  const cmd = new GetObjectCommand({
-    Bucket: bucket,
-    Key: key,
-    // Range: first 16 bytes is enough for all signatures we check.
-    Range: "bytes=0-15",
-  });
-  const resp = await r2.send(cmd);
-  const bytes = new Uint8Array(await resp.Body!.transformToByteArray());
-
-  const matched = MAGIC_SIGS.find((sig) => matches(bytes, sig));
-  const declared = declaredContentType.toLowerCase();
-
-  if (!matched) {
+  // 2. AV scan via clamd. When CLAMD_HOST is unset, scanBuffer returns
+  //    skipped=true; we treat skipped as a hard failure if AV_REQUIRED=true,
+  //    otherwise it passes. This keeps dev frictionless while letting prod
+  //    refuse unscannable uploads.
+  const av = await scanBuffer(bytes);
+  if (av.skipped && process.env.AV_REQUIRED === "true") {
     return {
       ok: false,
-      code: "MAGIC_MISMATCH",
-      message: "Uploaded file does not match any known safe format",
+      code: "AV_REQUIRED_BUT_SKIPPED",
+      message: `AV scan unavailable (${av.reason}) and AV_REQUIRED=true`,
     };
   }
-  // Declared type must match the actual family. WEBP / RIFF is loose;
-  // accept if declared is image/webp.
-  const familyMatch =
-    matched.mime === declared ||
-    (matched.name === "WEBP" && declared === "image/webp") ||
-    (matched.name === "JPEG" && (declared === "image/jpg" || declared === "image/jpeg"));
-
-  if (!familyMatch) {
+  if (!av.clean && av.virus) {
     return {
       ok: false,
-      code: "MAGIC_MISMATCH",
-      message: `Declared ${declared} but file is ${matched.name}`,
+      code: "AV_INFECTED",
+      message: `Antivirus matched: ${av.virus}`,
     };
   }
 

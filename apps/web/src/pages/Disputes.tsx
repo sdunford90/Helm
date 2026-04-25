@@ -59,6 +59,9 @@ interface EvidenceFormState {
   customerEmailAddress: string;
   serviceDate: string;
   uncategorizedText: string;
+  receiptFileId: string;
+  customerCommunicationFileId: string;
+  serviceDocumentationFileId: string;
 }
 
 const EMPTY_EVIDENCE: EvidenceFormState = {
@@ -67,7 +70,51 @@ const EMPTY_EVIDENCE: EvidenceFormState = {
   customerEmailAddress: '',
   serviceDate: '',
   uncategorizedText: '',
+  receiptFileId: '',
+  customerCommunicationFileId: '',
+  serviceDocumentationFileId: '',
 };
+
+type FileSlot = 'receiptFileId' | 'customerCommunicationFileId' | 'serviceDocumentationFileId';
+
+async function uploadEvidenceFile(
+  chargebackId: string,
+  file: File,
+): Promise<{ fileId: string }> {
+  // 1. Get a presigned URL from Helm.
+  const presign = await fetch('/api/storage/presign-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      category: 'documents',
+      filename: file.name,
+      contentType: file.type || 'application/octet-stream',
+    }),
+  });
+  if (!presign.ok) throw new Error((await presign.json()).error ?? 'Presign failed');
+  const { url, key } = await presign.json();
+
+  // 2. PUT to R2.
+  const put = await fetch(url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+  if (!put.ok) throw new Error('Upload to storage failed');
+
+  // 3. Verify (magic + AV).
+  const verify = await fetch('/api/storage/verify-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, contentType: file.type }),
+  });
+  if (!verify.ok) throw new Error((await verify.json()).error ?? 'File rejected');
+
+  // 4. Forward to Stripe.
+  const forward = await fetch(`/api/chargebacks/${chargebackId}/upload-evidence-file`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ storageKey: key, contentType: file.type, filename: file.name }),
+  });
+  if (!forward.ok) throw new Error((await forward.json()).error ?? 'Stripe upload failed');
+  return forward.json();
+}
 
 export default function Disputes() {
   const { data, loading, error, execute: reload } = useApi<Chargeback[]>('get', '/api/chargebacks', { immediate: true });
@@ -209,6 +256,33 @@ export default function Disputes() {
                               />
                             </div>
                           </div>
+
+                          {/* File evidence — uploads via Helm storage (magic+AV
+                              gated) then forwarded to Stripe Files. */}
+                          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                            <FileEvidenceField
+                              label="Receipt / invoice"
+                              chargebackId={c.id}
+                              fileId={form.receiptFileId}
+                              onUploaded={(id) => setForm((f) => ({ ...f, receiptFileId: id }))}
+                            />
+                            <FileEvidenceField
+                              label="Customer communication"
+                              chargebackId={c.id}
+                              fileId={form.customerCommunicationFileId}
+                              onUploaded={(id) =>
+                                setForm((f) => ({ ...f, customerCommunicationFileId: id }))
+                              }
+                            />
+                            <FileEvidenceField
+                              label="Service documentation"
+                              chargebackId={c.id}
+                              fileId={form.serviceDocumentationFileId}
+                              onUploaded={(id) =>
+                                setForm((f) => ({ ...f, serviceDocumentationFileId: id }))
+                              }
+                            />
+                          </div>
                           <div style={{ marginTop: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
                             <button
                               style={{ ...styles.primaryBtn, opacity: submitting ? 0.7 : 1 }}
@@ -238,6 +312,56 @@ export default function Disputes() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function FileEvidenceField({
+  label,
+  chargebackId,
+  fileId,
+  onUploaded,
+}: {
+  label: string;
+  chargebackId: string;
+  fileId: string;
+  onUploaded: (fileId: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  return (
+    <div>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#2E4A6B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+        {label}
+      </label>
+      {fileId ? (
+        <div style={{ fontSize: 12, color: '#1B5E20', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-all' }}>
+          ✓ {fileId}
+        </div>
+      ) : (
+        <input
+          type="file"
+          disabled={busy}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            setBusy(true);
+            setErr(null);
+            try {
+              const result = await uploadEvidenceFile(chargebackId, file);
+              onUploaded(result.fileId);
+            } catch (uerr) {
+              setErr(uerr instanceof Error ? uerr.message : 'Upload failed');
+            } finally {
+              setBusy(false);
+            }
+          }}
+          style={{ fontSize: 12 }}
+        />
+      )}
+      {busy && <div style={{ fontSize: 12, color: '#64748B' }}>Uploading + scanning…</div>}
+      {err && <div style={{ fontSize: 12, color: '#B71C1C' }}>{err}</div>}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { clerkAuth } from "../middleware/auth.js";
 import { appError } from "../middleware/error.js";
 import { prisma } from "../lib/prisma.js";
@@ -166,6 +167,92 @@ router.post(
       });
 
       res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/chargebacks/:id/upload-evidence-file
+//
+// Server-side bridge: client uploads to R2 via the existing presign flow,
+// then calls this endpoint with the storage key. We download the bytes,
+// forward to stripe.files.create with purpose='dispute_evidence' on the
+// connected account, and return the file_… id so the caller can drop it
+// into the evidence form's *FileId field.
+//
+// Doing this server-side keeps Stripe credentials off the client AND lets
+// the file flow through the same magic-byte/AV gate as every other upload.
+// ---------------------------------------------------------------------------
+
+const UploadEvidenceFileSchema = z.object({
+  storageKey: z.string().min(1),
+  contentType: z.string().min(1),
+  filename: z.string().min(1).max(255),
+});
+
+router.post(
+  "/:id/upload-evidence-file",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = req.tenantId!;
+      const id = String(req.params.id);
+      const { storageKey, contentType, filename } =
+        UploadEvidenceFileSchema.parse(req.body);
+
+      // The key must belong to this tenant — otherwise a marina staffer
+      // could trick us into uploading another tenant's file to their
+      // dispute (still scoped to their connected account, but it's data
+      // they shouldn't reach).
+      if (!storageKey.startsWith(`${tenantId}/`)) {
+        throw appError("Access denied to this file", 403, "FORBIDDEN");
+      }
+
+      const row = await prisma.chargeback.findFirst({
+        where: { id, tenantId },
+      });
+      if (!row) throw appError("Chargeback not found", 404, "NOT_FOUND");
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        throw appError(
+          "Stripe is not connected for this marina",
+          400,
+          "STRIPE_NOT_CONFIGURED",
+        );
+      }
+
+      // Download from R2.
+      const r2 = new S3Client({
+        region: "auto",
+        endpoint: process.env.R2_ENDPOINT,
+        credentials: {
+          accessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+          secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+        },
+      });
+      const obj = await r2.send(
+        new GetObjectCommand({
+          Bucket: process.env.R2_BUCKET ?? "helm-files",
+          Key: storageKey,
+        }),
+      );
+      const bytes = Buffer.from(await obj.Body!.transformToByteArray());
+
+      // Forward to Stripe.
+      const file = await requireStripe().files.create(
+        {
+          file: { data: bytes, name: filename, type: contentType },
+          purpose: "dispute_evidence",
+        },
+        { stripeAccount: tenant.stripeAccountId },
+      );
+
+      res.json({ fileId: file.id, size: file.size, type: file.type });
     } catch (err) {
       next(err);
     }

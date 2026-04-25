@@ -413,6 +413,7 @@ export async function transitionContractLifecycle(
 export async function autoRenewCheck(tenantId: string): Promise<{
   batchId: string | null;
   contractCount: number;
+  executedCount: number;
   expired: number;
   expiring: number;
 }> {
@@ -435,7 +436,7 @@ export async function autoRenewCheck(tenantId: string): Promise<{
   });
 
   if (eligibleContracts.length === 0) {
-    return { batchId: null, contractCount: 0, ...lifecycle };
+    return { batchId: null, contractCount: 0, executedCount: 0, ...lifecycle };
   }
 
   const result = await createBatch(
@@ -459,9 +460,37 @@ export async function autoRenewCheck(tenantId: string): Promise<{
     },
   });
 
+  // Execute immediately when the tenant has opted in. Without this opt-in
+  // the batch sits APPROVED waiting for a human to click 'Execute' — which
+  // defeats the point of 'auto'-renew. Operators turn this on per-tenant
+  // via tenant.autoExecuteRenewals.
+  let executedCount = 0;
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { autoExecuteRenewals: true },
+  });
+  if (tenant?.autoExecuteRenewals) {
+    try {
+      const exec = await executeBatch(
+        result.batchId,
+        tenantId,
+        "system:auto-renew",
+      );
+      executedCount = exec.renewedCount;
+    } catch (err) {
+      // Don't break the cron if one batch fails — log and let humans clean
+      // up via the standard review UI.
+      console.error(
+        `[renewal-engine] auto-execute failed for batch ${result.batchId}:`,
+        err,
+      );
+    }
+  }
+
   return {
     batchId: result.batchId,
     contractCount: result.contractCount,
+    executedCount,
     ...lifecycle,
   };
 }

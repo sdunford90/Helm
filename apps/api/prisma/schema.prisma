@@ -271,6 +271,10 @@ model Tenant {
   status               TenantStatus @default(ACTIVE)
   gracePeriodStartedAt DateTime?
   lockedAt             DateTime?
+  // Operator opt-in: when true, autoRenewCheck() not only creates and
+  // approves the renewal batch but also executes it immediately. Default
+  // false because rate-change batches usually want a human glance.
+  autoExecuteRenewals  Boolean      @default(false)
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
