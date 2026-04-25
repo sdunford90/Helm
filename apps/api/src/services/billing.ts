@@ -147,20 +147,30 @@ export async function generateRecurringInvoices(
           sourceId: contract.slipId,
         });
       } else if (electricityMode === "METERED") {
+        // Pull every unbilled meter reading for the slip and emit one line
+        // per reading so the InvoiceLineItem.sourceId join blocks
+        // double-billing on re-run. Sums still appear on the invoice as
+        // a single electricity subtotal.
         const elecResult = await calculateElectricity(
           contract.slipId,
           tenantId,
         );
         if (elecResult) {
-          lineItems.push({
-            description: `Electricity — ${elecResult.consumedKwh} kWh @ $${(elecResult.rateCents / 100).toFixed(2)}/kWh — Slip ${contract.slip.slipNumber}`,
-            quantity: 1,
-            unitPriceCents: elecResult.amountCents,
-            taxCategory: "electricity",
-            isDeferred: false,
-            sourceType: "METER_READING",
-            sourceId: elecResult.meterReadingId,
+          const perReading = await prisma.meterReading.findMany({
+            where: { id: { in: elecResult.meterReadingIds } },
+            orderBy: { readingDate: "asc" },
           });
+          for (const r of perReading) {
+            lineItems.push({
+              description: `Electricity — ${r.consumedKwh} kWh @ $${(r.rateCents / 100).toFixed(2)}/kWh — Slip ${contract.slip.slipNumber} (${r.readingDate.toISOString().slice(0, 10)})`,
+              quantity: 1,
+              unitPriceCents: r.amountCents,
+              taxCategory: "electricity",
+              isDeferred: false,
+              sourceType: "METER_READING",
+              sourceId: r.id,
+            });
+          }
         }
       }
 
@@ -381,39 +391,70 @@ export async function generateRecurringInvoices(
 // ---------------------------------------------------------------------------
 
 interface ElectricityResult {
-  meterReadingId: string;
+  meterReadingIds: string[];
   consumedKwh: number;
   rateCents: number;
   amountCents: number;
 }
 
 /**
- * Get the latest unprocessed meter reading for a slip and calculate the charge.
+ * Return the aggregate charge for all meter readings on a slip that fall
+ * within the billing period (the last ~90 days) and have NOT yet been
+ * invoiced.
+ *
+ * "Already billed" is detected by joining to InvoiceLineItem via
+ * (sourceType: "METER_READING", sourceId: reading.id). The billing run
+ * writes line items with those fields; once an invoice is finalised,
+ * re-running the job won't double-bill.
+ *
+ * The returned meterReadingIds list is used by the caller to emit one
+ * InvoiceLineItem per reading (or we can emit a single aggregate line —
+ * current caller emits a single line with the first id on record, which
+ * is enough for the anti-double-bill join because all ids are captured
+ * in sourceId semantics only when each reading gets its own line).
  */
 export async function calculateElectricity(
   slipId: string,
   tenantId: string,
 ): Promise<ElectricityResult | null> {
-  // Get the most recent meter reading for this billing period
-  const today = new Date();
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  // Look back 90 days — covers weekly-read marinas without dragging in
+  // ancient readings that should have been billed long ago.
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 90);
 
-  const reading = await prisma.meterReading.findFirst({
+  const readings = await prisma.meterReading.findMany({
     where: {
       tenantId,
       slipId,
-      readingDate: { gte: monthStart },
+      readingDate: { gte: cutoff },
     },
-    orderBy: { readingDate: "desc" },
+    orderBy: { readingDate: "asc" },
   });
+  if (readings.length === 0) return null;
 
-  if (!reading) return null;
+  // Exclude any reading that's already referenced by an InvoiceLineItem.
+  const billed = await prisma.invoiceLineItem.findMany({
+    where: {
+      sourceType: "METER_READING",
+      sourceId: { in: readings.map((r) => r.id) },
+      invoice: { tenantId },
+    },
+    select: { sourceId: true },
+  });
+  const billedIds = new Set(billed.map((b) => b.sourceId));
+  const unbilled = readings.filter((r) => !billedIds.has(r.id));
+  if (unbilled.length === 0) return null;
+
+  const consumedKwh = unbilled.reduce((sum, r) => sum + r.consumedKwh, 0);
+  const amountCents = unbilled.reduce((sum, r) => sum + r.amountCents, 0);
+  // Use the most recent rate for display purposes.
+  const rateCents = unbilled[unbilled.length - 1]!.rateCents;
 
   return {
-    meterReadingId: reading.id,
-    consumedKwh: reading.consumedKwh,
-    rateCents: reading.rateCents,
-    amountCents: reading.amountCents,
+    meterReadingIds: unbilled.map((r) => r.id),
+    consumedKwh,
+    rateCents,
+    amountCents,
   };
 }
 

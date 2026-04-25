@@ -28,6 +28,7 @@ const BYPASS_PREFIXES = [
   "/api/onboarding",
   "/api/auth/webhook",
   "/api/webhooks", // Stripe webhooks resolve tenant from event.account, not subdomain
+  "/api/email", // unsubscribe + Resend webhook — tenant comes from signed token or event payload
 ];
 
 function shouldBypass(path: string): boolean {
@@ -66,8 +67,13 @@ export async function tenantMiddleware(
         : { customDomain: hostname },
     });
 
-    // ── Dev fallback: use the first tenant when hostname doesn't resolve ──
-    if (!tenant && process.env.NODE_ENV !== "production") {
+    // ── Dev fallback: use the first tenant when hostname doesn't resolve.
+    // Gated on the same explicit opt-in as the auth dev bypass so that a
+    // misconfigured staging env can't silently serve the first tenant.
+    const devBypass =
+      process.env.ENABLE_AUTH_DEV_BYPASS === "true" &&
+      process.env.NODE_ENV !== "production";
+    if (!tenant && devBypass) {
       tenant = await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } });
     }
 

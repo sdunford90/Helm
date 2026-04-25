@@ -435,7 +435,50 @@ async function handleDispute(
 
   const payment = await prisma.payment.findFirst({
     where: { stripePaymentId: dispute.payment_intent as string, tenantId },
+    select: { id: true, customerId: true },
   });
+
+  // Persist to the Chargeback table so staff can find + respond in-app.
+  // Upsert keyed by stripeDisputeId so updates (won/lost/evidence submitted)
+  // mutate the same row.
+  if (payment) {
+    // Map Stripe dispute.status → our ChargebackStatus enum.
+    const mapStatus = (s: string | null): "OPEN" | "EVIDENCE_SUBMITTED" | "WON" | "LOST" => {
+      switch (s) {
+        case "won":
+          return "WON";
+        case "lost":
+          return "LOST";
+        case "under_review":
+        case "warning_under_review":
+          return "EVIDENCE_SUBMITTED";
+        default:
+          return "OPEN";
+      }
+    };
+
+    const status = mapStatus(dispute.status ?? null);
+    await prisma.chargeback.upsert({
+      where: { stripeDisputeId: dispute.id },
+      create: {
+        tenantId,
+        customerId: payment.customerId,
+        stripeDisputeId: dispute.id,
+        amountCents: dispute.amount,
+        status,
+        outcome: dispute.status ?? null,
+      },
+      update: {
+        status,
+        outcome: dispute.status ?? null,
+        evidenceSubmittedAt:
+          dispute.evidence_details?.submission_count &&
+          dispute.evidence_details.submission_count > 0
+            ? new Date()
+            : undefined,
+      },
+    });
+  }
 
   await prisma.auditLog.create({
     data: {

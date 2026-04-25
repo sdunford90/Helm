@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import crypto from "node:crypto";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
@@ -935,6 +936,30 @@ router.post(
   "/esign-webhook",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      // Shared-secret gate. Without this, any unauthenticated caller can
+      // flip esign status on any contract. The provider (DocuSign, HelloSign,
+      // etc.) must be configured to send this header on webhook delivery.
+      // Fail-closed in all envs: no secret configured ⇒ webhook is disabled.
+      const expected = process.env.ESIGN_WEBHOOK_SECRET;
+      const provided = req.header("x-esign-webhook-secret");
+      if (!expected) {
+        throw appError(
+          "E-signature webhooks are disabled until ESIGN_WEBHOOK_SECRET is configured",
+          503,
+          "ESIGN_WEBHOOK_DISABLED",
+        );
+      }
+      if (!provided || provided.length !== expected.length) {
+        throw appError("Invalid esign webhook credentials", 401, "UNAUTHORIZED");
+      }
+      const ok = crypto.timingSafeEqual(
+        Buffer.from(provided),
+        Buffer.from(expected),
+      );
+      if (!ok) {
+        throw appError("Invalid esign webhook credentials", 401, "UNAUTHORIZED");
+      }
+
       const {
         event,
         requestId,

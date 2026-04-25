@@ -368,13 +368,58 @@ export async function executeBatch(
 // ─── Auto-Renewal Check ──────────────────────────────────────────────────────
 
 /**
+ * Transition contract lifecycle based on endDate alone — separate from the
+ * auto-renew path because even manually-renewed contracts need their old
+ * instance flipped to EXPIRED once the term runs out.
+ *
+ *   ACTIVE, endDate < now            → EXPIRED
+ *   EXPIRING, endDate < now          → EXPIRED
+ *   ACTIVE, endDate within 30 days   → EXPIRING
+ *
+ * Safe to run repeatedly; all changes are idempotent updateMany calls.
+ */
+export async function transitionContractLifecycle(
+  tenantId: string,
+): Promise<{ expired: number; expiring: number }> {
+  const now = new Date();
+  const expiringCutoff = new Date();
+  expiringCutoff.setDate(now.getDate() + 30);
+
+  const expired = await prisma.slipContract.updateMany({
+    where: {
+      tenantId,
+      status: { in: ["ACTIVE", "EXPIRING"] },
+      endDate: { lt: now },
+    },
+    data: { status: "EXPIRED" },
+  });
+
+  const expiring = await prisma.slipContract.updateMany({
+    where: {
+      tenantId,
+      status: "ACTIVE",
+      endDate: { gte: now, lte: expiringCutoff },
+    },
+    data: { status: "EXPIRING" },
+  });
+
+  return { expired: expired.count, expiring: expiring.count };
+}
+
+/**
  * BullMQ job handler: find contracts expiring within 30 days that have
  * autoRenew=true and create a rolling renewal batch for them.
  */
 export async function autoRenewCheck(tenantId: string): Promise<{
   batchId: string | null;
   contractCount: number;
+  expired: number;
+  expiring: number;
 }> {
+  // First: sweep lifecycle transitions so the renewal query below sees
+  // correct statuses.
+  const lifecycle = await transitionContractLifecycle(tenantId);
+
   const now = new Date();
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() + 30);
@@ -390,7 +435,7 @@ export async function autoRenewCheck(tenantId: string): Promise<{
   });
 
   if (eligibleContracts.length === 0) {
-    return { batchId: null, contractCount: 0 };
+    return { batchId: null, contractCount: 0, ...lifecycle };
   }
 
   const result = await createBatch(
@@ -414,5 +459,9 @@ export async function autoRenewCheck(tenantId: string): Promise<{
     },
   });
 
-  return { batchId: result.batchId, contractCount: result.contractCount };
+  return {
+    batchId: result.batchId,
+    contractCount: result.contractCount,
+    ...lifecycle,
+  };
 }

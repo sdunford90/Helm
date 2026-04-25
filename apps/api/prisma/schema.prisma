@@ -281,6 +281,23 @@ model Tenant {
   @@map("tenants")
 }
 
+// Deliverability suppression list. Separate from CommunicationPreference,
+// which is a per-category opt-out for a known Customer. This table blocks
+// an address from receiving ANY Helm email — populated by the Resend
+// bounce/complaint webhook and by the unsubscribe link on outbound mail.
+model EmailSuppression {
+  id        String   @id @default(uuid())
+  tenantId  String
+  email     String
+  reason    String // BOUNCED_HARD | COMPLAINED | UNSUBSCRIBED
+  source    String // resend_bounce | resend_complaint | user_unsubscribe
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("email_suppressions")
+}
+
 model Location {
   id        String   @id @default(uuid())
   tenantId  String

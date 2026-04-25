@@ -10,8 +10,12 @@ import helmet from "helmet";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
+import { assertAuthConfigOrExit } from "./middleware/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { redisConnection, queues } from "./lib/queue.js";
+
+// Fail fast in production if Clerk keys aren't configured.
+assertAuthConfigOrExit();
 
 import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
@@ -47,6 +51,9 @@ import communicationPrefsRouter from "./routes/communication-prefs.js";
 import webhooksStripeRouter from "./routes/webhooks-stripe.js";
 import checkoutRouter from "./routes/checkout.js";
 import saasBillingRouter from "./routes/saas-billing.js";
+import portalRouter from "./routes/portal.js";
+import chargebacksRouter from "./routes/chargebacks.js";
+import emailComplianceRouter from "./routes/email-compliance.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -62,10 +69,11 @@ const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 app.use(cors());
 app.use(helmet());
 
-// Stripe webhook routes MUST be mounted before express.json() so their raw
-// body is preserved for signature verification. The router itself applies
+// Webhook routes MUST be mounted before express.json() so their raw body
+// is preserved for signature verification. The routers themselves apply
 // express.raw({type:"application/json"}) on each webhook endpoint.
 app.use("/api/webhooks", webhooksStripeRouter);
+app.use("/api/email", emailComplianceRouter);
 
 app.use(express.json());
 
@@ -111,6 +119,8 @@ app.use("/api/inventory", inventoryRouter);
 app.use("/api/communication-prefs", communicationPrefsRouter);
 app.use("/api/checkout", checkoutRouter);
 app.use("/api/saas-billing", saasBillingRouter);
+app.use("/api/portal", portalRouter);
+app.use("/api/chargebacks", chargebacksRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled
