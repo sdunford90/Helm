@@ -29,53 +29,95 @@ interface Adjustment {
   qtyChange: number; before: number; after: number; staff: string; notes: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API Response Types ────────────────────────────────── */
 
-const PRODUCTS: Product[] = [
-  { id: '1', sku: 'FUEL-REG', barcode: '0012345000012', name: 'Regular Gas (gal)', category: 'Fuel', costCents: 365, priceCents: 429, taxClass: 'Exempt', qoh: 2400, reorderPoint: 500, glRevenue: '4400', glCogs: '5100', trackInventory: true, active: true },
-  { id: '2', sku: 'FUEL-DSL', barcode: '0012345000029', name: 'Diesel (gal)', category: 'Fuel', costCents: 410, priceCents: 489, taxClass: 'Exempt', qoh: 1800, reorderPoint: 400, glRevenue: '4400', glCogs: '5100', trackInventory: true, active: true },
-  { id: '3', sku: 'FUEL-PRM', barcode: '0012345000036', name: 'Premium Gas (gal)', category: 'Fuel', costCents: 408, priceCents: 479, taxClass: 'Exempt', qoh: 1200, reorderPoint: 300, glRevenue: '4400', glCogs: '5100', trackInventory: true, active: true },
-  { id: '4', sku: 'ICE-10LB', barcode: '0012345000043', name: 'Bag of Ice (10lb)', category: 'Provisions', costCents: 199, priceCents: 399, taxClass: 'Standard', qoh: 85, reorderPoint: 20, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '5', sku: 'BAIT-SHP', barcode: '0012345000050', name: 'Live Shrimp (dz)', category: 'Bait & Tackle', costCents: 499, priceCents: 899, taxClass: 'Standard', qoh: 24, reorderPoint: 10, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '6', sku: 'BAIT-MIN', barcode: '0012345000067', name: 'Minnows (dz)', category: 'Bait & Tackle', costCents: 299, priceCents: 599, taxClass: 'Standard', qoh: 18, reorderPoint: 8, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '7', sku: 'SNK-WTR', barcode: '0012345000074', name: 'Bottled Water', category: 'Provisions', costCents: 89, priceCents: 249, taxClass: 'Standard', qoh: 144, reorderPoint: 48, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '8', sku: 'SNK-SODA', barcode: '0012345000081', name: 'Soft Drink (can)', category: 'Provisions', costCents: 65, priceCents: 199, taxClass: 'Standard', qoh: 200, reorderPoint: 60, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '9', sku: 'SUN-SPF', barcode: '0012345000098', name: 'Sunscreen SPF 50', category: 'Marine Supplies', costCents: 699, priceCents: 1299, taxClass: 'Standard', qoh: 32, reorderPoint: 10, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '10', sku: 'MRN-LINE', barcode: '0012345000104', name: 'Dock Line 3/8" 15\'', category: 'Marine Supplies', costCents: 999, priceCents: 1899, taxClass: 'Standard', qoh: 15, reorderPoint: 5, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '11', sku: 'MRN-FEND', barcode: '0012345000111', name: 'Boat Fender', category: 'Marine Supplies', costCents: 1299, priceCents: 2499, taxClass: 'Standard', qoh: 3, reorderPoint: 4, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '12', sku: 'APR-HAT', barcode: '0012345000128', name: 'Marina Cap', category: 'Apparel', costCents: 800, priceCents: 2200, taxClass: 'Standard', qoh: 48, reorderPoint: 12, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '13', sku: 'APR-TEE', barcode: '0012345000135', name: 'Marina T-Shirt', category: 'Apparel', costCents: 1000, priceCents: 2800, taxClass: 'Standard', qoh: 36, reorderPoint: 10, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '14', sku: 'MRN-OIL', barcode: '0012345000142', name: 'Marine Motor Oil (qt)', category: 'Boat Parts', costCents: 599, priceCents: 1199, taxClass: 'Standard', qoh: 24, reorderPoint: 8, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-  { id: '15', sku: 'MRN-FILT', barcode: '0012345000159', name: 'Oil Filter (universal)', category: 'Boat Parts', costCents: 499, priceCents: 999, taxClass: 'Standard', qoh: 12, reorderPoint: 6, glRevenue: '4500', glCogs: '5200', trackInventory: true, active: true },
-];
+interface ApiProduct {
+  id: string; sku: string; barcode: string | null; name: string; category: string;
+  costCents: number; priceCents: number; taxClass: string | null; qoh: number;
+  reorderPoint: number; cogsGlAccountId: string | null; revenueGlAccountId: string | null;
+  trackInventory: boolean; active: boolean;
+}
 
-const POS_DATA: PurchaseOrder[] = [
-  { id: '1', poNumber: 'PO-0042', vendor: 'Gulf Coast Petroleum', status: 'Received', items: 3, totalCostCents: 2195000, expectedDate: '2026-03-22', createdDate: '2026-03-18' },
-  { id: '2', poNumber: 'PO-0043', vendor: 'Marine Supply Distributors', status: 'Partial', items: 5, totalCostCents: 89500, expectedDate: '2026-03-25', createdDate: '2026-03-20' },
-  { id: '3', poNumber: 'PO-0044', vendor: 'Coastal Bait & Tackle', status: 'Submitted', items: 2, totalCostCents: 45000, expectedDate: '2026-03-28', createdDate: '2026-03-24' },
-  { id: '4', poNumber: 'PO-0045', vendor: 'Marina Apparel Co.', status: 'Draft', items: 4, totalCostCents: 125000, expectedDate: '2026-04-05', createdDate: '2026-03-25' },
-  { id: '5', poNumber: 'PO-0041', vendor: 'Gulf Coast Petroleum', status: 'Received', items: 2, totalCostCents: 1650000, expectedDate: '2026-03-15', createdDate: '2026-03-10' },
-];
+interface ApiAdjustment {
+  id: string; productId: string; productName?: string; productSku?: string;
+  quantityChange: number; reason: string; qohBefore?: number; qohAfter?: number;
+  staffName: string | null; notes: string | null; createdAt: string;
+}
 
-const COUNTS: CountSession[] = [
-  { id: '1', countNumber: 'CNT-012', date: '2026-03-25', startedBy: 'Jake Martinez', products: 15, discrepancies: 3, status: 'In Progress' },
-  { id: '2', countNumber: 'CNT-011', date: '2026-03-18', startedBy: 'Maria Santos', products: 15, discrepancies: 1, status: 'Completed' },
-  { id: '3', countNumber: 'CNT-010', date: '2026-03-11', startedBy: 'Jake Martinez', products: 15, discrepancies: 2, status: 'Completed' },
-  { id: '4', countNumber: 'CNT-009', date: '2026-03-04', startedBy: 'Maria Santos', products: 15, discrepancies: 0, status: 'Completed' },
-];
+interface ApiCountSession {
+  id: string; name: string; startedBy: string; status: string;
+  items: { productId: string; discrepancy?: number }[];
+  createdAt: string; completedAt: string | null;
+}
 
-const ADJUSTMENTS: Adjustment[] = [
-  { id: '1', date: '2026-03-25 10:30', product: 'Boat Fender', sku: 'MRN-FEND', type: 'Sold', qtyChange: -2, before: 5, after: 3, staff: 'Tom A.', notes: '' },
-  { id: '2', date: '2026-03-25 09:15', product: 'Regular Gas', sku: 'FUEL-REG', type: 'Sold', qtyChange: -45, before: 2445, after: 2400, staff: 'Jake M.', notes: 'Customer: James H.' },
-  { id: '3', date: '2026-03-24 16:00', product: 'Marina Cap', sku: 'APR-HAT', type: 'Sold', qtyChange: -2, before: 50, after: 48, staff: 'Maria S.', notes: '' },
-  { id: '4', date: '2026-03-24 14:20', product: 'Live Shrimp', sku: 'BAIT-SHP', type: 'Damaged', qtyChange: -6, before: 30, after: 24, staff: 'Jake M.', notes: 'Expired — disposed' },
-  { id: '5', date: '2026-03-22 08:00', product: 'Regular Gas', sku: 'FUEL-REG', type: 'Received', qtyChange: 3000, before: 1445, after: 4445, staff: 'Jake M.', notes: 'PO-0042 Gulf Coast' },
-  { id: '6', date: '2026-03-22 08:00', product: 'Diesel', sku: 'FUEL-DSL', type: 'Received', qtyChange: 2500, before: 800, after: 3300, staff: 'Jake M.', notes: 'PO-0042 Gulf Coast' },
-  { id: '7', date: '2026-03-18 15:30', product: 'Dock Line', sku: 'MRN-LINE', type: 'Count', qtyChange: -2, before: 17, after: 15, staff: 'Maria S.', notes: 'Physical count adjustment' },
-  { id: '8', date: '2026-03-18 15:30', product: 'Sunscreen SPF 50', sku: 'SUN-SPF', type: 'Shrinkage', qtyChange: -1, before: 33, after: 32, staff: 'Maria S.', notes: 'Missing from shelf' },
-  { id: '9', date: '2026-03-15 09:00', product: 'Bottled Water', sku: 'SNK-WTR', type: 'Received', qtyChange: 96, before: 48, after: 144, staff: 'Jake M.', notes: 'PO-0041' },
-  { id: '10', date: '2026-03-14 11:00', product: 'Marina T-Shirt', sku: 'APR-TEE', type: 'Return', qtyChange: 2, before: 34, after: 36, staff: 'Maria S.', notes: 'Customer return — wrong size' },
-];
+interface ApiPurchaseOrder {
+  id: string; poNumber: string; vendor: string; status: string;
+  expectedDate: string | null; notes: string | null;
+  lineItems: { quantity: number; unitCostCents: number }[];
+  totalCostCents: number; createdAt: string;
+}
+
+function toProduct(p: ApiProduct): Product {
+  return {
+    id: p.id, sku: p.sku, barcode: p.barcode ?? '', name: p.name,
+    category: p.category, costCents: p.costCents, priceCents: p.priceCents,
+    taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
+    glRevenue: p.revenueGlAccountId ?? '4500', glCogs: p.cogsGlAccountId ?? '5200',
+    trackInventory: p.trackInventory, active: p.active,
+  };
+}
+
+function toAdjustment(a: ApiAdjustment, _idx: number): Adjustment {
+  const date = new Date(a.createdAt);
+  const dateStr = date.toLocaleString('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const typeMap: Record<string, Adjustment['type']> = {
+    received: 'Received', sold: 'Sold', damaged: 'Damaged',
+    count: 'Count', shrinkage: 'Shrinkage', return: 'Return',
+  };
+  return {
+    id: a.id,
+    date: dateStr,
+    product: a.productName ?? a.productId,
+    sku: a.productSku ?? '—',
+    type: typeMap[a.reason] ?? 'Count',
+    qtyChange: a.quantityChange,
+    before: a.qohBefore ?? 0,
+    after: a.qohAfter ?? 0,
+    staff: a.staffName ?? '—',
+    notes: a.notes ?? '',
+  };
+}
+
+function toCountSession(s: ApiCountSession, idx: number): CountSession {
+  const discrepancies = s.items.filter((i) => (i.discrepancy ?? 0) !== 0).length;
+  return {
+    id: s.id,
+    countNumber: `CNT-${String(idx + 1).padStart(3, '0')}`,
+    date: s.createdAt.split('T')[0],
+    startedBy: s.startedBy,
+    products: s.items.length,
+    discrepancies,
+    status: s.status === 'completed' ? 'Completed' : 'In Progress',
+  };
+}
+
+function toPurchaseOrder(po: ApiPurchaseOrder): PurchaseOrder {
+  const statusMap: Record<string, PurchaseOrder['status']> = {
+    draft: 'Draft', submitted: 'Submitted', partial: 'Partial',
+    received: 'Received', cancelled: 'Cancelled',
+  };
+  return {
+    id: po.id, poNumber: po.poNumber, vendor: po.vendor,
+    status: statusMap[po.status] ?? 'Draft',
+    items: po.lineItems.length,
+    totalCostCents: po.totalCostCents,
+    expectedDate: po.expectedDate ?? '—',
+    createdDate: po.createdAt.split('T')[0],
+  };
+}
 
 /* ── Helpers ───────────────────────────────────────────── */
 
@@ -347,32 +389,92 @@ export default function Inventory() {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [lowOnly, setLowOnly] = useState(false);
-  const [products, setProducts] = useState<Product[]>(PRODUCTS);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
+  const [countSessions, setCountSessions] = useState<CountSession[]>([]);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [modal, setModal] = useState<ModalType>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [receivingPO, setReceivingPO] = useState<PurchaseOrder | null>(null);
 
+  const { data: productsData, loading: productsLoading } = useApi<{ data: ApiProduct[]; total: number }>(
+    'get', '/api/inventory/products?take=100&sortBy=name&sortOrder=asc', { immediate: true },
+  );
+  const { data: posData, loading: posLoading } = useApi<{ data: ApiPurchaseOrder[]; total: number }>(
+    'get', '/api/inventory/purchase-orders', { immediate: true },
+  );
+  const { data: countsData, loading: countsLoading } = useApi<{ data: ApiCountSession[]; total: number }>(
+    'get', '/api/inventory/counts', { immediate: true },
+  );
+  const { data: adjData, loading: adjLoading } = useApi<{ data: ApiAdjustment[]; total: number }>(
+    'get', '/api/inventory/adjustments?take=50', { immediate: true },
+  );
+  const { execute: createProductApi } = useApi<ApiProduct>('post', '/api/inventory/products');
+
+  React.useEffect(() => {
+    if (productsData?.data) setProducts(productsData.data.map(toProduct));
+  }, [productsData]);
+
+  React.useEffect(() => {
+    if (posData?.data) setPurchaseOrders(posData.data.map(toPurchaseOrder));
+  }, [posData]);
+
+  React.useEffect(() => {
+    if (countsData?.data) setCountSessions(countsData.data.map(toCountSession));
+  }, [countsData]);
+
+  React.useEffect(() => {
+    if (adjData?.data) setAdjustments(adjData.data.map(toAdjustment));
+  }, [adjData]);
+
   const totalValue = products.reduce((s, p) => s + p.qoh * p.costCents, 0);
   const lowCount = products.filter((p) => p.qoh <= p.reorderPoint && p.qoh > 0).length;
   const outCount = products.filter((p) => p.qoh === 0).length;
-  const openPOs = POS_DATA.filter((p) => p.status === 'Submitted' || p.status === 'Partial').length;
+  const openPOs = purchaseOrders.filter((p) => p.status === 'Submitted' || p.status === 'Partial').length;
   const categories = ['All', ...Array.from(new Set(products.map((p) => p.category)))];
 
   const filteredProducts = products.filter((p) => {
     if (catFilter !== 'All' && p.category !== catFilter) return false;
     if (lowOnly && p.qoh > p.reorderPoint) return false;
-    if (search) { const q = search.toLowerCase(); return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.barcode.includes(q); }
+    if (search) { const q = search.toLowerCase(); return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode && p.barcode.includes(q)); }
     return true;
   });
 
-  const handleSaveProduct = (p: Product) => {
-    setProducts((prev) => {
-      const idx = prev.findIndex((x) => x.id === p.id);
-      if (idx >= 0) { const updated = [...prev]; updated[idx] = p; return updated; }
-      return [...prev, p];
-    });
+  const handleSaveProduct = async (p: Product) => {
+    try {
+      const payload = {
+        name: p.name, sku: p.sku, barcode: p.barcode || null, category: p.category,
+        costCents: p.costCents, priceCents: p.priceCents, taxClass: p.taxClass,
+        reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
+        revenueGlAccountId: p.glRevenue || null, cogsGlAccountId: p.glCogs || null,
+      };
+      if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
+        await fetch(`/api/inventory/products/${p.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setProducts((prev) => prev.map((x) => x.id === p.id ? p : x));
+      } else {
+        const created = await createProductApi(payload);
+        if (created) setProducts((prev) => [toProduct(created as unknown as ApiProduct), ...prev]);
+      }
+      toast.success('Product saved', p.name + ' has been saved.');
+    } catch {
+      toast.error('Error', 'Failed to save product.');
+    }
     setEditingProduct(null);
     setModal(null);
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    try {
+      await fetch(`/api/inventory/products/${id}`, { method: 'DELETE' });
+      setProducts((prev) => prev.filter((x) => x.id !== id));
+      toast.success('Removed', 'Product removed from inventory.');
+    } catch {
+      toast.error('Error', 'Failed to remove product.');
+    }
   };
 
   const openEdit = (p: Product) => { setEditingProduct(p); setModal('editProduct'); };
@@ -409,7 +511,7 @@ export default function Inventory() {
         <div style={st.statCard}>
           <div style={st.statLabel}>Open POs</div>
           <div style={st.statValue}>{openPOs}</div>
-          <div style={st.statSub}>{POS_DATA.filter((p) => p.status === 'Draft').length} draft</div>
+          <div style={st.statSub}>{purchaseOrders.filter((p) => p.status === 'Draft').length} draft</div>
         </div>
       </div>
 
@@ -434,7 +536,11 @@ export default function Inventory() {
               <th style={st.th}>Reorder</th><th style={st.th}>Status</th><th style={st.th}>GL Rev</th><th style={st.th}>Actions</th>
             </tr></thead>
             <tbody>
-              {filteredProducts.map((p, idx) => {
+              {productsLoading ? (
+                <tr><td colSpan={12} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: '32px' }}>Loading inventory…</td></tr>
+              ) : filteredProducts.length === 0 ? (
+                <tr><td colSpan={12} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '32px' }}>No products found. Add your first product using the button above.</td></tr>
+              ) : filteredProducts.map((p, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const ss = stockStatus(p); const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents * 100).toFixed(0) : '0'; return (
                   <tr key={p.id}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#EFF6FF'; }}
@@ -453,7 +559,7 @@ export default function Inventory() {
                     <td style={{ ...st.td, ...st.mono, fontSize: '11px' }}>{p.glRevenue}</td>
                     <td style={st.td}>
                       <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => openEdit(p)} title="Edit"><Edit2 size={14} /></button>
-                      <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => setProducts((prev) => prev.filter((x) => x.id !== p.id))} title="Remove"><Trash2 size={14} /></button>
+                      <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => handleDeleteProduct(p.id)} title="Remove"><Trash2 size={14} /></button>
                     </td>
                   </tr>
                 );
@@ -469,7 +575,11 @@ export default function Inventory() {
         <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>PO #</th><th style={st.th}>Vendor</th><th style={st.th}>Items</th><th style={st.th}>Total Cost</th><th style={st.th}>Expected</th><th style={st.th}>Created</th><th style={st.th}>Status</th><th style={st.th}>Actions</th>
         </tr></thead><tbody>
-          {POS_DATA.map((po, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = poStatusColors[po.status]; return (
+          {posLoading ? (
+            <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', color: '#64748B' }}>Loading…</td></tr>
+          ) : purchaseOrders.length === 0 ? (
+            <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', color: '#94A3B8' }}>No purchase orders found.</td></tr>
+          ) : purchaseOrders.map((po, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = poStatusColors[po.status]; return (
             <tr key={po.id} style={{ backgroundColor: rowBg }}>
               <td style={{ ...st.td, fontWeight: 700 }}>{po.poNumber}</td>
               <td style={st.td}>{po.vendor}</td>
@@ -495,7 +605,11 @@ export default function Inventory() {
         <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Count #</th><th style={st.th}>Date</th><th style={st.th}>Started By</th><th style={st.th}>Products</th><th style={st.th}>Discrepancies</th><th style={st.th}>Status</th>
         </tr></thead><tbody>
-          {COUNTS.map((c, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; return (
+          {countsLoading ? (
+            <tr><td colSpan={6} style={{ ...st.td, textAlign: 'center', color: '#64748B' }}>Loading…</td></tr>
+          ) : countSessions.length === 0 ? (
+            <tr><td colSpan={6} style={{ ...st.td, textAlign: 'center', color: '#94A3B8' }}>No inventory counts yet.</td></tr>
+          ) : countSessions.map((c, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; return (
             <tr key={c.id} style={{ backgroundColor: rowBg }}>
               <td style={{ ...st.td, fontWeight: 700 }}>{c.countNumber}</td>
               <td style={st.td}>{c.date}</td>
@@ -517,7 +631,11 @@ export default function Inventory() {
         <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Date</th><th style={st.th}>Product</th><th style={st.th}>SKU</th><th style={st.th}>Type</th><th style={st.th}>Qty Change</th><th style={st.th}>Before</th><th style={st.th}>After</th><th style={st.th}>Staff</th><th style={st.th}>Notes</th>
         </tr></thead><tbody>
-          {ADJUSTMENTS.map((a, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const tc = adjTypeColors[a.type]; return (
+          {adjLoading ? (
+            <tr><td colSpan={9} style={{ ...st.td, textAlign: 'center', color: '#64748B' }}>Loading…</td></tr>
+          ) : adjustments.length === 0 ? (
+            <tr><td colSpan={9} style={{ ...st.td, textAlign: 'center', color: '#94A3B8' }}>No adjustments recorded yet.</td></tr>
+          ) : adjustments.map((a, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const tc = adjTypeColors[a.type]; return (
             <tr key={a.id} style={{ backgroundColor: rowBg }}>
               <td style={{ ...st.td, fontSize: '12px' }}>{a.date}</td>
               <td style={{ ...st.td, fontWeight: 600 }}>{a.product}</td>

@@ -1,4 +1,6 @@
-import { useState, CSSProperties } from 'react';
+import { useState, useEffect, CSSProperties } from 'react';
+import { useApi } from '../hooks/useApi';
+import { Loader, AlertCircle } from 'lucide-react';
 
 interface PropertyData {
   id: string;
@@ -21,56 +23,13 @@ interface Alert {
   severity: 'critical' | 'warning';
 }
 
-const properties: PropertyData[] = [
-  {
-    id: 'p1',
-    name: 'Bayshore Marina',
-    totalSlips: 180,
-    occupiedSlips: 168,
-    occupancyPct: 93,
-    monthlyRevenue: 287500,
-    totalAR: 34200,
-    activeLeads: 24,
-    compliancePct: 97,
-    revenueHistory: [245000, 252000, 261000, 268000, 274000, 287500],
-  },
-  {
-    id: 'p2',
-    name: 'Harbor Point Marina',
-    totalSlips: 120,
-    occupiedSlips: 102,
-    occupancyPct: 85,
-    monthlyRevenue: 178400,
-    totalAR: 22800,
-    activeLeads: 18,
-    compliancePct: 91,
-    revenueHistory: [152000, 158000, 163000, 170000, 174000, 178400],
-  },
-  {
-    id: 'p3',
-    name: 'Sunset Cove Marina',
-    totalSlips: 95,
-    occupiedSlips: 88,
-    occupancyPct: 93,
-    monthlyRevenue: 142300,
-    totalAR: 15600,
-    activeLeads: 11,
-    compliancePct: 94,
-    revenueHistory: [118000, 124000, 128000, 133000, 138000, 142300],
-  },
-];
+interface DashboardResponse {
+  properties: PropertyData[];
+  alerts: Alert[];
+  months: string[];
+}
 
-const alerts: Alert[] = [
-  { id: 'a1', property: 'Bayshore Marina', type: 'contract', message: '12 contracts expiring within 30 days', severity: 'critical' },
-  { id: 'a2', property: 'Harbor Point Marina', type: 'compliance', message: '4 vessels with expired insurance', severity: 'critical' },
-  { id: 'a3', property: 'Sunset Cove Marina', type: 'ach', message: '2 ACH returns pending resolution', severity: 'warning' },
-  { id: 'a4', property: 'Bayshore Marina', type: 'maintenance', message: 'Dock C power pedestal repair overdue', severity: 'warning' },
-  { id: 'a5', property: 'Harbor Point Marina', type: 'contract', message: '6 contracts expiring within 30 days', severity: 'warning' },
-  { id: 'a6', property: 'Sunset Cove Marina', type: 'compliance', message: '2 vessels with expired registration', severity: 'warning' },
-];
-
-const months = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
-const propertyColors = ['#0ea5e9', '#06b6d4', '#8b5cf6'];
+const propertyColors = ['#0ea5e9', '#06b6d4', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444'];
 
 function fmt(n: number): string {
   if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
@@ -85,6 +44,20 @@ function fmtFull(n: number): string {
 export default function PortfolioDashboard() {
   const [selectedProperty, setSelectedProperty] = useState<string>('all');
 
+  const { data, loading, error } = useApi<DashboardResponse>(
+    'get',
+    '/api/portfolio/dashboard',
+    { immediate: true },
+  );
+
+  const properties = data?.properties ?? [];
+  const alerts = data?.alerts ?? [];
+  const months = data?.months ?? [];
+
+  useEffect(() => {
+    setSelectedProperty('all');
+  }, [data]);
+
   const filtered = selectedProperty === 'all'
     ? properties
     : properties.filter((p) => p.id === selectedProperty);
@@ -97,11 +70,17 @@ export default function PortfolioDashboard() {
   };
   const totalOccupancy = totals.slips > 0 ? Math.round((totals.occupied / totals.slips) * 100) : 0;
 
-  // Stacked chart: find max total per month
   const monthTotals = months.map((_, i) =>
-    properties.reduce((s, p) => s + p.revenueHistory[i], 0)
+    properties.reduce((s, p) => s + (p.revenueHistory[i] ?? 0), 0)
   );
-  const chartMax = Math.max(...monthTotals) * 1.1;
+  const chartMax = Math.max(...monthTotals, 1) * 1.1;
+
+  const filteredAlerts = selectedProperty === 'all'
+    ? alerts
+    : alerts.filter((a) => {
+        const prop = properties.find((p) => p.id === selectedProperty);
+        return prop && a.property === prop.name;
+      });
 
   const s = {
     page: {
@@ -217,6 +196,7 @@ export default function PortfolioDashboard() {
       gap: 20,
       marginTop: 16,
       justifyContent: 'center',
+      flexWrap: 'wrap' as const,
     },
     legendItem: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#64748b' },
     legendDot: (color: string): CSSProperties => ({
@@ -258,7 +238,7 @@ export default function PortfolioDashboard() {
       background: severity === 'critical' ? '#fee2e2' : '#fef3c7',
       textTransform: 'uppercase' as const,
     }),
-    occupancyBar: (pct: number): CSSProperties => ({
+    occupancyBar: (): CSSProperties => ({
       width: 80,
       height: 6,
       borderRadius: 3,
@@ -278,12 +258,37 @@ export default function PortfolioDashboard() {
     }),
   };
 
-  const filteredAlerts = selectedProperty === 'all'
-    ? alerts
-    : alerts.filter((a) => {
-        const prop = properties.find((p) => p.id === selectedProperty);
-        return prop && a.property === prop.name;
-      });
+  if (loading) {
+    return (
+      <div style={{ ...s.page, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 320, gap: 12, color: '#64748b' }}>
+        <Loader size={22} className="animate-spin" />
+        <span style={{ fontSize: 15 }}>Loading portfolio data…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ ...s.page, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 320, gap: 12, color: '#dc2626' }}>
+        <AlertCircle size={28} />
+        <span style={{ fontSize: 15 }}>Could not load portfolio data. Please refresh.</span>
+      </div>
+    );
+  }
+
+  if (properties.length === 0) {
+    return (
+      <div style={s.page}>
+        <div style={s.headerRow}>
+          <h1 style={s.title} className="helm-page-title">Portfolio Overview</h1>
+        </div>
+        <hr style={s.divider} />
+        <div style={{ textAlign: 'center', color: '#94a3b8', padding: 64, fontSize: 15 }}>
+          No active tenants found. Add your first marina to see portfolio data here.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={s.page}>
@@ -348,7 +353,7 @@ export default function PortfolioDashboard() {
                 <td style={s.td}>{p.occupiedSlips} / {p.totalSlips}</td>
                 <td style={s.td}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={s.occupancyBar(p.occupancyPct)}>
+                    <div style={s.occupancyBar()}>
                       <div style={s.occupancyFill(p.occupancyPct)} />
                     </div>
                     <span>{p.occupancyPct}%</span>
@@ -374,7 +379,7 @@ export default function PortfolioDashboard() {
                 <td style={s.tdBold}>{totalOccupancy}%</td>
                 <td style={s.tdBold}>{fmtFull(totals.revenue)}</td>
                 <td style={s.tdBold}>{fmtFull(totals.ar)}</td>
-                <td style={s.tdBold}>{filtered.reduce((s, p) => s + p.activeLeads, 0)}</td>
+                <td style={s.tdBold}>{filtered.reduce((sum, p) => sum + p.activeLeads, 0)}</td>
                 <td style={s.tdBold}>--</td>
               </tr>
             )}
@@ -383,56 +388,59 @@ export default function PortfolioDashboard() {
       </div>
 
       {/* Revenue Chart - Stacked Bar */}
-      <div style={s.section}>
-        <h2 style={s.sectionTitle}>Revenue Trend (Stacked)</h2>
-        <div style={s.chartContainer}>
-          <div style={s.chartArea}>
-            {months.map((month, mi) => {
-              const total = properties.reduce((sum, p) => sum + p.revenueHistory[mi], 0);
-              const barHeight = (total / chartMax) * 200;
-              let cumulativeHeight = 0;
+      {months.length > 0 && (
+        <div style={s.section}>
+          <h2 style={s.sectionTitle}>Revenue Trend (Stacked)</h2>
+          <div style={s.chartContainer}>
+            <div style={s.chartArea}>
+              {months.map((month, mi) => {
+                const total = properties.reduce((sum, p) => sum + (p.revenueHistory[mi] ?? 0), 0);
+                const barHeight = chartMax > 0 ? (total / chartMax) * 200 : 0;
+                let cumulativeHeight = 0;
 
-              return (
-                <div key={month} style={s.chartCol}>
-                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, fontWeight: 600 }}>
-                    {fmt(total)}
+                return (
+                  <div key={month} style={s.chartCol}>
+                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, fontWeight: 600 }}>
+                      {fmt(total)}
+                    </div>
+                    <div style={{ position: 'relative', width: '80%', height: barHeight, borderRadius: 6, overflow: 'hidden' }}>
+                      {properties.map((p, pi) => {
+                        const segHeight = total > 0 ? ((p.revenueHistory[mi] ?? 0) / total) * barHeight : 0;
+                        const color = propertyColors[pi % propertyColors.length];
+                        const segment = (
+                          <div
+                            key={p.id}
+                            style={{
+                              position: 'absolute',
+                              bottom: cumulativeHeight,
+                              left: 0,
+                              right: 0,
+                              height: segHeight,
+                              background: color,
+                              opacity: selectedProperty === 'all' || selectedProperty === p.id ? 1 : 0.2,
+                            }}
+                          />
+                        );
+                        cumulativeHeight += segHeight;
+                        return segment;
+                      })}
+                    </div>
+                    <div style={s.chartLabel}>{month}</div>
                   </div>
-                  <div style={{ position: 'relative', width: '80%', height: barHeight, borderRadius: 6, overflow: 'hidden' }}>
-                    {properties.map((p, pi) => {
-                      const segHeight = (p.revenueHistory[mi] / total) * barHeight;
-                      const segment = (
-                        <div
-                          key={p.id}
-                          style={{
-                            position: 'absolute',
-                            bottom: cumulativeHeight,
-                            left: 0,
-                            right: 0,
-                            height: segHeight,
-                            background: propertyColors[pi],
-                            opacity: selectedProperty === 'all' || selectedProperty === p.id ? 1 : 0.2,
-                          }}
-                        />
-                      );
-                      cumulativeHeight += segHeight;
-                      return segment;
-                    })}
-                  </div>
-                  <div style={s.chartLabel}>{month}</div>
+                );
+              })}
+            </div>
+            <div style={s.legend}>
+              {properties.map((p, i) => (
+                <div key={p.id} style={s.legendItem}>
+                  <div style={s.legendDot(propertyColors[i % propertyColors.length])} />
+                  {p.name}
                 </div>
-              );
-            })}
-          </div>
-          <div style={s.legend}>
-            {properties.map((p, i) => (
-              <div key={p.id} style={s.legendItem}>
-                <div style={s.legendDot(propertyColors[i])} />
-                {p.name}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Alerts */}
       <div style={s.section}>
@@ -452,18 +460,19 @@ export default function PortfolioDashboard() {
             </span>
           )}
         </h2>
-        {filteredAlerts.map((alert) => (
-          <div key={alert.id} style={s.alertCard(alert.severity)}>
-            <div style={s.alertDot(alert.severity)} />
-            <div style={s.alertProperty}>{alert.property}</div>
-            <div style={s.alertMsg}>{alert.message}</div>
-            <span style={s.alertBadge(alert.severity)}>{alert.severity}</span>
-          </div>
-        ))}
-        {filteredAlerts.length === 0 && (
+        {filteredAlerts.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#94a3b8', padding: 32, fontSize: 14 }}>
             No alerts for the selected property.
           </div>
+        ) : (
+          filteredAlerts.map((alert) => (
+            <div key={alert.id} style={s.alertCard(alert.severity)}>
+              <div style={s.alertDot(alert.severity)} />
+              <div style={s.alertProperty}>{alert.property}</div>
+              <div style={s.alertMsg}>{alert.message}</div>
+              <span style={s.alertBadge(alert.severity)}>{alert.severity}</span>
+            </div>
+          ))
         )}
       </div>
     </div>

@@ -776,4 +776,59 @@ router.get(
   },
 );
 
+// ---------------------------------------------------------------------------
+// GET /api/portal/messages — thread for this customer
+// POST /api/portal/messages — send a new message
+// ---------------------------------------------------------------------------
+router.get(
+  "/messages",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const messages = await prisma.portalMessage.findMany({
+        where: { customerId: req.portalCustomerId!, tenantId: req.tenantId! },
+        orderBy: { createdAt: "asc" },
+      });
+      // Mark unread customer-visible messages as read
+      await prisma.portalMessage.updateMany({
+        where: {
+          customerId: req.portalCustomerId!,
+          tenantId: req.tenantId!,
+          sender: "staff",
+          read: false,
+        },
+        data: { read: true },
+      });
+      res.json(messages);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/messages",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { content } = req.body as { content?: string };
+      if (!content || !content.trim()) {
+        res.status(400).json({ error: "content is required" });
+        return;
+      }
+      const message = await prisma.portalMessage.create({
+        data: {
+          tenantId: req.tenantId!,
+          customerId: req.portalCustomerId!,
+          sender: "customer",
+          content: content.trim(),
+          read: false,
+        },
+      });
+      res.status(201).json(message);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;
+

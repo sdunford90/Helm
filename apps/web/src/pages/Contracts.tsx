@@ -314,18 +314,7 @@ const st: Record<string, React.CSSProperties> = {
   },
 };
 
-/* ── Mock Catalog Products ─────────────────────────────── */
-
-const DOCKAGE_PRODUCTS = [
-  { id: 'prod-1', name: '40ft Covered', rate: 2450, label: '40ft Covered - $2,450/mo' },
-  { id: 'prod-2', name: '30ft Open', rate: 1200, label: '30ft Open - $1,200/mo' },
-  { id: 'prod-3', name: '25ft Open', rate: 850, label: '25ft Open - $850/mo' },
-  { id: 'prod-4', name: '35ft Covered', rate: 1800, label: '35ft Covered - $1,800/mo' },
-  { id: 'prod-5', name: '50ft End Slip', rate: 3200, label: '50ft End Slip - $3,200/mo' },
-  { id: 'prod-6', name: '45ft Covered Premium', rate: 3000, label: '45ft Covered Premium - $3,000/mo' },
-];
-
-// TODO(api): fetch boats by customer
+// Boats are fetched per-customer via the API inside the modal
 const CUSTOMER_BOATS: Record<string, { id: string; name: string }[]> = {};
 
 /* ── Contract Form Modal ─────────────────────────────────── */
@@ -344,11 +333,21 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const { data: productsData } = useApi<{ data: { id: string; name: string; priceCents: number }[]; total: number }>(
+    'get', '/api/inventory/products?take=100&sortBy=name&sortOrder=asc', { immediate: true },
+  );
+  const catalogProducts = (productsData?.data ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    rate: p.priceCents / 100,
+    label: `${p.name} - $${(p.priceCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}/mo`,
+  }));
+
   const availableBoats = customer ? (CUSTOMER_BOATS[customer] || []) : [];
 
   const handleProductChange = (productId: string) => {
     setProduct(productId);
-    const prod = DOCKAGE_PRODUCTS.find((p) => p.id === productId);
+    const prod = catalogProducts.find((p) => p.id === productId);
     if (prod) {
       setRate(String(prod.rate));
     }
@@ -434,7 +433,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               <label style={st.label}>Product (Dockage Rate)</label>
               <select style={st.formSelect} value={product} onChange={(e) => handleProductChange(e.target.value)}>
                 <option value="">Select product...</option>
-                {DOCKAGE_PRODUCTS.map((p) => (
+                {catalogProducts.map((p) => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>

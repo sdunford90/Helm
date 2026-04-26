@@ -283,6 +283,7 @@ model Tenant {
   locations      Location[]
   saasInvoices   SaasInvoice[]
   supportTickets SupportTicket[]
+  portalMessages PortalMessage[]
 
   @@map("tenants")
 }
@@ -484,6 +485,7 @@ model Customer {
   transientBookings   TransientBooking[]
   rampTickets         RampTicket[]
   communicationPreferences CommunicationPreference[]
+  portalMessages      PortalMessage[]
 
   @@index([tenantId])
   @@map("customers")
@@ -1529,6 +1531,27 @@ model SaasInvoice {
 
   @@index([tenantId])
   @@map("saas_invoices")
+}
+
+// ==========================================================================
+//  PORTAL MESSAGES
+// ==========================================================================
+
+model PortalMessage {
+  id          String   @id @default(uuid())
+  tenantId    String
+  customerId  String
+  sender      String   // "customer" | "staff"
+  staffName   String?
+  content     String
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId, customerId])
+  @@map("portal_messages")
 }
 
 // ==========================================================================

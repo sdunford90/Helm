@@ -1,80 +1,17 @@
 import { useState, useRef, useEffect, CSSProperties } from 'react';
+import { useAuth } from '@clerk/clerk-react';
+import { Loader, AlertCircle, Send } from 'lucide-react';
 
 interface Message {
   id: string;
   sender: 'staff' | 'customer';
-  senderName: string;
+  staffName?: string | null;
   content: string;
-  timestamp: string;
+  createdAt: string;
   read: boolean;
 }
 
-const mockMessages: Message[] = [
-  {
-    id: 'm1',
-    sender: 'customer',
-    senderName: 'You',
-    content: 'Hi, I have a question about my most recent invoice. It seems like I was charged for a full month but I only arrived on the 15th.',
-    timestamp: '2026-03-20T09:14:00Z',
-    read: true,
-  },
-  {
-    id: 'm2',
-    sender: 'staff',
-    senderName: 'Sarah (Marina Office)',
-    content: 'Hi! Thanks for reaching out. Let me pull up your account and take a look at that invoice for you.',
-    timestamp: '2026-03-20T09:32:00Z',
-    read: true,
-  },
-  {
-    id: 'm3',
-    sender: 'staff',
-    senderName: 'Sarah (Marina Office)',
-    content: 'I found the invoice — it looks like the system generated a full-month charge because your contract start date was set to March 1st. Since you actually arrived on the 15th, we should prorate that.',
-    timestamp: '2026-03-20T09:45:00Z',
-    read: true,
-  },
-  {
-    id: 'm4',
-    sender: 'customer',
-    senderName: 'You',
-    content: 'That makes sense. Is it possible to get a credit for the difference? I have the email confirmation showing my arrival date.',
-    timestamp: '2026-03-20T10:02:00Z',
-    read: true,
-  },
-  {
-    id: 'm5',
-    sender: 'staff',
-    senderName: 'Sarah (Marina Office)',
-    content: 'Absolutely! I\'ve submitted a credit memo for $437.50 which covers the 15-day proration. You should see it applied to your account within 24 hours.',
-    timestamp: '2026-03-20T10:18:00Z',
-    read: true,
-  },
-  {
-    id: 'm6',
-    sender: 'customer',
-    senderName: 'You',
-    content: 'That\'s great, thank you! One more thing — can I set up autopay so I don\'t have to worry about future invoices?',
-    timestamp: '2026-03-20T10:25:00Z',
-    read: true,
-  },
-  {
-    id: 'm7',
-    sender: 'staff',
-    senderName: 'Sarah (Marina Office)',
-    content: 'Of course! You can enable autopay right from your portal under Payment Methods. Just add a bank account or card and toggle on "Auto-pay". Let me know if you need help with that.',
-    timestamp: '2026-03-20T10:41:00Z',
-    read: true,
-  },
-  {
-    id: 'm8',
-    sender: 'customer',
-    senderName: 'You',
-    content: 'Perfect, I\'ll set that up now. Thanks for the quick help, Sarah!',
-    timestamp: '2026-03-20T10:43:00Z',
-    read: true,
-  },
-];
+const API_BASE = '/api/portal/messages';
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -88,44 +25,91 @@ function formatTime(iso: string): string {
 }
 
 export default function Messages() {
-  const [messages, setMessages] = useState<Message[]>(mockMessages);
+  const { getToken } = useAuth();
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const [hasNew, setHasNew] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(0);
+
+  const authFetch = async (url: string, options: RequestInit = {}) => {
+    const token = await getToken();
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers ?? {}),
+      },
+    });
+  };
+
+  const loadMessages = async (showLoading = false) => {
+    if (showLoading) setLoading(true);
+    try {
+      const res = await authFetch(API_BASE);
+      if (!res.ok) throw new Error('Failed to load');
+      const data: Message[] = await res.json();
+      setMessages((prev) => {
+        if (data.length > prevCountRef.current && prevCountRef.current > 0) {
+          const latestNew = data.slice(prevCountRef.current);
+          const hasStaffNew = latestNew.some((m) => m.sender === 'staff');
+          if (hasStaffNew) {
+            setHasNew(true);
+            setTimeout(() => setHasNew(false), 4000);
+          }
+        }
+        prevCountRef.current = data.length;
+        return data;
+      });
+      setError(null);
+    } catch {
+      if (showLoading) setError('Could not load messages. Please refresh the page.');
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadMessages(true);
+    const interval = setInterval(() => loadMessages(false), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
-    if (!text) return;
-
-    const newMsg: Message = {
-      id: `m${Date.now()}`,
+    if (!text || sending) return;
+    setSending(true);
+    const optimistic: Message = {
+      id: `optimistic-${Date.now()}`,
       sender: 'customer',
-      senderName: 'You',
       content: text,
-      timestamp: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
       read: true,
     };
-    setMessages((prev) => [...prev, newMsg]);
+    setMessages((prev) => [...prev, optimistic]);
     setInput('');
-
-    // Simulate staff reply after a short delay
-    setTimeout(() => {
-      setHasNew(true);
-      const reply: Message = {
-        id: `m${Date.now() + 1}`,
-        sender: 'staff',
-        senderName: 'Sarah (Marina Office)',
-        content: 'Thanks for your message! I\'ll look into this and get back to you shortly.',
-        timestamp: new Date().toISOString(),
-        read: false,
-      };
-      setMessages((prev) => [...prev, reply]);
-      setTimeout(() => setHasNew(false), 3000);
-    }, 2000);
+    try {
+      const res = await authFetch(API_BASE, {
+        method: 'POST',
+        body: JSON.stringify({ content: text }),
+      });
+      if (!res.ok) throw new Error('Failed to send');
+      await loadMessages(false);
+    } catch {
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+      setInput(text);
+      setError('Failed to send message. Please try again.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -148,12 +132,7 @@ export default function Messages() {
       justifyContent: 'space-between',
       marginBottom: 8,
     },
-    title: {
-      fontSize: 24,
-      fontWeight: 800,
-      color: '#0a2540',
-      margin: 0,
-    },
+    title: { fontSize: 24, fontWeight: 800, color: '#0a2540', margin: 0 },
     newBadge: {
       fontSize: 11,
       fontWeight: 700,
@@ -161,7 +140,6 @@ export default function Messages() {
       background: '#ef4444',
       borderRadius: 20,
       padding: '3px 10px',
-      animation: 'pulse 1s ease-in-out infinite',
     },
     divider: {
       height: 3,
@@ -175,6 +153,7 @@ export default function Messages() {
       borderRadius: 12,
       border: '1px solid #e2e8f0',
       padding: 24,
+      minHeight: 240,
       maxHeight: 480,
       overflowY: 'auto' as const,
       display: 'flex',
@@ -226,16 +205,39 @@ export default function Messages() {
       maxHeight: 120,
     },
     sendButton: {
-      padding: '12px 24px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6,
+      padding: '12px 20px',
       fontSize: 14,
       fontWeight: 700,
       color: '#ffffff',
-      background: 'linear-gradient(135deg, #0ea5e9, #0077b6)',
+      background: sending ? '#94a3b8' : 'linear-gradient(135deg, #0ea5e9, #0077b6)',
       border: 'none',
       borderRadius: 10,
-      cursor: 'pointer',
+      cursor: sending ? 'not-allowed' : 'pointer',
       whiteSpace: 'nowrap' as const,
       alignSelf: 'flex-end',
+    },
+    emptyState: {
+      display: 'flex',
+      flexDirection: 'column' as const,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '40px 0',
+      color: '#94a3b8',
+      gap: 8,
+      flex: 1,
+    },
+    note: {
+      marginTop: 16,
+      padding: '12px 16px',
+      background: '#f0f9ff',
+      borderRadius: 10,
+      border: '1px solid #bae6fd',
+      fontSize: 13,
+      color: '#0369a1',
+      lineHeight: 1.5,
     },
   };
 
@@ -247,19 +249,41 @@ export default function Messages() {
       </div>
       <hr style={s.divider} />
 
+      {error && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 16, color: '#dc2626', fontSize: 13 }}>
+          <AlertCircle size={16} />
+          {error}
+        </div>
+      )}
+
       <div style={s.threadContainer}>
-        {messages.map((msg) => {
-          const isCustomer = msg.sender === 'customer';
-          return (
-            <div key={msg.id} style={s.bubbleRow(isCustomer)}>
-              <div style={s.bubble(isCustomer)}>
-                <div style={s.senderName(isCustomer)}>{msg.senderName}</div>
-                <div>{msg.content}</div>
-                <div style={s.timestamp(isCustomer)}>{formatTime(msg.timestamp)}</div>
+        {loading ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flex: 1, color: '#64748b', padding: 32 }}>
+            <Loader size={18} />
+            <span style={{ fontSize: 14 }}>Loading messages…</span>
+          </div>
+        ) : messages.length === 0 ? (
+          <div style={s.emptyState}>
+            <Send size={32} color="#cbd5e1" />
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#0a2540' }}>No messages yet</p>
+            <p style={{ margin: 0, fontSize: 13 }}>Send a message below and the marina team will respond.</p>
+          </div>
+        ) : (
+          messages.map((msg) => {
+            const isCustomer = msg.sender === 'customer';
+            return (
+              <div key={msg.id} style={s.bubbleRow(isCustomer)}>
+                <div style={s.bubble(isCustomer)}>
+                  <div style={s.senderName(isCustomer)}>
+                    {isCustomer ? 'You' : (msg.staffName ?? 'Marina Office')}
+                  </div>
+                  <div>{msg.content}</div>
+                  <div style={s.timestamp(isCustomer)}>{formatTime(msg.createdAt)}</div>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -271,10 +295,16 @@ export default function Messages() {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           rows={1}
+          disabled={loading}
         />
-        <button style={s.sendButton} onClick={handleSend}>
-          Send
+        <button style={s.sendButton} onClick={handleSend} disabled={sending || loading}>
+          {sending ? <Loader size={16} /> : <Send size={16} />}
+          {sending ? 'Sending…' : 'Send'}
         </button>
+      </div>
+
+      <div style={s.note}>
+        Messages are received by the marina office team. Typical response time is a few hours during business hours. For urgent matters, please call the marina directly.
       </div>
     </div>
   );
