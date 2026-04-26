@@ -5,10 +5,40 @@ import IORedis from "ioredis";
 // Redis connection
 // --------------------------------------------------------------------------
 
-const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+function createRedisConnection(): IORedis {
+  const redisUrl = process.env.REDIS_URL;
 
-export const redisConnection = new IORedis(REDIS_URL, {
-  maxRetriesPerRequest: null, // Required by BullMQ
+  if (!redisUrl || redisUrl === "redis://localhost:6379") {
+    // Local dev fallback
+    return new IORedis("redis://localhost:6379", {
+      maxRetriesPerRequest: null,
+      lazyConnect: true,
+    });
+  }
+
+  // Parse the URL to extract connection details — handles rediss:// (TLS)
+  // correctly for Upstash and similar providers.
+  const parsed = new URL(redisUrl);
+  const isTls = parsed.protocol === "rediss:";
+
+  return new IORedis({
+    host: parsed.hostname,
+    port: parsed.port ? parseInt(parsed.port, 10) : isTls ? 6380 : 6379,
+    username: parsed.username || undefined,
+    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+    tls: isTls ? {} : undefined,
+    maxRetriesPerRequest: null, // Required by BullMQ
+  });
+}
+
+export const redisConnection = createRedisConnection();
+
+redisConnection.on("connect", () => {
+  console.log("[redis] connected");
+});
+redisConnection.on("error", (err) => {
+  // Log but don't crash — queues degrade gracefully when Redis is unavailable
+  console.warn("[redis] connection error:", err.message);
 });
 
 // --------------------------------------------------------------------------
