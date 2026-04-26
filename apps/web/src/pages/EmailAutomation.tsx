@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Mail, Search, Plus, X, Play, Pause, Eye, Copy,
   Clock, Check, Send, Edit2, Lock, ChevronRight,
   AlertTriangle, FileText, DollarSign, Ship, Shield,
   Users, Megaphone, Zap,
 } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -42,9 +43,72 @@ interface SendLogEntry {
   openedAt: string | null;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+interface ApiRule {
+  id: string;
+  name: string;
+  trigger: string;
+  enabled: boolean;
+  delayMinutes: number;
+  channels: string[];
+  conditions?: Record<string, unknown>;
+  template?: { id: string; name: string; subject: string; category: string };
+}
 
-const RULES: AutomationRule[] = [
+interface ApiTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  category: string;
+  isDefault: boolean;
+  variables: string[];
+}
+
+interface ApiLog {
+  id: string;
+  trigger: string;
+  recipientEmail: string | null;
+  recipientPhone: string | null;
+  customerId: string | null;
+  subject: string | null;
+  status: string;
+  sentAt: string | null;
+  createdAt: string;
+  channels?: string[];
+}
+
+/* ── Trigger metadata ───────────────────────────────────── */
+
+const TRIGGER_LABELS: Record<string, { label: string; category: string }> = {
+  invoice_created: { label: 'Invoice Created', category: 'Billing' },
+  invoice_past_due: { label: 'Invoice Past Due', category: 'Billing' },
+  invoice_past_due_7: { label: '7 Days Past Due', category: 'Billing' },
+  invoice_past_due_14: { label: '14 Days Past Due', category: 'Billing' },
+  invoice_past_due_30: { label: '30 Days Past Due', category: 'Billing' },
+  payment_received: { label: 'Payment Received', category: 'Billing' },
+  payment_failed: { label: 'Payment Failed', category: 'Billing' },
+  ach_return: { label: 'ACH Return', category: 'Billing' },
+  contract_expiring_60: { label: 'Contract Expiring (60d)', category: 'Compliance' },
+  contract_expiring_30: { label: 'Contract Expiring (30d)', category: 'Compliance' },
+  contract_expiring_7: { label: 'Contract Expiring (7d)', category: 'Compliance' },
+  contract_expired: { label: 'Contract Expired', category: 'Compliance' },
+  insurance_expiring_60: { label: 'Insurance Expiring (60d)', category: 'Compliance' },
+  insurance_expiring_30: { label: 'Insurance Expiring (30d)', category: 'Compliance' },
+  insurance_expiring_7: { label: 'Insurance Expiring (7d)', category: 'Compliance' },
+  insurance_expired: { label: 'Insurance Expired', category: 'Compliance' },
+  registration_expiring_30: { label: 'Registration Expiring (30d)', category: 'Compliance' },
+  rental_booking_confirmed: { label: 'Rental Booked', category: 'Rentals' },
+  rental_pre_arrival: { label: 'Pre-Arrival (48hr)', category: 'Rentals' },
+  rental_post_return: { label: 'Rental Returned', category: 'Rentals' },
+  rental_abandoned_cart: { label: 'Abandoned Cart', category: 'Rentals' },
+  rental_nps_survey: { label: 'NPS Survey', category: 'Rentals' },
+  welcome_new_customer: { label: 'Welcome New Customer', category: 'Operations' },
+  waitlist_position_available: { label: 'Waitlist Available', category: 'Operations' },
+  dock_walk_violation: { label: 'Dock Walk Violation', category: 'Operations' },
+};
+
+/* ── Default fallback data ──────────────────────────────── */
+
+const DEFAULT_RULES: AutomationRule[] = [
   { id: '1', name: 'Invoice Notification', trigger: 'invoice_created', triggerLabel: 'Invoice Created', category: 'Billing', templateName: 'Invoice Generated', channels: ['email'], delayLabel: 'Immediate', enabled: true },
   { id: '2', name: 'Payment Receipt', trigger: 'payment_received', triggerLabel: 'Payment Received', category: 'Billing', templateName: 'Payment Receipt', channels: ['email'], delayLabel: 'Immediate', enabled: true },
   { id: '3', name: 'ACH Return Alert', trigger: 'ach_return', triggerLabel: 'ACH Return', category: 'Billing', templateName: 'ACH Return Notice', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
@@ -59,7 +123,7 @@ const RULES: AutomationRule[] = [
   { id: '12', name: 'Post-Rental Thank You', trigger: 'rental_post_return', triggerLabel: 'Rental Returned', category: 'Rentals', templateName: 'Post-Rental Thank You', channels: ['email'], delayLabel: '24 hours', enabled: true },
 ];
 
-const TEMPLATES: EmailTemplate[] = [
+const DEFAULT_TEMPLATES: EmailTemplate[] = [
   { id: '1', name: 'Invoice Generated', subject: 'Invoice {{invoiceNumber}} — {{amount}} Due', category: 'Billing', isDefault: true, variables: ['customerName', 'invoiceNumber', 'amount', 'dueDate', 'portalUrl'] },
   { id: '2', name: 'Payment Receipt', subject: 'Payment Received — {{amount}}', category: 'Billing', isDefault: true, variables: ['customerName', 'amount', 'method', 'invoiceNumber'] },
   { id: '3', name: 'ACH Return Notice', subject: 'ACH Payment Returned — Action Required', category: 'Billing', isDefault: true, variables: ['customerName', 'amount', 'reason'] },
@@ -77,23 +141,65 @@ const TEMPLATES: EmailTemplate[] = [
   { id: '15', name: 'Custom Marketing', subject: '', category: 'Marketing', isDefault: false, variables: ['customerName', 'marinaName', 'portalUrl'] },
 ];
 
-const SEND_LOG: SendLogEntry[] = [
-  { id: '1', date: '2026-03-25 11:42', recipient: 'James Harborview', email: 'james@email.com', template: 'Payment Receipt', trigger: 'Payment Received', channel: 'email', status: 'Opened', openedAt: '2026-03-25 12:10' },
-  { id: '2', date: '2026-03-25 11:42', recipient: 'James Harborview', email: '(555) 234-5678', template: 'Payment Receipt', trigger: 'Payment Received', channel: 'sms', status: 'Delivered', openedAt: null },
-  { id: '3', date: '2026-03-25 09:00', recipient: 'Maria Seabreeze', email: 'maria@email.com', template: 'Invoice Generated', trigger: 'Invoice Created', channel: 'email', status: 'Opened', openedAt: '2026-03-25 09:45' },
-  { id: '4', date: '2026-03-24 16:30', recipient: 'Elena Windward', email: 'elena@email.com', template: 'Rental Reminder', trigger: 'Pre-Arrival', channel: 'email', status: 'Opened', openedAt: '2026-03-24 17:15' },
-  { id: '5', date: '2026-03-24 16:30', recipient: 'Elena Windward', email: '(555) 345-6789', template: 'Rental Reminder', trigger: 'Pre-Arrival', channel: 'sms', status: 'Delivered', openedAt: null },
-  { id: '6', date: '2026-03-24 14:00', recipient: 'David Tidewater', email: 'david@email.com', template: 'Document Expiry', trigger: 'Insurance Expiring', channel: 'email', status: 'Delivered', openedAt: null },
-  { id: '7', date: '2026-03-24 10:15', recipient: 'Robert Chen', email: 'robert@email.com', template: 'Booking Confirmation', trigger: 'Rental Booked', channel: 'email', status: 'Opened', openedAt: '2026-03-24 10:22' },
-  { id: '8', date: '2026-03-24 10:15', recipient: 'Robert Chen', email: '(555) 456-7890', template: 'Booking Confirmation', trigger: 'Rental Booked', channel: 'sms', status: 'Delivered', openedAt: null },
-  { id: '9', date: '2026-03-23 09:00', recipient: 'Coastal Charters LLC', email: 'billing@coastal.com', template: 'Invoice Generated', trigger: 'Invoice Created', channel: 'email', status: 'Bounced', openedAt: null },
-  { id: '10', date: '2026-03-23 08:00', recipient: 'Tom Seaside', email: 'tom@email.com', template: 'Past Due Reminder', trigger: '7 Days Past Due', channel: 'email', status: 'Opened', openedAt: '2026-03-23 10:30' },
-  { id: '11', date: '2026-03-22 15:00', recipient: 'Amy Portview', email: 'amy@email.com', template: 'Contract Renewal', trigger: 'Contract Expiring', channel: 'email', status: 'Opened', openedAt: '2026-03-22 16:45' },
-  { id: '12', date: '2026-03-22 12:00', recipient: 'Mike Anchorage', email: 'mike@email.com', template: 'Post-Rental Thank You', trigger: 'Rental Returned', channel: 'email', status: 'Delivered', openedAt: null },
-  { id: '13', date: '2026-03-22 09:30', recipient: 'Lisa Bayfront', email: 'lisa@email.com', template: 'Rental Agreement', trigger: 'Rental Booked', channel: 'email', status: 'Opened', openedAt: '2026-03-22 09:48' },
-  { id: '14', date: '2026-03-21 14:00', recipient: 'Carlos Rivera', email: 'carlos@email.com', template: 'ACH Return Notice', trigger: 'ACH Return', channel: 'email', status: 'Failed', openedAt: null },
-  { id: '15', date: '2026-03-21 14:00', recipient: 'Carlos Rivera', email: '(555) 567-8901', template: 'ACH Return Notice', trigger: 'ACH Return', channel: 'sms', status: 'Delivered', openedAt: null },
-];
+/* ── Helpers ────────────────────────────────────────────── */
+
+function delayLabel(minutes: number): string {
+  if (minutes === 0) return 'Immediate';
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 1440) return `${minutes / 60} hour${minutes / 60 !== 1 ? 's' : ''}`;
+  return `${minutes / 1440} day${minutes / 1440 !== 1 ? 's' : ''}`;
+}
+
+function mapApiRule(r: ApiRule): AutomationRule {
+  const meta = TRIGGER_LABELS[r.trigger] ?? { label: r.trigger, category: 'Operations' };
+  return {
+    id: r.id,
+    name: r.name,
+    trigger: r.trigger,
+    triggerLabel: meta.label,
+    category: r.template?.category
+      ? r.template.category.charAt(0).toUpperCase() + r.template.category.slice(1)
+      : meta.category,
+    templateName: r.template?.name ?? 'Unknown Template',
+    channels: (r.channels as ('email' | 'sms')[]) ?? ['email'],
+    delayLabel: delayLabel(r.delayMinutes),
+    enabled: r.enabled,
+  };
+}
+
+function mapApiTemplate(t: ApiTemplate): EmailTemplate {
+  return {
+    id: t.id,
+    name: t.name,
+    subject: t.subject,
+    category: t.category.charAt(0).toUpperCase() + t.category.slice(1),
+    isDefault: t.isDefault,
+    variables: Array.isArray(t.variables) ? t.variables : [],
+  };
+}
+
+function mapApiLog(l: ApiLog): SendLogEntry {
+  const ch = l.channels && l.channels.length > 0 ? l.channels[0] as 'email' | 'sms' : 'email';
+  const statusMap: Record<string, SendLogEntry['status']> = {
+    SENT: 'Delivered',
+    DELIVERED: 'Delivered',
+    OPENED: 'Opened',
+    BOUNCED: 'Bounced',
+    FAILED: 'Failed',
+    QUEUED: 'Delivered',
+  };
+  return {
+    id: l.id,
+    date: l.sentAt ? new Date(l.sentAt).toLocaleString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : new Date(l.createdAt).toLocaleString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }),
+    recipient: l.customerId ?? 'Customer',
+    email: ch === 'email' ? (l.recipientEmail ?? '—') : (l.recipientPhone ?? '—'),
+    template: l.subject ?? '—',
+    trigger: TRIGGER_LABELS[l.trigger]?.label ?? l.trigger,
+    channel: ch,
+    status: statusMap[l.status] ?? 'Delivered',
+    openedAt: null,
+  };
+}
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -103,6 +209,12 @@ const catColors: Record<string, { bg: string; color: string }> = {
   Compliance: { bg: '#FFF3CD', color: '#856404' },
   Operations: { bg: '#F3E8FF', color: '#6B21A8' },
   Marketing: { bg: '#D6E8F4', color: '#0A2342' },
+  billing: { bg: '#DEF7EC', color: '#03543F' },
+  rentals: { bg: '#E0F7FF', color: '#0A2342' },
+  compliance: { bg: '#FFF3CD', color: '#856404' },
+  operations: { bg: '#F3E8FF', color: '#6B21A8' },
+  marketing: { bg: '#D6E8F4', color: '#0A2342' },
+  custom: { bg: '#F3E8FF', color: '#6B21A8' },
 };
 
 const statusColors: Record<string, { bg: string; color: string }> = {
@@ -144,20 +256,60 @@ type Tab = 'rules' | 'templates' | 'log';
 
 export default function EmailAutomation() {
   const [tab, setTab] = useState<Tab>('rules');
-  const [rules, setRules] = useState(RULES);
+  const [rules, setRules] = useState<AutomationRule[]>(DEFAULT_RULES);
+  const [templates, setTemplates] = useState<EmailTemplate[]>(DEFAULT_TEMPLATES);
+  const [sendLog, setSendLog] = useState<SendLogEntry[]>([]);
   const [editingTemplate, setEditingTemplate] = useState<EmailTemplate | null>(null);
   const [logStatusFilter, setLogStatusFilter] = useState('All');
   const toast = useToast();
 
+  const { execute: fetchRules } = useApi<{ data: ApiRule[] }>('get', '/api/email-automation/rules');
+  const { execute: fetchTemplates } = useApi<{ data: ApiTemplate[] }>('get', '/api/email-automation/templates');
+  const { execute: fetchLogs } = useApi<{ data: ApiLog[] }>('get', '/api/email-automation/logs');
+  const { execute: updateRule } = useApi<ApiRule>('put', '/api/email-automation/rules/placeholder');
+
+  useEffect(() => {
+    (async () => {
+      const [rulesRes, templatesRes, logsRes] = await Promise.all([
+        fetchRules(),
+        fetchTemplates(),
+        fetchLogs(),
+      ]);
+      if (rulesRes?.data && rulesRes.data.length > 0) {
+        setRules(rulesRes.data.map(mapApiRule));
+      }
+      if (templatesRes?.data && templatesRes.data.length > 0) {
+        setTemplates(templatesRes.data.map(mapApiTemplate));
+      }
+      if (logsRes?.data) {
+        setSendLog(logsRes.data.map(mapApiLog));
+      }
+    })();
+  }, []);
+
   const activeRules = rules.filter((r) => r.enabled).length;
-  const delivered = SEND_LOG.filter((l) => l.status === 'Delivered' || l.status === 'Opened').length;
-  const opened = SEND_LOG.filter((l) => l.status === 'Opened').length;
+  const delivered = sendLog.filter((l) => l.status === 'Delivered' || l.status === 'Opened').length;
+  const opened = sendLog.filter((l) => l.status === 'Opened').length;
   const openRate = delivered > 0 ? Math.round((opened / delivered) * 100) : 0;
 
-  const toggleRule = (id: string) => {
-    setRules((prev) => prev.map((r) => r.id === id ? { ...r, enabled: !r.enabled } : r));
+  const toggleRule = async (id: string) => {
     const rule = rules.find((r) => r.id === id);
-    toast.success(rule?.enabled ? 'Rule Disabled' : 'Rule Enabled', rule?.name);
+    if (!rule) return;
+    const newEnabled = !rule.enabled;
+    setRules((prev) => prev.map((r) => r.id === id ? { ...r, enabled: newEnabled } : r));
+    toast.success(newEnabled ? 'Rule Enabled' : 'Rule Disabled', rule.name);
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(id);
+    if (isUuid) {
+      try {
+        await fetch(`/api/email-automation/rules/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: newEnabled }),
+        });
+      } catch {
+      }
+    }
   };
 
   const tabItems: { key: Tab; label: string }[] = [
@@ -179,8 +331,8 @@ export default function EmailAutomation() {
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Emails Sent (30d)</div>
-          <div style={st.statValue}>{SEND_LOG.length}</div>
-          <div style={st.statSub}>{SEND_LOG.filter((l) => l.channel === 'sms').length} SMS</div>
+          <div style={st.statValue}>{sendLog.length}</div>
+          <div style={st.statSub}>{sendLog.filter((l) => l.channel === 'sms').length} SMS</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Open Rate</div>
@@ -189,8 +341,8 @@ export default function EmailAutomation() {
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Templates</div>
-          <div style={st.statValue}>{TEMPLATES.length}</div>
-          <div style={st.statSub}>{TEMPLATES.filter((t) => t.isDefault).length} system + {TEMPLATES.filter((t) => !t.isDefault).length} custom</div>
+          <div style={st.statValue}>{templates.length}</div>
+          <div style={st.statSub}>{templates.filter((t) => t.isDefault).length} system + {templates.filter((t) => !t.isDefault).length} custom</div>
         </div>
       </div>
 
@@ -235,7 +387,7 @@ export default function EmailAutomation() {
         <>
           <div style={st.filterBar} className="helm-filter-bar"><div style={{ flex: 1 }} /><button style={st.addBtn} onClick={() => toast.info('Create Template', 'Template editor opening...')}><Plus size={16} /> Create Template</button></div>
           <div style={st.templateGrid}>
-            {TEMPLATES.map((t) => { const cc = catColors[t.category] || catColors.Billing; return (
+            {templates.map((t) => { const cc = catColors[t.category] || catColors.Billing; return (
               <div key={t.id} style={st.templateCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
                   <div>
@@ -268,22 +420,28 @@ export default function EmailAutomation() {
               <option value="All">All Statuses</option><option>Delivered</option><option>Opened</option><option>Bounced</option><option>Failed</option>
             </select>
           </div>
-          <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
-            <th style={st.th}>Date</th><th style={st.th}>Recipient</th><th style={st.th}>Email / Phone</th><th style={st.th}>Template</th><th style={st.th}>Trigger</th><th style={st.th}>Channel</th><th style={st.th}>Status</th><th style={st.th}>Opened</th>
-          </tr></thead><tbody>
-            {SEND_LOG.filter((l) => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = statusColors[l.status]; return (
-              <tr key={l.id}>
-                <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: '"JetBrains Mono", monospace' }}>{l.date}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{l.recipient}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.email}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg }}>{l.template}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.trigger}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg }}>{l.channel === 'email' ? <Mail size={14} /> : <span style={{ fontSize: '11px', fontWeight: 600 }}>SMS</span>}</td>
-                <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{l.status}</span></td>
-                <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', color: l.openedAt ? '#0A2342' : '#94A3B8' }}>{l.openedAt || '—'}</td>
-              </tr>
-            ); })}
-          </tbody></table></div>
+          {sendLog.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '48px', background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', color: '#64748B', fontSize: '14px' }}>
+              No emails sent yet. Logs will appear here once automation rules trigger.
+            </div>
+          ) : (
+            <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
+              <th style={st.th}>Date</th><th style={st.th}>Recipient</th><th style={st.th}>Email / Phone</th><th style={st.th}>Template</th><th style={st.th}>Trigger</th><th style={st.th}>Channel</th><th style={st.th}>Status</th><th style={st.th}>Opened</th>
+            </tr></thead><tbody>
+              {sendLog.filter((l) => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = statusColors[l.status] || statusColors.Delivered; return (
+                <tr key={l.id}>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: '"JetBrains Mono", monospace' }}>{l.date}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{l.recipient}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.email}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg }}>{l.template}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.trigger}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg }}>{l.channel === 'email' ? <Mail size={14} /> : <span style={{ fontSize: '11px', fontWeight: 600 }}>SMS</span>}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg }}><span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{l.status}</span></td>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', color: l.openedAt ? '#0A2342' : '#94A3B8' }}>{l.openedAt || '—'}</td>
+                </tr>
+              ); })}
+            </tbody></table></div>
+          )}
         </>
       )}
 

@@ -876,6 +876,44 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model EmailTemplate {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  subject   String
+  htmlBody  String   @default("")
+  category  String   @default("billing")
+  isDefault Boolean  @default(false)
+  variables Json     @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rules AutomationRule[]
+
+  @@index([tenantId])
+  @@map("email_templates")
+}
+
+model AutomationRule {
+  id            String   @id @default(uuid())
+  tenantId      String
+  name          String
+  trigger       String
+  enabled       Boolean  @default(true)
+  delayMinutes  Int      @default(0)
+  templateId    String
+  channels      Json     @default("[\"email\"]")
+  conditions    Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  template EmailTemplate @relation(fields: [templateId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, trigger])
+  @@map("automation_rules")
+}
+
 model EmailAutomationLog {
   id              String    @id @default(uuid())
   tenantId        String

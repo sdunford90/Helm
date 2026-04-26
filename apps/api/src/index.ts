@@ -56,6 +56,7 @@ import portalRouter from "./routes/portal.js";
 import chargebacksRouter from "./routes/chargebacks.js";
 import emailComplianceRouter from "./routes/email-compliance.js";
 import taxRouter from "./routes/tax.js";
+import emailAutomationRouter from "./routes/email-automation.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -168,6 +169,7 @@ app.use("/api/saas-billing", saasBillingRouter);
 app.use("/api/portal", portalRouter);
 app.use("/api/chargebacks", chargebacksRouter);
 app.use("/api/tax", taxRouter);
+app.use("/api/email-automation", emailAutomationRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled

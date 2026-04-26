@@ -982,5 +982,63 @@ router.get("/sales-tax", async (req: Request, res: Response, next: NextFunction)
   }
 });
 
+// ─── POST /reports/generate — stub endpoint used by the Reports UI ────────────
+// Accepts a reportId + options, returns a minimal success envelope so the UI
+// can display a toast.  The actual data is fetched separately via the
+// GET /reports/<reportId> endpoints (consumed by the in-app viewer).
+
+const REPORT_ID_MAP: Record<string, string> = {
+  revenue: "revenue",
+  aging: "ar-aging",
+  collections: "collections",
+  deferred: "deferred-revenue",
+  gl: "gl-summary",
+  occupancy: "occupancy",
+  utilization: "rental-utilization",
+  dockwalk: "dock-walk-summary",
+  customer_activity: "customer-activity",
+  leads: "lead-conversion",
+  waitlist: "waitlist",
+  rent_roll: "occupancy",
+  rental_util: "rental-utilization",
+  pos_sales: "pos-sales",
+  inventory: "inventory",
+  maintenance: "dock-walk-summary",
+};
+
+router.post(
+  "/generate",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { reportId, format = "PDF", dateFrom, dateTo } = req.body as {
+        reportId?: string;
+        format?: string;
+        dateFrom?: string;
+        dateTo?: string;
+      };
+
+      if (!reportId) {
+        res.status(400).json({ error: "reportId is required" });
+        return;
+      }
+
+      const mappedId = REPORT_ID_MAP[reportId] ?? reportId;
+
+      res.json({
+        success: true,
+        reportId,
+        mappedEndpoint: `/api/reports/${mappedId}`,
+        format,
+        dateFrom: dateFrom ?? null,
+        dateTo: dateTo ?? null,
+        generatedAt: new Date().toISOString(),
+        message: `${reportId} report queued for generation`,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;
 

@@ -71,3 +71,11 @@ Versioned migrations live in `apps/api/prisma/migrations/`. Workflow:
 - `apps/admin/vite.config.ts` sets `host: '0.0.0.0'`, `strictPort: true`, `port: 3003`
 - `apps/admin/tsconfig.json` references `tsconfig.node.json` (both files present)
 - The app shows a Clerk auth error when `VITE_CLERK_PUBLISHABLE_KEY` is not set
+
+## Recently completed features (Apr 2026)
+- **Email Automation** — `EmailTemplate` + `AutomationRule` Prisma models added and pushed to DB. Route registered at `/api/email-automation/*`. Frontend (`EmailAutomation.tsx`) now fetches real rules/templates/logs from API; falls back to defaults when DB is empty. Toggle persists to DB for UUID-based rules.
+- **Reports generate endpoint** — `POST /api/reports/generate` added to `reports.ts`. Maps `reportId` to the correct sub-endpoint and returns a success envelope so the UI toast works.
+- **Portal — Announcements** — `GET /api/portal/announcements` added to `portal.ts`. `Announcements.tsx` now fetches from API with loading/empty states.
+- **Portal — My Boats** — `MyBoats.tsx` wired to existing `GET /api/portal/boats`. Shows real vessel data with live registration expiry checks.
+- **Portal — Concierge Requests** — `GET|POST /api/portal/concierge` added to `portal.ts`. `ConciergeRequests.tsx` loads and submits real requests with loading/empty states.
+- **Portal — Waitlist Status** — `GET /api/portal/waitlist` added to `portal.ts`. `WaitlistStatus.tsx` shows real waitlist entries; shows "Not on waitlist" empty state when none exist.

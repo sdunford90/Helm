@@ -659,4 +659,121 @@ router.post(
   },
 );
 
+// ---------------------------------------------------------------------------
+// GET /api/portal/announcements — tenant announcements visible to this customer
+// ---------------------------------------------------------------------------
+router.get(
+  "/announcements",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = req.tenantId!;
+      const announcements = await prisma.announcement.findMany({
+        where: { tenantId, sentAt: { not: null } },
+        orderBy: { sentAt: "desc" },
+        take: 50,
+        select: {
+          id: true,
+          subject: true,
+          body: true,
+          isEmergency: true,
+          channels: true,
+          sentAt: true,
+          deliveries: {
+            where: { customerId: req.portalCustomerId! },
+            select: { status: true, openedAt: true },
+            take: 1,
+          },
+        },
+      });
+
+      const result = announcements.map((a) => {
+        const delivery = a.deliveries[0];
+        return {
+          id: a.id,
+          title: a.subject,
+          body: a.body,
+          date: a.sentAt!.toISOString().split("T")[0],
+          category: a.isEmergency ? "Emergency" : "Operations",
+          urgent: a.isEmergency,
+          unread: !delivery || delivery.status === "PENDING",
+        };
+      });
+
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/portal/concierge — customer's concierge requests
+// ---------------------------------------------------------------------------
+router.get(
+  "/concierge",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const requests = await prisma.conciergeRequest.findMany({
+        where: { customerId: req.portalCustomerId!, tenantId: req.tenantId! },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
+      res.json(requests);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/portal/concierge — submit a new concierge request
+// ---------------------------------------------------------------------------
+router.post(
+  "/concierge",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { serviceType, preferredDate, notes } = req.body as {
+        serviceType?: string;
+        preferredDate?: string;
+        notes?: string;
+      };
+      if (!serviceType) {
+        res.status(400).json({ error: "serviceType is required" });
+        return;
+      }
+      const request = await prisma.conciergeRequest.create({
+        data: {
+          tenantId: req.tenantId!,
+          customerId: req.portalCustomerId!,
+          serviceType,
+          preferredDate: preferredDate ? new Date(preferredDate) : null,
+          notes: notes ?? null,
+          status: "SUBMITTED",
+        },
+      });
+      res.status(201).json(request);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/portal/waitlist — customer's waitlist entries
+// ---------------------------------------------------------------------------
+router.get(
+  "/waitlist",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const entries = await prisma.waitlistEntry.findMany({
+        where: { customerId: req.portalCustomerId!, tenantId: req.tenantId! },
+        orderBy: { createdAt: "asc" },
+      });
+      res.json(entries);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;
