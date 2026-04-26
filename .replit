@@ -90,3 +90,4 @@ publicDir = "apps/web/dist"
 
 [userenv.shared]
 VITE_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xvc2Utb2FyZmlzaC01Mi5jbGVyay5hY2NvdW50cy5kZXYk"
+ENABLE_AUTH_DEV_BYPASS = "True"
