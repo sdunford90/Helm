@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import {
   Search,
   Plus,
@@ -11,6 +12,9 @@ import {
   LogOut,
   AlertTriangle,
   CreditCard,
+  CheckCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
@@ -34,6 +38,24 @@ interface Booking {
   nightlyRate: number;
   status: BookingStatus;
   payment: PaymentStatus;
+}
+
+interface AvailableSlip {
+  id: string;
+  slipNumber: string;
+  length: number;
+  width: number;
+  dock: string | null;
+}
+
+interface CalBooking {
+  id: string;
+  guestName: string;
+  checkIn: string;
+  checkOut: string | null;
+  status: string;
+  rateCents: number;
+  slip: { id: string; slipNumber: string } | null;
 }
 
 const STATUS_COLORS: Record<BookingStatus, { bg: string; text: string }> = {
@@ -113,11 +135,28 @@ const s: Record<string, React.CSSProperties> = {
 
 const SLIP_OPTIONS = ['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'];
 
+// Module-level calendar window: today through 14 days (recomputed on page load)
+function getCalWindow(offsetWeeks: number) {
+  const from = new Date();
+  from.setHours(0, 0, 0, 0);
+  from.setDate(from.getDate() + offsetWeeks * 7);
+  const to = new Date(from);
+  to.setDate(to.getDate() + 14);
+  return { from, to };
+}
+
 export default function Transient() {
+  const { getToken } = useAuth();
   const { data: apiBookings, loading } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
 
   const [localBookings, setLocalBookings] = useState<Booking[]>([]);
   const [tab, setTab] = useState<TabKey>('current');
+
+  // Calendar state
+  const [calOffset, setCalOffset] = useState(0);
+  const [calBookings, setCalBookings] = useState<CalBooking[]>([]);
+  const [calAvail, setCalAvail] = useState<AvailableSlip[]>([]);
+  const [calLoading, setCalLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [dateFilter, setDateFilter] = useState('');
@@ -135,6 +174,46 @@ export default function Transient() {
   const [nbRate, setNbRate] = useState('');
   const [nbPayment, setNbPayment] = useState('');
   const [nbSaving, setNbSaving] = useState(false);
+
+  // Fetch calendar data when the calendar tab is active or the week offset changes
+  useEffect(() => {
+    if (tab !== 'calendar') return;
+    const { from, to } = getCalWindow(calOffset);
+    const fromStr = from.toISOString();
+    const toStr = to.toISOString();
+
+    let cancelled = false;
+    setCalLoading(true);
+
+    const fetchCal = async () => {
+      try {
+        const token = await getToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+
+        const [bRes, aRes] = await Promise.all([
+          fetch(`/api/transient?dateFrom=${encodeURIComponent(fromStr)}&dateTo=${encodeURIComponent(toStr)}&take=200`, { headers }),
+          fetch(`/api/transient/availability?dateFrom=${encodeURIComponent(fromStr)}&dateTo=${encodeURIComponent(toStr)}`, { headers }),
+        ]);
+
+        const bookingsData = bRes.ok ? (await bRes.json() as { data?: CalBooking[]; } | CalBooking[]) : [];
+        const availData = aRes.ok ? (await aRes.json() as AvailableSlip[]) : [];
+
+        if (!cancelled) {
+          const bArr = Array.isArray(bookingsData) ? bookingsData : (bookingsData as { data?: CalBooking[] }).data ?? [];
+          setCalBookings(bArr);
+          setCalAvail(Array.isArray(availData) ? availData : []);
+        }
+      } catch {
+        if (!cancelled) { setCalBookings([]); setCalAvail([]); }
+      } finally {
+        if (!cancelled) setCalLoading(false);
+      }
+    };
+
+    void fetchCal();
+    return () => { cancelled = true; };
+  }, [tab, calOffset, getToken]);
 
   const resetBookingForm = () => {
     setNbName(''); setNbEmail(''); setNbPhone(''); setNbBoat('');
@@ -391,14 +470,151 @@ export default function Transient() {
       )}
 
       {/* ── Calendar Tab ── */}
-      {tab === 'calendar' && (
-        <div style={s.calendarPlaceholder}>
-          <div style={{ textAlign: 'center' }}>
-            <Calendar size={48} style={{ color: '#CCC', marginBottom: '12px' }} />
-            <div>Calendar view — slip availability grid coming soon.</div>
+      {tab === 'calendar' && (() => {
+        const { from: calFrom, to: calTo } = getCalWindow(calOffset);
+
+        // Build the 14-day column headers
+        const days: Date[] = [];
+        for (let i = 0; i < 14; i++) {
+          const d = new Date(calFrom);
+          d.setDate(d.getDate() + i);
+          days.push(d);
+        }
+
+        // Collect all slip IDs → slipNumber for rows
+        const slipMap = new Map<string, string>();
+        calBookings.forEach((b) => {
+          if (b.slip) slipMap.set(b.slip.id, b.slip.slipNumber);
+        });
+        calAvail.forEach((sl) => slipMap.set(sl.id, sl.slipNumber));
+        const slips = Array.from(slipMap.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+
+        // Cell lookup: slipId + day (YYYY-MM-DD) → booking
+        type CellInfo = { booking: CalBooking | null; available: boolean };
+        const cellMap = new Map<string, CellInfo>();
+        calAvail.forEach((sl) => {
+          days.forEach((d) => {
+            cellMap.set(`${sl.id}|${d.toISOString().slice(0, 10)}`, { booking: null, available: true });
+          });
+        });
+        calBookings.forEach((b) => {
+          if (!b.slip) return;
+          const checkIn = new Date(b.checkIn);
+          checkIn.setHours(0, 0, 0, 0);
+          const checkOut = b.checkOut ? new Date(b.checkOut) : calTo;
+          checkOut.setHours(0, 0, 0, 0);
+          days.forEach((d) => {
+            if (d >= checkIn && d < checkOut) {
+              cellMap.set(`${b.slip!.id}|${d.toISOString().slice(0, 10)}`, { booking: b, available: false });
+            }
+          });
+        });
+
+        const statusColor: Record<string, string> = {
+          BOOKED: '#3B82F6',
+          CHECKED_IN: '#10B981',
+          OVERSTAY: '#EF4444',
+          CHECKED_OUT: '#9CA3AF',
+          CANCELLED: '#E5E7EB',
+        };
+
+        const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const DOW_SHORT = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        return (
+          <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+            {/* Calendar header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid #E2E8F0', backgroundColor: '#F7F9FB' }}>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>
+                {MONTH_SHORT[calFrom.getMonth()]} {calFrom.getDate()} – {MONTH_SHORT[calTo.getDate() <= calFrom.getDate() || calTo.getMonth() !== calFrom.getMonth() ? calTo.getMonth() : calFrom.getMonth()]} {calTo.getDate()}, {calTo.getFullYear()}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginRight: '16px', fontSize: '12px', color: '#64748B' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 10, height: 10, background: '#10B981', borderRadius: 2, display: 'inline-block' }} /> Checked In</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 10, height: 10, background: '#3B82F6', borderRadius: 2, display: 'inline-block' }} /> Booked</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 10, height: 10, background: '#EF4444', borderRadius: 2, display: 'inline-block' }} /> Overstay</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 10, height: 10, background: '#E8F5E9', border: '1px solid #A7F3D0', borderRadius: 2, display: 'inline-block' }} /> Available</span>
+                </div>
+                <button onClick={() => setCalOffset(o => o - 2)} style={{ padding: '6px 10px', border: '1px solid #E2E8F0', borderRadius: '6px', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', color: '#0A2342' }}>
+                  <ChevronLeft size={16} />
+                </button>
+                <button onClick={() => setCalOffset(0)} style={{ padding: '5px 12px', border: '1px solid #E2E8F0', borderRadius: '6px', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>Today</button>
+                <button onClick={() => setCalOffset(o => o + 2)} style={{ padding: '6px 10px', border: '1px solid #E2E8F0', borderRadius: '6px', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', color: '#0A2342' }}>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+
+            {calLoading ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '48px', color: '#64748B', gap: '10px' }}>
+                <Calendar size={20} /> Loading availability…
+              </div>
+            ) : slips.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '48px', color: '#94A3B8' }}>
+                <CheckCircle size={32} style={{ color: '#10B981', marginBottom: '12px' }} />
+                <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>All slips available</div>
+                <div style={{ fontSize: '13px' }}>No transient bookings found in this 14-day window.</div>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: '900px' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#0A2342' }}>
+                      <th style={{ padding: '10px 16px', textAlign: 'left', color: '#fff', fontWeight: 600, fontSize: '12px', minWidth: '90px', position: 'sticky' as const, left: 0, background: '#0A2342', zIndex: 1 }}>Slip</th>
+                      {days.map((d) => {
+                        const isToday = d.getTime() === today.getTime();
+                        return (
+                          <th key={d.toISOString()} style={{ padding: '8px 4px', color: isToday ? '#00D4FF' : '#fff', fontWeight: isToday ? 700 : 500, fontSize: '11px', textAlign: 'center', minWidth: '52px', borderLeft: '1px solid rgba(255,255,255,0.1)' }}>
+                            <div>{DOW_SHORT[d.getDay()]}</div>
+                            <div style={{ fontSize: '13px', fontWeight: 700 }}>{d.getDate()}</div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {slips.map(([slipId, slipNum], rowIdx) => (
+                      <tr key={slipId} style={{ backgroundColor: rowIdx % 2 === 0 ? '#fff' : '#F7F9FB' }}>
+                        <td style={{ padding: '8px 16px', fontWeight: 600, color: '#0A2342', fontSize: '13px', position: 'sticky' as const, left: 0, background: rowIdx % 2 === 0 ? '#fff' : '#F7F9FB', zIndex: 1, borderRight: '2px solid #E2E8F0' }}>
+                          {slipNum}
+                        </td>
+                        {days.map((d) => {
+                          const key = `${slipId}|${d.toISOString().slice(0, 10)}`;
+                          const cell = cellMap.get(key);
+                          const isToday = d.getTime() === today.getTime();
+                          if (!cell) {
+                            return <td key={key} style={{ borderLeft: '1px solid #F1F5F9', backgroundColor: isToday ? 'rgba(0,212,255,0.05)' : undefined }} />;
+                          }
+                          if (cell.booking) {
+                            const b = cell.booking;
+                            const color = statusColor[b.status] ?? '#9CA3AF';
+                            return (
+                              <td key={key} title={`${b.guestName} — ${b.status}`} style={{ padding: '2px 3px', borderLeft: '1px solid #F1F5F9', backgroundColor: isToday ? 'rgba(0,212,255,0.05)' : undefined }}>
+                                <div style={{ background: color, color: '#fff', borderRadius: '4px', padding: '3px 5px', fontSize: '10px', fontWeight: 600, whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '46px' }}>
+                                  {b.guestName.split(' ')[0]}
+                                </div>
+                              </td>
+                            );
+                          }
+                          return (
+                            <td key={key} title="Available" style={{ padding: '2px 3px', borderLeft: '1px solid #F1F5F9', backgroundColor: isToday ? 'rgba(0,212,255,0.1)' : undefined }}>
+                              <div style={{ background: '#E8F5E9', border: '1px solid #A7F3D0', borderRadius: '4px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <CheckCircle size={10} color="#10B981" />
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── New Booking Modal ── */}
       {showModal && (

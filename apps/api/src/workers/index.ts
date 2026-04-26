@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { redisConnection } from "../lib/queue.js";
+import { redisConnection, queues } from "../lib/queue.js";
 import {
   sendEmail,
   invoiceEmailHtml,
@@ -12,6 +12,14 @@ import { sendSms } from "../lib/sms.js";
 import { prisma } from "../lib/prisma.js";
 import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
 import { runTenantLifecycleCheck } from "../jobs/tenant-lifecycle.js";
+import { generateRecurringInvoices } from "../services/billing.js";
+import { recognizeDeferred } from "../services/deferred-revenue.js";
+import {
+  syncCustomer,
+  syncInvoice,
+  syncPayment,
+  getValidAccessToken,
+} from "../services/qbo-sync.js";
 
 // --------------------------------------------------------------------------
 // Email worker
@@ -126,7 +134,6 @@ const automationWorker = new Worker(
 
     switch (type) {
       case "ABANDONED_CART_1":
-        // 1 hour after abandonment — gentle reminder
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -137,7 +144,6 @@ const automationWorker = new Worker(
         break;
 
       case "ABANDONED_CART_2":
-        // 24 hours — follow-up with urgency
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -148,7 +154,6 @@ const automationWorker = new Worker(
         break;
 
       case "ABANDONED_CART_3":
-        // 72 hours — final nudge via SMS if available
         if (customer.phone) {
           await sendSms(
             customer.phone,
@@ -158,7 +163,6 @@ const automationWorker = new Worker(
         break;
 
       case "POST_BOOKING":
-        // Confirmation + what to expect
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -169,7 +173,6 @@ const automationWorker = new Worker(
         break;
 
       case "PRE_ARRIVAL":
-        // Day before arrival — logistics + checklist
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -180,7 +183,6 @@ const automationWorker = new Worker(
         break;
 
       case "POST_RENTAL":
-        // After departure — thank you + review request
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -191,7 +193,6 @@ const automationWorker = new Worker(
         break;
 
       case "NPS_SURVEY":
-        // NPS score request
         if (customer.email) {
           await sendEmail({
             to: customer.email,
@@ -215,15 +216,89 @@ automationWorker.on("failed", (job, err) => {
 });
 
 // --------------------------------------------------------------------------
-// QBO sync worker (stub)
+// QBO sync worker — token refresh + entity sync
 // --------------------------------------------------------------------------
 
 const qboSyncWorker = new Worker(
   "qbo-sync",
   async (job) => {
-    console.log("[qbo-sync] Processing:", job.data.type, job.data);
-    // TODO: Implement OAuth token refresh + entity sync
-    // Supported types will include: invoice, payment, customer, credit_memo
+    const { type, tenantId, entityId } = job.data as {
+      type: string;
+      tenantId: string;
+      entityId?: string;
+    };
+
+    if (!tenantId) {
+      console.warn("[qbo-sync] Missing tenantId — skipping job");
+      return;
+    }
+
+    // Proactively ensure the token is valid before any sync operation.
+    // getValidAccessToken will refresh if expiry is within 5 minutes.
+    let accessToken: string | null = null;
+    try {
+      accessToken = await getValidAccessToken(tenantId);
+    } catch (err) {
+      console.warn(`[qbo-sync] Token refresh failed for tenant ${tenantId}:`, (err as Error).message);
+      return;
+    }
+
+    if (!accessToken) {
+      console.warn(`[qbo-sync] No valid QBO token for tenant ${tenantId} — skipping ${type}`);
+      return;
+    }
+
+    switch (type) {
+      case "customer":
+        if (!entityId) {
+          console.warn("[qbo-sync] customer sync requires entityId");
+          return;
+        }
+        try {
+          await syncCustomer(entityId, tenantId);
+          console.log(`[qbo-sync] Synced customer ${entityId} for tenant ${tenantId}`);
+        } catch (err) {
+          console.error(`[qbo-sync] Customer sync failed for ${entityId}:`, (err as Error).message);
+          throw err; // rethrow so BullMQ can retry
+        }
+        break;
+
+      case "invoice":
+        if (!entityId) {
+          console.warn("[qbo-sync] invoice sync requires entityId");
+          return;
+        }
+        try {
+          await syncInvoice(entityId, tenantId);
+          console.log(`[qbo-sync] Synced invoice ${entityId} for tenant ${tenantId}`);
+        } catch (err) {
+          console.error(`[qbo-sync] Invoice sync failed for ${entityId}:`, (err as Error).message);
+          throw err;
+        }
+        break;
+
+      case "payment":
+        if (!entityId) {
+          console.warn("[qbo-sync] payment sync requires entityId");
+          return;
+        }
+        try {
+          await syncPayment(entityId, tenantId);
+          console.log(`[qbo-sync] Synced payment ${entityId} for tenant ${tenantId}`);
+        } catch (err) {
+          console.error(`[qbo-sync] Payment sync failed for ${entityId}:`, (err as Error).message);
+          throw err;
+        }
+        break;
+
+      case "token-refresh":
+        // Pure token refresh job — just calling getValidAccessToken above is sufficient.
+        console.log(`[qbo-sync] Token refresh complete for tenant ${tenantId}`);
+        break;
+
+      default:
+        console.warn(`[qbo-sync] Unknown job type: ${type}`);
+    }
   },
   { connection: redisConnection, concurrency: 3 },
 );
@@ -233,7 +308,7 @@ qboSyncWorker.on("failed", (job, err) => {
 });
 
 // --------------------------------------------------------------------------
-// Billing worker (tenant lifecycle)
+// Billing worker — recurring invoice generation + tenant lifecycle
 // --------------------------------------------------------------------------
 
 const billingWorker = new Worker(
@@ -247,6 +322,32 @@ const billingWorker = new Worker(
         );
         break;
       }
+
+      case "generate-recurring-invoices": {
+        // Run for a specific tenant or all active tenants
+        const tenantId = job.data?.tenantId as string | undefined;
+        if (tenantId) {
+          const invoices = await generateRecurringInvoices(tenantId);
+          console.log(`[billing-worker] Generated ${invoices.length} invoices for tenant ${tenantId}`);
+        } else {
+          const tenants = await prisma.tenant.findMany({
+            where: { status: "ACTIVE" },
+            select: { id: true },
+          });
+          let total = 0;
+          for (const tenant of tenants) {
+            try {
+              const invoices = await generateRecurringInvoices(tenant.id);
+              total += invoices.length;
+            } catch (err) {
+              console.error(`[billing-worker] Recurring billing failed for tenant ${tenant.id}:`, (err as Error).message);
+            }
+          }
+          console.log(`[billing-worker] Recurring billing complete — ${total} invoices across ${tenants.length} tenants`);
+        }
+        break;
+      }
+
       default:
         console.warn(`[billing-worker] Unknown job name: ${job.name}`);
     }
@@ -257,6 +358,100 @@ const billingWorker = new Worker(
 billingWorker.on("failed", (job, err) => {
   console.error(`[billing-worker] Job ${job?.id} failed:`, err.message);
 });
+
+// --------------------------------------------------------------------------
+// Deferred revenue worker — monthly recognition
+// --------------------------------------------------------------------------
+
+const deferredRevenueWorker = new Worker(
+  "deferred-revenue",
+  async (job) => {
+    if (job.name !== "recognize-deferred") {
+      console.warn(`[deferred-revenue] Unknown job name: ${job.name}`);
+      return;
+    }
+
+    const tenantId = job.data?.tenantId as string | undefined;
+    if (tenantId) {
+      const count = await recognizeDeferred(tenantId);
+      console.log(`[deferred-revenue] Recognized ${count} entries for tenant ${tenantId}`);
+    } else {
+      const tenants = await prisma.tenant.findMany({
+        where: { status: "ACTIVE" },
+        select: { id: true },
+      });
+      let total = 0;
+      for (const tenant of tenants) {
+        try {
+          const count = await recognizeDeferred(tenant.id);
+          total += count;
+        } catch (err) {
+          console.error(`[deferred-revenue] Recognition failed for tenant ${tenant.id}:`, (err as Error).message);
+        }
+      }
+      console.log(`[deferred-revenue] Recognition complete — ${total} entries across ${tenants.length} tenants`);
+    }
+  },
+  { connection: redisConnection, concurrency: 1 },
+);
+
+deferredRevenueWorker.on("failed", (job, err) => {
+  console.error(`[deferred-revenue] Job ${job?.id} failed:`, err.message);
+});
+
+// --------------------------------------------------------------------------
+// Schedule repeatable cron jobs at startup
+// --------------------------------------------------------------------------
+
+async function scheduleRepeatableJobs() {
+  try {
+    // Daily at 05:00 UTC — generate recurring invoices for all active tenants
+    await queues.billing.add(
+      "generate-recurring-invoices",
+      {},
+      {
+        repeat: { pattern: "0 5 * * *" },
+        jobId: "cron-generate-recurring-invoices",
+      },
+    );
+
+    // Daily at 06:00 UTC — recognize deferred revenue entries
+    await queues["deferred-revenue"].add(
+      "recognize-deferred",
+      {},
+      {
+        repeat: { pattern: "0 6 * * *" },
+        jobId: "cron-recognize-deferred",
+      },
+    );
+
+    // Daily at 04:00 UTC — tenant lifecycle checks (trial expirations, etc.)
+    await queues.billing.add(
+      "tenant-lifecycle",
+      {},
+      {
+        repeat: { pattern: "0 4 * * *" },
+        jobId: "cron-tenant-lifecycle",
+      },
+    );
+
+    // Weekly Sunday at midnight — algorithmic pricing suggestions
+    await queues.automation.add(
+      "algorithmic-pricing",
+      {},
+      {
+        repeat: { pattern: "0 0 * * 0" },
+        jobId: "cron-algorithmic-pricing",
+      },
+    );
+
+    console.log("[helm-workers] Repeatable cron jobs scheduled");
+  } catch (err) {
+    console.error("[helm-workers] Failed to schedule repeatable jobs:", (err as Error).message);
+  }
+}
+
+void scheduleRepeatableJobs();
 
 // --------------------------------------------------------------------------
 // Graceful shutdown
@@ -270,6 +465,7 @@ async function shutdown() {
     automationWorker.close(),
     qboSyncWorker.close(),
     billingWorker.close(),
+    deferredRevenueWorker.close(),
   ]);
   console.log("[helm-workers] All workers stopped");
   process.exit(0);

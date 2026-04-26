@@ -201,9 +201,22 @@ export async function calculateTax(
   return { totalTaxCents, items };
 }
 
-/** Legacy helper — kept for any callers that still use it. */
+/** Legacy helper — returns all currently-active tax rates for the tenant. */
 export async function getTaxRates(
   tenantId: string,
 ): Promise<{ jurisdiction: string; category: string; rate: number }[]> {
-  return [];
+  const now = new Date();
+  const rates = await prisma.taxRate.findMany({
+    where: {
+      tenantId,
+      effectiveFrom: { lte: now },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+    },
+    include: { jurisdiction: { select: { name: true } } },
+  });
+  return rates.map((r) => ({
+    jurisdiction: r.jurisdiction.name,
+    category: r.category,
+    rate: r.ratePctBps / 10_000,
+  }));
 }

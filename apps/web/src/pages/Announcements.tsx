@@ -55,6 +55,21 @@ interface DeliveryRecord {
   openedAt: string | null;
 }
 
+interface RawDelivery {
+  id: string;
+  channel: string;
+  status: string;
+  sentAt: string | null;
+  openedAt: string | null;
+  announcement: { id: string; subject: string } | null;
+  customer: { id: string; firstName: string; lastName: string; email: string | null } | null;
+}
+
+interface DeliveryApiResponse {
+  data: RawDelivery[];
+  pagination: { skip: number; take: number; total: number };
+}
+
 interface Template {
   id: string;
   title: string;
@@ -270,13 +285,23 @@ export default function Announcements() {
   // API calls
   const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/api/announcements', { immediate: true });
   const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
-  // TODO(api): global delivery log endpoint (currently only per-announcement /:id/deliveries)
-  const apiDeliveryLog: DeliveryRecord[] | null = null as DeliveryRecord[] | null;
+  const { data: rawDeliveries } = useApi<DeliveryApiResponse>('get', '/api/announcements/deliveries?take=200', { immediate: true });
   // TODO(api): announcement templates endpoint
   const apiTemplates: Template[] | null = null as Template[] | null;
 
+  const channelMap: Record<string, Channel> = { EMAIL: 'Email', SMS: 'SMS', PUSH: 'Push', IN_APP: 'In-App' };
+  const deliveryStatusMap: Record<string, DeliveryStatus> = { DELIVERED: 'Delivered', OPENED: 'Opened', BOUNCED: 'Bounced', FAILED: 'Failed' };
+
   const announcements: Announcement[] = apiAnnouncements ?? [];
-  const deliveryLog: DeliveryRecord[] = apiDeliveryLog ?? [];
+  const deliveryLog: DeliveryRecord[] = (rawDeliveries?.data ?? []).map((r): DeliveryRecord => ({
+    id: r.id,
+    announcement: r.announcement?.subject ?? '—',
+    customer: r.customer ? `${r.customer.firstName} ${r.customer.lastName}`.trim() : '—',
+    channel: channelMap[r.channel] ?? (r.channel as Channel),
+    sentAt: r.sentAt ? new Date(r.sentAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—',
+    status: deliveryStatusMap[r.status] ?? (r.status as DeliveryStatus),
+    openedAt: r.openedAt ? new Date(r.openedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
+  }));
   const templates: Template[] = apiTemplates ?? [];
 
   const totalSent = announcements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.delivered, 0);

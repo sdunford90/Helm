@@ -273,6 +273,46 @@ router.get(
   },
 );
 
+// ─── GET /deliveries — Global delivery log across all announcements ──────────
+
+router.get(
+  "/deliveries",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const query = DeliveriesQuerySchema.parse(req.query);
+
+      const where: Record<string, unknown> = {
+        announcement: { tenantId },
+      };
+      if (query.status) where.status = query.status;
+
+      const [deliveries, total] = await Promise.all([
+        prisma.announcementDelivery.findMany({
+          where,
+          orderBy: { sentAt: "desc" },
+          skip: query.skip,
+          take: query.take,
+          include: {
+            announcement: { select: { id: true, subject: true } },
+            customer: {
+              select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+            },
+          },
+        }),
+        prisma.announcementDelivery.count({ where }),
+      ]);
+
+      res.json({
+        data: deliveries,
+        pagination: { skip: query.skip, take: query.take, total },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── GET /:id — Single announcement with delivery stats ─────────────────────
 
 router.get(
