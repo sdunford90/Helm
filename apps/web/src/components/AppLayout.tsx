@@ -30,11 +30,6 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 
-const LOCATIONS = [
-  { id: 'main', name: 'Bayshore Marina - Main Dock' },
-  { id: 'fuel', name: 'Bayshore Marina - Fuel Dock' },
-  { id: 'rental', name: 'Bayshore Marina - Rental Center' },
-];
 
 const NAV_SECTIONS = [
   {
@@ -215,15 +210,14 @@ export default function AppLayout() {
   const location = useLocation();
   const { user, isLoaded } = useUser();
   const { isSignedIn } = useAuth();
-  const { modules } = useModules();
-  const [currentLocation, setCurrentLocation] = useState(LOCATIONS[0].id);
+  const { modules, locations, currentLocationId, setCurrentLocationId } = useModules();
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
     : '';
-  const selectedLocation = LOCATIONS.find((l) => l.id === currentLocation) || LOCATIONS[0];
+  const selectedLocation = locations.find((l) => l.id === currentLocationId) ?? locations[0];
 
   if (!isLoaded) {
     return (
@@ -269,6 +263,7 @@ export default function AppLayout() {
         {NAV_SECTIONS.map((section) => {
           const visibleItems = section.items.filter((item) => {
             if (item.path === '/rentals' && !modules.rentals) return false;
+            if (item.path === '/transient' && !modules.transient) return false;
             return true;
           });
           if (visibleItems.length === 0) return null;
@@ -331,7 +326,7 @@ export default function AppLayout() {
                 }}
               >
                 <MapPin size={14} style={{ color: '#00D4FF' }} />
-                {selectedLocation.name}
+                {selectedLocation?.name ?? 'Select location'}
                 <ChevronDown size={14} style={{ color: '#64748B' }} />
               </button>
               {locationDropdownOpen && (
@@ -353,10 +348,10 @@ export default function AppLayout() {
                   <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
                     Switch Location
                   </div>
-                  {LOCATIONS.map((loc) => (
+                  {locations.map((loc) => (
                     <button
                       key={loc.id}
-                      onClick={() => { setCurrentLocation(loc.id); setLocationDropdownOpen(false); }}
+                      onClick={() => { setCurrentLocationId(loc.id); setLocationDropdownOpen(false); }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -365,17 +360,17 @@ export default function AppLayout() {
                         padding: '10px 12px',
                         fontSize: '14px',
                         color: '#0A2342',
-                        background: loc.id === currentLocation ? '#F0FAFF' : '#FFFFFF',
+                        background: loc.id === currentLocationId ? '#F0FAFF' : '#FFFFFF',
                         border: 'none',
                         borderBottom: '1px solid #F2F4F6',
                         cursor: 'pointer',
                         textAlign: 'left' as const,
-                        fontWeight: loc.id === currentLocation ? 600 : 400,
+                        fontWeight: loc.id === currentLocationId ? 600 : 400,
                       }}
                     >
-                      <MapPin size={14} style={{ color: loc.id === currentLocation ? '#00D4FF' : '#94A3B8' }} />
+                      <MapPin size={14} style={{ color: loc.id === currentLocationId ? '#00D4FF' : '#94A3B8' }} />
                       {loc.name}
-                      {loc.id === currentLocation && <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Current</span>}
+                      {loc.id === currentLocationId && <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Current</span>}
                     </button>
                   ))}
                 </div>

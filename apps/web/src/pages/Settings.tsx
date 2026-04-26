@@ -1164,14 +1164,22 @@ export default function Settings() {
       {tab === 'modules' && (
         <div style={st.card}>
           <h3 style={st.sectionTitle}><ToggleRight size={20} /> Module Management</h3>
-          <p style={{ color: '#64748B', fontSize: '14px', marginBottom: '24px', lineHeight: 1.6 }}>
-            Enable or disable optional modules for this marina. Disabled modules are hidden from the navigation and inaccessible to all users.
+          <p style={{ color: '#64748B', fontSize: '14px', marginBottom: '12px', lineHeight: 1.6 }}>
+            Enable or disable features for the currently selected location. Each marina in your portfolio can have a different configuration — a transient-only stop, a rental-only center, or a full-service facility.
           </p>
+          <div style={{ fontSize: '13px', color: '#0369A1', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '10px 14px', marginBottom: '24px' }}>
+            These settings apply to <strong>the location shown in the top bar</strong>. Switch locations there to configure a different marina.
+          </div>
           {([
+            {
+              key: 'transient' as const,
+              label: 'Transient Slip Booking',
+              description: 'Allow walk-in and online guests to reserve available slips by date. Enables the transient management section, the public-facing booking widget, and nightly rate pricing.',
+            },
             {
               key: 'rentals' as const,
               label: 'Rentals',
-              description: 'Boat, kayak, jet ski and equipment rentals — includes availability calendar, reservation management, pricing rules, promo codes, and the Rentals dashboard.',
+              description: 'Boat, kayak, jet ski and equipment rentals — includes availability calendar, reservation management, pricing rules, promo codes, and the Rentals dashboard. Also controls the public rental booking widget.',
             },
           ] as { key: keyof typeof modules; label: string; description: string }[]).map((mod) => (
             <div
