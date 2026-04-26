@@ -1,16 +1,54 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ClipboardCheck, Search, Plus, X, AlertTriangle,
-  Eye, CheckCircle2, Clock, MapPin, Camera, Droplets,
-  Shield,
+  Eye, CheckCircle2, Clock, Camera, Droplets,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
-/* ── Types ─────────────────────────────────────────────── */
+/* ── API types (from server) ─────────────────────────────── */
+
+interface ApiDockWalk {
+  id: string;
+  inspectorId: string;
+  dockId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'IN_PROGRESS' | 'COMPLETED';
+  items: { id: string; status: 'OK' | 'VIOLATION' | 'NEEDS_ATTENTION'; slipId: string | null }[];
+}
+
+interface ApiIssue {
+  id: string;
+  status: 'VIOLATION' | 'NEEDS_ATTENTION';
+  notes: string | null;
+  violationType: string | null;
+  slip: { id: string; slipNumber: string; dockId: string } | null;
+  dockWalk: { id: string; startedAt: string; inspectorId: string; status: string };
+}
+
+interface ApiPumpOut {
+  id: string;
+  slipId: string;
+  staffId: string | null;
+  eventDate: string;
+  gallons: number;
+  feeCents: number | null;
+  slip: { id: string; slipNumber: string; dockId: string } | null;
+}
+
+interface TeamMember {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string;
+  role: string;
+  active: boolean;
+}
+
+/* ── Frontend types ──────────────────────────────────────── */
 
 type WalkStatus = 'In Progress' | 'Completed';
 type Severity = 'Low' | 'Medium' | 'High' | 'Critical';
-type ViolationStatus = 'Open' | 'Resolved';
 
 interface DockWalk {
   id: string;
@@ -32,7 +70,7 @@ interface Violation {
   type: string;
   severity: Severity;
   description: string;
-  status: ViolationStatus;
+  status: 'Open' | 'Resolved';
   reportedBy: string;
 }
 
@@ -40,46 +78,47 @@ interface PumpOut {
   id: string;
   date: string;
   slip: string;
-  boatName: string;
+  gallons: number;
   performedBy: string;
-  duration: string;
-  notes: string;
+  feeCents: number | null;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Helpers ─────────────────────────────────────────────── */
 
-const WALKS: DockWalk[] = [
-  { id: '1', number: 'DW-0042', date: '2026-03-25', inspector: 'Jake Martinez', docks: ['A', 'B'], slipsChecked: 14, violations: 2, status: 'In Progress', duration: '35 min' },
-  { id: '2', number: 'DW-0041', date: '2026-03-24', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 1, status: 'Completed', duration: '52 min' },
-  { id: '3', number: 'DW-0040', date: '2026-03-23', inspector: 'Jake Martinez', docks: ['C'], slipsChecked: 6, violations: 0, status: 'Completed', duration: '18 min' },
-  { id: '4', number: 'DW-0039', date: '2026-03-22', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 3, status: 'Completed', duration: '58 min' },
-  { id: '5', number: 'DW-0038', date: '2026-03-21', inspector: 'Jake Martinez', docks: ['B'], slipsChecked: 7, violations: 1, status: 'Completed', duration: '22 min' },
-  { id: '6', number: 'DW-0037', date: '2026-03-20', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 2, status: 'Completed', duration: '48 min' },
-  { id: '7', number: 'DW-0036', date: '2026-03-19', inspector: 'Jake Martinez', docks: ['A'], slipsChecked: 8, violations: 0, status: 'Completed', duration: '20 min' },
-  { id: '8', number: 'DW-0035', date: '2026-03-18', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 4, status: 'Completed', duration: '1h 5min' },
-];
+const DOCKS = ['A', 'B', 'C', 'D', 'Fuel'];
 
-const VIOLATIONS: Violation[] = [
-  { id: '1', number: 'VIO-0089', walkDate: '2026-03-25', slip: 'A-01', type: 'Line Condition', severity: 'Medium', description: 'Port-side dock line frayed near cleat, showing significant wear. Recommend replacement.', status: 'Open', reportedBy: 'Jake Martinez' },
-  { id: '2', number: 'VIO-0088', walkDate: '2026-03-25', slip: 'B-01', type: 'Electrical', severity: 'High', description: 'Shore power cord showing exposed insulation near pedestal connection. Fire/shock hazard.', status: 'Open', reportedBy: 'Jake Martinez' },
-  { id: '3', number: 'VIO-0087', walkDate: '2026-03-24', slip: 'C-02', type: 'Cleanliness', severity: 'Low', description: 'Oil sheen observed around vessel. Minor leak from engine compartment.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '4', number: 'VIO-0086', walkDate: '2026-03-22', slip: 'A-04', type: 'Safety Hazard', severity: 'Critical', description: 'Bilge pump failure — vessel taking on water. Owner contacted immediately.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '5', number: 'VIO-0085', walkDate: '2026-03-22', slip: 'B-03', type: 'Unauthorized Modification', severity: 'Medium', description: 'Tenant installed unapproved solar panel mount on dock finger.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '6', number: 'VIO-0084', walkDate: '2026-03-22', slip: 'A-02', type: 'Line Condition', severity: 'Low', description: 'Spring line showing light wear. Monitor on next walk.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '7', number: 'VIO-0083', walkDate: '2026-03-21', slip: 'B-02', type: 'Cleanliness', severity: 'Low', description: 'Trash and debris on dock near slip. Tenant notified.', status: 'Resolved', reportedBy: 'Jake Martinez' },
-  { id: '8', number: 'VIO-0082', walkDate: '2026-03-20', slip: 'A-03', type: 'Safety Hazard', severity: 'High', description: 'Fire extinguisher expired. Vessel non-compliant with marina safety policy.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '9', number: 'VIO-0081', walkDate: '2026-03-20', slip: 'C-01', type: 'Electrical', severity: 'Medium', description: 'Shore power cord not properly secured. Trip hazard on dock.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '10', number: 'VIO-0080', walkDate: '2026-03-18', slip: 'B-01', type: 'Line Condition', severity: 'High', description: 'Bow line undersized for vessel weight. Must upgrade to 5/8" minimum.', status: 'Resolved', reportedBy: 'Maria Santos' },
-];
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
-const PUMP_OUTS: PumpOut[] = [
-  { id: '1', date: '2026-03-25 9:30 AM', slip: 'A-01', boatName: 'Sea Spirit', performedBy: 'Jake Martinez', duration: '15 min', notes: '' },
-  { id: '2', date: '2026-03-24 2:15 PM', slip: 'B-01', boatName: 'Tidewater Express', performedBy: 'Maria Santos', duration: '20 min', notes: 'Tank nearly full' },
-  { id: '3', date: '2026-03-23 10:00 AM', slip: 'C-01', boatName: 'Windward', performedBy: 'Jake Martinez', duration: '12 min', notes: '' },
-  { id: '4', date: '2026-03-22 3:45 PM', slip: 'A-02', boatName: 'Coastal Dream', performedBy: 'Maria Santos', duration: '18 min', notes: 'Requested weekly schedule' },
-  { id: '5', date: '2026-03-20 11:30 AM', slip: 'B-03', boatName: 'Harbor Light', performedBy: 'Jake Martinez', duration: '14 min', notes: '' },
-  { id: '6', date: '2026-03-18 9:00 AM', slip: 'A-01', boatName: 'Sea Spirit', performedBy: 'Maria Santos', duration: '16 min', notes: '' },
-];
+function fmtDuration(startedAt: string, completedAt: string | null): string {
+  if (!completedAt) return '—';
+  const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}min`;
+}
+
+function violationSeverity(violationType: string | null): Severity {
+  if (!violationType) return 'Medium';
+  if (violationType === 'SAFETY_HAZARD') return 'Critical';
+  if (violationType === 'ELECTRICAL') return 'High';
+  if (violationType === 'LINE_CONDITION') return 'Medium';
+  if (violationType === 'CLEANLINESS') return 'Low';
+  return 'Medium';
+}
+
+function violationTypeLabel(violationType: string | null): string {
+  if (!violationType) return 'Other';
+  return violationType.split('_').map((w) => w[0] + w.slice(1).toLowerCase()).join(' ');
+}
+
+function staffName(teamMembers: TeamMember[], staffId: string | null): string {
+  if (!staffId) return '—';
+  const m = teamMembers.find((u) => u.id === staffId);
+  if (!m) return staffId.slice(0, 8);
+  return [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email;
+}
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -136,17 +175,19 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Start Walk Modal ──────────────────────────────────── */
 
-const INSPECTORS = [
-  { id: 'staff-jake', name: 'Jake Martinez' },
-  { id: 'staff-maria', name: 'Maria Santos' },
-  { id: 'staff-tom', name: 'Tom Bradley' },
-];
-
-const DOCKS = ['A', 'B', 'C', 'D', 'Fuel'];
-
-function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (walk: DockWalk) => void }) {
-  const [inspector, setInspector] = useState(INSPECTORS[0].id);
-  const [selectedDocks, setSelectedDocks] = useState<string[]>(['A', 'B', 'C']);
+function StartWalkModal({
+  onClose,
+  onSave,
+  teamMembers,
+}: {
+  onClose: () => void;
+  onSave?: (walk: DockWalk) => void;
+  teamMembers: TeamMember[];
+}) {
+  const dockStaff = teamMembers.filter((m) => m.active);
+  const firstStaff = dockStaff[0];
+  const [inspector, setInspector] = useState(firstStaff?.id ?? '');
+  const [selectedDocks, setSelectedDocks] = useState<string[]>(['A']);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -162,22 +203,22 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (wa
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inspectorId: inspector, dockId: selectedDocks[0], notes }),
       });
-      const inspectorName = INSPECTORS.find((i) => i.id === inspector)?.name ?? inspector;
-      const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const newWalk: DockWalk = res.ok
-        ? await res.json()
-        : {
-            id: `walk-${Date.now()}`,
-            number: `DW-${String(Date.now()).slice(-4)}`,
-            date: today,
-            inspector: inspectorName,
-            docks: selectedDocks,
-            slipsChecked: 0,
-            violations: 0,
-            status: 'In Progress',
-            duration: '—',
-          };
-      onSave?.(newWalk);
+      if (res.ok) {
+        const raw: ApiDockWalk = await res.json();
+        const inspName = staffName(teamMembers, raw.inspectorId);
+        const newWalk: DockWalk = {
+          id: raw.id,
+          number: `DW-${raw.id.slice(-6).toUpperCase()}`,
+          date: fmtDate(raw.startedAt),
+          inspector: inspName,
+          docks: raw.dockId ? [raw.dockId] : selectedDocks,
+          slipsChecked: 0,
+          violations: 0,
+          status: 'In Progress',
+          duration: '—',
+        };
+        onSave?.(newWalk);
+      }
     } finally {
       setSaving(false);
       onClose();
@@ -195,7 +236,11 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (wa
           <div style={st.field}>
             <label style={st.label}>Inspector *</label>
             <select style={st.input} value={inspector} onChange={(e) => setInspector(e.target.value)}>
-              {INSPECTORS.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+              {dockStaff.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {[m.firstName, m.lastName].filter(Boolean).join(' ') || m.email}
+                </option>
+              ))}
             </select>
           </div>
           <div style={st.field}>
@@ -241,10 +286,12 @@ function ViolationDetail({ violation, onClose, onResolved }: {
     if (resolving) return;
     setResolving(true);
     try {
-      await fetch(`/api/dock-walks/violations/${violation.id}`, {
+      const walkId = violation.id.split('::')[0];
+      const itemId = violation.id.split('::')[1] ?? violation.id;
+      await fetch(`/api/dock-walks/${walkId}/items/${itemId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'RESOLVED', resolutionNotes }),
+        body: JSON.stringify({ status: 'OK', notes: resolutionNotes }),
       });
       setResolved(true);
       onResolved?.(violation.id);
@@ -279,7 +326,7 @@ function ViolationDetail({ violation, onClose, onResolved }: {
       </div>
       <div style={st.detailSection}>
         <div style={st.detailLabel}>Description</div>
-        <div style={{ ...st.detailValue, lineHeight: 1.6 }}>{violation.description}</div>
+        <div style={{ ...st.detailValue, lineHeight: 1.6 }}>{violation.description || '—'}</div>
       </div>
       <div style={st.detailSection}>
         <div style={st.detailLabel}>Photos</div>
@@ -320,23 +367,83 @@ function ViolationDetail({ violation, onClose, onResolved }: {
 export default function DockWalks() {
   const [tab, setTab] = useState<'history' | 'violations' | 'pumpouts'>('history');
   const [search, setSearch] = useState('');
+  const [dockFilter, setDockFilter] = useState('All');
   const [severityFilter, setSeverityFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showStartWalk, setShowStartWalk] = useState(false);
   const [selectedViolation, setSelectedViolation] = useState<Violation | null>(null);
-
-  const { data: apiWalks, loading: walksLoading } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
-  const { data: apiViolations, loading: violationsLoading } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
-
   const [localWalks, setLocalWalks] = useState<DockWalk[]>([]);
-  const [localViolations, setLocalViolations] = useState<Violation[] | null>(null);
+  const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
 
-  const walks = localWalks.length > 0 ? localWalks : (apiWalks || WALKS);
-  const violations = localViolations ?? (apiViolations || VIOLATIONS);
+  const { data: teamData } = useApi<{ members: TeamMember[] }>('get', '/api/settings/team', { immediate: true });
+  const { data: walksData, loading: walksLoading } = useApi<{ data: ApiDockWalk[]; pagination: unknown }>('get', '/api/dock-walks?take=50', { immediate: true });
+  const { data: issuesData, loading: issuesLoading } = useApi<{ data: ApiIssue[]; pagination: unknown }>('get', '/api/dock-walks/issues?take=50', { immediate: true });
+  const { data: pumpOutsData, loading: pumpOutsLoading } = useApi<{ data: ApiPumpOut[]; pagination: unknown }>('get', '/api/dock-walks/pump-outs?take=50', { immediate: true });
+
+  const teamMembers = teamData?.members ?? [];
+
+  const walks: DockWalk[] = useMemo(() => {
+    const apiWalks = walksData?.data ?? [];
+    const mapped = apiWalks.map((w): DockWalk => ({
+      id: w.id,
+      number: `DW-${w.id.slice(-6).toUpperCase()}`,
+      date: fmtDate(w.startedAt),
+      inspector: staffName(teamMembers, w.inspectorId),
+      docks: w.dockId ? [w.dockId] : [],
+      slipsChecked: w.items.length,
+      violations: w.items.filter((i) => i.status === 'VIOLATION').length,
+      status: w.status === 'IN_PROGRESS' ? 'In Progress' : 'Completed',
+      duration: fmtDuration(w.startedAt, w.completedAt),
+    }));
+    return localWalks.length > 0 ? [...localWalks, ...mapped] : mapped;
+  }, [walksData, teamMembers, localWalks]);
+
+  const violations: Violation[] = useMemo(() => {
+    const apiIssues = issuesData?.data ?? [];
+    return apiIssues.map((item): Violation => ({
+      id: `${item.dockWalk.id}::${item.id}`,
+      number: `VIO-${item.id.slice(-6).toUpperCase()}`,
+      walkDate: fmtDate(item.dockWalk.startedAt),
+      slip: item.slip?.slipNumber ?? '—',
+      type: violationTypeLabel(item.violationType),
+      severity: violationSeverity(item.violationType),
+      description: item.notes ?? '',
+      status: resolvedIds.has(item.id) ? 'Resolved' : 'Open',
+      reportedBy: staffName(teamMembers, item.dockWalk.inspectorId),
+    }));
+  }, [issuesData, teamMembers, resolvedIds]);
+
+  const pumpOuts: PumpOut[] = useMemo(() => {
+    return (pumpOutsData?.data ?? []).map((p): PumpOut => ({
+      id: p.id,
+      date: new Date(p.eventDate).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      slip: p.slip?.slipNumber ?? p.slipId.slice(0, 8),
+      gallons: p.gallons,
+      performedBy: staffName(teamMembers, p.staffId),
+      feeCents: p.feeCents,
+    }));
+  }, [pumpOutsData, teamMembers]);
 
   const openViolations = violations.filter((v) => v.status === 'Open').length;
   const avgItems = walks.length > 0 ? Math.round(walks.reduce((s, w) => s + w.slipsChecked, 0) / walks.length) : 0;
   const lastWalk = walks[0];
+
+  const filteredWalks = walks.filter((w) => {
+    if (dockFilter !== 'All' && !w.docks.includes(dockFilter)) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return w.number.toLowerCase().includes(q) || w.inspector.toLowerCase().includes(q);
+  });
+
+  const filteredViolations = violations.filter((v) => {
+    if (severityFilter !== 'All' && v.severity !== severityFilter) return false;
+    if (statusFilter !== 'All' && v.status !== statusFilter) return false;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return v.number.toLowerCase().includes(q) || v.slip.toLowerCase().includes(q) || v.type.toLowerCase().includes(q);
+  });
+
+  const loading = walksLoading || issuesLoading || pumpOutsLoading;
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'history', label: 'Walk History' },
@@ -349,19 +456,19 @@ export default function DockWalks() {
       <h1 style={st.title} className="helm-page-title">Dock Walks</h1>
       <hr style={st.divider} />
 
-      {(walksLoading || violationsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading dock walks...</div>}
+      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading...</div>}
 
       {/* Stats */}
       <div style={st.statsRow} className="helm-stats-grid">
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Walks</div>
           <div style={st.statValue}>{walks.length}</div>
-          <div style={st.statSub}>This month</div>
+          <div style={st.statSub}>All recorded walks</div>
         </div>
         <div style={{ ...st.statCard, borderTop: openViolations > 0 ? '3px solid #F59E0B' : '3px solid #00D4FF' }}>
           <div style={st.statLabel}>Open Violations</div>
           <div style={{ ...st.statValue, color: openViolations > 0 ? '#C2410C' : '#03543F' }}>{openViolations}</div>
-          <div style={st.statSub}>{violations.filter((v) => v.severity === 'High' || v.severity === 'Critical').filter((v) => v.status === 'Open').length} high/critical</div>
+          <div style={st.statSub}>{violations.filter((v) => (v.severity === 'High' || v.severity === 'Critical') && v.status === 'Open').length} high/critical</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Avg Slips / Walk</div>
@@ -370,8 +477,8 @@ export default function DockWalks() {
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Last Walk</div>
-          <div style={st.statValue}>{lastWalk.date}</div>
-          <div style={st.statSub}>{lastWalk.inspector} — {lastWalk.status}</div>
+          <div style={{ ...st.statValue, fontSize: '18px' }}>{lastWalk?.date ?? '—'}</div>
+          <div style={st.statSub}>{lastWalk ? `${lastWalk.inspector} — ${lastWalk.status}` : 'No walks yet'}</div>
         </div>
       </div>
 
@@ -392,6 +499,10 @@ export default function DockWalks() {
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search walks..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+            <select style={st.select} value={dockFilter} onChange={(e) => setDockFilter(e.target.value)}>
+              <option value="All">All Docks</option>
+              {DOCKS.map((d) => <option key={d} value={d}>Dock {d}</option>)}
+            </select>
             <button style={st.addBtn} onClick={() => setShowStartWalk(true)}>
               <ClipboardCheck size={16} /> Start New Walk
             </button>
@@ -403,7 +514,7 @@ export default function DockWalks() {
                   <th style={st.th}>Walk #</th>
                   <th style={st.th}>Date</th>
                   <th style={st.th}>Inspector</th>
-                  <th style={st.th}>Dock(s)</th>
+                  <th style={st.th}>Dock</th>
                   <th style={st.th}>Slips Checked</th>
                   <th style={st.th}>Violations</th>
                   <th style={st.th}>Status</th>
@@ -411,21 +522,26 @@ export default function DockWalks() {
                 </tr>
               </thead>
               <tbody>
-                {walks.filter((w) => !search || w.number.toLowerCase().includes(search.toLowerCase()) || w.inspector.toLowerCase().includes(search.toLowerCase())).map((w, idx) => {
+                {filteredWalks.length === 0 && !loading && (
+                  <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', padding: '32px', color: '#64748B' }}>No dock walks found.</td></tr>
+                )}
+                {filteredWalks.map((w, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={w.id}>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{w.number}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{w.date}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{w.inspector}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{(w.docks ?? []).map((d) => `Dock ${d}`).join(', ')}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{w.docks.map((d) => `Dock ${d}`).join(', ') || '—'}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center', ...st.mono }}>{w.slipsChecked}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
                         <span style={{ ...st.mono, color: w.violations > 0 ? '#C2410C' : '#03543F', fontWeight: 600 }}>{w.violations}</span>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: w.status === 'In Progress' ? '#E0F7FF' : '#DEF7EC', color: w.status === 'In Progress' ? '#0A2342' : '#03543F' }}>
-                          {w.status === 'In Progress' ? <Clock size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> : <CheckCircle2 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />}
+                          {w.status === 'In Progress'
+                            ? <Clock size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                            : <CheckCircle2 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />}
                           {w.status}
                         </span>
                       </td>
@@ -475,13 +591,10 @@ export default function DockWalks() {
                 </tr>
               </thead>
               <tbody>
-                {violations.filter((v) => {
-                  if (severityFilter !== 'All' && v.severity !== severityFilter) return false;
-                  if (statusFilter !== 'All' && v.status !== statusFilter) return false;
-                  if (!search) return true;
-                  const q = search.toLowerCase();
-                  return v.number.toLowerCase().includes(q) || v.slip.toLowerCase().includes(q) || v.type.toLowerCase().includes(q);
-                }).map((v, idx) => {
+                {filteredViolations.length === 0 && !issuesLoading && (
+                  <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', padding: '32px', color: '#64748B' }}>No violations found.</td></tr>
+                )}
+                {filteredViolations.map((v, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   const sc = severityColors[v.severity];
                   return (
@@ -496,7 +609,7 @@ export default function DockWalks() {
                           {v.severity}
                         </span>
                       </td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.description}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg, maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.description || '—'}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: v.status === 'Open' ? '#FFF3CD' : '#DEF7EC', color: v.status === 'Open' ? '#856404' : '#03543F' }}>{v.status}</span>
                       </td>
@@ -527,23 +640,26 @@ export default function DockWalks() {
                 <tr>
                   <th style={st.th}>Date / Time</th>
                   <th style={st.th}>Slip</th>
-                  <th style={st.th}>Boat Name</th>
+                  <th style={st.th}>Gallons</th>
+                  <th style={st.th}>Fee</th>
                   <th style={st.th}>Performed By</th>
-                  <th style={st.th}>Duration</th>
-                  <th style={st.th}>Notes</th>
                 </tr>
               </thead>
               <tbody>
-                {PUMP_OUTS.map((p, idx) => {
+                {pumpOuts.length === 0 && !pumpOutsLoading && (
+                  <tr><td colSpan={5} style={{ ...st.td, textAlign: 'center', padding: '32px', color: '#64748B' }}>No pump-outs recorded.</td></tr>
+                )}
+                {pumpOuts.map((p, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={p.id}>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{p.date}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.slip}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{p.boatName}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.gallons} gal</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>
+                        {p.feeCents != null ? `$${(p.feeCents / 100).toFixed(2)}` : '—'}
+                      </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{p.performedBy}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.duration}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg, color: p.notes ? '#0A2342' : '#94A3B8' }}>{p.notes || '—'}</td>
                     </tr>
                   );
                 })}
@@ -555,9 +671,10 @@ export default function DockWalks() {
 
       {showStartWalk && (
         <StartWalkModal
+          teamMembers={teamMembers}
           onClose={() => setShowStartWalk(false)}
           onSave={(newWalk) => {
-            setLocalWalks((prev) => [newWalk, ...(prev.length > 0 ? prev : apiWalks || WALKS)]);
+            setLocalWalks((prev) => [newWalk, ...prev]);
             setShowStartWalk(false);
           }}
         />
@@ -567,8 +684,9 @@ export default function DockWalks() {
           violation={selectedViolation}
           onClose={() => setSelectedViolation(null)}
           onResolved={(id) => {
-            const base = localViolations ?? (apiViolations || VIOLATIONS);
-            setLocalViolations(base.map((v) => v.id === id ? { ...v, status: 'Resolved' } : v));
+            const itemId = id.split('::')[1] ?? id;
+            setResolvedIds((prev) => new Set([...prev, itemId]));
+            setSelectedViolation(null);
           }}
         />
       )}

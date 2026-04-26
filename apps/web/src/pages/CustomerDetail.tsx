@@ -40,18 +40,105 @@ interface CustomerDetail {
   lifetimeValue: number;
 }
 
-const BOATS: Boat[] = [
-  { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92, make: 'Hunter', model: '380', year: '2018', beam: '12.5', draft: '5.5', height: '57', color: 'White', hin: 'HUN38001A818', mmsi: '338102847', engineType: 'Inboard Diesel', engineHp: '42', fuelType: 'Diesel' },
-  { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78, make: 'Sea Ray', model: '280 Sundancer', year: '2020', beam: '9.5', draft: '2.8', height: '8.5', color: 'Blue/White', hin: 'SRAY2801B020', mmsi: '', engineType: 'Inboard Gas', engineHp: '260', fuelType: 'Gasoline' },
-];
+/* ── API shapes (from server) ────────────────────────────── */
 
-const INVOICES = [
-  { id: 'INV-001', description: 'Monthly Slip Rental - March', amount: 850.0, status: 'Paid', date: '2025-03-01' },
-  { id: 'INV-002', description: 'Electric Meter - February', amount: 142.5, status: 'Paid', date: '2025-02-15' },
-  { id: 'INV-003', description: 'Monthly Slip Rental - April', amount: 850.0, status: 'Open', date: '2025-04-01' },
-  { id: 'INV-004', description: 'Pump-Out Service', amount: 45.0, status: 'Open', date: '2025-03-20' },
-  { id: 'INV-005', description: 'Late Fee', amount: 25.0, status: 'Overdue', date: '2025-01-15' },
-];
+interface ApiInsuranceRecord {
+  id: string;
+  policyNumber: string;
+  provider: string;
+  coverageType: string;
+  coverageCents: number;
+  expiryDate: string | null;
+  status: string;
+}
+
+interface ApiBoat {
+  id: string;
+  name: string | null;
+  type?: string;
+  lengthFt: number;
+  beamFt?: number | null;
+  draftFt?: number | null;
+  registrationNumber: string | null;
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  fuelType: string | null;
+  engineHp: number | null;
+  hin: string | null;
+  insuranceRecords: ApiInsuranceRecord[];
+  compliance?: number;
+}
+
+interface ApiInvoice {
+  id: string;
+  invoiceNumber?: string;
+  description?: string;
+  totalCents: number;
+  status: string;
+  issuedDate: string;
+  _count?: { lineItems: number; payments: number };
+}
+
+interface ApiTimelineEvent {
+  type: string;
+  date: string;
+  description: string;
+  meta?: Record<string, unknown>;
+}
+
+function mapApiBoat(b: ApiBoat): Boat {
+  return {
+    id: b.id,
+    name: b.name ?? '—',
+    type: b.type ?? 'Other',
+    length: b.lengthFt,
+    beam: b.beamFt?.toString() ?? '',
+    draft: b.draftFt?.toString() ?? '',
+    height: '',
+    registration: b.registrationNumber ?? '—',
+    make: b.make ?? '',
+    model: b.model ?? '',
+    year: b.year?.toString() ?? '',
+    color: '',
+    hin: b.hin ?? '',
+    mmsi: '',
+    engineType: '',
+    engineHp: b.engineHp?.toString() ?? '',
+    fuelType: b.fuelType ?? '',
+    compliance: b.compliance ?? 100,
+  };
+}
+
+function mapApiInvoice(inv: ApiInvoice): Invoice {
+  return {
+    id: inv.id,
+    description: inv.description ?? inv.invoiceNumber ?? inv.id.slice(0, 8).toUpperCase(),
+    amount: inv.totalCents / 100,
+    status: inv.status === 'ISSUED' ? 'Open' : inv.status === 'PAST_DUE' ? 'Overdue' : inv.status === 'PAID' ? 'Paid' : inv.status,
+    date: new Date(inv.issuedDate).toISOString().slice(0, 10),
+  };
+}
+
+function mapApiInsurance(ins: ApiInsuranceRecord, boatId: string, boatName: string): InsuranceRecord {
+  const expiryDate = ins.expiryDate ? new Date(ins.expiryDate) : null;
+  const now = new Date();
+  const daysUntilExpiry = expiryDate ? Math.floor((expiryDate.getTime() - now.getTime()) / 86400000) : null;
+  let status: InsuranceRecord['status'] = 'Current';
+  if (!expiryDate || expiryDate < now) status = 'Expired';
+  else if (daysUntilExpiry !== null && daysUntilExpiry <= 60) status = 'Expiring Soon';
+  return {
+    id: ins.id,
+    boatId,
+    boatName,
+    provider: ins.provider,
+    policyNumber: ins.policyNumber,
+    type: ins.coverageType,
+    coverage: ins.coverageCents / 100,
+    expiry: expiryDate ? expiryDate.toISOString().slice(0, 10) : '—',
+    status,
+  };
+}
 
 interface Boat {
   id: string;
@@ -94,29 +181,12 @@ interface InsuranceRecord {
   status: 'Current' | 'Expiring Soon' | 'Expired';
 }
 
-const INSURANCE: InsuranceRecord[] = [
-  { id: 'INS-001', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48291', type: 'Hull & Liability', coverage: 250000, expiry: '2026-06-15', status: 'Current' },
-  { id: 'INS-002', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48292', type: 'Environmental Liability', coverage: 100000, expiry: '2026-06-15', status: 'Current' },
-  { id: 'INS-003', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77410', type: 'Hull & Liability', coverage: 120000, expiry: '2026-04-20', status: 'Expiring Soon' },
-  { id: 'INS-004', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77411', type: 'Pollution Liability', coverage: 50000, expiry: '2025-12-01', status: 'Expired' },
-];
-
 const insuranceStatusColors: Record<string, { bg: string; color: string }> = {
   Current: { bg: '#E8F5E9', color: '#1B5E20' },
   'Expiring Soon': { bg: '#FFF3CD', color: '#856404' },
   Expired: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
-const ACTIVITY = [
-  { date: '2025-03-20', action: 'Pump-out service completed', type: 'service' },
-  { date: '2025-03-15', action: 'Invoice INV-003 generated', type: 'billing' },
-  { date: '2025-03-01', action: 'Payment received - $850.00', type: 'payment' },
-  { date: '2025-02-20', action: 'Meter reading submitted: 1,240 kWh', type: 'meter' },
-  { date: '2025-02-15', action: 'Invoice INV-002 generated', type: 'billing' },
-  { date: '2025-02-01', action: 'Contract auto-renewed for 12 months', type: 'contract' },
-  { date: '2025-01-15', action: 'Insurance document uploaded', type: 'document' },
-  { date: '2024-12-20', action: 'Dock walk inspection - passed', type: 'inspection' },
-];
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -635,8 +705,9 @@ export default function CustomerDetailPage() {
 
   // API calls
   const { data: apiCustomer, loading, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
-  const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
-  const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
+  const { data: apiBoatData } = useApi<{ data: ApiBoat[]; pagination: unknown }>('get', `/api/boats?customerId=${id}&take=50`, { immediate: true });
+  const { data: apiInvoiceData } = useApi<{ data: ApiInvoice[]; pagination: unknown }>('get', `/api/invoices?customerId=${id}&take=50`, { immediate: true });
+  const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
   const updateBoatApi = useApi('put', '/api/boats/update');
   const addBoatApi = useApi('post', '/api/boats');
@@ -652,9 +723,13 @@ export default function CustomerDetailPage() {
     );
   }
   const c = apiCustomer;
-  const rawBoats = apiBoats || BOATS;
-  const boats = localBoats.length > 0 ? localBoats : rawBoats;
-  const invoices = apiInvoices || INVOICES;
+  const apiBoatsMapped = (apiBoatData?.data ?? []).map(mapApiBoat);
+  const boats = localBoats.length > 0 ? localBoats : apiBoatsMapped;
+  const invoices = (apiInvoiceData?.data ?? []).map(mapApiInvoice);
+  const activity = timelineData?.data ?? [];
+  const allInsurance: InsuranceRecord[] = (apiBoatData?.data ?? []).flatMap((b) =>
+    b.insuranceRecords.map((ins) => mapApiInsurance(ins, b.id, b.name ?? '—'))
+  );
 
   const handleSaveBoat = (updated: Boat) => {
     setLocalBoats(boats.map((b) => b.id === updated.id ? updated : b));
@@ -780,7 +855,7 @@ export default function CustomerDetailPage() {
       </div>
       {boats.map((b) => {
         const cb = complianceBadge(b.compliance);
-        const boatInsurance = INSURANCE.filter((ins) => ins.boatId === b.id);
+        const boatInsurance = allInsurance.filter((ins) => ins.boatId === b.id);
         return (
           <div key={b.id} style={{ ...s.card, padding: 0, overflow: 'hidden' }}>
             {/* Boat Header */}
@@ -917,13 +992,17 @@ export default function CustomerDetailPage() {
   const renderActivity = () => (
     <div style={s.timeline}>
       <div style={s.timelineLine} />
-      {ACTIVITY.map((a, i) => {
+      {activity.length === 0 && (
+        <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8' }}>No activity recorded yet.</div>
+      )}
+      {activity.map((a, i) => {
         const Icon = activityIcons[a.type] || Activity;
+        const dateStr = new Date(a.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         return (
           <div key={i} style={s.timelineItem}>
             <div style={s.timelineDot} />
-            <div style={s.timelineDate}>{a.date}</div>
-            <div style={s.timelineAction}>{a.action}</div>
+            <div style={s.timelineDate}>{dateStr}</div>
+            <div style={s.timelineAction}>{a.description}</div>
           </div>
         );
       })}

@@ -61,48 +61,103 @@ interface PromoCode {
   active: boolean;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API shapes ──────────────────────────────────────────── */
 
-const PRODUCTS: RentalProduct[] = [
-  { id: '1', name: 'Bay Cruiser 24', type: 'Pontoon', capacity: 10, hourlyRate: 85, halfDayRate: 280, dailyRate: 450, status: 'Available', rating: 4.8, totalBookings: 142 },
-  { id: '2', name: 'Wave Runner Pro', type: 'Jet Ski', capacity: 2, hourlyRate: 65, halfDayRate: 200, dailyRate: 350, status: 'Available', rating: 4.6, totalBookings: 218 },
-  { id: '3', name: 'Harbor Explorer', type: 'Kayak', capacity: 2, hourlyRate: 25, halfDayRate: 60, dailyRate: 90, status: 'Available', rating: 4.9, totalBookings: 305 },
-  { id: '4', name: 'Sunset Sailor 28', type: 'Sailboat', capacity: 6, hourlyRate: 95, halfDayRate: 320, dailyRate: 520, status: 'Available', rating: 4.7, totalBookings: 87 },
-  { id: '5', name: 'Fishing Charter 30', type: 'Powerboat', capacity: 8, hourlyRate: 120, halfDayRate: 400, dailyRate: 650, status: 'Maintenance', rating: 4.5, totalBookings: 64 },
-  { id: '6', name: 'Paddleboard Classic', type: 'Paddleboard', capacity: 1, hourlyRate: 20, halfDayRate: 45, dailyRate: 70, status: 'Available', rating: 4.4, totalBookings: 189 },
-  { id: '7', name: 'Family Pontoon 28', type: 'Pontoon', capacity: 12, hourlyRate: 110, halfDayRate: 360, dailyRate: 580, status: 'Available', rating: 4.8, totalBookings: 96 },
-  { id: '8', name: 'Speed Demon X2', type: 'Jet Ski', capacity: 2, hourlyRate: 70, halfDayRate: 220, dailyRate: 380, status: 'Retired', rating: 4.2, totalBookings: 156 },
-];
+interface ApiRentalProduct {
+  id: string;
+  name: string;
+  category: string | null;
+  hourlyRateCents: number | null;
+  dailyRateCents: number | null;
+  basePriceCents: number;
+  active: boolean;
+  availableQuantity?: number;
+  utilizationPct?: number;
+}
 
-const RESERVATIONS: Reservation[] = [
-  { id: '1', number: 'RES-1042', customer: 'James Harborview', product: 'Bay Cruiser 24', date: '2026-03-25', timeSlot: '9:00 AM - 1:00 PM', duration: '4 hours', total: 340, status: 'Checked In', notes: '' },
-  { id: '2', number: 'RES-1043', customer: 'Maria Seabreeze', product: 'Wave Runner Pro', date: '2026-03-25', timeSlot: '10:00 AM - 12:00 PM', duration: '2 hours', total: 130, status: 'Confirmed', notes: 'Birthday celebration' },
-  { id: '3', number: 'RES-1044', customer: 'Robert Dockside', product: 'Harbor Explorer', date: '2026-03-25', timeSlot: '2:00 PM - 4:00 PM', duration: '2 hours', total: 50, status: 'Pending', notes: '' },
-  { id: '4', number: 'RES-1045', customer: 'Elena Windward', product: 'Sunset Sailor 28', date: '2026-03-26', timeSlot: '8:00 AM - 4:00 PM', duration: 'Full Day', total: 520, status: 'Confirmed', notes: 'Experienced sailor' },
-  { id: '5', number: 'RES-1046', customer: 'David Tidewater', product: 'Bay Cruiser 24', date: '2026-03-24', timeSlot: '1:00 PM - 5:00 PM', duration: '4 hours', total: 340, status: 'Checked Out', notes: '' },
-  { id: '6', number: 'RES-1047', customer: 'Sarah Coastline', product: 'Paddleboard Classic', date: '2026-03-24', timeSlot: '10:00 AM - 12:00 PM', duration: '2 hours', total: 40, status: 'No Show', notes: '' },
-  { id: '7', number: 'RES-1048', customer: 'Mike Anchorage', product: 'Family Pontoon 28', date: '2026-03-27', timeSlot: '9:00 AM - 5:00 PM', duration: 'Full Day', total: 580, status: 'Confirmed', notes: 'Family reunion - 10 guests' },
-  { id: '8', number: 'RES-1049', customer: 'Lisa Bayfront', product: 'Wave Runner Pro', date: '2026-03-23', timeSlot: '3:00 PM - 5:00 PM', duration: '2 hours', total: 130, status: 'Cancelled', notes: 'Weather concern' },
-  { id: '9', number: 'RES-1050', customer: 'Tom Seaside', product: 'Harbor Explorer', date: '2026-03-26', timeSlot: '8:00 AM - 10:00 AM', duration: '2 hours', total: 50, status: 'Pending', notes: '' },
-  { id: '10', number: 'RES-1051', customer: 'Amy Portview', product: 'Fishing Charter 30', date: '2026-03-28', timeSlot: '6:00 AM - 2:00 PM', duration: 'Full Day', total: 650, status: 'Confirmed', notes: 'Deep sea fishing' },
-];
+interface ApiReservation {
+  id: string;
+  status: string;
+  startDt: string;
+  endDt: string;
+  totalCents: number;
+  notes?: string | null;
+  cancellationReason?: string | null;
+  customer: { id: string; firstName: string; lastName: string; email: string } | null;
+  rentalProduct: { id: string; name: string; category: string | null } | null;
+}
 
-const PRICING_RULES: PricingRule[] = [
-  { id: '1', name: 'Summer Peak Season', type: 'Seasonal', adjustment: 25, startDate: '2026-06-01', endDate: '2026-09-01', active: true },
-  { id: '2', name: 'Weekend Surcharge', type: 'Peak Day', adjustment: 15, startDate: '2026-01-01', endDate: '2026-12-31', active: true },
-  { id: '3', name: 'Early Bird Discount', type: 'Lead Time', adjustment: -10, startDate: '2026-01-01', endDate: '2026-12-31', active: true },
-  { id: '4', name: 'Multi-Day Discount', type: 'Multi-day', adjustment: -15, startDate: '2026-01-01', endDate: '2026-12-31', active: true },
-  { id: '5', name: 'Holiday Premium', type: 'Peak Day', adjustment: 30, startDate: '2026-05-22', endDate: '2026-05-25', active: true },
-  { id: '6', name: 'Winter Off-Season', type: 'Seasonal', adjustment: -20, startDate: '2026-11-01', endDate: '2027-03-01', active: false },
-];
+interface ApiPricingRule {
+  id: string;
+  name: string;
+  type: string;
+  adjustmentPct: number | null;
+  adjustmentCents: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  active: boolean;
+}
 
-const PROMO_CODES: PromoCode[] = [
-  { id: '1', code: 'WELCOME20', discount: 20, discountType: '%', validFrom: '2026-01-01', validTo: '2026-12-31', uses: 34, maxUses: 100, active: true },
-  { id: '2', code: 'SUMMER50', discount: 50, discountType: '$', validFrom: '2026-06-01', validTo: '2026-08-31', uses: 0, maxUses: 50, active: true },
-  { id: '3', code: 'LOYALTY15', discount: 15, discountType: '%', validFrom: '2026-01-01', validTo: '2026-12-31', uses: 12, maxUses: 0, active: true },
-  { id: '4', code: 'SPRING10', discount: 10, discountType: '%', validFrom: '2026-03-01', validTo: '2026-05-31', uses: 8, maxUses: 25, active: true },
-  { id: '5', code: 'FLASHSALE', discount: 30, discountType: '%', validFrom: '2026-02-01', validTo: '2026-02-28', uses: 25, maxUses: 25, active: false },
-];
+function mapApiProduct(p: ApiRentalProduct): RentalProduct {
+  const hourlyRate = p.hourlyRateCents ? p.hourlyRateCents / 100 : p.basePriceCents / 100;
+  const dailyRate = p.dailyRateCents ? p.dailyRateCents / 100 : hourlyRate * 8;
+  return {
+    id: p.id,
+    name: p.name,
+    type: p.category ?? 'Other',
+    capacity: 4,
+    hourlyRate,
+    halfDayRate: Math.round(hourlyRate * 4),
+    dailyRate,
+    status: p.active ? 'Available' : 'Retired',
+    rating: 0,
+    totalBookings: 0,
+  };
+}
+
+function mapApiReservation(r: ApiReservation): Reservation {
+  const statusMap: Record<string, ReservationStatus> = {
+    PENDING: 'Pending',
+    CONFIRMED: 'Confirmed',
+    CHECKED_IN: 'Checked In',
+    CHECKED_OUT: 'Checked Out',
+    CANCELLED: 'Cancelled',
+    NO_SHOW: 'No Show',
+  };
+  const start = new Date(r.startDt);
+  const end = new Date(r.endDt);
+  const hrs = Math.round((end.getTime() - start.getTime()) / 3600000);
+  const durationStr = hrs >= 24 ? `${Math.round(hrs / 24)} day(s)` : `${hrs} hour(s)`;
+  const timeSlot = `${start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} - ${end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  const customerName = r.customer
+    ? `${r.customer.firstName} ${r.customer.lastName}`.trim()
+    : 'Guest';
+  return {
+    id: r.id,
+    number: `RES-${r.id.slice(-6).toUpperCase()}`,
+    customer: customerName,
+    product: r.rentalProduct?.name ?? '—',
+    date: start.toISOString().slice(0, 10),
+    timeSlot,
+    duration: durationStr,
+    total: r.totalCents / 100,
+    status: statusMap[r.status] ?? 'Pending',
+    notes: r.notes ?? r.cancellationReason ?? '',
+  };
+}
+
+function mapApiPricingRule(r: ApiPricingRule): PricingRule {
+  const adj = r.adjustmentPct ?? (r.adjustmentCents ? r.adjustmentCents / 100 : 0);
+  return {
+    id: r.id,
+    name: r.name,
+    type: r.type,
+    adjustment: adj,
+    startDate: r.startDate ? r.startDate.slice(0, 10) : '',
+    endDate: r.endDate ? r.endDate.slice(0, 10) : '',
+    active: r.active,
+  };
+}
 
 /* ── Availability Grid Types & Data ────────────────────── */
 
@@ -779,25 +834,24 @@ export default function Rentals() {
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [localProducts, setLocalProducts] = useState<RentalProduct[]>([]);
 
-  // API calls with fallback to mock data
-  const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/api/rentals/products', { immediate: true });
-  const { data: apiReservations, loading: loadingRes } = useApi<Reservation[]>('get', '/api/rentals/reservations', { immediate: true });
-  const { data: apiPricingRules } = useApi<PricingRule[]>('get', '/api/rentals/pricing-rules', { immediate: true });
-  const { data: apiPromoCodes } = useApi<PromoCode[]>('get', '/api/rentals/promo-codes', { immediate: true });
-  const createProduct = useApi<RentalProduct>('post', '/api/rentals/products');
+  // API calls
+  const { data: apiProductData, loading: loadingProducts } = useApi<{ data: ApiRentalProduct[]; pagination: unknown }>('get', '/api/rentals/products', { immediate: true });
+  const { data: apiReservationData, loading: loadingRes } = useApi<{ data: ApiReservation[]; pagination: unknown }>('get', '/api/rentals/reservations?take=100', { immediate: true });
+  const { data: apiPricingRuleData } = useApi<{ data: ApiPricingRule[]; pagination: unknown }>('get', '/api/rentals/pricing-rules', { immediate: true });
+  const createProduct = useApi<ApiRentalProduct>('post', '/api/rentals/products');
 
   const handleAddProduct = (p: RentalProduct) => {
-    setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : (apiProducts ?? PRODUCTS))]);
-    createProduct.execute({ body: p }).catch(() => {});
+    setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : products)]);
+    createProduct.execute({ body: { name: p.name, category: p.type, basePriceCents: Math.round(p.hourlyRate * 100), hourlyRateCents: Math.round(p.hourlyRate * 100), dailyRateCents: Math.round(p.dailyRate * 100), active: true } }).catch(() => {});
   };
 
   const products = useMemo(
-    () => localProducts.length > 0 ? localProducts : (apiProducts ?? PRODUCTS),
-    [localProducts, apiProducts]
+    () => localProducts.length > 0 ? localProducts : (apiProductData?.data ?? []).map(mapApiProduct),
+    [localProducts, apiProductData]
   );
-  const reservations = useMemo(() => apiReservations ?? RESERVATIONS, [apiReservations]);
-  const pricingRules = useMemo(() => apiPricingRules ?? PRICING_RULES, [apiPricingRules]);
-  const promoCodes = useMemo(() => apiPromoCodes ?? PROMO_CODES, [apiPromoCodes]);
+  const reservations = useMemo(() => (apiReservationData?.data ?? []).map(mapApiReservation), [apiReservationData]);
+  const pricingRules = useMemo(() => (apiPricingRuleData?.data ?? []).map(mapApiPricingRule), [apiPricingRuleData]);
+  const promoCodes = useMemo<PromoCode[]>(() => [], []);
 
   const loading = loadingProducts || loadingRes;
 

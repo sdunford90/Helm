@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { createApiClient, type ApiClient } from "../shared/api";
 import {
   colors,
@@ -55,17 +55,28 @@ interface MockSlip {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mock slips                                                         */
+/*  API slip shape                                                     */
 /* ------------------------------------------------------------------ */
 
-const MOCK_SLIPS: MockSlip[] = [
-  { id: "slip_a1", label: "A-1", maxLength: 30, maxBeam: 10, nightlyRate: 75, weekendPremium: 15 },
-  { id: "slip_a2", label: "A-2", maxLength: 30, maxBeam: 10, nightlyRate: 75, weekendPremium: 15 },
-  { id: "slip_b1", label: "B-1", maxLength: 40, maxBeam: 14, nightlyRate: 110, weekendPremium: 25 },
-  { id: "slip_b2", label: "B-2", maxLength: 40, maxBeam: 14, nightlyRate: 110, weekendPremium: 25 },
-  { id: "slip_c1", label: "C-1", maxLength: 55, maxBeam: 18, nightlyRate: 160, weekendPremium: 35 },
-  { id: "slip_c2", label: "C-2", maxLength: 60, maxBeam: 20, nightlyRate: 185, weekendPremium: 40 },
-];
+interface ApiAvailableSlip {
+  id: string;
+  slipNumber: string;
+  lengthFt: number;
+  widthFt: number;
+  dockId: string | null;
+  rateCents?: number;
+}
+
+function mapApiSlip(s: ApiAvailableSlip): MockSlip {
+  return {
+    id: s.id,
+    label: s.slipNumber,
+    maxLength: s.lengthFt,
+    maxBeam: s.widthFt,
+    nightlyRate: s.rateCents ? s.rateCents / 100 : 85,
+    weekendPremium: 20,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -161,6 +172,15 @@ export default function TransientBookingWidget({
   const [errorMsg, setErrorMsg] = useState("");
   const [focused, setFocused] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [apiSlips, setApiSlips] = useState<MockSlip[]>([]);
+
+  useEffect(() => {
+    api.get<{ data: ApiAvailableSlip[] }>("/api/transient/available-slips").then(({ data }) => {
+      if (data?.data && data.data.length > 0) {
+        setApiSlips(data.data.map(mapApiSlip));
+      }
+    }).catch(() => {});
+  }, [api]);
 
   const focusStyle = (name: string): React.CSSProperties =>
     focused === name
@@ -176,9 +196,9 @@ export default function TransientBookingWidget({
   const matchingSlips = useMemo(() => {
     const len = Number(boat.length) || 0;
     const bm = Number(boat.beam) || 0;
-    if (!len) return MOCK_SLIPS;
-    return MOCK_SLIPS.filter((s) => s.maxLength >= len && s.maxBeam >= bm);
-  }, [boat.length, boat.beam]);
+    if (!len) return apiSlips;
+    return apiSlips.filter((s) => s.maxLength >= len && s.maxBeam >= bm);
+  }, [boat.length, boat.beam, apiSlips]);
 
   const pricing = useMemo(() => {
     if (!selectedSlip || nights <= 0) return { base: 0, weekendSurcharge: 0, total: 0 };

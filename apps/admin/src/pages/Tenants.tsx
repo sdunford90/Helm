@@ -1,36 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+
+interface ApiTenant {
+  id: string;
+  name: string;
+  subdomain: string;
+  status: 'active' | 'trial' | 'grace_period' | 'locked';
+  saasTier: { id: string; name: string } | null;
+  mrrCents: number;
+  userCount: number;
+  createdAt: string;
+}
 
 interface Tenant {
   id: string;
   name: string;
   subdomain: string;
   status: 'active' | 'trial' | 'grace_period' | 'locked';
-  tier: 'Starter' | 'Professional' | 'Enterprise';
+  tier: string;
   mrr: number;
   slips: number;
   created: string;
-  lastLogin: string;
   adminEmail: string;
 }
-
-const MOCK_TENANTS: Tenant[] = [
-  { id: '1', name: 'Sunset Cove Marina', subdomain: 'sunsetcove', status: 'active', tier: 'Professional', mrr: 499, slips: 185, created: '2025-06-15', lastLogin: '2026-03-25', adminEmail: 'admin@sunsetcove.com' },
-  { id: '2', name: 'Harbor Bay Marina', subdomain: 'harborbay', status: 'trial', tier: 'Professional', mrr: 0, slips: 120, created: '2026-03-23', lastLogin: '2026-03-25', adminEmail: 'mgr@harborbay.com' },
-  { id: '3', name: 'Pacific Coast Marina', subdomain: 'pacificcoast', status: 'active', tier: 'Enterprise', mrr: 999, slips: 420, created: '2025-03-10', lastLogin: '2026-03-24', adminEmail: 'ops@pacificcoast.com' },
-  { id: '4', name: 'Old Port Marina', subdomain: 'oldport', status: 'grace_period', tier: 'Professional', mrr: 499, slips: 95, created: '2025-09-01', lastLogin: '2026-03-20', adminEmail: 'info@oldport.com' },
-  { id: '5', name: 'Lakeside Harbor', subdomain: 'lakeside', status: 'active', tier: 'Starter', mrr: 299, slips: 48, created: '2025-11-20', lastLogin: '2026-03-22', adminEmail: 'marina@lakeside.com' },
-  { id: '6', name: 'Crystal Waters Yacht Club', subdomain: 'crystalwaters', status: 'trial', tier: 'Enterprise', mrr: 0, slips: 310, created: '2026-03-20', lastLogin: '2026-03-25', adminEmail: 'admin@crystalwaters.com' },
-  { id: '7', name: 'Bayview Docks', subdomain: 'bayview', status: 'locked', tier: 'Starter', mrr: 0, slips: 32, created: '2025-07-05', lastLogin: '2026-02-28', adminEmail: 'dock@bayview.com' },
-  { id: '8', name: 'Fisherman\'s Wharf Marina', subdomain: 'fishermanswharf', status: 'active', tier: 'Enterprise', mrr: 999, slips: 380, created: '2025-01-15', lastLogin: '2026-03-25', adminEmail: 'ops@fwharf.com' },
-  { id: '9', name: 'Blue Horizon Marina', subdomain: 'bluehorizon', status: 'active', tier: 'Professional', mrr: 499, slips: 210, created: '2025-05-22', lastLogin: '2026-03-24', adminEmail: 'admin@bluehorizon.com' },
-  { id: '10', name: 'Anchor Point Marina', subdomain: 'anchorpoint', status: 'active', tier: 'Starter', mrr: 299, slips: 65, created: '2025-08-14', lastLogin: '2026-03-23', adminEmail: 'hello@anchorpoint.com' },
-  { id: '11', name: 'Windward Yacht Harbor', subdomain: 'windward', status: 'active', tier: 'Professional', mrr: 499, slips: 175, created: '2025-04-30', lastLogin: '2026-03-25', adminEmail: 'mgr@windward.com' },
-  { id: '12', name: 'Coral Reef Marina', subdomain: 'coralreef', status: 'active', tier: 'Enterprise', mrr: 999, slips: 450, created: '2025-02-10', lastLogin: '2026-03-25', adminEmail: 'admin@coralreef.com' },
-  { id: '13', name: 'Tidewater Landing', subdomain: 'tidewater', status: 'trial', tier: 'Starter', mrr: 0, slips: 40, created: '2026-03-18', lastLogin: '2026-03-24', adminEmail: 'info@tidewater.com' },
-  { id: '14', name: 'Seabreeze Marina', subdomain: 'seabreeze', status: 'active', tier: 'Professional', mrr: 499, slips: 155, created: '2025-10-05', lastLogin: '2026-03-25', adminEmail: 'ops@seabreeze.com' },
-  { id: '15', name: 'North Shore Docks', subdomain: 'northshore', status: 'active', tier: 'Starter', mrr: 299, slips: 72, created: '2025-12-01', lastLogin: '2026-03-21', adminEmail: 'dock@northshore.com' },
-];
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
   active: { label: 'Active', bg: 'rgba(76,175,80,0.15)', color: '#4CAF50' },
@@ -46,18 +38,78 @@ const card: React.CSSProperties = {
   padding: 20,
 };
 
+function mapTenant(t: ApiTenant): Tenant {
+  return {
+    id: t.id,
+    name: t.name,
+    subdomain: t.subdomain,
+    status: t.status,
+    tier: t.saasTier?.name ?? 'Unknown',
+    mrr: Math.round(t.mrrCents / 100),
+    slips: 0,
+    created: new Date(t.createdAt).toISOString().slice(0, 10),
+    adminEmail: '—',
+  };
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    ...init,
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
 const Tenants: React.FC = () => {
   const navigate = useNavigate();
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showModal, setShowModal] = useState(false);
   const [newTenant, setNewTenant] = useState({ name: '', subdomain: '', email: '', tier: 'Professional' });
+  const [creating, setCreating] = useState(false);
 
-  const filtered = MOCK_TENANTS.filter((t) => {
+  const fetchTenants = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await apiFetch<{ items: ApiTenant[]; pagination: { total: number } }>('/api/admin/tenants?limit=100');
+      setTenants(res.items.map(mapTenant));
+      setTotal(res.pagination.total);
+    } catch {
+      setTenants([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchTenants(); }, [fetchTenants]);
+
+  const filtered = tenants.filter((t) => {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase()) || t.subdomain.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === 'all' || t.status === statusFilter;
     return matchSearch && matchStatus;
   });
+
+  const handleCreateTenant = async () => {
+    if (!newTenant.name || !newTenant.subdomain || !newTenant.email) return;
+    setCreating(true);
+    try {
+      await apiFetch('/api/admin/tenants', {
+        method: 'POST',
+        body: JSON.stringify({ name: newTenant.name, subdomain: newTenant.subdomain, adminEmail: newTenant.email }),
+      });
+      setShowModal(false);
+      setNewTenant({ name: '', subdomain: '', email: '', tier: 'Professional' });
+      await fetchTenants();
+    } catch {
+      // ignore
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
     <div>
@@ -91,46 +143,59 @@ const Tenants: React.FC = () => {
         </button>
       </div>
 
-      {/* Table */}
-      <div style={card}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              {['Marina Name', 'Subdomain', 'Status', 'SaaS Tier', 'MRR', 'Slips', 'Created', 'Last Login'].map((h) => (
-                <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((t) => {
-              const sc = STATUS_CONFIG[t.status];
-              return (
-                <tr
-                  key={t.id}
-                  onClick={() => navigate(`/tenants/${t.id}`)}
-                  style={{ cursor: 'pointer', transition: 'background 0.15s' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.02)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <td style={{ padding: '12px', fontSize: 13, fontWeight: 500, color: '#FFF', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.name}</td>
-                  <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.subdomain}.helmhq.com</td>
-                  <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span style={{ background: sc.bg, color: sc.color, padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600 }}>{sc.label}</span>
+      {loading && (
+        <div style={{ textAlign: 'center', padding: 48, color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>Loading tenants...</div>
+      )}
+
+      {!loading && (
+        <div style={card}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Marina Name', 'Subdomain', 'Status', 'SaaS Tier', 'MRR', 'Users', 'Created'].map((h) => (
+                  <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 48, fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>
+                    No tenants found.
                   </td>
-                  <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.tier}</td>
-                  <td style={{ padding: '12px', fontSize: 13, fontWeight: 600, color: t.mrr > 0 ? '#4CAF50' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.mrr > 0 ? `$${t.mrr}` : 'Free'}</td>
-                  <td style={{ padding: '12px', fontSize: 13, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.slips}</td>
-                  <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.created}</td>
-                  <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.lastLogin}</td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>Showing {filtered.length} of {MOCK_TENANTS.length} tenants</div>
-      </div>
+              )}
+              {filtered.map((t) => {
+                const sc = STATUS_CONFIG[t.status] ?? STATUS_CONFIG.active;
+                return (
+                  <tr
+                    key={t.id}
+                    onClick={() => navigate(`/tenants/${t.id}`)}
+                    style={{ cursor: 'pointer', transition: 'background 0.15s' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.02)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <td style={{ padding: '12px', fontSize: 13, fontWeight: 500, color: '#FFF', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.name}</td>
+                    <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.subdomain}.helmhq.com</td>
+                    <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                      <span style={{ background: sc.bg, color: sc.color, padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600 }}>{sc.label}</span>
+                    </td>
+                    <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.tier}</td>
+                    <td style={{ padding: '12px', fontSize: 13, fontWeight: 600, color: t.mrr > 0 ? '#4CAF50' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.mrr > 0 ? `$${t.mrr}/mo` : 'Free'}</td>
+                    <td style={{ padding: '12px', fontSize: 13, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{(t as any).userCount ?? '—'}</td>
+                    <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.created}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>
+            Showing {filtered.length} of {total} tenants
+          </div>
+        </div>
+      )}
 
       {/* Create Tenant Modal */}
       {showModal && (
@@ -168,7 +233,9 @@ const Tenants: React.FC = () => {
             </div>
             <div style={{ display: 'flex', gap: 12, marginTop: 28, justifyContent: 'flex-end' }}>
               <button onClick={() => setShowModal(false)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '9px 20px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={() => setShowModal(false)} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Create Tenant</button>
+              <button onClick={handleCreateTenant} disabled={creating} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: creating ? 0.7 : 1 }}>
+                {creating ? 'Creating...' : 'Create Tenant'}
+              </button>
             </div>
           </div>
         </div>

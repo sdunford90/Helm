@@ -53,7 +53,7 @@ async function main() {
   console.log(`  ✓ ${posProducts.length} POS products`);
   console.log(`  ✓ ${transactions.length} POS transactions`);
 
-  const { walks, announcements } = await seedOperations(prisma, tenant.id, users, slips);
+  const { walks, announcements } = await seedOperations(prisma, tenant.id, users, slips, customers);
   console.log(`  ✓ ${walks.length} dock walks`);
   console.log(`  ✓ ${announcements.length} announcements`);
 

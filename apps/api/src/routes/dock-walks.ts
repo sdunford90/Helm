@@ -13,6 +13,7 @@ const DockWalkItemStatusEnum = z.enum(["OK", "VIOLATION", "NEEDS_ATTENTION"]);
 const ListDockWalksQuerySchema = z.object({
   status: DockWalkStatusEnum.optional(),
   inspectorId: z.string().optional(),
+  dockId: z.string().optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
   skip: z.coerce.number().int().min(0).default(0),
@@ -111,6 +112,7 @@ router.get(
 
       if (query.status) where.status = query.status;
       if (query.inspectorId) where.inspectorId = query.inspectorId;
+      if (query.dockId) where.dockId = query.dockId;
 
       if (query.dateFrom || query.dateTo) {
         const dateFilter: Record<string, Date> = {};

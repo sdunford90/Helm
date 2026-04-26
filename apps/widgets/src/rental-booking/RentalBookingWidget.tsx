@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { createApiClient, type ApiClient } from "../shared/api";
 import {
   colors,
@@ -51,47 +51,33 @@ interface CustomerInfo {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mock data                                                          */
+/*  API product shape                                                  */
 /* ------------------------------------------------------------------ */
 
-const MOCK_PRODUCTS: Product[] = [
-  {
-    id: "prod_1",
-    name: "22' Pontoon Boat",
-    description: "Perfect for family outings. Comfortable seating for up to 10.",
-    capacity: 10,
-    hourlyRate: 85,
-    dailyRate: 450,
+interface ApiRentalProduct {
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  basePriceCents: number;
+  hourlyRateCents?: number | null;
+  dailyRateCents?: number | null;
+  active: boolean;
+}
+
+function mapApiProduct(p: ApiRentalProduct): Product {
+  const hourlyRate = p.hourlyRateCents ? p.hourlyRateCents / 100 : p.basePriceCents / 100;
+  const dailyRate = p.dailyRateCents ? p.dailyRateCents / 100 : hourlyRate * 8;
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description ?? p.category ?? '',
+    capacity: 4,
+    hourlyRate,
+    dailyRate,
     imageUrl: null,
-  },
-  {
-    id: "prod_2",
-    name: "18' Center Console",
-    description: "Great for fishing and cruising. Bimini top included.",
-    capacity: 6,
-    hourlyRate: 75,
-    dailyRate: 400,
-    imageUrl: null,
-  },
-  {
-    id: "prod_3",
-    name: "Jet Ski (Yamaha)",
-    description: "High-performance personal watercraft.",
-    capacity: 2,
-    hourlyRate: 60,
-    dailyRate: 300,
-    imageUrl: null,
-  },
-  {
-    id: "prod_4",
-    name: "24' Deck Boat",
-    description: "Spacious deck boat perfect for large groups.",
-    capacity: 12,
-    hourlyRate: 110,
-    dailyRate: 575,
-    imageUrl: null,
-  },
-];
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Sub-components                                                     */
@@ -163,6 +149,16 @@ export default function RentalBookingWidget({
 
   const [step, setStep] = useState(0);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [apiProducts, setApiProducts] = useState<Product[]>([]);
+
+  useEffect(() => {
+    api.get<{ data: ApiRentalProduct[] }>("/api/rentals/products").then(({ data }) => {
+      if (data?.data && data.data.length > 0) {
+        setApiProducts(data.data.filter((p) => p.active).map(mapApiProduct));
+      }
+    }).catch(() => {});
+  }, [api]);
+
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [duration, setDuration] = useState<"hourly" | "daily">("hourly");
@@ -296,7 +292,10 @@ export default function RentalBookingWidget({
               Choose from our available boats and watercraft:
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: spacing.md }}>
-              {MOCK_PRODUCTS.map((p) => {
+              {apiProducts.length === 0 && (
+                <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px' }}>Loading products...</div>
+              )}
+              {apiProducts.map((p) => {
                 const isSelected = selectedProduct?.id === p.id;
                 return (
                   <div

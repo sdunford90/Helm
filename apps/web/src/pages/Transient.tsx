@@ -24,6 +24,55 @@ type BookingStatus = 'Booked' | 'Checked In' | 'Checked Out' | 'Overstay' | 'Can
 type PaymentStatus = 'Paid' | 'Pending' | 'Partial' | 'Refunded';
 type TabKey = 'current' | 'all' | 'calendar';
 
+interface ApiSlip {
+  id: string;
+  slipNumber: string;
+  lengthFt: number;
+  widthFt: number;
+  dockId: string | null;
+}
+
+interface ApiBooking {
+  id: string;
+  bookingNumber?: string;
+  guestName: string;
+  guestEmail: string | null;
+  guestPhone: string | null;
+  boatName: string | null;
+  boatLength: number | null;
+  checkIn: string;
+  checkOut: string | null;
+  rateCents: number;
+  status: string;
+  slip: { id: string; slipNumber: string } | null;
+  customer: { firstName: string; lastName: string; email: string; phone: string | null } | null;
+}
+
+function mapApiBooking(b: ApiBooking): Booking {
+  const statusMap: Record<string, BookingStatus> = {
+    BOOKED: 'Booked',
+    CHECKED_IN: 'Checked In',
+    CHECKED_OUT: 'Checked Out',
+    OVERSTAY: 'Overstay',
+    CANCELLED: 'Cancelled',
+  };
+  return {
+    id: b.id,
+    bookingNumber: b.bookingNumber ?? `TRN-${b.id.slice(-6).toUpperCase()}`,
+    guestName: b.guestName,
+    email: b.guestEmail ?? b.customer?.email ?? '—',
+    phone: b.guestPhone ?? b.customer?.phone ?? '—',
+    boatName: b.boatName ?? '—',
+    boatLength: b.boatLength ?? 0,
+    slip: b.slip?.slipNumber ?? '—',
+    checkIn: new Date(b.checkIn).toISOString().slice(0, 10),
+    checkOut: b.checkOut ? new Date(b.checkOut).toISOString().slice(0, 10) : '—',
+    nightlyRate: b.rateCents / 100,
+    status: statusMap[b.status] ?? 'Booked',
+    payment: 'Paid',
+  };
+}
+
 interface Booking {
   id: string;
   bookingNumber: string;
@@ -133,7 +182,7 @@ const s: Record<string, React.CSSProperties> = {
 
 /* ── Component ─────────────────────────────────────────── */
 
-const SLIP_OPTIONS = ['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'];
+/* SLIP_OPTIONS is now fetched from /api/slips?transientCapable=true */
 
 // Module-level calendar window: today through 14 days (recomputed on page load)
 function getCalWindow(offsetWeeks: number) {
@@ -147,7 +196,8 @@ function getCalWindow(offsetWeeks: number) {
 
 export default function Transient() {
   const { getToken } = useAuth();
-  const { data: apiBookings, loading } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
+  const { data: apiBookingData, loading } = useApi<{ data: ApiBooking[]; total: number }>('get', '/api/transient?take=100', { immediate: true });
+  const { data: apiSlipsData } = useApi<{ data: ApiSlip[] }>('get', '/api/slips?transientCapable=true&take=50', { immediate: true });
 
   const [localBookings, setLocalBookings] = useState<Booking[]>([]);
   const [tab, setTab] = useState<TabKey>('current');
@@ -260,7 +310,9 @@ export default function Transient() {
     }
   };
 
-  const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || []);
+  const apiBookings = (apiBookingData?.data ?? []).map(mapApiBooking);
+  const slipOptions = apiSlipsData?.data ?? [];
+  const allBookings = localBookings.length > 0 ? localBookings : apiBookings;
 
   /* Derived */
   const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
@@ -289,7 +341,7 @@ export default function Transient() {
   const handleCheckOut = (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation();
     setLocalBookings((prev) =>
-      (prev.length > 0 ? prev : (apiBookings || [])).map((b) =>
+      (prev.length > 0 ? prev : apiBookings).map((b) =>
         b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b
       )
     );
@@ -661,8 +713,9 @@ export default function Transient() {
                   <span style={s.fieldLabel}>Slip *</span>
                   <select style={{ ...s.input, ...s.select }} value={nbSlip} onChange={(e) => setNbSlip(e.target.value)}>
                     <option value="">Select slip...</option>
-                    {SLIP_OPTIONS.map((sl) => (
-                      <option key={sl} value={sl}>{sl}</option>
+                    {slipOptions.length === 0 && <option value="">Loading slips...</option>}
+                    {slipOptions.map((sl) => (
+                      <option key={sl.id} value={sl.slipNumber}>{sl.slipNumber}</option>
                     ))}
                   </select>
                 </div>

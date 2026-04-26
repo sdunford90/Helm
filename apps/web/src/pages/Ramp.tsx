@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import {
   Search,
@@ -6,8 +6,6 @@ import {
   X,
   Clock,
   DollarSign,
-  TrendingUp,
-  CreditCard,
   Waves,
   Car,
   Ticket,
@@ -15,11 +13,26 @@ import {
   Activity,
 } from 'lucide-react';
 
-/* ── Types ─────────────────────────────────────────────── */
+/* ── API types ─────────────────────────────────────────── */
+
+interface ApiRampTicket {
+  id: string;
+  ticketType: 'SINGLE_LAUNCH' | 'DAILY_PASS' | 'SEASONAL_PASS';
+  guestName: string | null;
+  customerId: string | null;
+  customer: { firstName: string; lastName: string; email: string; phone?: string } | null;
+  licensePlate: string | null;
+  boatRegistration: string | null;
+  amountCents: number;
+  paymentMethod: string;
+  validDate: string | null;
+  createdAt: string;
+}
+
+/* ── Frontend types ─────────────────────────────────────── */
 
 type TicketType = 'Single Launch' | 'Daily Pass' | 'Seasonal Pass';
 type TicketStatus = 'Active' | 'Completed' | 'Void';
-type PassStatus = 'Active' | 'Expired' | 'Suspended';
 type TabKey = 'today' | 'all' | 'passes';
 
 interface RampTicket {
@@ -27,6 +40,7 @@ interface RampTicket {
   ticketNumber: string;
   time: string;
   date: string;
+  dateRaw: string;
   customerName: string;
   isGuest: boolean;
   boatReg: string;
@@ -35,26 +49,55 @@ interface RampTicket {
   amount: number;
   status: TicketStatus;
   payment: string;
-}
-
-interface SeasonalPass {
-  id: string;
-  passNumber: string;
-  customer: string;
   phone: string;
-  email: string;
-  startDate: string;
-  endDate: string;
-  launchesUsed: number;
-  status: PassStatus;
+  validDate: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────── */
+
+const TICKET_TYPE_LABELS: Record<string, TicketType> = {
+  SINGLE_LAUNCH: 'Single Launch',
+  DAILY_PASS: 'Daily Pass',
+  SEASONAL_PASS: 'Seasonal Pass',
+};
+
+const PAYMENT_LABELS: Record<string, string> = {
+  CARD: 'Credit Card',
+  CASH: 'Cash',
+  CHECK: 'Check',
+  ACH: 'ACH',
+  INVOICE: 'Invoice',
+};
+
+function mapTicket(t: ApiRampTicket): RampTicket {
+  const dt = new Date(t.createdAt);
+  const customerName = t.customer
+    ? `${t.customer.firstName} ${t.customer.lastName}`.trim()
+    : (t.guestName ?? 'Guest');
+  const dateStr = dt.toISOString().slice(0, 10);
+  return {
+    id: t.id,
+    ticketNumber: `RT-${t.id.slice(-6).toUpperCase()}`,
+    time: dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    date: dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    dateRaw: dateStr,
+    customerName,
+    isGuest: !t.customerId,
+    boatReg: t.boatRegistration ?? '—',
+    licensePlate: t.licensePlate ?? '—',
+    ticketType: TICKET_TYPE_LABELS[t.ticketType] ?? 'Single Launch',
+    amount: t.amountCents / 100,
+    status: 'Active',
+    payment: PAYMENT_LABELS[t.paymentMethod] ?? t.paymentMethod,
+    phone: t.customer?.phone ?? '—',
+    validDate: t.validDate ? new Date(t.validDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+  };
+}
 
 const TICKET_RATES: Record<TicketType, number> = {
   'Single Launch': 25,
   'Daily Pass': 45,
-  'Seasonal Pass': 0,
+  'Seasonal Pass': 249,
 };
 
 const TICKET_STATUS_COLORS: Record<TicketStatus, { bg: string; text: string }> = {
@@ -63,17 +106,11 @@ const TICKET_STATUS_COLORS: Record<TicketStatus, { bg: string; text: string }> =
   Void: { bg: '#FDECEA', text: '#B71C1C' },
 };
 
-const PASS_STATUS_COLORS: Record<PassStatus, { bg: string; text: string }> = {
-  Active: { bg: '#E8F5E9', text: '#1B5E20' },
-  Expired: { bg: '#F5F5F5', text: '#616161' },
-  Suspended: { bg: '#FFF3CD', text: '#856404' },
-};
-
-/* ── Helpers ───────────────────────────────────────────── */
-
 function fmt$(n: number): string {
   return n === 0 ? '--' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+const TODAY = new Date().toISOString().slice(0, 10);
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -103,7 +140,6 @@ const s: Record<string, React.CSSProperties> = {
   rowOdd: { backgroundColor: '#FFFFFF' },
   badge: { display: 'inline-block', padding: '3px 12px', borderRadius: '9999px', fontSize: '12px', fontWeight: 600, lineHeight: '18px' },
   guestBadge: { display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600, backgroundColor: '#FFF3CD', color: '#856404', marginLeft: '6px' },
-  /* Modal */
   overlay: { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(10, 35, 66, 0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   modal: { backgroundColor: '#FFFFFF', borderRadius: '12px', width: '520px', maxWidth: '95vw', maxHeight: '85vh', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column' as const },
   modalHeader: { padding: '24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
@@ -116,8 +152,6 @@ const s: Record<string, React.CSSProperties> = {
   input: { padding: '8px 12px', fontSize: '14px', color: '#0A2342', border: '1px solid #CCC', borderRadius: '6px', outline: 'none' },
   modalFooter: { padding: '20px 24px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#F7F9FB' },
   cancelBtn: { padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', backgroundColor: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' },
-  /* Pass card */
-  cardGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' },
 };
 
 /* ── Component ─────────────────────────────────────────── */
@@ -130,24 +164,26 @@ export default function Ramp() {
   const [dateTo, setDateTo] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [ticketTypeField, setTicketTypeField] = useState<TicketType>('Single Launch');
+  const [guestName, setGuestName] = useState('');
+  const [licensePlate, setLicensePlate] = useState('');
+  const [boatReg, setBoatReg] = useState('');
+  const [payment, setPayment] = useState('CARD');
 
-  const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/api/ramp', { immediate: true });
-  const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/api/ramp');
-  // TODO(api): seasonal passes endpoint
-  const apiPasses: SeasonalPass[] | null = null as SeasonalPass[] | null;
-  const tickets: RampTicket[] = apiTickets ?? [];
-  const passes: SeasonalPass[] = apiPasses ?? [];
+  const { data: ticketsData, loading: ticketsLoading, execute: refetchTickets } = useApi<{ data: ApiRampTicket[]; total: number }>('get', '/api/ramp/tickets?take=100', { immediate: true });
+  const { data: passesData } = useApi<{ data: ApiRampTicket[]; total: number }>('get', '/api/ramp/tickets?ticketType=SEASONAL_PASS&take=100', { immediate: true });
+  const { execute: createTicket, loading: creatingTicket } = useApi<ApiRampTicket>('post', '/api/ramp/tickets');
 
-  const todayTickets = tickets.filter((t) => t.date === '2026-03-25');
-  const launchesToday = todayTickets.length;
+  const tickets: RampTicket[] = useMemo(() => (ticketsData?.data ?? []).map(mapTicket), [ticketsData]);
+  const passes: RampTicket[] = useMemo(() => (passesData?.data ?? []).filter((t) => t.ticketType === 'SEASONAL_PASS').map(mapTicket), [passesData]);
+
+  const todayTickets = tickets.filter((t) => t.dateRaw === TODAY);
   const revenueToday = todayTickets.reduce((sum, t) => sum + t.amount, 0);
-  const activePasses = passes.filter((p) => p.status === 'Active').length;
-  const peakHour = '7:00 - 8:00 AM';
+  const activePasses = passes.length;
 
   const filteredAll = tickets.filter((t) => {
     if (typeFilter !== 'All' && t.ticketType !== typeFilter) return false;
-    if (dateFrom && t.date < dateFrom) return false;
-    if (dateTo && t.date > dateTo) return false;
+    if (dateFrom && t.dateRaw < dateFrom) return false;
+    if (dateTo && t.dateRaw > dateTo) return false;
     if (search) {
       const q = search.toLowerCase();
       const hay = `${t.ticketNumber} ${t.customerName} ${t.boatReg} ${t.licensePlate}`.toLowerCase();
@@ -156,16 +192,39 @@ export default function Ramp() {
     return true;
   });
 
+  const handleCreateTicket = async () => {
+    const typeMap: Record<TicketType, string> = {
+      'Single Launch': 'SINGLE_LAUNCH',
+      'Daily Pass': 'DAILY_PASS',
+      'Seasonal Pass': 'SEASONAL_PASS',
+    };
+    await createTicket({
+      ticketType: typeMap[ticketTypeField],
+      guestName: guestName || null,
+      licensePlate: licensePlate || null,
+      boatRegistration: boatReg || null,
+      amountCents: Math.round(TICKET_RATES[ticketTypeField] * 100),
+      paymentMethod: payment,
+    });
+    setShowModal(false);
+    setGuestName('');
+    setLicensePlate('');
+    setBoatReg('');
+    await refetchTickets();
+  };
+
   return (
     <div style={s.page}>
       <h1 style={s.title} className="helm-page-title">Launch Ramp</h1>
       <hr style={s.divider} />
 
+      {ticketsLoading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading...</div>}
+
       {/* Stats */}
       <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Launches Today</div>
-          <div style={s.statValue}>{launchesToday}</div>
+          <div style={s.statValue}>{todayTickets.length}</div>
         </div>
         <div style={s.statCard}>
           <div style={s.statLabel}>Revenue Today</div>
@@ -176,8 +235,8 @@ export default function Ramp() {
           <div style={s.statValue}>{activePasses}</div>
         </div>
         <div style={s.statCard}>
-          <div style={s.statLabel}>Peak Hour</div>
-          <div style={{ ...s.statValue, fontSize: '18px' }}>{peakHour}</div>
+          <div style={s.statLabel}>Total Tickets</div>
+          <div style={s.statValue}>{tickets.length}</div>
         </div>
       </div>
 
@@ -193,7 +252,9 @@ export default function Ramp() {
         <>
           <div style={s.filterBar} className="helm-filter-bar">
             <Activity size={16} style={{ color: '#00D4FF' }} />
-            <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Live Activity Log — March 25, 2026</span>
+            <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>
+              Live Activity Log — {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+            </span>
             <div style={s.spacer} />
             <button style={s.primaryBtn} onClick={() => setShowModal(true)}>
               <Plus size={16} /> New Ticket
@@ -213,6 +274,9 @@ export default function Ramp() {
                 </tr>
               </thead>
               <tbody>
+                {todayTickets.length === 0 && (
+                  <tr><td colSpan={7} style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#94A3B8' }}>No launches yet today.</td></tr>
+                )}
                 {todayTickets.map((t, idx) => (
                   <tr key={t.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
                     <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>
@@ -254,9 +318,9 @@ export default function Ramp() {
               <Search size={16} style={s.searchIcon} />
               <input style={s.searchInput} placeholder="Search tickets..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <input type="date" style={s.dateInput} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} placeholder="From" />
+            <input type="date" style={s.dateInput} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             <span style={{ color: '#64748B', fontSize: '13px' }}>to</span>
-            <input type="date" style={s.dateInput} value={dateTo} onChange={(e) => setDateTo(e.target.value)} placeholder="To" />
+            <input type="date" style={s.dateInput} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
             <select style={s.select} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
               <option value="All">All Types</option>
               <option value="Single Launch">Single Launch</option>
@@ -285,6 +349,9 @@ export default function Ramp() {
                 </tr>
               </thead>
               <tbody>
+                {filteredAll.length === 0 && (
+                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={10}>No tickets match the current filters.</td></tr>
+                )}
                 {filteredAll.map((t, idx) => (
                   <tr key={t.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
                     <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{t.ticketNumber}</td>
@@ -306,9 +373,6 @@ export default function Ramp() {
                     </td>
                   </tr>
                 ))}
-                {filteredAll.length === 0 && (
-                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={10}>No tickets match the current filters.</td></tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -329,34 +393,31 @@ export default function Ramp() {
                 <tr>
                   <th style={s.th}>Pass #</th>
                   <th style={s.th}>Customer</th>
-                  <th style={s.th}>Phone</th>
-                  <th style={s.th}>Start Date</th>
-                  <th style={s.th}>End Date</th>
-                  <th style={s.th}>Launches Used</th>
-                  <th style={s.th}>Status</th>
+                  <th style={s.th}>Purchase Date</th>
+                  <th style={s.th}>Valid Through</th>
+                  <th style={s.th}>Amount</th>
+                  <th style={s.th}>Payment</th>
                 </tr>
               </thead>
               <tbody>
                 {passes.length === 0 && (
                   <tr>
-                    <td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
+                    <td colSpan={6} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
                       No seasonal passes yet.
                     </td>
                   </tr>
                 )}
                 {passes.map((p, idx) => (
                   <tr key={p.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.passNumber}</td>
-                    <td style={{ ...s.td, fontWeight: 600 }}>{p.customer}</td>
-                    <td style={s.td}>{p.phone}</td>
-                    <td style={s.td}>{p.startDate}</td>
-                    <td style={s.td}>{p.endDate}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', textAlign: 'center' }}>{p.launchesUsed}</td>
-                    <td style={s.td}>
-                      <span style={{ ...s.badge, backgroundColor: PASS_STATUS_COLORS[p.status].bg, color: PASS_STATUS_COLORS[p.status].text }}>
-                        {p.status}
-                      </span>
+                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.ticketNumber}</td>
+                    <td style={{ ...s.td, fontWeight: 600 }}>
+                      {p.customerName}
+                      {p.isGuest && <span style={s.guestBadge}>GUEST</span>}
                     </td>
+                    <td style={s.td}>{p.date}</td>
+                    <td style={s.td}>{p.validDate}</td>
+                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(p.amount)}</td>
+                    <td style={s.td}>{p.payment}</td>
                   </tr>
                 ))}
               </tbody>
@@ -377,15 +438,15 @@ export default function Ramp() {
               <div style={s.fieldGrid}>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Customer / Guest Name</span>
-                  <input style={s.input} placeholder="Name or 'Guest'" />
+                  <input style={s.input} placeholder="Name or 'Guest'" value={guestName} onChange={(e) => setGuestName(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>License Plate</span>
-                  <input style={s.input} placeholder="ABC 1234" />
+                  <input style={s.input} placeholder="ABC 1234" value={licensePlate} onChange={(e) => setLicensePlate(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Boat Registration</span>
-                  <input style={s.input} placeholder="FL-0000-XX" />
+                  <input style={s.input} placeholder="FL-0000-XX" value={boatReg} onChange={(e) => setBoatReg(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Ticket Type</span>
@@ -401,30 +462,22 @@ export default function Ramp() {
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Amount ($)</span>
-                  <input
-                    style={s.input}
-                    type="number"
-                    step="0.01"
-                    value={TICKET_RATES[ticketTypeField]}
-                    readOnly={ticketTypeField === 'Seasonal Pass'}
-                  />
+                  <input style={s.input} type="number" step="0.01" value={TICKET_RATES[ticketTypeField]} readOnly />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Payment Method</span>
-                  <select style={{ ...s.input, ...s.select }}>
-                    <option value="credit">Credit Card</option>
-                    <option value="cash">Cash</option>
-                    <option value="season">Season Pass</option>
+                  <select style={{ ...s.input, ...s.select }} value={payment} onChange={(e) => setPayment(e.target.value)}>
+                    <option value="CARD">Credit Card</option>
+                    <option value="CASH">Cash</option>
+                    <option value="CHECK">Check</option>
+                    <option value="INVOICE">Invoice</option>
                   </select>
                 </div>
               </div>
             </div>
             <div style={s.modalFooter}>
               <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} disabled={creatingTicket} onClick={async () => {
-                await createTicket({ ticketType: ticketTypeField, amount: TICKET_RATES[ticketTypeField] });
-                setShowModal(false);
-              }}>
+              <button style={s.primaryBtn} disabled={creatingTicket} onClick={handleCreateTicket}>
                 <Waves size={16} /> {creatingTicket ? 'Recording...' : 'Record Launch'}
               </button>
             </div>
