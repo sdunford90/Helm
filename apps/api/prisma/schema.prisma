@@ -17,6 +17,7 @@ enum TenantStatus {
 
 enum UserRole {
   PLATFORM_ADMIN
+  TENANT_ADMIN
   MARINA_OWNER
   MARINA_MANAGER
   DOCK_STAFF
@@ -284,6 +285,7 @@ model Tenant {
   saasInvoices   SaasInvoice[]
   supportTickets SupportTicket[]
   portalMessages PortalMessage[]
+  customRoles    CustomRole[]
 
   @@map("tenants")
 }
@@ -343,21 +345,56 @@ model SaasTier {
 }
 
 model User {
-  id          String   @id @default(uuid())
-  tenantId    String
-  email       String
-  role        UserRole
-  firstName   String
-  lastName    String
-  clerkUserId String?
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(uuid())
+  tenantId     String
+  email        String
+  role         UserRole
+  firstName    String
+  lastName     String
+  clerkUserId  String?
+  active       Boolean  @default(true)
+  customRoleId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  customRole CustomRole? @relation(fields: [customRoleId], references: [id])
 
   @@index([tenantId])
   @@map("users")
+}
+
+model CustomRole {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  color       String   @default("#64748B")
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  permissions RolePermission[]
+  users       User[]
+
+  @@index([tenantId])
+  @@map("custom_roles")
+}
+
+model RolePermission {
+  id        String  @id @default(uuid())
+  roleId    String
+  module    String
+  canView   Boolean @default(false)
+  canCreate Boolean @default(false)
+  canEdit   Boolean @default(false)
+  canDelete Boolean @default(false)
+
+  role CustomRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, module])
+  @@map("role_permissions")
 }
 
 model LeadForm {

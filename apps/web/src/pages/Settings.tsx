@@ -6,6 +6,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
+  Lock, Shield, Users,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 
@@ -20,6 +21,51 @@ interface TeamMember {
   lastLogin: string;
   locations: string[];
 }
+
+interface RolePermission {
+  id: string;
+  roleId: string;
+  module: string;
+  canView: boolean;
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+}
+
+interface CustomRole {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string;
+  isSystem: boolean;
+  permissions: RolePermission[];
+  _count?: { users: number };
+}
+
+const PERMISSION_MODULES = [
+  { key: 'dashboard',     label: 'Dashboard',              group: 'Overview' },
+  { key: 'slips',         label: 'Slip Management',        group: 'Operations' },
+  { key: 'contracts',     label: 'Contracts',              group: 'Operations' },
+  { key: 'transient',     label: 'Transient Bookings',     group: 'Operations' },
+  { key: 'customers',     label: 'Customers',              group: 'Operations' },
+  { key: 'work_orders',   label: 'Work Orders',            group: 'Operations' },
+  { key: 'waitlist',      label: 'Waitlist',               group: 'Operations' },
+  { key: 'concierge',     label: 'Concierge Requests',     group: 'Operations' },
+  { key: 'invoices',      label: 'Invoices',               group: 'Finance' },
+  { key: 'payments',      label: 'Payments',               group: 'Finance' },
+  { key: 'reports',       label: 'Reports & Analytics',    group: 'Finance' },
+  { key: 'billing',       label: 'Billing & Subscription', group: 'Finance' },
+  { key: 'gl_accounts',   label: 'GL / Chart of Accounts', group: 'Finance' },
+  { key: 'rentals',       label: 'Rentals',                group: 'Revenue' },
+  { key: 'pos',           label: 'Point of Sale',          group: 'Revenue' },
+  { key: 'inventory',     label: 'Inventory',              group: 'Revenue' },
+  { key: 'announcements', label: 'Announcements',          group: 'Communication' },
+  { key: 'team',          label: 'Team & Roles',           group: 'Admin' },
+  { key: 'settings',      label: 'Settings',               group: 'Admin' },
+  { key: 'integrations',  label: 'Integrations',           group: 'Admin' },
+] as const;
+
+const MODULE_GROUPS = [...new Set(PERMISSION_MODULES.map((m) => m.group))];
 
 interface DockageRate {
   id: string;
@@ -258,7 +304,7 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 
 export default function Settings() {
   const { modules, setModule } = useModules();
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'advanced' | 'modules'>('profile');
+  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules'>('profile');
 
   // API calls
   const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
@@ -316,13 +362,99 @@ export default function Settings() {
   const [inviteRole, setInviteRole] = useState('Dock Staff');
   const [inviteLocations, setInviteLocations] = useState<string[]>([]);
 
+  // Roles state
+  const { data: rolesData, loading: rolesLoading } = useApi<{ data: CustomRole[] }>('get', '/api/roles', { immediate: true });
+  const { execute: seedRoles, loading: seeding } = useApi<any>('post', '/api/roles/seed');
+  const { execute: createRole, loading: creatingRole } = useApi<CustomRole>('post', '/api/roles');
+  const [roles, setRoles] = React.useState<CustomRole[]>([]);
+  const [selectedRoleId, setSelectedRoleId] = React.useState<string | null>(null);
+  const [showNewRoleForm, setShowNewRoleForm] = React.useState(false);
+  const [newRoleName, setNewRoleName] = React.useState('');
+  const [newRoleDesc, setNewRoleDesc] = React.useState('');
+  const [newRoleColor, setNewRoleColor] = React.useState('#3B82F6');
+  const [permSaving, setPermSaving] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (rolesData?.data) setRoles(rolesData.data);
+  }, [rolesData]);
+
+  const selectedRole = roles.find((r) => r.id === selectedRoleId) ?? null;
+
+  const getPerm = (role: CustomRole | null, module: string) =>
+    role?.permissions.find((p) => p.module === module);
+
+  const handleTogglePerm = async (
+    roleId: string,
+    module: string,
+    field: 'canView' | 'canCreate' | 'canEdit' | 'canDelete',
+    value: boolean,
+  ) => {
+    const key = `${roleId}-${module}-${field}`;
+    setPermSaving(key);
+    setRoles((prev) =>
+      prev.map((r) =>
+        r.id !== roleId ? r : {
+          ...r,
+          permissions: r.permissions.map((p) =>
+            p.module !== module ? p : { ...p, [field]: value }
+          ),
+        }
+      )
+    );
+    try {
+      await fetch(`/api/roles/${roleId}/permissions/${module}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      });
+    } catch {
+      setRoles((prev) =>
+        prev.map((r) =>
+          r.id !== roleId ? r : {
+            ...r,
+            permissions: r.permissions.map((p) =>
+              p.module !== module ? p : { ...p, [field]: !value }
+            ),
+          }
+        )
+      );
+    } finally {
+      setPermSaving(null);
+    }
+  };
+
+  const handleSeedRoles = async () => {
+    await seedRoles({});
+    const fresh = await fetch('/api/roles', { credentials: 'include' }).then((r) => r.json());
+    if (fresh?.data) { setRoles(fresh.data); setSelectedRoleId(fresh.data[0]?.id ?? null); }
+  };
+
+  const handleCreateRole = async () => {
+    if (!newRoleName.trim()) return;
+    const result = await createRole({ name: newRoleName, description: newRoleDesc, color: newRoleColor });
+    if (result) {
+      setRoles((prev) => [...prev, result]);
+      setSelectedRoleId(result.id);
+      setShowNewRoleForm(false);
+      setNewRoleName(''); setNewRoleDesc(''); setNewRoleColor('#3B82F6');
+    }
+  };
+
+  const handleDeleteRole = async (roleId: string) => {
+    await fetch(`/api/roles/${roleId}`, { method: 'DELETE', credentials: 'include' });
+    setRoles((prev) => prev.filter((r) => r.id !== roleId));
+    if (selectedRoleId === roleId) setSelectedRoleId(roles.find((r) => r.id !== roleId)?.id ?? null);
+  };
+
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
     { key: 'branding', label: 'Branding', icon: Palette },
     { key: 'billing', label: 'Billing', icon: CreditCard },
     { key: 'catalog', label: 'Catalog', icon: Package },
     { key: 'integrations', label: 'Integrations', icon: Link },
-    { key: 'team', label: 'Team & Roles', icon: ShieldCheck },
+    { key: 'team', label: 'Team', icon: Users },
+    { key: 'roles', label: 'Roles', icon: Shield },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
@@ -1142,22 +1274,200 @@ export default function Settings() {
             </table>
           </div>
 
-          <div style={{ marginTop: '32px' }}>
-            <h3 style={st.sectionTitle}>Role Permissions</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              {Object.entries(ROLE_PERMISSIONS).map(([role, perms]) => (
-                <div key={role} style={st.roleCard}>
-                  <div style={st.roleTitle}>{role}</div>
-                  <div style={st.rolePerms}>
-                    {perms.map((p) => (
-                      <div key={p}>• {p}</div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div style={{ marginTop: '24px', padding: '14px 16px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', fontSize: '13px', color: '#0369A1' }}>
+            Role permissions are now managed in the <button onClick={() => setTab('roles')} style={{ background: 'none', border: 'none', color: '#0369A1', fontWeight: 700, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>Roles tab</button>. You can create custom roles and configure exactly what each one can access.
           </div>
         </>
+      )}
+
+      {/* Roles */}
+      {tab === 'roles' && (
+        <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+          {/* Left: role list */}
+          <div style={{ width: '260px', flexShrink: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ ...st.sectionTitle, marginBottom: 0, fontSize: '15px' }}><Shield size={16} /> Roles</h3>
+              <button
+                style={{ ...st.addBtn, padding: '6px 10px', fontSize: '12px' }}
+                onClick={() => setShowNewRoleForm(true)}
+              >
+                <Plus size={14} /> New
+              </button>
+            </div>
+
+            {/* Seed prompt */}
+            {!rolesLoading && roles.length === 0 && (
+              <div style={{ padding: '16px', background: '#F8FAFC', border: '1px dashed #CBD5E1', borderRadius: '8px', textAlign: 'center' }}>
+                <Shield size={24} style={{ color: '#94A3B8', marginBottom: '8px' }} />
+                <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '12px', lineHeight: 1.5 }}>No roles yet. Load the standard built-in roles to get started.</p>
+                <button
+                  style={{ ...st.addBtn, width: '100%', justifyContent: 'center', fontSize: '13px' }}
+                  onClick={handleSeedRoles}
+                  disabled={seeding}
+                >
+                  {seeding ? 'Loading…' : 'Load Built-in Roles'}
+                </button>
+              </div>
+            )}
+
+            {/* New role form */}
+            {showNewRoleForm && (
+              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '14px', marginBottom: '10px' }}>
+                <div style={{ fontWeight: 600, fontSize: '13px', color: '#0A2342', marginBottom: '10px' }}>New Custom Role</div>
+                <input
+                  style={{ ...st.input, marginBottom: '8px', fontSize: '13px' }}
+                  placeholder="Role name *"
+                  value={newRoleName}
+                  onChange={(e) => setNewRoleName(e.target.value)}
+                />
+                <input
+                  style={{ ...st.input, marginBottom: '8px', fontSize: '13px' }}
+                  placeholder="Description (optional)"
+                  value={newRoleDesc}
+                  onChange={(e) => setNewRoleDesc(e.target.value)}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                  <label style={{ fontSize: '12px', color: '#64748B' }}>Color:</label>
+                  <input type="color" value={newRoleColor} onChange={(e) => setNewRoleColor(e.target.value)} style={{ width: '32px', height: '24px', border: 'none', borderRadius: '4px', cursor: 'pointer', padding: 0 }} />
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button style={{ ...st.addBtn, flex: 1, justifyContent: 'center', fontSize: '12px' }} onClick={handleCreateRole} disabled={creatingRole || !newRoleName.trim()}>
+                    {creatingRole ? 'Creating…' : 'Create'}
+                  </button>
+                  <button style={{ ...st.outlineBtn, fontSize: '12px' }} onClick={() => setShowNewRoleForm(false)}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Role list */}
+            {rolesLoading ? (
+              <div style={{ color: '#94A3B8', fontSize: '13px', textAlign: 'center', padding: '20px' }}>Loading roles…</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {roles.map((role) => (
+                  <button
+                    key={role.id}
+                    onClick={() => setSelectedRoleId(role.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid',
+                      borderColor: selectedRoleId === role.id ? role.color : '#E2E8F0',
+                      background: selectedRoleId === role.id ? `${role.color}14` : '#FFFFFF',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      width: '100%',
+                    }}
+                  >
+                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: role.color, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{role.name}</div>
+                      <div style={{ fontSize: '11px', color: '#94A3B8' }}>{role._count?.users ?? 0} user{role._count?.users !== 1 ? 's' : ''}{role.isSystem ? ' · built-in' : ''}</div>
+                    </div>
+                    {role.isSystem && <Lock size={12} style={{ color: '#94A3B8', flexShrink: 0 }} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: permission matrix */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {!selectedRole ? (
+              <div style={{ ...st.card, textAlign: 'center', color: '#94A3B8', padding: '48px' }}>
+                <Shield size={32} style={{ marginBottom: '12px', opacity: 0.4 }} />
+                <p style={{ fontSize: '14px' }}>Select a role to view and edit its permissions</p>
+              </div>
+            ) : (
+              <div style={st.card}>
+                {/* Role header */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+                  <div style={{ width: '16px', height: '16px', borderRadius: '50%', background: selectedRole.color }} />
+                  <div>
+                    <h3 style={{ fontSize: '17px', fontWeight: 700, color: '#0A2342', margin: 0 }}>{selectedRole.name}</h3>
+                    {selectedRole.description && <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>{selectedRole.description}</div>}
+                  </div>
+                  {selectedRole.isSystem && (
+                    <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: '#64748B', background: '#F1F5F9', padding: '4px 10px', borderRadius: '20px' }}>
+                      <Lock size={11} /> Built-in
+                    </span>
+                  )}
+                  {!selectedRole.isSystem && (
+                    <button
+                      style={{ marginLeft: 'auto', background: 'none', border: '1px solid #FCA5A5', color: '#DC2626', borderRadius: '6px', padding: '4px 12px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => { if (window.confirm(`Delete role "${selectedRole.name}"?`)) handleDeleteRole(selectedRole.id); }}
+                    >
+                      <Trash2 size={12} /> Delete Role
+                    </button>
+                  )}
+                </div>
+
+                {selectedRole.isSystem && (
+                  <div style={{ fontSize: '13px', color: '#0369A1', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '8px 12px', marginBottom: '16px' }}>
+                    Built-in roles can't be edited. Clone or create a custom role to customise permissions.
+                  </div>
+                )}
+
+                {/* Permission matrix */}
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#F8FAFC' }}>
+                        <th style={{ ...st.th, textAlign: 'left', width: '40%' }}>Module</th>
+                        <th style={{ ...st.th, textAlign: 'center', width: '15%' }}>View</th>
+                        <th style={{ ...st.th, textAlign: 'center', width: '15%' }}>Create</th>
+                        <th style={{ ...st.th, textAlign: 'center', width: '15%' }}>Edit</th>
+                        <th style={{ ...st.th, textAlign: 'center', width: '15%' }}>Delete</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {MODULE_GROUPS.map((group) => {
+                        const groupModules = PERMISSION_MODULES.filter((m) => m.group === group);
+                        return (
+                          <React.Fragment key={group}>
+                            <tr>
+                              <td colSpan={5} style={{ padding: '10px 12px 4px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#94A3B8', background: '#FAFBFC', borderTop: '1px solid #F2F4F6' }}>
+                                {group}
+                              </td>
+                            </tr>
+                            {groupModules.map((mod, idx) => {
+                              const perm = getPerm(selectedRole, mod.key);
+                              const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+                              const disabled = selectedRole.isSystem;
+                              return (
+                                <tr key={mod.key} style={{ background: rowBg }}>
+                                  <td style={{ ...st.td, fontSize: '13px', color: '#0A2342', fontWeight: 500 }}>{mod.label}</td>
+                                  {(['canView', 'canCreate', 'canEdit', 'canDelete'] as const).map((field) => {
+                                    const checked = perm?.[field] ?? false;
+                                    const saving = permSaving === `${selectedRole.id}-${mod.key}-${field}`;
+                                    return (
+                                      <td key={field} style={{ ...st.td, textAlign: 'center' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          disabled={disabled || saving}
+                                          onChange={(e) => handleTogglePerm(selectedRole.id, mod.key, field, e.target.checked)}
+                                          style={{ width: '16px', height: '16px', cursor: disabled ? 'default' : 'pointer', accentColor: selectedRole.color, opacity: saving ? 0.5 : 1 }}
+                                        />
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Modules */}

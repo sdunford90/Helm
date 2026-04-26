@@ -59,6 +59,7 @@ import taxRouter from "./routes/tax.js";
 import emailAutomationRouter from "./routes/email-automation.js";
 import portfolioRouter from "./routes/portfolio.js";
 import locationsRouter from "./routes/locations.js";
+import rolesRouter from "./routes/roles.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -174,6 +175,7 @@ app.use("/api/tax", taxRouter);
 app.use("/api/email-automation", emailAutomationRouter);
 app.use("/api/portfolio", portfolioRouter);
 app.use("/api/locations", locationsRouter);
+app.use("/api/roles", rolesRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled
