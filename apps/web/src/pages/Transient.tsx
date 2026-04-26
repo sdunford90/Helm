@@ -221,32 +221,43 @@ export default function Transient() {
     setNbRate(''); setNbPayment('');
   };
 
-  const handleCreateBooking = () => {
+  const { execute: createBookingApi } = useApi<{ data: { id: string; bookingNumber?: string } }>('post', '/api/transient');
+
+  const handleCreateBooking = async () => {
     if (!nbName || !nbSlip || !nbCheckIn) return;
     setNbSaving(true);
-    const nights = nbCheckIn && nbCheckOut
-      ? Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))
-      : 1;
-    const rate = parseFloat(nbRate) || 85;
-    const newBooking: Booking = {
-      id: `trans-${Date.now()}`,
-      bookingNumber: `TG-${2100 + (allBookings.length + 1)}`,
-      guestName: nbName,
-      boatName: nbBoat || '—',
-      boatLength: parseFloat(nbLength) || 0,
-      slip: nbSlip,
-      checkIn: nbCheckIn,
-      checkOut: nbCheckOut || '',
-      nightlyRate: rate,
-      status: 'Booked',
-      phone: nbPhone,
-      email: nbEmail,
-      payment: 'Pending' as PaymentStatus,
-    };
-    setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || [])]);
-    resetBookingForm();
-    setNbSaving(false);
-    setShowModal(false);
+    try {
+      const nightCount = nbCheckIn && nbCheckOut
+        ? Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))
+        : 1;
+      const rate = parseFloat(nbRate) || 85;
+      const rateCents = Math.round(rate * 100);
+      const totalCents = rateCents * nightCount;
+
+      // POST to API — slipId must be a real UUID; nbSlip holds the slip number
+      // so we use it as the display label and try to match via the slip select
+      await createBookingApi({
+        slipId: nbSlip,   // expected to be slip UUID selected in the form
+        guestName: nbName,
+        guestEmail: nbEmail || null,
+        guestPhone: nbPhone || null,
+        boatName: nbBoat || null,
+        boatLength: parseFloat(nbLength) || null,
+        checkIn: new Date(nbCheckIn).toISOString(),
+        checkOut: nbCheckOut ? new Date(nbCheckOut).toISOString() : null,
+        rateCents,
+        totalCents,
+      });
+
+      // Refresh bookings list from API by resetting localBookings
+      setLocalBookings([]);
+      resetBookingForm();
+      setShowModal(false);
+    } catch {
+      // Keep modal open so the user can correct the issue
+    } finally {
+      setNbSaving(false);
+    }
   };
 
   const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || []);

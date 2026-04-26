@@ -7,6 +7,7 @@ import { postInvoice, postVoid } from "../services/gl-posting.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
+import puppeteer from "puppeteer";
 
 const router: Router = Router();
 
@@ -137,6 +138,111 @@ router.get(
 );
 
 // ─── GET /:id — Invoice detail ──────────────────────────────────────────────
+
+// ─── GET /:id/pdf — Generate and stream invoice PDF ─────────────────────────
+
+router.get(
+  "/:id/pdf",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const invoice = await prisma.invoice.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: {
+          customer: { select: { firstName: true, lastName: true, email: true, address: true, city: true, state: true, zip: true } },
+          lineItems: true,
+          payments: { select: { amountCents: true, method: true, postedDate: true } },
+        },
+      });
+
+      if (!invoice) {
+        res.status(404).json({ error: "Invoice not found" });
+        return;
+      }
+
+      const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
+      const tenantName = tenant?.name ?? "Marina";
+
+      const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+      const formatDate = (d: Date | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+
+      const lineItemRows = invoice.lineItems.map((li) => `
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0">${li.description}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:center">${li.qty}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right">${fmt(li.unitCents)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right">${fmt(li.extendedCents)}</td>
+        </tr>
+      `).join("");
+
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+        <style>
+          body { font-family: "Helvetica Neue", sans-serif; color: #0A2342; margin: 0; padding: 40px; }
+          h1 { font-size: 28px; margin: 0 0 4px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+          th { background: #0A2342; color: #fff; padding: 10px 12px; text-align: left; font-size: 12px; letter-spacing: 0.05em; }
+          th:last-child, td:last-child { text-align: right; }
+          .label { font-size: 11px; color: #64748B; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
+          .total-row td { font-weight: 700; background: #F7F9FB; }
+        </style>
+      </head><body>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px">
+          <div>
+            <h1>${tenantName}</h1>
+            <div style="font-size:22px;font-weight:700;color:#00D4FF">INVOICE</div>
+          </div>
+          <div style="text-align:right">
+            <div class="label">Invoice #</div><div style="font-size:16px;font-weight:600">${invoice.invoiceNumber}</div>
+            <div class="label" style="margin-top:12px">Issue Date</div><div>${formatDate(invoice.issuedDate)}</div>
+            <div class="label" style="margin-top:8px">Due Date</div><div>${formatDate(invoice.dueDate)}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:48px;margin-bottom:32px">
+          <div>
+            <div class="label">Bill To</div>
+            <div style="font-size:15px;font-weight:600">${invoice.customer.firstName} ${invoice.customer.lastName}</div>
+            ${invoice.customer.email ? `<div style="color:#64748B;font-size:13px">${invoice.customer.email}</div>` : ''}
+            ${invoice.customer.address ? `<div style="font-size:13px">${invoice.customer.address}</div>` : ''}
+            ${invoice.customer.city ? `<div style="font-size:13px">${invoice.customer.city}, ${invoice.customer.state ?? ''} ${invoice.customer.zip ?? ''}</div>` : ''}
+          </div>
+          <div>
+            <div class="label">Status</div>
+            <div style="font-size:14px;font-weight:600;color:${invoice.status === 'PAID' ? '#10B981' : invoice.status === 'PAST_DUE' ? '#EF4444' : '#0A2342'}">${invoice.status}</div>
+          </div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Description</th><th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th>
+          </tr></thead>
+          <tbody>${lineItemRows}</tbody>
+          <tfoot>
+            <tr><td colspan="3" style="padding:8px 12px;text-align:right;font-size:13px;color:#64748B">Subtotal</td><td style="padding:8px 12px;text-align:right">${fmt(invoice.subtotalCents)}</td></tr>
+            <tr><td colspan="3" style="padding:8px 12px;text-align:right;font-size:13px;color:#64748B">Tax</td><td style="padding:8px 12px;text-align:right">${fmt(invoice.taxCents)}</td></tr>
+            <tr class="total-row"><td colspan="3" style="padding:10px 12px;text-align:right">Total</td><td style="padding:10px 12px;text-align:right;font-size:16px">${fmt(invoice.totalCents)}</td></tr>
+          </tfoot>
+        </table>
+        ${invoice.memo ? `<div style="margin-top:24px;font-size:13px;color:#64748B"><strong>Memo:</strong> ${invoice.memo}</div>` : ''}
+      </body></html>`;
+
+      const browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "load" });
+        const pdfBuffer = await page.pdf({ format: "Letter", printBackground: true, margin: { top: "20px", bottom: "20px" } });
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `inline; filename="invoice-${invoice.invoiceNumber}.pdf"`);
+        res.send(Buffer.from(pdfBuffer));
+      } finally {
+        await browser.close();
+      }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /:id — Get single invoice ──────────────────────────────────────────
 
 router.get(
   "/:id",
@@ -482,8 +588,11 @@ router.post(
         return inv;
       });
 
-      // QBO sync placeholder
-      // await queues["qbo-sync"].add("sync-invoice", { tenantId, invoiceId: updated.id });
+      // Queue QBO sync if the tenant has connected QuickBooks
+      const tenantForQbo = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { qboRealmId: true } });
+      if (tenantForQbo?.qboRealmId) {
+        await queues["qbo-sync"].add("sync-invoice", { tenantId, invoiceId: updated.id });
+      }
 
       // Audit log
       await prisma.auditLog.create({

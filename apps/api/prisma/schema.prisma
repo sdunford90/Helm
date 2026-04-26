@@ -278,9 +278,11 @@ model Tenant {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
-  saasTier  SaasTier?  @relation(fields: [saasTierId], references: [id])
-  users     User[]
-  locations Location[]
+  saasTier       SaasTier?      @relation(fields: [saasTierId], references: [id])
+  users          User[]
+  locations      Location[]
+  saasInvoices   SaasInvoice[]
+  supportTickets SupportTicket[]
 
   @@map("tenants")
 }
@@ -1469,4 +1471,45 @@ model InvoiceLineItemTax {
   @@index([jurisdictionId])
   @@index([lineItemId])
   @@map("invoice_line_item_tax")
+}
+
+// ==========================================================================
+//  PLATFORM (SAAS) BILLING
+// ==========================================================================
+
+model SaasInvoice {
+  id          String    @id @default(uuid())
+  tenantId    String
+  periodStart DateTime
+  periodEnd   DateTime
+  amountCents Int
+  status      String    @default("issued")  // draft | issued | paid | past_due
+  issuedAt    DateTime  @default(now())
+  paidAt      DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("saas_invoices")
+}
+
+// ==========================================================================
+//  SUPPORT TICKETS
+// ==========================================================================
+
+model SupportTicket {
+  id          String    @id @default(uuid())
+  tenantId    String
+  subject     String
+  description String
+  status      String    @default("open")    // open | in_progress | waiting_on_customer | resolved | closed
+  priority    String    @default("medium")  // low | medium | high | urgent
+  assignedTo  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("support_tickets")
 }

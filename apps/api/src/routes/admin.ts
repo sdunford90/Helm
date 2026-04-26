@@ -456,23 +456,6 @@ router.get("/billing/overview", async (_req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
-// In-memory mock store for SaaS invoices (until a SaasInvoice model exists)
-// --------------------------------------------------------------------------
-interface SaasInvoice {
-  id: string;
-  tenantId: string;
-  tenantName: string;
-  periodStart: string;
-  periodEnd: string;
-  amountCents: number;
-  status: "draft" | "issued" | "paid" | "past_due";
-  issuedAt: string;
-  paidAt: string | null;
-}
-
-const saasInvoiceStore: SaasInvoice[] = [];
-
-// --------------------------------------------------------------------------
 // GET /api/admin/billing/invoices — list SaaS invoices
 // --------------------------------------------------------------------------
 router.get("/billing/invoices", async (req, res, next) => {
@@ -482,15 +465,32 @@ router.get("/billing/invoices", async (req, res, next) => {
     const status = req.query.status as string | undefined;
     const tenantId = req.query.tenantId as string | undefined;
 
-    let filtered = [...saasInvoiceStore];
-    if (status) filtered = filtered.filter((i) => i.status === status);
-    if (tenantId) filtered = filtered.filter((i) => i.tenantId === tenantId);
+    const where: Record<string, unknown> = {};
+    if (status) where.status = status;
+    if (tenantId) where.tenantId = tenantId;
 
-    // Sort newest first
-    filtered.sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime());
+    const [total, rows] = await Promise.all([
+      prisma.saasInvoice.count({ where }),
+      prisma.saasInvoice.findMany({
+        where,
+        include: { tenant: { select: { id: true, name: true } } },
+        orderBy: { issuedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
 
-    const total = filtered.length;
-    const items = filtered.slice((page - 1) * limit, page * limit);
+    const items = rows.map((inv) => ({
+      id: inv.id,
+      tenantId: inv.tenantId,
+      tenantName: inv.tenant.name,
+      periodStart: inv.periodStart.toISOString(),
+      periodEnd: inv.periodEnd.toISOString(),
+      amountCents: inv.amountCents,
+      status: inv.status,
+      issuedAt: inv.issuedAt.toISOString(),
+      paidAt: inv.paidAt?.toISOString() ?? null,
+    }));
 
     res.json({
       items,
@@ -512,34 +512,45 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
     });
 
     const now = new Date();
-    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString();
+    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    const generated: SaasInvoice[] = [];
+    const generated = [];
 
     for (const tenant of activeTenants) {
       if (!tenant.saasTier) continue;
 
       // Skip if invoice already exists for this period
-      const alreadyExists = saasInvoiceStore.some(
-        (i) => i.tenantId === tenant.id && i.periodStart === periodStart,
-      );
+      const alreadyExists = await prisma.saasInvoice.findFirst({
+        where: {
+          tenantId: tenant.id,
+          periodStart: { gte: periodStart, lte: periodStart },
+        },
+      });
       if (alreadyExists) continue;
 
-      const invoice: SaasInvoice = {
-        id: randomUUID(),
-        tenantId: tenant.id,
-        tenantName: tenant.name,
-        periodStart,
-        periodEnd,
-        amountCents: tenant.saasTier.monthlyFeeCents,
-        status: "issued",
-        issuedAt: now.toISOString(),
-        paidAt: null,
-      };
+      const invoice = await prisma.saasInvoice.create({
+        data: {
+          tenantId: tenant.id,
+          periodStart,
+          periodEnd,
+          amountCents: tenant.saasTier.monthlyFeeCents,
+          status: "issued",
+        },
+        include: { tenant: { select: { name: true } } },
+      });
 
-      saasInvoiceStore.push(invoice);
-      generated.push(invoice);
+      generated.push({
+        id: invoice.id,
+        tenantId: invoice.tenantId,
+        tenantName: invoice.tenant.name,
+        periodStart: invoice.periodStart.toISOString(),
+        periodEnd: invoice.periodEnd.toISOString(),
+        amountCents: invoice.amountCents,
+        status: invoice.status,
+        issuedAt: invoice.issuedAt.toISOString(),
+        paidAt: null,
+      });
     }
 
     res.status(201).json({
@@ -785,24 +796,6 @@ router.get("/analytics/tenants", async (_req, res, next) => {
 // ==========================================================================
 
 // --------------------------------------------------------------------------
-// In-memory mock store for support tickets (until a SupportTicket model exists)
-// --------------------------------------------------------------------------
-interface SupportTicket {
-  id: string;
-  tenantId: string;
-  tenantName: string;
-  subject: string;
-  description: string;
-  status: "open" | "in_progress" | "waiting_on_customer" | "resolved" | "closed";
-  priority: "low" | "medium" | "high" | "urgent";
-  assignedTo: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-const supportTicketStore: SupportTicket[] = [];
-
-// --------------------------------------------------------------------------
 // GET /api/admin/support/tickets — list support tickets across all tenants
 // --------------------------------------------------------------------------
 router.get("/support/tickets", async (req, res, next) => {
@@ -813,20 +806,66 @@ router.get("/support/tickets", async (req, res, next) => {
     const priority = req.query.priority as string | undefined;
     const tenantId = req.query.tenantId as string | undefined;
 
-    let filtered = [...supportTicketStore];
-    if (status) filtered = filtered.filter((t) => t.status === status);
-    if (priority) filtered = filtered.filter((t) => t.priority === priority);
-    if (tenantId) filtered = filtered.filter((t) => t.tenantId === tenantId);
+    const where: Record<string, unknown> = {};
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (tenantId) where.tenantId = tenantId;
 
-    // Sort newest first
-    filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const [total, rows] = await Promise.all([
+      prisma.supportTicket.count({ where }),
+      prisma.supportTicket.findMany({
+        where,
+        include: { tenant: { select: { id: true, name: true } } },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
 
-    const total = filtered.length;
-    const items = filtered.slice((page - 1) * limit, page * limit);
+    const items = rows.map((t) => ({
+      id: t.id,
+      tenantId: t.tenantId,
+      tenantName: t.tenant.name,
+      subject: t.subject,
+      description: t.description,
+      status: t.status,
+      priority: t.priority,
+      assignedTo: t.assignedTo,
+      createdAt: t.createdAt.toISOString(),
+      updatedAt: t.updatedAt.toISOString(),
+    }));
 
-    res.json({
-      items,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    res.json({ items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/support/tickets — create a support ticket (from tenant)
+// --------------------------------------------------------------------------
+router.post("/support/tickets", async (req, res, next) => {
+  try {
+    const { tenantId, subject, description, priority = "medium" } = req.body;
+    if (!tenantId || !subject || !description) {
+      res.status(400).json({ error: "tenantId, subject, and description are required" });
+      return;
+    }
+    const ticket = await prisma.supportTicket.create({
+      data: { tenantId, subject, description, priority, status: "open" },
+      include: { tenant: { select: { name: true } } },
+    });
+    res.status(201).json({
+      id: ticket.id,
+      tenantId: ticket.tenantId,
+      tenantName: ticket.tenant.name,
+      subject: ticket.subject,
+      description: ticket.description,
+      status: ticket.status,
+      priority: ticket.priority,
+      assignedTo: ticket.assignedTo,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: ticket.updatedAt.toISOString(),
     });
   } catch (err) {
     next(err);
@@ -834,44 +873,52 @@ router.get("/support/tickets", async (req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
-// PUT /api/admin/support/tickets/:id — update ticket status
+// PUT /api/admin/support/tickets/:id — update ticket status / priority
 // --------------------------------------------------------------------------
 router.put("/support/tickets/:id", async (req, res, next) => {
   try {
-    const ticket = supportTicketStore.find((t) => t.id === req.params.id);
-    if (!ticket) {
+    const existing = await prisma.supportTicket.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
       res.status(404).json({ error: "Ticket not found" });
       return;
     }
 
     const { status, priority, assignedTo } = req.body;
-
     const validStatuses = ["open", "in_progress", "waiting_on_customer", "resolved", "closed"];
     const validPriorities = ["low", "medium", "high", "urgent"];
 
-    if (status !== undefined) {
-      if (!validStatuses.includes(status)) {
-        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
-        return;
-      }
-      ticket.status = status;
+    if (status !== undefined && !validStatuses.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+      return;
+    }
+    if (priority !== undefined && !validPriorities.includes(priority)) {
+      res.status(400).json({ error: `Invalid priority. Must be one of: ${validPriorities.join(", ")}` });
+      return;
     }
 
-    if (priority !== undefined) {
-      if (!validPriorities.includes(priority)) {
-        res.status(400).json({ error: `Invalid priority. Must be one of: ${validPriorities.join(", ")}` });
-        return;
-      }
-      ticket.priority = priority;
-    }
+    const data: Record<string, unknown> = {};
+    if (status !== undefined) data.status = status;
+    if (priority !== undefined) data.priority = priority;
+    if (assignedTo !== undefined) data.assignedTo = assignedTo;
 
-    if (assignedTo !== undefined) {
-      ticket.assignedTo = assignedTo;
-    }
+    const updated = await prisma.supportTicket.update({
+      where: { id: req.params.id },
+      data,
+      include: { tenant: { select: { name: true } } },
+    });
 
-    ticket.updatedAt = new Date().toISOString();
-
-    res.json(ticket);
+    res.json({
+      id: updated.id,
+      tenantId: updated.tenantId,
+      tenantName: updated.tenant.name,
+      subject: updated.subject,
+      description: updated.description,
+      status: updated.status,
+      priority: updated.priority,
+      assignedTo: updated.assignedTo,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+    });
   } catch (err) {
     next(err);
   }

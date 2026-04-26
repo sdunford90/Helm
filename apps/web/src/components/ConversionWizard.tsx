@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import {
   X,
   ChevronRight,
@@ -33,16 +34,12 @@ interface ConversionWizardProps {
   onConvert: () => void;
 }
 
-/* ── Mock Slips ───────────────────────────────────────── */
-
-const AVAILABLE_SLIPS = [
-  { id: 'A-12', label: 'A-12 (30ft)', maxLength: 30, rate: 850 },
-  { id: 'A-15', label: 'A-15 (35ft)', maxLength: 35, rate: 1050 },
-  { id: 'B-03', label: 'B-03 (40ft)', maxLength: 40, rate: 1250 },
-  { id: 'B-07', label: 'B-07 (45ft)', maxLength: 45, rate: 1450 },
-  { id: 'C-01', label: 'C-01 (50ft)', maxLength: 50, rate: 1800 },
-  { id: 'D-10', label: 'D-10 (25ft)', maxLength: 25, rate: 650 },
-];
+interface AvailableSlip {
+  id: string;
+  label: string;
+  maxLength: number;
+  rate: number;
+}
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -324,6 +321,8 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
   const [email, setEmail] = useState(lead.email);
   const [phone, setPhone] = useState(lead.phone);
 
+  const { getToken } = useAuth();
+
   // Step 2 state
   const [boatName, setBoatName] = useState('');
   const [boatLength, setBoatLength] = useState(String(lead.boatLength));
@@ -332,13 +331,41 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
   const [skipBoat, setSkipBoat] = useState(false);
 
   // Step 3 state
+  const [availableSlips, setAvailableSlips] = useState<AvailableSlip[]>([]);
   const [selectedSlip, setSelectedSlip] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [skipSlip, setSkipSlip] = useState(false);
 
+  // Fetch real available slips when reaching step 3
+  useEffect(() => {
+    if (step !== 2 || skipSlip) return;
+    let cancelled = false;
+    const fetchSlips = async () => {
+      try {
+        const token = await getToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch('/api/slips?status=VACANT&take=200', { headers });
+        if (!res.ok || cancelled) return;
+        const json = await res.json() as { data?: Array<{ id: string; slipNumber: string; lengthFt?: number; basePriceCents?: number }> } | Array<{ id: string; slipNumber: string; lengthFt?: number; basePriceCents?: number }>;
+        const rows = Array.isArray(json) ? json : (json.data ?? []);
+        if (!cancelled) {
+          setAvailableSlips(rows.map((s) => ({
+            id: s.id,
+            label: `${s.slipNumber}${s.lengthFt ? ` (${s.lengthFt}ft)` : ''}`,
+            maxLength: s.lengthFt ?? 0,
+            rate: Math.round((s.basePriceCents ?? 0) / 100),
+          })));
+        }
+      } catch { /* ignore */ }
+    };
+    void fetchSlips();
+    return () => { cancelled = true; };
+  }, [step, skipSlip, getToken]);
+
   const StepIcon = STEP_ICONS[step];
 
-  const selectedSlipData = AVAILABLE_SLIPS.find((sl) => sl.id === selectedSlip);
+  const selectedSlipData = availableSlips.find((sl) => sl.id === selectedSlip);
 
   const goNext = () => {
     if (step < 3) setStep(step + 1);
@@ -506,7 +533,8 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
                         onChange={(e) => setSelectedSlip(e.target.value)}
                       >
                         <option value="">Choose a slip...</option>
-                        {AVAILABLE_SLIPS.map((sl) => (
+                        {availableSlips.length === 0 && <option disabled>Loading slips…</option>}
+                        {availableSlips.map((sl) => (
                           <option key={sl.id} value={sl.id}>
                             {sl.label}
                           </option>

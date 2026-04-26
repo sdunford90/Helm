@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Edit, UserPlus, Wrench, QrCode, Printer } from 'lucide-react';
+import QRCode from 'qrcode';
 
 interface SlipInfo {
   id: string;
@@ -207,6 +208,27 @@ const styles: Record<string, React.CSSProperties> = {
 
 export default function SlipDetailPanel({ slip, onClose, onEdit, onAssign, onMaintenance }: SlipDetailPanelProps) {
   const sts = statusColors[slip.status];
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+
+  useEffect(() => {
+    const url = `${window.location.origin}/slips/${slip.id}`;
+    QRCode.toDataURL(url, { width: 80, margin: 1, color: { dark: '#0A2342', light: '#FFFFFF' } })
+      .then(setQrDataUrl)
+      .catch(() => setQrDataUrl(''));
+  }, [slip.id]);
+
+  const handlePrintQr = () => {
+    if (!qrDataUrl) return;
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(`<html><body style="text-align:center;padding:24px;font-family:sans-serif;">
+      <h3>Slip ${slip.number}</h3>
+      <img src="${qrDataUrl}" width="200" height="200" />
+      <p style="font-size:12px;color:#666;">Scan to view slip details</p>
+    </body></html>`);
+    win.document.close();
+    win.print();
+  };
 
   return (
     <div style={styles.panel}>
@@ -323,14 +345,18 @@ export default function SlipDetailPanel({ slip, onClose, onEdit, onAssign, onMai
         {/* QR Code */}
         <div style={styles.sectionTitle}>QR Code</div>
         <div style={styles.qrSection}>
-          <div style={styles.qrPlaceholder}>
-            <QrCode size={32} />
-          </div>
+          {qrDataUrl ? (
+            <img src={qrDataUrl} alt={`QR code for slip ${slip.number}`} width={80} height={80} style={{ borderRadius: '4px', flexShrink: 0 }} />
+          ) : (
+            <div style={styles.qrPlaceholder}>
+              <QrCode size={32} />
+            </div>
+          )}
           <div style={{ flex: 1, marginLeft: '16px' }}>
             <div style={{ fontSize: '13px', color: '#2E4A6B', marginBottom: '8px' }}>
               Scan to view slip details or submit meter readings.
             </div>
-            <button style={styles.printBtn}>
+            <button style={styles.printBtn} onClick={handlePrintQr} disabled={!qrDataUrl}>
               <Printer size={14} />
               Print QR
             </button>

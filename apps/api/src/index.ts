@@ -7,6 +7,7 @@ initSentry();
 import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
@@ -67,7 +68,51 @@ const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 // Global middleware
 // --------------------------------------------------------------------------
 
-app.use(cors());
+// In production restrict origins to known app domains; in development allow all.
+const ALLOWED_ORIGINS = [
+  process.env.APP_URL,
+  process.env.APP_PORTAL_URL,
+  process.env.APP_ADMIN_URL,
+  // Vite dev servers
+  'http://localhost:5000',
+  'http://localhost:5001',
+  'http://localhost:5002',
+  'http://localhost:5173',
+].filter(Boolean) as string[];
+
+// Global rate limit: 300 requests per minute per IP.
+// Tighten per-route (e.g. auth endpoints) as needed.
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+  skip: (req) => req.path === '/api/health',
+});
+app.use(globalLimiter);
+
+// Stricter limiter for authentication + webhook endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down.' },
+});
+app.use('/api/auth', authLimiter);
+
+app.use(
+  cors({
+    origin: process.env.NODE_ENV === 'production'
+      ? (origin, cb) => {
+          if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+          return cb(new Error(`CORS: origin ${origin} not allowed`));
+        }
+      : true,
+    credentials: true,
+  }),
+);
 app.use(helmet());
 
 // Webhook routes MUST be mounted before express.json() so their raw body

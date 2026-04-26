@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import {
   HelpCircle, X, Search, ChevronRight, Send,
   BookOpen, MessageSquare, Clock, CheckCircle2,
@@ -64,12 +65,39 @@ const ticketStatusColors: Record<string, { bg: string; color: string }> = {
 /* ── Component ─────────────────────────────────────────── */
 
 export default function HelpCenter() {
+  const { getToken } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [tab, setTab] = useState<'articles' | 'submit' | 'tickets'>('articles');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [selectedArticle, setSelectedArticle] = useState<HelpArticle | null>(null);
   const [ticketSubmitted, setTicketSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const categoryRef = useRef<HTMLSelectElement>(null);
+  const descriptionRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleSubmitTicket = async () => {
+    const subject = subjectRef.current?.value.trim() ?? '';
+    const description = descriptionRef.current?.value.trim() ?? '';
+    const category = categoryRef.current?.value ?? '';
+    if (!subject || !description) return;
+    setSubmitting(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      // tenantId is resolved server-side from the subdomain/token; pass category in description
+      await fetch('/api/admin/support/tickets', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ subject, description: `[${category}] ${description}`, priority: 'medium' }),
+      });
+      setTicketSubmitted(true);
+    } catch { /* keep form open */ } finally {
+      setSubmitting(false);
+    }
+  };
 
   const filteredArticles = HELP_ARTICLES.filter((a) => {
     if (categoryFilter !== 'All' && a.category !== categoryFilter) return false;
@@ -149,20 +177,20 @@ export default function HelpCenter() {
             <>
               <div style={st.field}>
                 <label style={st.label}>Subject *</label>
-                <input style={st.input} placeholder="Brief description of your issue" />
+                <input ref={subjectRef} style={st.input} placeholder="Brief description of your issue" />
               </div>
               <div style={st.field}>
                 <label style={st.label}>Category</label>
-                <select style={st.select}>
+                <select ref={categoryRef} style={st.select}>
                   {HELP_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div style={st.field}>
                 <label style={st.label}>Description *</label>
-                <textarea style={{ ...st.input, minHeight: '120px', resize: 'vertical' as const }} placeholder="Describe your issue in detail..." />
+                <textarea ref={descriptionRef} style={{ ...st.input, minHeight: '120px', resize: 'vertical' as const }} placeholder="Describe your issue in detail..." />
               </div>
-              <button style={st.submitBtn} onClick={() => setTicketSubmitted(true)}>
-                <Send size={16} /> Submit Ticket
+              <button style={{ ...st.submitBtn, opacity: submitting ? 0.7 : 1 }} onClick={() => void handleSubmitTicket()} disabled={submitting}>
+                <Send size={16} /> {submitting ? 'Submitting…' : 'Submit Ticket'}
               </button>
             </>
           )}
