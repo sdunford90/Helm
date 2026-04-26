@@ -93,3 +93,5 @@ VITE_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xvc2Utb2FyZmlzaC01Mi5jbGVyay5hY2NvdW50cy
 APP_URL = "https://app.tracktheturn.com"
 APP_PORTAL_URL = "https://portal.tracktheturn.com"
 APP_ADMIN_URL = "https://admin.tracktheturn.com"
+QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/onboarding/qbo/callback"
+QBO_ENVIRONMENT = "sandbox"
