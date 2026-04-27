@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import { useAuth } from '@clerk/clerk-react';
+import { api } from '../lib/api';
 import { useApi } from '../hooks/useApi';
 import {
   Megaphone,
@@ -282,6 +284,7 @@ const styles: Record<string, React.CSSProperties> = {
 
 /* ─── Component ─── */
 export default function Announcements() {
+  const { getToken } = useAuth();
   const [activeTab, setActiveTab] = useState<TabName>('all');
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState<string>('All');
@@ -438,8 +441,17 @@ export default function Announcements() {
     }
   }, [apiAutoTemplatesMapped, newRuleTemplate]);
 
-  const toggleAutoRule = (id: string) => {
-    setAutoRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
+  const toggleAutoRule = async (id: string) => {
+    const rule = autoRules.find(r => r.id === id);
+    if (!rule) return;
+    const newEnabled = !rule.enabled;
+    try {
+      const token = await getToken();
+      await api.put(`/email-automation/rules/${id}`, { enabled: newEnabled }, token);
+      setAutoRules(prev => prev.map(r => r.id === id ? { ...r, enabled: newEnabled } : r));
+    } catch {
+      // leave state unchanged on failure
+    }
   };
 
   const handleCreateRule = () => {
