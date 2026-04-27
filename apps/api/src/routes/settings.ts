@@ -33,6 +33,8 @@ const brandingSchema = z.object({
     .regex(/^#[0-9A-Fa-f]{6}$/, "Must be a valid hex color")
     .optional(),
   faviconUrl: z.string().url().optional().or(z.literal("")),
+  companyDisplayName: z.string().max(100).optional(),
+  tagline: z.string().max(200).optional(),
 });
 
 const billingSchema = z.object({
@@ -204,6 +206,8 @@ router.get("/branding", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANA
       primaryColor: branding.primaryColor ?? "#0A2342",
       secondaryColor: branding.secondaryColor ?? "#00D4FF",
       faviconUrl: branding.faviconUrl ?? "",
+      companyDisplayName: branding.companyDisplayName ?? "",
+      tagline: branding.tagline ?? "",
     });
   } catch (err) {
     next(err);
@@ -233,6 +237,8 @@ router.put("/branding", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANA
       primaryColor: data.primaryColor ?? existingBranding.primaryColor ?? "#0A2342",
       secondaryColor: data.secondaryColor ?? existingBranding.secondaryColor ?? "#00D4FF",
       faviconUrl: data.faviconUrl ?? existingBranding.faviconUrl ?? "",
+      companyDisplayName: data.companyDisplayName ?? existingBranding.companyDisplayName ?? "",
+      tagline: data.tagline ?? existingBranding.tagline ?? "",
     };
 
     await prisma.tenant.update({
@@ -245,6 +251,8 @@ router.put("/branding", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANA
       primaryColor: updatedBranding.primaryColor,
       secondaryColor: updatedBranding.secondaryColor,
       faviconUrl: updatedBranding.faviconUrl,
+      companyDisplayName: updatedBranding.companyDisplayName,
+      tagline: updatedBranding.tagline,
     });
   } catch (err) {
     if (err instanceof z.ZodError) {

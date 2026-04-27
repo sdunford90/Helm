@@ -343,14 +343,38 @@ export default function Settings() {
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
 
-  const { data: brandingData } = useApi<{ logoUrl: string; primaryColor: string; secondaryColor: string; faviconUrl: string }>('get', '/api/settings/branding', { immediate: true });
-  const { execute: saveBranding } = useApi<any>('put', '/api/settings/branding');
+  const { data: brandingData } = useApi<{ logoUrl: string; primaryColor: string; secondaryColor: string; faviconUrl: string; companyDisplayName: string; tagline: string }>('get', '/api/settings/branding', { immediate: true });
+  const { execute: saveBranding, loading: savingBranding } = useApi<any>('put', '/api/settings/branding');
+
+  const [primaryColor, setPrimaryColor] = useState<string>('#0A2342');
+  const [secondaryColor, setSecondaryColor] = useState<string>('#00D4FF');
+  const [faviconUrl, setFaviconUrl] = useState<string>('');
+  const [companyDisplayName, setCompanyDisplayName] = useState<string>('');
+  const [tagline, setTagline] = useState<string>('');
 
   React.useEffect(() => {
-    if (brandingData?.logoUrl) {
-      setLogoUrl(brandingData.logoUrl);
+    if (brandingData) {
+      if (brandingData.logoUrl) setLogoUrl(brandingData.logoUrl);
+      if (brandingData.primaryColor) setPrimaryColor(brandingData.primaryColor);
+      if (brandingData.secondaryColor) setSecondaryColor(brandingData.secondaryColor);
+      if (brandingData.faviconUrl !== undefined) setFaviconUrl(brandingData.faviconUrl);
+      if (brandingData.companyDisplayName !== undefined) setCompanyDisplayName(brandingData.companyDisplayName);
+      if (brandingData.tagline !== undefined) setTagline(brandingData.tagline);
     }
   }, [brandingData]);
+
+  const [brandingError, setBrandingError] = useState<string | null>(null);
+
+  const handleSaveBranding = async () => {
+    setBrandingError(null);
+    const result = await saveBranding({ logoUrl: logoUrl ?? '', primaryColor, secondaryColor, faviconUrl, companyDisplayName, tagline });
+    if (result) {
+      setSavedMsg('Branding saved successfully!');
+      setTimeout(() => setSavedMsg(null), 2000);
+    } else {
+      setBrandingError('Could not save branding. Please try again.');
+    }
+  };
 
   const handleLogoUpload = async (file: File) => {
     if (!file) return;
@@ -1310,18 +1334,29 @@ export default function Settings() {
             <div style={{ display: 'flex', gap: '32px', marginBottom: '24px' }}>
               <div>
                 <div style={st.label}>Primary</div>
-                <div style={{ ...st.colorSwatch, backgroundColor: '#0A2342', marginTop: '8px' }} />
-                <div style={{ ...st.mono, fontSize: '12px', marginTop: '4px', color: '#64748B' }}>#0A2342</div>
+                <label style={{ display: 'block', marginTop: '8px', cursor: 'pointer', position: 'relative' }}>
+                  <div style={{ ...st.colorSwatch, backgroundColor: primaryColor, cursor: 'pointer', border: '2px solid #E2E8F0', borderRadius: '6px' }} />
+                  <input
+                    type="color"
+                    value={primaryColor}
+                    onChange={(e) => setPrimaryColor(e.target.value)}
+                    style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', top: 0, left: 0, cursor: 'pointer' }}
+                  />
+                </label>
+                <div style={{ ...st.mono, fontSize: '12px', marginTop: '4px', color: '#64748B' }}>{primaryColor.toUpperCase()}</div>
               </div>
               <div>
                 <div style={st.label}>Secondary</div>
-                <div style={{ ...st.colorSwatch, backgroundColor: '#2E4A6B', marginTop: '8px' }} />
-                <div style={{ ...st.mono, fontSize: '12px', marginTop: '4px', color: '#64748B' }}>#2E4A6B</div>
-              </div>
-              <div>
-                <div style={st.label}>Accent</div>
-                <div style={{ ...st.colorSwatch, backgroundColor: '#00D4FF', marginTop: '8px' }} />
-                <div style={{ ...st.mono, fontSize: '12px', marginTop: '4px', color: '#64748B' }}>#00D4FF</div>
+                <label style={{ display: 'block', marginTop: '8px', cursor: 'pointer', position: 'relative' }}>
+                  <div style={{ ...st.colorSwatch, backgroundColor: secondaryColor, cursor: 'pointer', border: '2px solid #E2E8F0', borderRadius: '6px' }} />
+                  <input
+                    type="color"
+                    value={secondaryColor}
+                    onChange={(e) => setSecondaryColor(e.target.value)}
+                    style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', top: 0, left: 0, cursor: 'pointer' }}
+                  />
+                </label>
+                <div style={{ ...st.mono, fontSize: '12px', marginTop: '4px', color: '#64748B' }}>{secondaryColor.toUpperCase()}</div>
               </div>
             </div>
           </div>
@@ -1362,16 +1397,27 @@ export default function Settings() {
             <div style={st.formGrid} className="helm-form-grid">
               <div style={st.field}>
                 <label style={st.label}>Company Display Name</label>
-                <input style={st.input} defaultValue="Bayshore Marina LLC" />
+                <input
+                  style={st.input}
+                  value={companyDisplayName}
+                  onChange={(e) => setCompanyDisplayName(e.target.value)}
+                  placeholder="e.g. Bayshore Marina LLC"
+                />
               </div>
               <div style={st.field}>
                 <label style={st.label}>Tagline</label>
-                <input style={st.input} defaultValue="Your home on the water" />
+                <input
+                  style={st.input}
+                  value={tagline}
+                  onChange={(e) => setTagline(e.target.value)}
+                  placeholder="e.g. Your home on the water"
+                />
               </div>
             </div>
-            <button style={st.saveBtn} onClick={() => handleSave('branding')} disabled={savingSettings}>
-              {savingSettings ? 'Saving...' : 'Save Branding'}
+            <button style={st.saveBtn} onClick={handleSaveBranding} disabled={savingBranding}>
+              {savingBranding ? 'Saving...' : 'Save Branding'}
             </button>
+            {brandingError && <div style={{ fontSize: '13px', color: '#DC2626', marginTop: '8px' }}>{brandingError}</div>}
           </div>
         </>
       )}
