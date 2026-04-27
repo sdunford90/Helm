@@ -2,6 +2,12 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  createConnectionToken,
+  listReaders,
+  createPaymentIntent as createTerminalPaymentIntent,
+  capturePayment,
+} from "../services/stripe-terminal.js";
 
 const router: Router = Router();
 
@@ -1034,6 +1040,122 @@ router.get(
         byPaymentMethod: byMethod,
         topProducts,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /terminal/connection-token — Terminal SDK auth ────────────────────
+
+router.post(
+  "/terminal/connection-token",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res
+          .status(400)
+          .json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+      const secret = await createConnectionToken(tenant.stripeAccountId);
+      res.json({ secret });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /terminal/readers — list registered readers ────────────────────────
+
+router.get(
+  "/terminal/readers",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res.json({ data: [] });
+        return;
+      }
+      const readers = await listReaders(tenant.stripeAccountId);
+      res.json({ data: readers });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /terminal/payment-intents — create a terminal payment intent ────────
+
+const TerminalPaymentSchema = z.object({
+  amountCents: z.number().int().positive(),
+  tipEnabled: z.boolean().default(false),
+  tipAmounts: z.array(z.number().int().min(0)).optional(),
+});
+
+router.post(
+  "/terminal/payment-intents",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res
+          .status(400)
+          .json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+      const data = TerminalPaymentSchema.parse(req.body);
+      const clientSecret = await createTerminalPaymentIntent({
+        amount: data.amountCents,
+        connectedAccountId: tenant.stripeAccountId,
+        applicationFee: Math.round(data.amountCents * 0.005),
+        tipEnabled: data.tipEnabled,
+        tipAmounts: data.tipAmounts,
+      });
+      res.json({ clientSecret });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /terminal/payment-intents/:id/capture — capture after reader ───────
+
+const CaptureSchema = z.object({
+  tipAmountCents: z.number().int().min(0).optional(),
+});
+
+router.post(
+  "/terminal/payment-intents/:id/capture",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res
+          .status(400)
+          .json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+      const { tipAmountCents } = CaptureSchema.parse(req.body);
+      await capturePayment(
+        req.params.id,
+        tenant.stripeAccountId,
+        tipAmountCents,
+      );
+      res.json({ captured: true });
     } catch (err) {
       next(err);
     }

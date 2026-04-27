@@ -196,13 +196,13 @@ const avail = (s: SlotStatus, name?: string, resId?: string, notes?: string): Av
 
 const FREE: DayAvailability = { morning: avail('available'), afternoon: avail('available'), evening: avail('available') };
 
-// TODO(api): wire to /api/rentals/availability
-const AVAILABILITY: Record<string, Record<string, DayAvailability>> = {};
-
-/** Count available slots today for a product */
-function countAvailableToday(productId: string): { available: number; total: number } {
+/** Count available slots today for a product from live data */
+function countAvailableToday(
+  productId: string,
+  availabilityData: Record<string, Record<string, DayAvailability>>,
+): { available: number; total: number } {
   const today = new Date().toISOString().slice(0, 10);
-  const day = AVAILABILITY[productId]?.[today];
+  const day = availabilityData[productId]?.[today];
   if (!day) return { available: 3, total: 3 };
   let a = 0;
   if (day.morning.status === 'available') a++;
@@ -213,7 +213,7 @@ function countAvailableToday(productId: string): { available: number; total: num
 
 /* ── Availability Grid Component ───────────────────────── */
 
-function AvailabilityGrid({ products, onViewReservation }: { products: RentalProduct[]; onViewReservation?: (resId: string) => void }) {
+function AvailabilityGrid({ products, onViewReservation, availabilityData }: { products: RentalProduct[]; onViewReservation?: (resId: string) => void; availabilityData: Record<string, Record<string, DayAvailability>> }) {
   const [selectedCell, setSelectedCell] = useState<{ productId: string; date: string; slot: TimeSlotKey } | null>(null);
   const activeProducts = products.filter(p => p.status !== 'Retired');
 
@@ -269,7 +269,7 @@ function AvailabilityGrid({ products, onViewReservation }: { products: RentalPro
 
   const selectedSlotData = useMemo(() => {
     if (!selectedCell) return null;
-    const day = AVAILABILITY[selectedCell.productId]?.[selectedCell.date];
+    const day = availabilityData[selectedCell.productId]?.[selectedCell.date];
     if (!day) return null;
     const slotKey: TimeSlotKey = selectedCell.slot;
     const slot: AvailabilitySlot = day[slotKey];
@@ -343,7 +343,7 @@ function AvailabilityGrid({ products, onViewReservation }: { products: RentalPro
                     {dates.map((d: Date) => {
                       const dStr = d.toISOString().slice(0, 10);
                       const isToday = dStr === todayStr;
-                      const dayData = AVAILABILITY[p.id]?.[dStr] ?? FREE;
+                      const dayData = availabilityData[p.id]?.[dStr] ?? FREE;
                       const slots: TimeSlotKey[] = ['morning', 'afternoon', 'evening'];
                       return (
                         <td key={dStr} style={{ ...gridSt.cell, backgroundColor: isToday ? `${rowBg === '#FFFFFF' ? 'rgba(0,212,255,0.04)' : 'rgba(0,212,255,0.07)'}` : rowBg }}>
@@ -838,6 +838,8 @@ export default function Rentals() {
   const { data: apiProductData, loading: loadingProducts } = useApi<{ data: ApiRentalProduct[]; pagination: unknown }>('get', '/api/rentals/products', { immediate: true });
   const { data: apiReservationData, loading: loadingRes } = useApi<{ data: ApiReservation[]; pagination: unknown }>('get', '/api/rentals/reservations?take=100', { immediate: true });
   const { data: apiPricingRuleData } = useApi<{ data: ApiPricingRule[]; pagination: unknown }>('get', '/api/rentals/pricing-rules', { immediate: true });
+  const { data: apiAvailabilityData } = useApi<{ data: Record<string, Record<string, DayAvailability>> }>('get', '/api/rentals/availability', { immediate: true });
+  const availabilityData: Record<string, Record<string, DayAvailability>> = apiAvailabilityData?.data ?? {};
   const createProduct = useApi<ApiRentalProduct>('post', '/api/rentals/products');
 
   const handleAddProduct = (p: RentalProduct) => {
@@ -967,7 +969,7 @@ export default function Rentals() {
                       <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{p.totalBookings}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         {(() => {
-                          const av = countAvailableToday(p.id);
+                          const av = countAvailableToday(p.id, availabilityData);
                           const pct = Math.round((av.available / av.total) * 100);
                           const barBg = pct === 0 ? '#FDE8E8' : pct <= 33 ? '#FFF3CD' : '#DEF7EC';
                           const barFg = pct === 0 ? '#9B1C1C' : pct <= 33 ? '#856404' : '#03543F';
@@ -1067,7 +1069,7 @@ export default function Rentals() {
       )}
 
       {/* Availability Grid Tab */}
-      {tab === 'availability' && <AvailabilityGrid products={products} onViewReservation={handleViewReservation} />}
+      {tab === 'availability' && <AvailabilityGrid products={products} onViewReservation={handleViewReservation} availabilityData={availabilityData} />}
 
       {/* Settings Tab */}
       {tab === 'settings' && (

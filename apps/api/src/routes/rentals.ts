@@ -1331,4 +1331,141 @@ router.post(
   },
 );
 
+// ─── GET /availability — 14-day slot grid for all products ───────────────────
+
+router.get(
+  "/availability",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const rawStart =
+        (req.query.startDate as string) ||
+        new Date().toISOString().slice(0, 10);
+      const days = Math.min(
+        parseInt((req.query.days as string) || "14", 10),
+        30,
+      );
+
+      const startDate = new Date(`${rawStart}T00:00:00.000Z`);
+      const endDate = new Date(startDate);
+      endDate.setUTCDate(endDate.getUTCDate() + days);
+
+      const products = await prisma.rentalProduct.findMany({
+        where: { tenantId },
+        select: { id: true, isActive: true },
+      });
+
+      const reservations = await prisma.reservation.findMany({
+        where: {
+          tenantId,
+          status: { notIn: ["CANCELLED", "NO_SHOW"] as any[] },
+          startDt: { lt: endDate },
+          endDt: { gt: startDate },
+        },
+        select: {
+          id: true,
+          rentalProductId: true,
+          startDt: true,
+          endDt: true,
+          customer: { select: { firstName: true } },
+        },
+      });
+
+      type SlotStatus = "available" | "booked" | "maintenance" | "blocked";
+      type SlotData = {
+        status: SlotStatus;
+        customerFirstName?: string;
+        reservationId?: string;
+      };
+      type DayData = {
+        morning: SlotData;
+        afternoon: SlotData;
+        evening: SlotData;
+      };
+      type TimeSlotKey = "morning" | "afternoon" | "evening";
+
+      const SLOT_HOURS: Record<TimeSlotKey, [number, number]> = {
+        morning: [8, 12],
+        afternoon: [12, 16],
+        evening: [16, 20],
+      };
+
+      const result: Record<string, Record<string, DayData>> = {};
+
+      for (const product of products) {
+        result[product.id] = {};
+        for (let i = 0; i < days; i++) {
+          const date = new Date(startDate);
+          date.setUTCDate(date.getUTCDate() + i);
+          const dateStr = date.toISOString().slice(0, 10);
+
+          const defaultStatus: SlotStatus = product.isActive
+            ? "available"
+            : "maintenance";
+          const dayData: DayData = {
+            morning: { status: defaultStatus },
+            afternoon: { status: defaultStatus },
+            evening: { status: defaultStatus },
+          };
+
+          if (product.isActive) {
+            const dayStart = new Date(`${dateStr}T00:00:00.000Z`);
+            const dayEnd = new Date(`${dateStr}T23:59:59.999Z`);
+
+            const dayRes = reservations.filter(
+              (r) =>
+                r.rentalProductId === product.id &&
+                r.startDt < dayEnd &&
+                r.endDt > dayStart,
+            );
+
+            for (const r of dayRes) {
+              const resDayStart = r.startDt.toISOString().slice(0, 10);
+              const resDayEnd = r.endDt.toISOString().slice(0, 10);
+              const isFirstDay = resDayStart === dateStr;
+              const isLastDay = resDayEnd === dateStr;
+
+              const slotKeys: TimeSlotKey[] = [
+                "morning",
+                "afternoon",
+                "evening",
+              ];
+              for (const slotKey of slotKeys) {
+                const [slotStart, slotEnd] = SLOT_HOURS[slotKey];
+                let overlaps = false;
+                if (!isFirstDay && !isLastDay) {
+                  overlaps = true;
+                } else if (isFirstDay && isLastDay) {
+                  const startH = r.startDt.getUTCHours();
+                  const endH = r.endDt.getUTCHours();
+                  overlaps = startH < slotEnd && endH > slotStart;
+                } else if (isFirstDay) {
+                  overlaps = r.startDt.getUTCHours() < slotEnd;
+                } else {
+                  overlaps = r.endDt.getUTCHours() > slotStart;
+                }
+
+                if (overlaps) {
+                  dayData[slotKey] = {
+                    status: "booked",
+                    customerFirstName:
+                      r.customer?.firstName ?? undefined,
+                    reservationId: r.id,
+                  };
+                }
+              }
+            }
+          }
+
+          result[product.id][dateStr] = dayData;
+        }
+      }
+
+      res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;

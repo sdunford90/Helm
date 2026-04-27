@@ -1,13 +1,15 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
-  AlertTriangle, Trash2, RotateCcw, Printer,
+  AlertTriangle, Trash2, RotateCcw, Printer, Wifi, WifiOff,
+  Monitor, CheckCircle2, Loader,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { loadStripeTerminal } from '@stripe/terminal-js';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -240,6 +242,179 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
   );
 }
 
+/* ── Terminal Payment Modal ────────────────────────────── */
+
+interface StripeReader { id: string; label: string; status: string; device_type: string }
+type TerminalStatus = 'loading' | 'readers' | 'connecting' | 'collecting' | 'processing' | 'done' | 'error';
+
+function TerminalPaymentModal({
+  total, amountCents, onClose, onComplete, getToken,
+}: {
+  total: number; amountCents: number; onClose: () => void; onComplete: (method: string) => void; getToken: () => Promise<string | null>;
+}) {
+  const [status, setStatus] = useState<TerminalStatus>('loading');
+  const [readers, setReaders] = useState<StripeReader[]>([]);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [selectedReader, setSelectedReader] = useState<StripeReader | null>(null);
+  const terminalRef = useRef<any>(null);
+
+  const apiCall = useCallback(async (method: string, path: string, body?: unknown) => {
+    const token = await getToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as any).error ?? 'Request failed'); }
+    return res.json() as Promise<any>;
+  }, [getToken]);
+
+  const discoverReaders = useCallback(async () => {
+    setStatus('loading');
+    setErrorMsg('');
+    try {
+      const { secret } = await apiCall('POST', '/api/pos/terminal/connection-token');
+      const StripeTerminal = await loadStripeTerminal();
+      if (!StripeTerminal) throw new Error('Stripe Terminal SDK failed to load');
+      const terminal = StripeTerminal.create({
+        onFetchConnectionToken: async () => secret as string,
+        onUnexpectedReaderDisconnect: () => { setStatus('error'); setErrorMsg('Reader disconnected.'); },
+      });
+      terminalRef.current = terminal;
+      const result = await (terminal as any).discoverReaders({ simulated: true });
+      const discovered: StripeReader[] = ((result.discoveredReaders ?? []) as any[]).map((r: any) => ({
+        id: r.id, label: r.label || 'Simulated Reader', status: r.status ?? 'online', device_type: r.device_type ?? 'simulated_wispos',
+      }));
+      const { data: backendReaders } = await apiCall('GET', '/api/pos/terminal/readers').catch(() => ({ data: [] }));
+      const real: StripeReader[] = ((backendReaders ?? []) as any[]).map((r: any) => ({
+        id: r.id, label: r.label || r.id, status: r.status, device_type: r.device_type,
+      }));
+      const seen = new Set<string>();
+      const all = [...discovered, ...real].filter((r) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; });
+      setReaders(all);
+      setStatus('readers');
+    } catch (err: any) {
+      setErrorMsg((err as Error).message ?? 'Terminal setup failed. Check that a Stripe account is connected.');
+      setStatus('error');
+    }
+  }, [apiCall]);
+
+  const connectAndCollect = useCallback(async (reader: StripeReader) => {
+    if (!terminalRef.current) return;
+    setSelectedReader(reader);
+    setStatus('connecting');
+    try {
+      const { error: ce } = await (terminalRef.current as any).connectReader(reader);
+      if (ce) { setErrorMsg((ce as any).message ?? 'Connect failed'); setStatus('error'); return; }
+      setStatus('collecting');
+      const { clientSecret } = await apiCall('POST', '/api/pos/terminal/payment-intents', { amountCents, tipEnabled: false });
+      const { paymentIntent, error: colErr } = await (terminalRef.current as any).collectPaymentMethod(clientSecret as string);
+      if (colErr) { setErrorMsg((colErr as any).message ?? 'Card collection failed'); setStatus('error'); return; }
+      setStatus('processing');
+      const { paymentIntent: processed, error: procErr } = await (terminalRef.current as any).processPayment(paymentIntent);
+      if (procErr) { setErrorMsg((procErr as any).message ?? 'Payment processing failed'); setStatus('error'); return; }
+      const piId: string = (processed as any).id;
+      await apiCall('POST', `/api/pos/terminal/payment-intents/${piId}/capture`);
+      setStatus('done');
+      setTimeout(() => onComplete('Card (Terminal)'), 1500);
+    } catch (err: any) {
+      setErrorMsg((err as Error).message ?? 'Terminal payment failed');
+      setStatus('error');
+    }
+  }, [amountCents, apiCall, onComplete]);
+
+  useEffect(() => { void discoverReaders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tSt = {
+    overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+    modal: { background: '#FFFFFF', borderRadius: '12px', width: '480px', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
+    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid #E2E8F0', background: '#0A2342', borderRadius: '12px 12px 0 0', color: '#FFFFFF' },
+    body: { padding: '24px' },
+    readerCard: { display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', marginBottom: '8px' },
+    statusBox: { textAlign: 'center' as const, padding: '32px 0' },
+  };
+
+  return (
+    <div style={tSt.overlay} onClick={status === 'error' || status === 'readers' ? onClose : undefined}>
+      <div style={tSt.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={tSt.header}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '16px' }}>
+            <Monitor size={18} /> Card Reader — ${total.toFixed(2)}
+          </div>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={tSt.body}>
+          {status === 'loading' && (
+            <div style={tSt.statusBox}>
+              <Loader size={40} style={{ color: '#0A2342', marginBottom: '12px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>Discovering readers…</div>
+              <div style={{ fontSize: '13px', color: '#64748B', marginTop: '8px' }}>Connecting to Stripe Terminal</div>
+            </div>
+          )}
+          {status === 'readers' && (
+            <>
+              <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>Select a card reader to proceed:</div>
+              {readers.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>
+                  <WifiOff size={32} style={{ marginBottom: '8px', opacity: 0.4 }} />
+                  <div style={{ fontWeight: 600, marginBottom: '4px' }}>No readers found</div>
+                  <div style={{ fontSize: '13px' }}>Register a reader in your Stripe Dashboard or use the simulated reader in test mode.</div>
+                </div>
+              )}
+              {readers.map((r) => (
+                <div key={r.id} style={tSt.readerCard} onClick={() => void connectAndCollect(r)}>
+                  <Wifi size={20} style={{ color: r.status === 'online' || r.id.startsWith('tmr_') ? '#22C55E' : '#94A3B8' }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: '14px', color: '#0A2342' }}>{r.label}</div>
+                    <div style={{ fontSize: '12px', color: '#64748B' }}>{r.device_type}</div>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Select →</div>
+                </div>
+              ))}
+              <button style={{ marginTop: '8px', width: '100%', padding: '10px', background: 'none', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#64748B' }} onClick={() => void discoverReaders()}>
+                Refresh readers
+              </button>
+            </>
+          )}
+          {status === 'connecting' && (
+            <div style={tSt.statusBox}>
+              <Loader size={40} style={{ color: '#0A2342', marginBottom: '12px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>Connecting to {selectedReader?.label}…</div>
+            </div>
+          )}
+          {status === 'collecting' && (
+            <div style={tSt.statusBox}>
+              <CreditCard size={48} style={{ color: '#0A2342', marginBottom: '16px' }} />
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>Tap, insert, or swipe</div>
+              <div style={{ fontSize: '32px', fontWeight: 700, color: '#00D4FF', margin: '12px 0', fontFamily: 'monospace' }}>${total.toFixed(2)}</div>
+              <div style={{ fontSize: '13px', color: '#64748B' }}>Waiting for card on {selectedReader?.label}</div>
+            </div>
+          )}
+          {status === 'processing' && (
+            <div style={tSt.statusBox}>
+              <Loader size={40} style={{ color: '#0A2342', marginBottom: '12px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>Processing…</div>
+            </div>
+          )}
+          {status === 'done' && (
+            <div style={tSt.statusBox}>
+              <CheckCircle2 size={48} style={{ color: '#22C55E', marginBottom: '16px' }} />
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#03543F' }}>Payment Approved</div>
+              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${total.toFixed(2)} charged via card reader</div>
+            </div>
+          )}
+          {status === 'error' && (
+            <div style={tSt.statusBox}>
+              <AlertTriangle size={40} style={{ color: '#DC2626', marginBottom: '12px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#DC2626' }}>Terminal Error</div>
+              <div style={{ fontSize: '13px', color: '#64748B', margin: '8px 0 20px' }}>{errorMsg}</div>
+              <button style={{ padding: '10px 24px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }} onClick={() => void discoverReaders()}>Try Again</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Payment Modal ─────────────────────────────────────── */
 
 function PaymentModal({
@@ -386,6 +561,7 @@ export default function POS() {
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
   const [closingShift, setClosingShift] = useState(false);
   const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[] } | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
@@ -702,6 +878,7 @@ export default function POS() {
               <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
               <div style={st.payBtns}>
                 <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card', cartSnapshot: cart })}><CreditCard size={16} /> Card</button>
+                <button style={st.payBtn} onClick={() => total > 0 && setTerminalOpen(true)}><Monitor size={16} /> Terminal</button>
                 <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
                 {achEnabled && (
                   <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
@@ -812,6 +989,15 @@ export default function POS() {
           onClose={() => setPaymentModal(null)}
           onComplete={(method) => handlePaymentComplete(method)}
           cartItems={paymentModal.cartSnapshot}
+        />
+      )}
+      {terminalOpen && (
+        <TerminalPaymentModal
+          total={total}
+          amountCents={Math.round(total * 100)}
+          onClose={() => setTerminalOpen(false)}
+          onComplete={(method) => { setTerminalOpen(false); handlePaymentComplete(method); }}
+          getToken={getToken}
         />
       )}
     </div>

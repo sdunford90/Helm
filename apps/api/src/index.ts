@@ -60,6 +60,7 @@ import emailAutomationRouter from "./routes/email-automation.js";
 import portfolioRouter from "./routes/portfolio.js";
 import locationsRouter from "./routes/locations.js";
 import rolesRouter from "./routes/roles.js";
+import supportRouter from "./routes/support.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -176,6 +177,7 @@ app.use("/api/email-automation", emailAutomationRouter);
 app.use("/api/portfolio", portfolioRouter);
 app.use("/api/locations", locationsRouter);
 app.use("/api/roles", rolesRouter);
+app.use("/api/support", supportRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled

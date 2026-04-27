@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import {
   HelpCircle, X, Search, ChevronRight, Send,
-  BookOpen, MessageSquare, Clock, CheckCircle2,
+  BookOpen, MessageSquare, Clock, CheckCircle2, RefreshCw,
 } from 'lucide-react';
 import { HELP_ARTICLES, HELP_CATEGORIES, type HelpArticle } from '../data/help-articles';
 
@@ -11,13 +11,11 @@ import { HELP_ARTICLES, HELP_CATEGORIES, type HelpArticle } from '../data/help-a
 interface Ticket {
   id: string;
   subject: string;
-  category: string;
-  status: 'Open' | 'In Progress' | 'Resolved';
-  submittedAt: string;
+  description: string;
+  status: string;
+  priority: string;
+  createdAt: string;
 }
-
-// TODO(api): support tickets endpoint (post-MVP)
-const TICKETS: Ticket[] = [];
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -56,10 +54,20 @@ const st: Record<string, React.CSSProperties> = {
   successMsg: { textAlign: 'center' as const, padding: '32px 0' },
 };
 
-const ticketStatusColors: Record<string, { bg: string; color: string }> = {
-  Open: { bg: '#E0F7FF', color: '#0A2342' },
-  'In Progress': { bg: '#FFF3CD', color: '#856404' },
-  Resolved: { bg: '#DEF7EC', color: '#03543F' },
+const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
+  open: { bg: '#E0F7FF', color: '#0A2342' },
+  in_progress: { bg: '#FFF3CD', color: '#856404' },
+  waiting_on_customer: { bg: '#FFF3CD', color: '#856404' },
+  resolved: { bg: '#DEF7EC', color: '#03543F' },
+  closed: { bg: '#E2E8F0', color: '#475569' },
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  waiting_on_customer: 'Waiting',
+  resolved: 'Resolved',
+  closed: 'Closed',
 };
 
 /* ── Component ─────────────────────────────────────────── */
@@ -73,9 +81,33 @@ export default function HelpCenter() {
   const [selectedArticle, setSelectedArticle] = useState<HelpArticle | null>(null);
   const [ticketSubmitted, setTicketSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
   const subjectRef = useRef<HTMLInputElement>(null);
   const categoryRef = useRef<HTMLSelectElement>(null);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
+
+  const fetchTickets = useCallback(async () => {
+    setTicketsLoading(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch('/api/support/tickets', { headers });
+      if (res.ok) {
+        const json = await res.json();
+        setTickets(json.data ?? []);
+      }
+    } catch { /* silent */ } finally {
+      setTicketsLoading(false);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    if (isOpen && tab === 'tickets') {
+      void fetchTickets();
+    }
+  }, [isOpen, tab, fetchTickets]);
 
   const handleSubmitTicket = async () => {
     const subject = subjectRef.current?.value.trim() ?? '';
@@ -87,13 +119,14 @@ export default function HelpCenter() {
       const token = await getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
-      // tenantId is resolved server-side from the subdomain/token; pass category in description
-      await fetch('/api/admin/support/tickets', {
+      const res = await fetch('/api/support/tickets', {
         method: 'POST',
         headers,
         body: JSON.stringify({ subject, description: `[${category}] ${description}`, priority: 'medium' }),
       });
-      setTicketSubmitted(true);
+      if (res.ok || res.status === 201) {
+        setTicketSubmitted(true);
+      }
     } catch { /* keep form open */ } finally {
       setSubmitting(false);
     }
@@ -199,25 +232,44 @@ export default function HelpCenter() {
             <div style={st.successMsg}>
               <CheckCircle2 size={48} style={{ color: '#22C55E', marginBottom: '16px' }} />
               <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342', margin: '0 0 8px 0' }}>Ticket Submitted</h3>
-              <p style={{ fontSize: '14px', color: '#64748B', lineHeight: 1.6 }}>We've received your ticket and will respond within 1 business day. You'll receive an email confirmation shortly.</p>
+              <p style={{ fontSize: '14px', color: '#64748B', lineHeight: 1.6 }}>We've received your ticket and will respond within 1 business day.</p>
+              <button style={{ ...st.submitBtn, marginTop: '16px' }} onClick={() => { setTab('tickets'); void fetchTickets(); }}>
+                <MessageSquare size={16} /> View My Tickets
+              </button>
             </div>
           )}
 
           {/* My Tickets Tab */}
           {tab === 'tickets' && (
             <>
-              {TICKETS.length === 0 && (
-                <div style={{ textAlign: 'center', color: '#94A3B8', padding: '32px 0' }}>No tickets yet.</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>Your support tickets</span>
+                <button
+                  style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}
+                  onClick={() => void fetchTickets()}
+                >
+                  <RefreshCw size={13} /> Refresh
+                </button>
+              </div>
+              {ticketsLoading && <div style={{ textAlign: 'center', color: '#94A3B8', padding: '32px 0' }}>Loading tickets...</div>}
+              {!ticketsLoading && tickets.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#94A3B8', padding: '32px 0' }}>
+                  <MessageSquare size={32} style={{ marginBottom: '8px', opacity: 0.4 }} />
+                  <div>No tickets yet.</div>
+                  <button style={{ ...st.submitBtn, marginTop: '12px', padding: '8px 16px', width: 'auto' }} onClick={() => setTab('submit')}>
+                    Submit a ticket
+                  </button>
+                </div>
               )}
-              {TICKETS.map((t) => {
-                const sc = ticketStatusColors[t.status];
+              {!ticketsLoading && tickets.map((t) => {
+                const sc = STATUS_COLORS[t.status] ?? STATUS_COLORS.open;
                 return (
                   <div key={t.id} style={st.ticketCard}>
                     <div style={st.ticketTitle}>{t.subject}</div>
                     <div style={st.ticketMeta}>
-                      <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{t.status}</span>
-                      <span>{t.category}</span>
-                      <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />{t.submittedAt}</span>
+                      <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{STATUS_LABEL[t.status] ?? t.status}</span>
+                      <span style={{ textTransform: 'capitalize' }}>{t.priority}</span>
+                      <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />{new Date(t.createdAt).toLocaleDateString()}</span>
                     </div>
                   </div>
                 );
