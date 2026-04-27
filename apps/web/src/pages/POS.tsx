@@ -81,8 +81,6 @@ const PAYMENT_METHOD_API: Record<string, string> = {
   Card: 'CARD', Cash: 'CASH', ACH: 'ACH', 'Charge to Slip': 'CHARGE_TO_ACCOUNT',
 };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /* ── Styles ─────────────────────────────────────────────── */
 
 const st: Record<string, React.CSSProperties> = {
@@ -319,8 +317,6 @@ export default function POS() {
   const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', '/api/pos/transactions', { immediate: true });
   const createTransaction = useApi<unknown>('post', '/api/pos/transactions');
 
-  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
-
   const posProducts = useMemo(() => {
     const raw = apiProductsResp?.data ?? [];
     return raw.map(mapApiProduct);
@@ -338,50 +334,40 @@ export default function POS() {
       total: t.totalCents / 100,
       method: 'N/A',
       cashier: 'Staff',
+      cartItems: (t.lineItems ?? []).map((li) => ({
+        product: {
+          id: li.productId,
+          sku: li.productId.slice(0, 8),
+          name: li.product?.name ?? 'Item',
+          category: 'General',
+          price: li.unitPriceCents / 100,
+          taxRate: 0,
+          inStock: 999,
+          reorderPoint: 0,
+        },
+        quantity: li.quantity,
+      })),
     }));
   }, [apiTxnsResp]);
 
-  const transactions = useMemo(
-    () => localTransactions.length > 0 ? localTransactions : apiTransactionsMapped,
-    [localTransactions, apiTransactionsMapped]
-  );
+  const transactions = apiTransactionsMapped;
 
   const handlePaymentComplete = async (method: string) => {
-    const subtotalCalc = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
-    const taxCalc = cart.reduce((s, i) => s + (i.product.price * i.product.taxRate / 100) * i.quantity, 0);
-    const totalCalc = subtotalCalc + taxCalc;
+    const lineItems = cart.map((i) => ({
+      productId: i.product.id,
+      quantity: Math.max(1, Math.round(i.quantity)),
+      unitPriceCents: Math.round(i.product.price * 100),
+    }));
 
-    const validLineItems = cart
-      .filter((i) => UUID_RE.test(i.product.id))
-      .map((i) => ({
-        productId: i.product.id,
-        quantity: Math.round(i.quantity),
-        unitPriceCents: Math.round(i.product.price * 100),
-      }));
+    const result = await createTransaction.execute({
+      lineItems,
+      paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
+    });
 
-    if (validLineItems.length > 0) {
-      await createTransaction.execute({
-        lineItems: validLineItems,
-        paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
-      });
+    if (result !== null) {
       await refreshTransactions();
-      setLocalTransactions([]);
-    } else {
-      const now = new Date();
-      const txn: Transaction = {
-        id: `txn-${Date.now()}`,
-        number: `TXN-${Date.now().toString().slice(-6)}`,
-        date: now.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
-        items: cart.reduce((s, i) => s + Math.round(i.quantity), 0),
-        subtotal: Math.round(subtotalCalc * 100) / 100,
-        tax: Math.round(taxCalc * 100) / 100,
-        total: Math.round(totalCalc * 100) / 100,
-        method,
-        cashier: shiftCashier,
-        cartItems: [...cart],
-      };
-      setLocalTransactions((prev) => [txn, ...prev]);
     }
+
     setCart([]);
     setRecalledTxn(null);
   };
