@@ -237,7 +237,8 @@ const qboSyncWorker = new Worker(
     // getValidAccessToken will refresh if expiry is within 5 minutes.
     let accessToken: string | null = null;
     try {
-      accessToken = await getValidAccessToken(tenantId);
+      const tokens = await getValidAccessToken(tenantId);
+      accessToken = tokens.accessToken;
     } catch (err) {
       console.warn(`[qbo-sync] Token refresh failed for tenant ${tenantId}:`, (err as Error).message);
       return;

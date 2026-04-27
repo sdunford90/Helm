@@ -290,7 +290,7 @@ router.get(
       const [deliveries, total] = await Promise.all([
         prisma.announcementDelivery.findMany({
           where,
-          orderBy: { sentAt: "desc" },
+          orderBy: { openedAt: "desc" },
           skip: query.skip,
           take: query.take,
           include: {

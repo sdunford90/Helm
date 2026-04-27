@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
-  AlertTriangle, Trash2, RotateCcw,
+  AlertTriangle, Trash2, RotateCcw, Printer,
 } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -59,6 +61,19 @@ interface ApiTransaction {
   totalCents: number;
   createdAt: string;
   lineItems: { quantity: number; productId: string; unitPriceCents: number; product?: { name: string } }[];
+}
+
+interface ApiShift {
+  id: string;
+  status: 'OPEN' | 'CLOSED';
+  cashierId: string;
+  openedAt: string;
+  closedAt: string | null;
+  openingFloatCents: number;
+  closingCashCents: number | null;
+  salesTotal: number;
+  expectedCashCents: number;
+  varianceCents: number | null;
 }
 
 /* ── API mapping helpers ─────────────────────────────────── */
@@ -149,7 +164,7 @@ const stockStatus = (product: Product): { label: string; bg: string; color: stri
 
 /* ── Shift Modal ───────────────────────────────────────── */
 
-function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (name: string, float: number) => void }) {
+function OpenShiftModal({ onClose, onOpen, loading }: { onClose: () => void; onOpen: (name: string, float: number) => void; loading?: boolean }) {
   const [name, setName] = useState('');
   const [float, setFloat] = useState('100.00');
   return (
@@ -171,7 +186,54 @@ function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (nam
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={() => { onOpen(name || 'Jake M.', parseFloat(float) || 100); onClose(); }}>Open Shift</button>
+          <button style={{ ...st.saveBtn, opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => { onOpen(name || 'Staff', parseFloat(float) || 100); }}>{loading ? 'Opening...' : 'Open Shift'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Close Shift Modal ─────────────────────────────────── */
+
+function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }: {
+  onClose: () => void;
+  onConfirm: (closingCash: number, notes: string) => void;
+  floatAmt: number;
+  runningTotal: number;
+  loading?: boolean;
+}) {
+  const [closingCash, setClosingCash] = useState((floatAmt + runningTotal).toFixed(2));
+  const [notes, setNotes] = useState('');
+  const expected = floatAmt + runningTotal;
+  const variance = (parseFloat(closingCash) || 0) - expected;
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>Close Shift</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={st.modalBody}>
+          <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px', marginBottom: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Opening Float</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${floatAmt.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${runningTotal.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Expected in Drawer</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${expected.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Variance</div><div style={{ fontSize: '16px', fontWeight: 700, color: variance >= 0 ? '#059669' : '#DC2626', fontFamily: 'monospace' }}>{variance >= 0 ? '+' : ''}${variance.toFixed(2)}</div></div>
+            </div>
+          </div>
+          <div style={st.field}>
+            <label style={st.label}>Actual Closing Cash Count ($) *</label>
+            <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: 'monospace' }} type="number" step="0.01" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} autoFocus />
+          </div>
+          <div style={st.field}>
+            <label style={st.label}>Notes (optional)</label>
+            <input style={st.input} placeholder="e.g. $5 short, recount confirmed" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(parseFloat(closingCash) || 0, notes)}>{loading ? 'Closing...' : 'Close Shift'}</button>
         </div>
       </div>
     </div>
@@ -181,12 +243,13 @@ function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (nam
 /* ── Payment Modal ─────────────────────────────────────── */
 
 function PaymentModal({
-  total, method, onClose, onComplete,
+  total, method, onClose, onComplete, cartItems,
 }: {
   total: number;
   method: string;
   onClose: () => void;
   onComplete: (method: string, tendered: number) => void;
+  cartItems: CartItem[];
 }) {
   const [tendered, setTendered] = useState(method === 'Cash' ? '' : total.toFixed(2));
   const [slip, setSlip] = useState('');
@@ -197,7 +260,16 @@ function PaymentModal({
     if (method === 'Cash' && parseFloat(tendered) < total) return;
     setDone(true);
     onComplete(method, parseFloat(tendered) || total);
-    setTimeout(() => onClose(), 1200);
+  };
+
+  const handlePrintReceipt = () => {
+    const receiptWindow = window.open('', '_blank', 'width=400,height=600');
+    if (!receiptWindow) return;
+    const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const rows = cartItems.map((ci) => `<tr><td>${ci.product.name}</td><td style="text-align:right">x${ci.quantity}</td><td style="text-align:right">$${(ci.product.price * ci.quantity).toFixed(2)}</td></tr>`).join('');
+    receiptWindow.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:monospace;padding:20px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px}hr{border:none;border-top:1px dashed #999;margin:10px 0}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0}.footer{text-align:center;font-size:12px;color:#666;margin-top:16px}</style></head><body><h2>Point of Sale Receipt</h2><div style="text-align:center;font-size:12px;color:#666">${now}</div><hr/><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><hr/><div style="text-align:right;font-weight:bold;font-size:16px">Total: $${total.toFixed(2)}</div>${change > 0 ? `<div style="text-align:right;font-size:13px">Change: $${change.toFixed(2)}</div>` : ''}<div style="text-align:right;font-size:12px;color:#666">Payment: ${method}</div><hr/><div class="footer">Thank you for your business!</div></body></html>`);
+    receiptWindow.document.close();
+    receiptWindow.print();
   };
 
   return (
@@ -216,6 +288,13 @@ function PaymentModal({
               {method === 'Cash' && change > 0 && (
                 <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', marginTop: '12px' }}>Change: ${change.toFixed(2)}</div>
               )}
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '20px' }}>
+                <button
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '9px 18px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: '1px solid #0A2342', backgroundColor: '#FFFFFF', color: '#0A2342', cursor: 'pointer' }}
+                  onClick={handlePrintReceipt}
+                ><Printer size={15} /> Print Receipt</button>
+                <button style={{ ...st.saveBtn, fontSize: '13px', padding: '9px 18px' }} onClick={onClose}>Done</button>
+              </div>
             </div>
           ) : (
             <>
@@ -294,14 +373,19 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
 
 export default function POS() {
   const navigate = useNavigate();
+  const { getToken } = useAuth();
   const [tab, setTab] = useState<'sale' | 'transactions'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [shiftOpen, setShiftOpen] = useState(true);
-  const [shiftCashier] = useState('Jake M.');
-  const [shiftFloat] = useState(100);
+  const [shiftOpen, setShiftOpen] = useState(false);
+  const [shiftId, setShiftId] = useState<string | null>(null);
+  const [shiftCashier, setShiftCashier] = useState('');
+  const [shiftFloat, setShiftFloat] = useState(0);
+  const [shiftOpenedAt, setShiftOpenedAt] = useState<Date | null>(null);
   const [showShiftModal, setShowShiftModal] = useState(false);
-  const [paymentModal, setPaymentModal] = useState<{ method: string } | null>(null);
+  const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
+  const [closingShift, setClosingShift] = useState(false);
+  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[] } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
@@ -317,7 +401,56 @@ export default function POS() {
 
   const { data: apiProductsResp, loading: loadingProducts } = useApi<{ data: ApiProduct[]; pagination: unknown }>('get', '/api/pos/products', { immediate: true });
   const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', '/api/pos/transactions', { immediate: true });
+  const { data: shiftsData, execute: fetchShifts } = useApi<{ data: ApiShift[] }>('get', '/api/pos/shifts', { immediate: true });
+  const { execute: openShiftApi, loading: openingShift } = useApi<ApiShift>('post', '/api/pos/shifts/open');
   const createTransaction = useApi<unknown>('post', '/api/pos/transactions');
+
+  useEffect(() => {
+    if (shiftsData?.data) {
+      const openShift = shiftsData.data.find((s) => s.status === 'OPEN');
+      if (openShift) {
+        setShiftOpen(true);
+        setShiftId(openShift.id);
+        setShiftFloat(openShift.openingFloatCents / 100);
+        setShiftOpenedAt(new Date(openShift.openedAt));
+      } else {
+        setShiftOpen(false);
+        setShiftId(null);
+      }
+    }
+  }, [shiftsData]);
+
+  const handleOpenShift = async (name: string, floatAmt: number) => {
+    const result = await openShiftApi({ openingFloatCents: Math.round(floatAmt * 100) });
+    if (result) {
+      setShiftOpen(true);
+      setShiftId(result.id);
+      setShiftCashier(name);
+      setShiftFloat(floatAmt);
+      setShiftOpenedAt(new Date(result.openedAt));
+      setShowShiftModal(false);
+    }
+  };
+
+  const handleCloseShift = async (closingCash: number, notes: string) => {
+    if (!shiftId) return;
+    setClosingShift(true);
+    try {
+      const token = await getToken();
+      await api.post(`/pos/shifts/${shiftId}/close`, { closingCashCents: Math.round(closingCash * 100), notes: notes || undefined }, token);
+      setShiftOpen(false);
+      setShiftId(null);
+      setShiftCashier('');
+      setShiftFloat(0);
+      setShiftOpenedAt(null);
+      setShowCloseShiftModal(false);
+      await fetchShifts();
+    } catch (err) {
+      console.error('Failed to close shift:', err);
+    } finally {
+      setClosingShift(false);
+    }
+  };
 
   const posProducts = useMemo(() => {
     const raw = apiProductsResp?.data ?? [];
@@ -450,12 +583,12 @@ export default function POS() {
       {shiftOpen ? (
         <div style={st.shiftBanner}>
           <div style={st.shiftInfo}>
-            <div><div style={st.shiftLabel}>Cashier</div><div style={st.shiftValue}>{shiftCashier}</div></div>
-            <div><div style={st.shiftLabel}>Opened At</div><div style={st.shiftValue}>8:00 AM</div></div>
+            <div><div style={st.shiftLabel}>Cashier</div><div style={st.shiftValue}>{shiftCashier || 'Staff'}</div></div>
+            <div><div style={st.shiftLabel}>Opened At</div><div style={st.shiftValue}>{shiftOpenedAt ? shiftOpenedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—'}</div></div>
             <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${shiftFloat.toFixed(2)}</div></div>
             <div><div style={st.shiftLabel}>Running Total</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
           </div>
-          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => setShiftOpen(false)}>Close Shift</button>
+          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => setShowCloseShiftModal(true)}>Close Shift</button>
         </div>
       ) : (
         <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center' }}>
@@ -568,12 +701,12 @@ export default function POS() {
               <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
               <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
               <div style={st.payBtns}>
-                <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card' })}><CreditCard size={16} /> Card</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash' })}><Banknote size={16} /> Cash</button>
+                <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card', cartSnapshot: cart })}><CreditCard size={16} /> Card</button>
+                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
                 {achEnabled && (
-                  <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH' })}><Building2 size={16} /> ACH</button>
+                  <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
                 )}
-                <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip' })}><DollarSign size={16} /> Charge to Slip</button>
+                <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart })}><DollarSign size={16} /> Charge to Slip</button>
               </div>
             </div>
           </div>
@@ -656,13 +789,29 @@ export default function POS() {
         </>
       )}
 
-      {showShiftModal && <OpenShiftModal onClose={() => setShowShiftModal(false)} onOpen={() => { setShiftOpen(true); }} />}
+      {showShiftModal && (
+        <OpenShiftModal
+          onClose={() => setShowShiftModal(false)}
+          onOpen={handleOpenShift}
+          loading={openingShift}
+        />
+      )}
+      {showCloseShiftModal && (
+        <CloseShiftModal
+          onClose={() => setShowCloseShiftModal(false)}
+          onConfirm={handleCloseShift}
+          floatAmt={shiftFloat}
+          runningTotal={runningTotal - total}
+          loading={closingShift}
+        />
+      )}
       {paymentModal && (
         <PaymentModal
           total={total}
           method={paymentModal.method}
           onClose={() => setPaymentModal(null)}
           onComplete={(method) => handlePaymentComplete(method)}
+          cartItems={paymentModal.cartSnapshot}
         />
       )}
     </div>

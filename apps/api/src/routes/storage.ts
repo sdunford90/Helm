@@ -142,7 +142,9 @@ router.post(
         });
         return;
       }
-      res.json({ ok: true });
+      const publicBase = (process.env.R2_PUBLIC_URL ?? "").replace(/\/$/, "");
+      const publicUrl = publicBase ? `${publicBase}/${key}` : null;
+      res.json({ ok: true, publicUrl });
     } catch (err) {
       next(err);
     }

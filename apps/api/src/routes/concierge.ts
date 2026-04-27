@@ -292,18 +292,19 @@ router.put(
           data: {
             tenantId: existing.tenantId,
             customerId: existing.customerId,
+            invoiceNumber: `CONC-${Date.now()}`,
             status: "DRAFT",
             issuedDate: new Date(),
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             subtotalCents: existing.quoteCents,
             taxCents: 0,
             totalCents: existing.quoteCents,
+            balanceCents: existing.quoteCents,
             lineItems: {
               create: {
-                tenantId: existing.tenantId,
-                description: `Concierge: ${existing.serviceType}${existing.vendor ? ` — ${updated.vendor?.name}` : ''}`,
-                qty: 1,
-                unitCents: existing.quoteCents,
+                description: `Concierge: ${existing.serviceType}${existing.vendorId ? ` — ${updated.vendor?.name}` : ''}`,
+                quantity: 1,
+                unitPriceCents: existing.quoteCents,
                 extendedCents: existing.quoteCents,
                 taxCents: 0,
                 isDeferred: false,

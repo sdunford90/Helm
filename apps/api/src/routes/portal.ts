@@ -271,7 +271,7 @@ router.get(
           { customer: customer.stripeCustomerId, type: "us_bank_account" },
           stripeOpts,
         ),
-        stripe.customers.retrieve(customer.stripeCustomerId, stripeOpts),
+        stripe.customers.retrieve(customer.stripeCustomerId, {}, stripeOpts),
       ]);
 
       const sc = stripeCustomer as import("stripe").default.Customer;
@@ -416,13 +416,13 @@ router.delete(
       const stripeOpts = { stripeAccount: stripeAccountId };
 
       // Verify the payment method belongs to this customer before detaching
-      const pm = await stripe.paymentMethods.retrieve(pmId, stripeOpts);
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
       if (pm.customer !== customer.stripeCustomerId) {
         res.status(403).json({ error: "Payment method does not belong to this customer" });
         return;
       }
 
-      await stripe.paymentMethods.detach(pmId, stripeOpts);
+      await stripe.paymentMethods.detach(pmId, {}, stripeOpts);
       res.json({ success: true });
     } catch (err) {
       next(err);
@@ -499,7 +499,7 @@ router.get(
       }
 
       const stripe = requireStripe();
-      const sc = await stripe.customers.retrieve(customer.stripeCustomerId, {
+      const sc = await stripe.customers.retrieve(customer.stripeCustomerId, {}, {
         stripeAccount: stripeAccountId,
       }) as import("stripe").default.Customer;
 

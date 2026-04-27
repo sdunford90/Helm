@@ -88,23 +88,6 @@ const reportCards: ReportCard[] = [
   { id: 'inventory', title: 'Inventory Valuation', description: 'Current stock levels, cost basis, and reorder recommendations.', icon: Package, lastGenerated: '2026-03-15', category: 'rentals_pos' },
 ];
 
-const recentReports: RecentReport[] = [
-  { id: '1', name: 'Revenue Summary - March 2026', type: 'Revenue', generatedBy: 'Sarah Johnson', date: '2026-03-24 14:32', format: 'PDF', size: '1.2 MB' },
-  { id: '2', name: 'Occupancy Report - Q1 2026', type: 'Occupancy', generatedBy: 'Mike Chen', date: '2026-03-24 09:15', format: 'XLSX', size: '856 KB' },
-  { id: '3', name: 'AR Aging - March 2026', type: 'Aging', generatedBy: 'Sarah Johnson', date: '2026-03-23 16:45', format: 'PDF', size: '943 KB' },
-  { id: '4', name: 'POS Sales - Week 12', type: 'POS Sales', generatedBy: 'Tom Rivera', date: '2026-03-23 08:00', format: 'CSV', size: '324 KB' },
-  { id: '5', name: 'Customer Activity - March', type: 'Customer Activity', generatedBy: 'Sarah Johnson', date: '2026-03-22 11:20', format: 'PDF', size: '2.1 MB' },
-  { id: '6', name: 'Dock Walk Summary - 03/21', type: 'Dock Walk', generatedBy: 'James Park', date: '2026-03-21 17:30', format: 'PDF', size: '1.8 MB' },
-  { id: '7', name: 'GL Summary - February 2026', type: 'GL Summary', generatedBy: 'Sarah Johnson', date: '2026-03-20 10:00', format: 'XLSX', size: '1.5 MB' },
-  { id: '8', name: 'Collections Report - Feb', type: 'Collections', generatedBy: 'Mike Chen', date: '2026-03-19 14:10', format: 'PDF', size: '678 KB' },
-];
-
-const scheduledReports: ScheduledReport[] = [
-  { id: '1', reportName: 'Revenue Summary', frequency: 'Monthly', recipients: ['sarah@marina.com', 'cfo@marina.com'], nextRun: '2026-04-01 06:00', status: 'Active' },
-  { id: '2', reportName: 'Occupancy Report', frequency: 'Weekly', recipients: ['ops@marina.com'], nextRun: '2026-03-30 07:00', status: 'Active' },
-  { id: '3', reportName: 'AR Aging Report', frequency: 'Weekly', recipients: ['sarah@marina.com', 'billing@marina.com'], nextRun: '2026-03-30 06:00', status: 'Active' },
-  { id: '4', reportName: 'POS Sales Summary', frequency: 'Daily', recipients: ['manager@marina.com'], nextRun: '2026-03-26 06:00', status: 'Paused' },
-];
 
 const categoryLabels: Record<string, string> = {
   financial: 'Financial',
@@ -215,15 +198,23 @@ export default function Reports() {
   const [modalReportId, setModalReportId] = useState<string | null>(null);
   const { execute: generateReport, loading: generating } = useApi<any>('post', '/api/reports/generate');
   const [modalFormat, setModalFormat] = useState<ReportFormat>('PDF');
-  const [modalDateFrom, setModalDateFrom] = useState('2026-03-01');
-  const [modalDateTo, setModalDateTo] = useState('2026-03-25');
+  const [modalDateFrom, setModalDateFrom] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [modalDateTo, setModalDateTo] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   const [modalDock, setModalDock] = useState('All Docks');
   const [modalSegment, setModalSegment] = useState('All Customers');
   const [cardFormats, setCardFormats] = useState<Record<string, ReportFormat>>({});
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
+  const [scheduledReports] = useState<ScheduledReport[]>([]);
   const [scheduleStatuses, setScheduleStatuses] = useState<Record<string, 'Active' | 'Paused'>>({});
   const getScheduleStatus = (sr: ScheduledReport) => scheduleStatuses[sr.id] ?? sr.status;
-  const toggleSchedule = (id: string) => setScheduleStatuses((prev) => ({ ...prev, [id]: prev[id] === 'Active' || (!prev[id] && scheduledReports.find((s) => s.id === id)?.status === 'Active') ? 'Paused' : 'Active' }));
+  const toggleSchedule = (id: string) => setScheduleStatuses((prev) => ({ ...prev, [id]: prev[id] === 'Active' ? 'Paused' : 'Active' }));
 
   const [viewingReport, setViewingReport] = useState<string | null>(null);
 
@@ -366,7 +357,9 @@ export default function Reports() {
               </tr>
             </thead>
             <tbody>
-              {recentReports.map((r) => (
+              {recentReports.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: '48px 24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px' }}>No reports generated yet. Use the Report Library tab to generate your first report.</td></tr>
+              ) : recentReports.map((r) => (
                 <tr key={r.id}>
                   <td style={styles.td}>
                     <span
@@ -425,7 +418,9 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody>
-                {scheduledReports.map((sr) => (
+                {scheduledReports.length === 0 ? (
+                  <tr><td colSpan={6} style={{ padding: '48px 24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px' }}>No scheduled reports configured. Click "Add Schedule" to set up automated report delivery.</td></tr>
+                ) : scheduledReports.map((sr) => (
                   <tr key={sr.id}>
                     <td style={styles.td}>
                       <span
@@ -624,7 +619,7 @@ export default function Reports() {
               style={styles.btnGenerateModal}
               disabled={generating}
               onClick={async () => {
-                await generateReport({
+                const result = await generateReport({
                   reportId: modalReportId,
                   format: modalFormat,
                   dateFrom: modalDateFrom,
@@ -632,6 +627,21 @@ export default function Reports() {
                   dock: modalDock,
                   segment: modalSegment,
                 });
+                if (result !== null && modalReportId) {
+                  const card = reportCards.find((r) => r.id === modalReportId);
+                  const now = new Date();
+                  const dateStr = now.toLocaleString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                  setRecentReports((prev) => [{
+                    id: `${Date.now()}`,
+                    name: `${card?.title ?? modalReportId} — ${now.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`,
+                    type: card?.title ?? modalReportId,
+                    generatedBy: 'You',
+                    date: dateStr,
+                    format: modalFormat,
+                    size: '—',
+                  }, ...prev.slice(0, 19)]);
+                  toast.success('Report Generated', `${card?.title ?? modalReportId} is ready`);
+                }
                 closeModal();
               }}
             >

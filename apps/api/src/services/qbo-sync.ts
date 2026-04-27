@@ -116,7 +116,7 @@ async function storeTokens(
   });
 }
 
-async function getValidAccessToken(tenantId: string): Promise<{ accessToken: string; realmId: string }> {
+export async function getValidAccessToken(tenantId: string): Promise<{ accessToken: string; realmId: string }> {
   const tokens = await getTokens(tenantId);
 
   // Refresh if token expires within 5 minutes

@@ -150,7 +150,7 @@ router.get(
       const invoice = await prisma.invoice.findFirst({
         where: { id: req.params.id, tenantId },
         include: {
-          customer: { select: { firstName: true, lastName: true, email: true, address: true, city: true, state: true, zip: true } },
+          customer: { select: { firstName: true, lastName: true, email: true, addressJson: true } },
           lineItems: true,
           payments: { select: { amountCents: true, method: true, postedDate: true } },
         },
@@ -170,8 +170,8 @@ router.get(
       const lineItemRows = invoice.lineItems.map((li) => `
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0">${li.description}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:center">${li.qty}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right">${fmt(li.unitCents)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:center">${li.quantity}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right">${fmt(li.unitPriceCents)}</td>
           <td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right">${fmt(li.extendedCents)}</td>
         </tr>
       `).join("");
@@ -203,8 +203,8 @@ router.get(
             <div class="label">Bill To</div>
             <div style="font-size:15px;font-weight:600">${invoice.customer.firstName} ${invoice.customer.lastName}</div>
             ${invoice.customer.email ? `<div style="color:#64748B;font-size:13px">${invoice.customer.email}</div>` : ''}
-            ${invoice.customer.address ? `<div style="font-size:13px">${invoice.customer.address}</div>` : ''}
-            ${invoice.customer.city ? `<div style="font-size:13px">${invoice.customer.city}, ${invoice.customer.state ?? ''} ${invoice.customer.zip ?? ''}</div>` : ''}
+            ${(() => { const a = invoice.customer.addressJson as Record<string,string> | null; return a?.address ? `<div style="font-size:13px">${a.address}</div>` : ''; })()}
+            ${(() => { const a = invoice.customer.addressJson as Record<string,string> | null; return a?.city ? `<div style="font-size:13px">${a.city}, ${a.state ?? ''} ${a.zip ?? ''}</div>` : ''; })()}
           </div>
           <div>
             <div class="label">Status</div>
@@ -222,7 +222,7 @@ router.get(
             <tr class="total-row"><td colspan="3" style="padding:10px 12px;text-align:right">Total</td><td style="padding:10px 12px;text-align:right;font-size:16px">${fmt(invoice.totalCents)}</td></tr>
           </tfoot>
         </table>
-        ${invoice.memo ? `<div style="margin-top:24px;font-size:13px;color:#64748B"><strong>Memo:</strong> ${invoice.memo}</div>` : ''}
+        
       </body></html>`;
 
       const browser = await puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });

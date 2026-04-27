@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 import {
   Building2, Palette, CreditCard, Link, ShieldCheck,
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
@@ -326,6 +328,7 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 ];
 
 export default function Settings() {
+  const { getToken } = useAuth();
   const { modules, setModule } = useModules();
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations'>('profile');
 
@@ -333,6 +336,34 @@ export default function Settings() {
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
+
+  // Branding logo upload
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
+
+  const handleLogoUpload = async (file: File) => {
+    if (!file) return;
+    const validTypes = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp'];
+    if (!validTypes.includes(file.type)) { setLogoError('Please upload a PNG, JPG, SVG, or WebP image.'); return; }
+    if (file.size > 5 * 1024 * 1024) { setLogoError('Logo must be under 5 MB.'); return; }
+    setLogoUploading(true);
+    setLogoError(null);
+    try {
+      const token = await getToken();
+      const presign = await api.post<{ url: string; key: string }>('/storage/presign-upload', { category: 'logo', filename: file.name, contentType: file.type }, token);
+      await fetch(presign.url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+      const verify = await api.post<{ ok: boolean; publicUrl?: string }>('/storage/verify-upload', { key: presign.key, contentType: file.type }, token);
+      if (verify.ok && verify.publicUrl) {
+        setLogoUrl(verify.publicUrl);
+      }
+    } catch (err) {
+      setLogoError('Upload failed. Please try again.');
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   // Team
   const { data: apiTeamRaw, execute: refetchTeam } = useApi<{ members: ApiUser[] }>('get', '/api/settings/team', { immediate: true });
@@ -1280,10 +1311,35 @@ export default function Settings() {
           </div>
           <div style={st.card}>
             <h3 style={st.sectionTitle}>Logo</h3>
-            <div style={{ width: '200px', height: '120px', borderRadius: '8px', background: '#F8FAFC', border: '2px dashed #CBD5E1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginBottom: '16px' }}>
-              <Building2 size={32} style={{ color: '#94A3B8', marginBottom: '8px' }} />
-              <span style={{ fontSize: '13px', color: '#64748B' }}>Drop logo here or click to upload</span>
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/svg+xml,image/webp"
+              style={{ display: 'none' }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); }}
+            />
+            <div
+              style={{ width: '200px', height: '120px', borderRadius: '8px', background: '#F8FAFC', border: `2px dashed ${logoError ? '#DC2626' : '#CBD5E1'}`, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: logoUploading ? 'wait' : 'pointer', marginBottom: '8px', position: 'relative', overflow: 'hidden' }}
+              onClick={() => !logoUploading && logoInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) handleLogoUpload(f); }}
+            >
+              {logoUrl ? (
+                <img src={logoUrl} alt="Logo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+              ) : (
+                <>
+                  <Building2 size={32} style={{ color: '#94A3B8', marginBottom: '8px' }} />
+                  <span style={{ fontSize: '13px', color: '#64748B', textAlign: 'center', padding: '0 12px' }}>
+                    {logoUploading ? 'Uploading...' : 'Drop logo here or click to upload'}
+                  </span>
+                </>
+              )}
             </div>
+            {logoError && <div style={{ fontSize: '12px', color: '#DC2626', marginBottom: '8px' }}>{logoError}</div>}
+            {logoUrl && (
+              <button style={{ fontSize: '12px', padding: '4px 10px', marginBottom: '8px', background: 'none', border: '1px solid #CBD5E1', borderRadius: '4px', cursor: 'pointer', color: '#64748B' }} onClick={() => { setLogoUrl(null); if (logoInputRef.current) logoInputRef.current.value = ''; }}>Remove</button>
+            )}
+            <div style={{ fontSize: '11px', color: '#94A3B8' }}>PNG, JPG, SVG or WebP · Max 5 MB</div>
           </div>
           <div style={st.card}>
             <h3 style={st.sectionTitle}>Invoice Header</h3>
