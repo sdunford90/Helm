@@ -72,10 +72,9 @@ const UpdatePricingRuleSchema = z.object({
 });
 
 const CalendarOverrideSchema = z.object({
-  startDate: z.string().min(1),
-  endDate: z.string().min(1),
-  multiplier: z.number().min(0),
-  label: z.string().min(1),
+  overrideDate: z.string().min(1),
+  priceCents: z.number().int().min(0),
+  note: z.string().optional(),
 });
 
 const CalendarQuerySchema = z.object({
@@ -611,12 +610,11 @@ router.post(
 
       const override = await (prisma as any).pricingCalendarOverride.create({
         data: {
-          tenantId,
           rentalProductId: req.params.id,
-          startDate: new Date(data.startDate),
-          endDate: new Date(data.endDate),
-          multiplier: data.multiplier,
-          label: data.label,
+          overrideDate: new Date(data.overrideDate),
+          priceCents: data.priceCents,
+          note: data.note ?? null,
+          createdBy: req.userId ?? null,
         },
       });
 
@@ -679,10 +677,8 @@ router.get(
       // Get calendar overrides for this month
       const overrides = await (prisma as any).pricingCalendarOverride.findMany({
         where: {
-          tenantId,
           rentalProductId: req.params.id,
-          startDate: { lte: endOfMonth },
-          endDate: { gte: startOfMonth },
+          overrideDate: { gte: startOfMonth, lte: endOfMonth },
         },
       });
 
