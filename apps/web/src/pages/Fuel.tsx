@@ -155,7 +155,7 @@ function RecordSaleModal({
 }: {
   fuelTypes: ApiFuelType[];
   onClose: () => void;
-  onSave: (p: SalePayload) => Promise<void>;
+  onSave: (p: SalePayload) => Promise<boolean>;
 }) {
   const [customer, setCustomer] = useState('');
   const [fuelTypeIdx, setFuelTypeIdx] = useState(0);
@@ -170,14 +170,14 @@ function RecordSaleModal({
     if (!gallons || !ft) return;
     setSaving(true);
     try {
-      await onSave({
+      const ok = await onSave({
         fuelType: ft.type,
         gallons: parseFloat(gallons),
         pumpNumber: parseInt(pump),
         paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
         guestName: customer || undefined,
       });
-      onClose();
+      if (ok) onClose();
     } finally {
       setSaving(false);
     }
@@ -248,7 +248,7 @@ function LogDeliveryModal({
 }: {
   fuelTypes: ApiFuelType[];
   onClose: () => void;
-  onSave: (p: DeliveryPayload) => Promise<void>;
+  onSave: (p: DeliveryPayload) => Promise<boolean>;
 }) {
   const [supplier, setSupplier] = useState('');
   const [fuelTypeIdx, setFuelTypeIdx] = useState(0);
@@ -262,13 +262,13 @@ function LogDeliveryModal({
     if (!supplier || !gallons || !ft) return;
     setSaving(true);
     try {
-      await onSave({
+      const ok = await onSave({
         supplier,
         fuelType: ft.type,
         gallons: parseFloat(gallons),
         costCentsPerGallon: Math.round(parseFloat(costPerGal || '0') * 100),
       });
-      onClose();
+      if (ok) onClose();
     } finally {
       setSaving(false);
     }
@@ -423,14 +423,18 @@ export default function Fuel() {
     { key: 'tanks', label: 'Tank Levels' },
   ];
 
-  const handleSaveSale = async (payload: SalePayload) => {
-    await createSale.execute(payload);
+  const handleSaveSale = async (payload: SalePayload): Promise<boolean> => {
+    const result = await createSale.execute(payload);
+    if (result === null) return false;
     await Promise.all([refreshSales(), refreshTypes()]);
+    return true;
   };
 
-  const handleSaveDelivery = async (payload: DeliveryPayload) => {
-    await createDelivery.execute(payload);
+  const handleSaveDelivery = async (payload: DeliveryPayload): Promise<boolean> => {
+    const result = await createDelivery.execute(payload);
+    if (result === null) return false;
     await Promise.all([refreshDeliveries(), refreshTypes()]);
+    return true;
   };
 
   const handleUpdatePrice = async (id: string, priceCents: number, costCents: number) => {

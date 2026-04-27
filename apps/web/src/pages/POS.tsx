@@ -368,10 +368,9 @@ export default function POS() {
 
     if (result !== null) {
       await refreshTransactions();
+      setCart([]);
+      setRecalledTxn(null);
     }
-
-    setCart([]);
-    setRecalledTxn(null);
   };
 
   const recallTransaction = (txn: Transaction) => {
