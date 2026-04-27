@@ -37,37 +37,24 @@ This creates the **Bayshore Marina** tenant with:
 
 Seeding is idempotent — re-running it wipes existing data and starts fresh.
 
-### 1.3 Verify required environment variables are set
+### 1.3 Credentials status — everything is configured
 
-Check the Replit Secrets panel. These must be present:
+All third-party service credentials are already set in Replit Secrets:
 
-**Always required (API won't start without them):**
-| Secret | Purpose |
-|--------|---------|
-| `CLERK_SECRET_KEY` | Clerk backend SDK — also used as fallback signing key |
-| `DATABASE_URL` | PostgreSQL connection (auto-managed by Replit) |
-| `REDIS_URL` | Session / queue store |
+| Service | Secrets configured | Notes |
+|---------|-------------------|-------|
+| **Clerk** | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_WEBHOOK_SECRET`, `VITE_CLERK_PUBLISHABLE_KEY` | Sandbox/dev keys |
+| **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET_PLATFORM`, `STRIPE_WEBHOOK_SECRET_CONNECT`, `VITE_STRIPE_PUBLISHABLE_KEY` | Sandbox keys |
+| **Resend** | `RESEND_API_KEY` | Email delivery |
+| **R2 Storage** | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT`, `R2_PUBLIC_URL` | File uploads |
+| **QuickBooks** | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_WEBHOOK_VERIFIER_TOKEN`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` | Sandbox |
+| **Redis** | `REDIS_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Queue/cache |
 
-**Required for full feature testing:**
-| Secret | Feature |
-|--------|---------|
-| `STRIPE_SECRET_KEY` | Payments, POS terminal, invoicing |
-| `STRIPE_WEBHOOK_SECRET_PLATFORM` | Platform webhook verification |
-| `STRIPE_WEBHOOK_SECRET_CONNECT` | Connect webhook verification |
-| `VITE_STRIPE_PUBLISHABLE_KEY` | Stripe Elements in the browser |
-| `RESEND_API_KEY` | Sending invoice/contract emails |
-| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` / `R2_ENDPOINT` / `R2_PUBLIC_URL` | File storage (insurance docs, attachments) |
-| `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET` / `QBO_WEBHOOK_VERIFIER_TOKEN` | QuickBooks Online integration |
+No credentials need to be added before testing.
 
-**Frontend env vars (set in Replit Secrets as VITE_ prefixed):**
-| Variable | Value needed |
-|----------|-------------|
-| `VITE_CLERK_PUBLISHABLE_KEY` | Your Clerk publishable key |
-| `VITE_STRIPE_PUBLISHABLE_KEY` | Your Stripe publishable key |
+### 1.4 Dev auth bypass (no Clerk sign-in needed)
 
-### 1.4 Dev auth bypass (no Clerk account needed)
-
-The following env vars are already set in the **development** environment:
+The following are already set in the **development** environment:
 
 ```
 ENABLE_AUTH_DEV_BYPASS=true
@@ -76,11 +63,23 @@ NODE_ENV=development
 ```
 
 With these set:
-- The **API** skips Clerk token verification and automatically uses the first seeded user (Sarah Dunford, `MARINA_OWNER` role)
-- The **frontend** skips the Clerk sign-in redirect and loads the app directly
-- No Clerk user account or sign-in is required to navigate the UI
+- The **API** skips Clerk token verification and automatically uses the first seeded user (Sarah Dunford, `MARINA_OWNER`)
+- The **frontend** skips the Clerk sign-in redirect — the app loads directly without logging in
+- Clerk is still fully configured if you want to test real sign-in (see Section 5)
 
 > **Important:** These flags must never be set in production. The API actively blocks the bypass when `NODE_ENV=production`.
+
+### 1.5 In-app setup steps required before certain features work
+
+Even though credentials are all in place, some features require completing a one-time setup flow inside the app itself:
+
+| Feature | Setup step required |
+|---------|-------------------|
+| **Card payments / invoicing** | Settings → Stripe → Connect Stripe Account (completes Stripe Connect OAuth for the Bayshore Marina tenant) |
+| **Card reader (POS)** | Settings → POS Settings → Readers → Register Reader (enter pairing code from a Stripe Terminal device or simulator) |
+| **QuickBooks sync** | Settings → Integrations → QuickBooks → Connect (completes QBO OAuth — redirects to QBO sandbox, then returns) |
+| **Email sending** | No setup needed — Resend key is live and emails send immediately |
+| **File uploads** | No setup needed — R2 is configured and ready |
 
 ---
 
@@ -99,15 +98,17 @@ With these set:
 
 Switch between locations using the dropdown in the top-right of the nav bar.
 
-### Staff Users (seeded but not linked to Clerk accounts in dev bypass mode)
-| Email | Role | Notes |
-|-------|------|-------|
-| sarah@bayshoremarina.com | MARINA_OWNER | Active user in dev bypass |
-| jake@bayshoremarina.com | MARINA_MANAGER | |
-| maria@bayshoremarina.com | DOCK_STAFF | |
-| tom@bayshoremarina.com | POS_CASHIER | |
-| lisa@bayshoremarina.com | ACCOUNTING | |
-| robert@bayshoremarina.com | DOCK_STAFF | |
+### Staff Users
+These users exist in the database. The dev bypass automatically signs you in as Sarah (MARINA_OWNER). To test with a different role, a real Clerk sign-in is required (see Section 5).
+
+| Email | Role |
+|-------|------|
+| sarah@bayshoremarina.com | MARINA_OWNER |
+| jake@bayshoremarina.com | MARINA_MANAGER |
+| maria@bayshoremarina.com | DOCK_STAFF |
+| tom@bayshoremarina.com | POS_CASHIER |
+| lisa@bayshoremarina.com | ACCOUNTING |
+| robert@bayshoremarina.com | DOCK_STAFF |
 
 ---
 
@@ -133,6 +134,7 @@ Work through each page in the left navigation. For each one: load the page, veri
 - [ ] Contract list loads with seeded agreements
 - [ ] Open a contract to view line items, dates, and status
 - [ ] Filter by status (Active, Pending, Expired)
+- [ ] Send a contract for e-signature — generates a signing link
 
 ### Dock Walks
 - [ ] Dock walk list loads with recent entries
@@ -158,8 +160,8 @@ Work through each page in the left navigation. For each one: load the page, veri
 - [ ] Invoice list loads (42 invoices seeded)
 - [ ] Open an invoice to see line items and payment status
 - [ ] Filter by status (Draft, Sent, Paid, Overdue)
-- [ ] **Send invoice** — requires `RESEND_API_KEY` to deliver email
-- [ ] **Collect payment** — requires Stripe credentials
+- [ ] **Send invoice email** — Resend is configured, email should deliver
+- [ ] **Collect payment** — requires Stripe Connect setup for the tenant (Settings → Stripe first)
 
 ### Rentals
 - [ ] Rental list loads with seeded records
@@ -169,9 +171,9 @@ Work through each page in the left navigation. For each one: load the page, veri
 ### POS
 - [ ] POS grid loads with product tiles
 - [ ] Add items to cart
-- [ ] Complete a cash sale
-- [ ] **Card payment** — requires Stripe Terminal reader (pairing code from Settings → POS Settings → Readers)
-- [ ] Settings tab: register a reader via pairing code
+- [ ] Complete a **cash sale** — no Stripe needed
+- [ ] Complete a **card payment** — requires Stripe Connect setup + a registered reader
+- [ ] Settings tab → Readers → register a reader via pairing code from a Stripe Terminal simulator
 
 ### Fuel
 - [ ] Fuel log loads
@@ -196,7 +198,7 @@ Work through each page in the left navigation. For each one: load the page, veri
 ### Waitlist
 - [ ] Waitlist table loads with seeded entries
 - [ ] Filter by slip type and status
-- [ ] **Add to Waitlist**: enter first name + last name (required) → slip type + boat length (optional) → Save → entry appears
+- [ ] **Add to Waitlist**: enter first name + last name (required) → slip type + boat length (optional) → Save → entry appears in list
 - [ ] Notify / Accept / Remove an entry
 
 ### Reports
@@ -206,52 +208,62 @@ Work through each page in the left navigation. For each one: load the page, veri
 
 ### Settings
 - [ ] General settings page loads and saves
-- [ ] **Stripe Connect** — connect a Stripe account (requires live Stripe credentials)
-- [ ] **QuickBooks Online** — OAuth connect flow (requires QBO credentials)
-- [ ] Tax rates page loads
+- [ ] **Stripe Connect** — click Connect, complete the Stripe OAuth flow (sandbox), confirm account appears connected
+- [ ] **QuickBooks Online** — click Connect, complete QBO OAuth (sandbox), confirm sync status
+- [ ] Tax rates page loads and allows adding a rate
 
 ### Announcements
 - [ ] Announcements list loads
 - [ ] Create and publish an announcement
 
 ### Audit Log
-- [ ] Audit log loads with recent activity entries
+- [ ] Audit log loads with recent activity entries reflecting actions taken during testing
 
 ---
 
-## 4. External Services — What Works Without Live Credentials
+## 4. Service Status at a Glance
 
-| Feature | Works in dev bypass? | Needs live credentials |
-|---------|---------------------|----------------------|
-| Browse all pages | ✅ Yes | — |
-| Read seed data | ✅ Yes | — |
-| Create/edit records | ✅ Yes | — |
-| Cash POS sale | ✅ Yes | — |
-| Card payment (POS / invoices) | ❌ No | Stripe secret + publishable key |
-| Card reader terminal | ❌ No | Stripe Terminal + physical reader |
-| Send email (invoices, contracts) | ❌ No | Resend API key |
-| File uploads (insurance docs) | ❌ No | R2 storage credentials |
-| QuickBooks sync | ❌ No | QBO OAuth credentials |
-| Clerk user management | ❌ No | Clerk secret + publishable key |
-
----
-
-## 5. Known Dev Limitations
-
-1. **Dashboard tiles may stay at "Loading..." or show zeros** — some dashboard stat endpoints are in progress. Data-heavy pages like Billing, Customers, and Slips load correctly from seed.
-
-2. **Clerk user account not linked** — the dev bypass uses the first seeded DB user (Sarah Dunford) automatically. If you remove `ENABLE_AUTH_DEV_BYPASS=true`, you must create a matching Clerk user at [dashboard.clerk.com](https://dashboard.clerk.com) with the email `sarah@bayshoremarina.com` and add her to the tenant.
-
-3. **Stripe elements will not render** without `VITE_STRIPE_PUBLISHABLE_KEY` — the invoice payment button and POS card flow will fail silently or show an error.
-
-4. **Re-seed resets all data** — running `pnpm --filter @helm/api run seed` again wipes everything created during testing.
+| Feature | Status |
+|---------|--------|
+| Browse all pages | ✅ Works — no setup needed |
+| Read / create / edit data | ✅ Works — no setup needed |
+| Cash POS sale | ✅ Works — no setup needed |
+| Email sending (invoices, contracts) | ✅ Resend configured — sends immediately |
+| File uploads (insurance docs, attachments) | ✅ R2 configured — uploads work |
+| Card payment / invoicing | ⚙️ Stripe keys configured — needs Stripe Connect OAuth in Settings |
+| Stripe Terminal card reader | ⚙️ Stripe configured — needs reader registration in POS Settings |
+| QuickBooks sync | ⚙️ QBO keys configured — needs OAuth flow in Settings |
+| Clerk real sign-in | ⚙️ Clerk configured — needs a Clerk user created (see Section 5) |
 
 ---
 
-## 6. Resetting to a Clean State
+## 5. Testing with Real Clerk Sign-In (Optional)
+
+The dev bypass handles authentication automatically for most testing. To test actual role-based access or Clerk-specific features:
+
+1. Go to [dashboard.clerk.com](https://dashboard.clerk.com) → Users → Create User
+2. Use the email `sarah@bayshoremarina.com` (or any seeded user email) and set a password
+3. In Replit Secrets, remove or set `VITE_ENABLE_AUTH_DEV_BYPASS=false` and `ENABLE_AUTH_DEV_BYPASS=false`
+4. Restart both workflows
+5. Sign in at the app with that Clerk user — the API will match the Clerk ID to the seeded database user
+
+To return to bypass mode, set both flags back to `true` and restart.
+
+---
+
+## 6. Known Issues
+
+1. **Some Dashboard tiles may show "Loading..." or zeros** — certain dashboard stat endpoints are still being finalized. Core pages (Billing, Slips, Customers, Leads, Waitlist) all load correctly from seed data.
+
+2. **Re-seed wipes everything** — running `pnpm --filter @helm/api run seed` again deletes all records created during a testing session. Do this intentionally only.
+
+3. **Stripe Connect must be completed per tenant** — even with Stripe credentials configured, each marina tenant needs to connect their own Stripe account through the Settings UI before card payments or invoice collection will work.
+
+---
+
+## 7. Resetting to a Clean State
 
 ```bash
-# From the project root
 pnpm --filter @helm/api run seed
 ```
 
@@ -259,12 +271,10 @@ Then hard-refresh the browser. All pages will show fresh seed data.
 
 ---
 
-## 7. Port Reference
+## 8. Port Reference
 
-| Service | Port | Direct URL |
-|---------|------|-----------|
-| Web app | 5000 | Preview pane default |
-| API | 3001 | `/api/*` proxied through Vite |
-| Admin panel | 3003 | Use Replit port switcher |
-
-The web app Vite dev server proxies all `/api/` requests to `localhost:3001` automatically, so you never need to point the browser at the API directly.
+| Service | Port | How to access |
+|---------|------|--------------|
+| Web app | 5000 | Preview pane (default) |
+| API | 3001 | `/api/*` proxied through Vite — no direct access needed |
+| Admin panel | 3003 | Use the Replit port switcher in the preview pane |
