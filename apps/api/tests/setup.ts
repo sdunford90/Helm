@@ -48,6 +48,28 @@ export const mockPrisma = {
   referralPartner: { findMany: vi.fn().mockResolvedValue([]) },
   npsSurvey: { findMany: vi.fn().mockResolvedValue([]) },
   meterReading: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
+  fuelSale: {
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockImplementation(({ data }: any) => Promise.resolve({
+      id: 'test-fuel-sale-id', tenantId: data.tenantId ?? 'test-tenant', customerId: data.customerId ?? null,
+      guestName: data.guestName ?? null, fuelType: data.fuelType, gallons: data.gallons,
+      priceCentsPerGallon: data.priceCentsPerGallon, totalCents: data.totalCents,
+      pumpNumber: data.pumpNumber ?? null, staffId: data.staffId ?? null,
+      paymentMethod: data.paymentMethod ?? null, createdAt: new Date(),
+    })),
+    count: vi.fn().mockResolvedValue(0),
+  },
+  fuelDelivery: {
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockImplementation(({ data }: any) => Promise.resolve({
+      id: 'test-fuel-delivery-id', tenantId: data.tenantId ?? 'test-tenant',
+      supplier: data.supplier, fuelType: data.fuelType, gallons: data.gallons,
+      costCentsPerGallon: data.costCentsPerGallon, totalCostCents: data.totalCostCents,
+      tankLevelAfterGallons: data.tankLevelAfterGallons ?? null,
+      notes: data.notes ?? null, deliveredAt: new Date(),
+    })),
+    count: vi.fn().mockResolvedValue(0),
+  },
   user: { findMany: vi.fn().mockResolvedValue([]) },
   apiKey: { findUnique: vi.fn() },
   processed_webhooks: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
