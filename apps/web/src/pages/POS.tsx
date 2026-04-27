@@ -122,7 +122,7 @@ const st: Record<string, React.CSSProperties> = {
   prodGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px' },
   prodCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '16px', cursor: 'pointer', textAlign: 'center' as const, transition: 'box-shadow 0.15s' },
   prodName: { fontSize: '14px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' },
-  prodPrice: { fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  prodPrice: { fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' },
   prodCat: { fontSize: '11px', color: '#64748B', marginTop: '4px' },
   cart: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', display: 'flex', flexDirection: 'column' as const, maxHeight: 'calc(100vh - 280px)' },
   cartHeader: { padding: '16px 20px', borderBottom: '1px solid #E2E8F0', fontSize: '16px', fontWeight: 700, color: '#0A2342', display: 'flex', alignItems: 'center', gap: '8px' },
@@ -133,7 +133,7 @@ const st: Record<string, React.CSSProperties> = {
   qtyBtn: { width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #CCC', background: '#FFFFFF', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0A2342' },
   cartFooter: { borderTop: '2px solid #0A2342', padding: '16px 20px' },
   cartRow: { display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#2E4A6B', marginBottom: '6px' },
-  cartTotal: { display: 'flex', justifyContent: 'space-between', fontSize: '20px', fontWeight: 700, color: '#0A2342', marginBottom: '16px', fontFamily: '"JetBrains Mono", monospace' },
+  cartTotal: { display: 'flex', justifyContent: 'space-between', fontSize: '20px', fontWeight: 700, color: '#0A2342', marginBottom: '16px', fontVariantNumeric: 'tabular-nums' },
   payBtns: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
   payBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '12px', fontSize: '14px', fontWeight: 600, borderRadius: '6px', cursor: 'pointer', border: '1px solid #E2E8F0', background: '#FFFFFF', color: '#0A2342', transition: 'background 0.15s' },
   payBtnPrimary: { background: '#0A2342', color: '#FFFFFF', border: '1px solid #0A2342' },
@@ -143,7 +143,7 @@ const st: Record<string, React.CSSProperties> = {
   th: { textAlign: 'left' as const, padding: '12px 16px', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF' },
   td: { padding: '12px 16px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
   badge: { display: 'inline-block', padding: '2px 10px', fontSize: '12px', fontWeight: 600, borderRadius: '9999px' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '14px' },
+  mono: { fontVariantNumeric: 'tabular-nums', fontSize: '14px' },
   addBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap' as const },
   select: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', background: '#FFFFFF', cursor: 'pointer' },
   overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10, 35, 66, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
@@ -221,15 +221,15 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
         <div style={st.modalBody}>
           <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px', marginBottom: '20px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Opening Float</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${floatAmt.toFixed(2)}</div></div>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${runningTotal.toFixed(2)}</div></div>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Expected in Drawer</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontFamily: 'monospace' }}>${expected.toFixed(2)}</div></div>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Variance</div><div style={{ fontSize: '16px', fontWeight: 700, color: variance >= 0 ? '#059669' : '#DC2626', fontFamily: 'monospace' }}>{variance >= 0 ? '+' : ''}${variance.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Opening Float</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${floatAmt.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${runningTotal.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Expected in Drawer</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${expected.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Variance</div><div style={{ fontSize: '16px', fontWeight: 700, color: variance >= 0 ? '#059669' : '#DC2626', fontVariantNumeric: 'tabular-nums' }}>{variance >= 0 ? '+' : ''}${variance.toFixed(2)}</div></div>
             </div>
           </div>
           <div style={st.field}>
             <label style={st.label}>Actual Closing Cash Count ($) *</label>
-            <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: 'monospace' }} type="number" step="0.01" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} autoFocus />
+            <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} autoFocus />
           </div>
           <div style={st.field}>
             <label style={st.label}>Notes (optional)</label>
@@ -280,7 +280,7 @@ function CnpForm({
     <>
       <div style={{ textAlign: 'center', marginBottom: '20px' }}>
         <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Due</div>
-        <div style={{ fontSize: '38px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
+        <div style={{ fontSize: '38px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${total.toFixed(2)}</div>
         <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Card Not Present — keyed entry</div>
       </div>
 
@@ -289,7 +289,7 @@ function CnpForm({
           hidePostalCode: true,
           disableLink: true,
           style: {
-            base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#94A3B8' } },
+            base: { fontSize: '15px', color: '#0A2342', fontVariantNumeric: 'tabular-nums', '::placeholder': { color: '#94A3B8' } },
             invalid: { color: '#DC2626' },
           },
         } as any} />
@@ -504,7 +504,7 @@ function CardPaymentModal({
             <div style={tSt.statusBox}>
               <CreditCard size={48} style={{ color: '#0A2342', marginBottom: '16px' }} />
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>Tap, insert, or swipe</div>
-              <div style={{ fontSize: '36px', fontWeight: 700, color: '#00D4FF', margin: '10px 0', fontFamily: 'monospace' }}>${total.toFixed(2)}</div>
+              <div style={{ fontSize: '36px', fontWeight: 700, color: '#00D4FF', margin: '10px 0', fontVariantNumeric: 'tabular-nums' }}>${total.toFixed(2)}</div>
               <div style={{ fontSize: '13px', color: '#64748B' }}>Waiting on {selectedReader?.label}</div>
             </div>
           )}
@@ -625,7 +625,7 @@ function PaymentModal({
             <>
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
                 <div style={{ fontSize: '14px', color: '#64748B', marginBottom: '4px' }}>Total Due</div>
-                <div style={{ fontSize: '36px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
+                <div style={{ fontSize: '36px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${total.toFixed(2)}</div>
               </div>
               {method === 'Cash' && (
                 <>
@@ -654,7 +654,7 @@ function PaymentModal({
                   <div style={st.field}>
                     <label style={st.label}>Amount Tendered</label>
                     <input
-                      style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: '"JetBrains Mono", monospace' }}
+                      style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}
                       type="number"
                       step="0.01"
                       value={tendered}
@@ -664,7 +664,7 @@ function PaymentModal({
                   </div>
                   <div style={{ textAlign: 'center', padding: '12px', background: '#DEF7EC', borderRadius: '8px', marginBottom: '16px' }}>
                     <div style={{ fontSize: '13px', color: '#03543F' }}>Change Due</div>
-                    <div style={{ fontSize: '24px', fontWeight: 700, color: '#03543F', fontFamily: '"JetBrains Mono", monospace' }}>${change.toFixed(2)}</div>
+                    <div style={{ fontSize: '24px', fontWeight: 700, color: '#03543F', fontVariantNumeric: 'tabular-nums' }}>${change.toFixed(2)}</div>
                   </div>
                 </>
               )}
@@ -1316,8 +1316,8 @@ export default function POS() {
                         <tr key={ci.product.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
                           <td style={{ padding: '10px 0', color: '#0A2342', fontWeight: 500 }}>{ci.product.name}</td>
                           <td style={{ padding: '10px 0', textAlign: 'center', color: '#64748B' }}>{ci.quantity}</td>
-                          <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' }}>${ci.product.price.toFixed(2)}</td>
-                          <td style={{ padding: '10px 0', textAlign: 'right', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>${(ci.product.price * ci.quantity).toFixed(2)}</td>
+                          <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B', fontVariantNumeric: 'tabular-nums', fontSize: '13px' }}>${ci.product.price.toFixed(2)}</td>
+                          <td style={{ padding: '10px 0', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>${(ci.product.price * ci.quantity).toFixed(2)}</td>
                         </tr>
                       ))
                     ) : (
@@ -1329,7 +1329,7 @@ export default function POS() {
                   <tfoot>
                     <tr style={{ borderTop: '2px solid #0A2342' }}>
                       <td colSpan={3} style={{ padding: '10px 0', fontWeight: 700, color: '#0A2342', textAlign: 'right', paddingRight: '12px' }}>Total</td>
-                      <td style={{ padding: '10px 0', textAlign: 'right', fontFamily: '"JetBrains Mono", monospace', fontWeight: 700, fontSize: '15px', color: '#0A2342' }}>${recalledTxnData.total.toFixed(2)}</td>
+                      <td style={{ padding: '10px 0', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, fontSize: '15px', color: '#0A2342' }}>${recalledTxnData.total.toFixed(2)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -1384,7 +1384,7 @@ export default function POS() {
                 <div style={st.cartHeader}><RotateCcw size={18} /> Transaction Actions</div>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px' }}>
                   <div style={{ width: '100%', textAlign: 'center', marginBottom: '8px' }}>
-                    <div style={{ fontSize: '28px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${recalledTxnData.total.toFixed(2)}</div>
+                    <div style={{ fontSize: '28px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${recalledTxnData.total.toFixed(2)}</div>
                     <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>Transaction {recalledTxnData.number}</div>
                   </div>
 

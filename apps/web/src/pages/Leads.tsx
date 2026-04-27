@@ -42,6 +42,15 @@ interface Lead {
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
 const SOURCES: Source[] = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 
+// Normalize uppercase API stage values → frontend title-case Stage type
+const STAGE_API_MAP: Record<string, Stage> = {
+  NEW: 'New', CONTACTED: 'Contacted', QUALIFIED: 'Qualified',
+  PROPOSAL_SENT: 'Proposal Sent', WON: 'Won', LOST: 'Lost',
+};
+function normalizeStage(s: string): Stage {
+  return STAGE_API_MAP[s] ?? (s as Stage);
+}
+
 /* ── Stage Colors ──────────────────────────────────────── */
 
 const STAGE_COLORS: Record<Stage, { bg: string; text: string }> = {
@@ -291,13 +300,17 @@ export default function Leads() {
   const [localLeads, setLocalLeads] = useState<Lead[]>([]);
 
   // API calls
-  const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
+  const { data: apiLeadsResp, loading, execute: refetchLeads } = useApi<{ data: Lead[] }>('get', '/api/leads', { immediate: true });
   const createLeadApi = useApi<Lead>('post', '/api/leads');
   const updateLeadApi = useApi<Lead>('put', '/api/leads');
 
   useEffect(() => {
-    if (apiLeads) setLocalLeads(apiLeads);
-  }, [apiLeads]);
+    if (apiLeadsResp?.data) {
+      setLocalLeads(
+        apiLeadsResp.data.map((l) => ({ ...l, stage: normalizeStage(l.stage as string) }))
+      );
+    }
+  }, [apiLeadsResp]);
 
   const leads = localLeads;
 
