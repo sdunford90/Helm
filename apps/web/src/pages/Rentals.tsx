@@ -694,7 +694,10 @@ interface PriceQuote {
 function NewReservationModal({ products, onClose, onCreated }: NewReservationModalProps) {
   const { getToken } = useAuth();
 
-  /* Customer search */
+  /* ── Wizard step ──────────────────────────────────────────── */
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+
+  /* ── Step 1: Customer ─────────────────────────────────────── */
   const [custQuery, setCustQuery] = useState('');
   const [custResults, setCustResults] = useState<{ id: string; name: string; email: string }[]>([]);
   const [custSearching, setCustSearching] = useState(false);
@@ -702,12 +705,24 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const [selectedCustomer, setSelectedCustomer] = useState<{ id: string; name: string; email: string } | null>(null);
   const custDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* Form fields */
-  const [productId, setProductId] = useState('');
+  /* Quick-add new customer */
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [qaFirst, setQaFirst] = useState('');
+  const [qaLast, setQaLast] = useState('');
+  const [qaEmail, setQaEmail] = useState('');
+  const [qaPhone, setQaPhone] = useState('');
+  const [qaSaving, setQaSaving] = useState(false);
+  const [qaError, setQaError] = useState('');
+
+  /* ── Step 2: Rental Period ────────────────────────────────── */
   const [startDate, setStartDate] = useState('');
   const [startTime, setStartTime] = useState('09:00');
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('17:00');
+
+  /* ── Step 3: Product + Unit ───────────────────────────────── */
+  const [productId, setProductId] = useState('');
+  const [unitLabel, setUnitLabel] = useState('');
   const [notes, setNotes] = useState('');
 
   /* Pricing */
@@ -721,6 +736,31 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const selectedProduct = products.find((p) => p.id === productId) ?? null;
+
+  /* ── Helpers ─────────────────────────────────────────────── */
+  const fmtCents = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rateLabel = (p: RentalProduct) => p.dailyRate > 0
+    ? `$${p.dailyRate.toFixed(0)}/day`
+    : p.hourlyRate > 0 ? `$${p.hourlyRate.toFixed(0)}/hr` : '';
+  const catIcon: Record<string, string> = { Boat: '⛵', Kayak: '🚣', 'Paddle Board': '🏄', Dock: '⚓', Watercraft: '🚤', default: '🚤' };
+  const icon = (cat: string) => catIcon[cat] ?? catIcon.default;
+
+  const durationSummary = () => {
+    if (!startDate || !endDate) return null;
+    const ms = new Date(`${endDate}T${endTime}`).getTime() - new Date(`${startDate}T${startTime}`).getTime();
+    if (ms <= 0) return null;
+    const hrs = ms / 3600000;
+    if (hrs >= 24) {
+      const days = Math.round(hrs / 24 * 10) / 10;
+      return `${days} day${days !== 1 ? 's' : ''}`;
+    }
+    return `${Math.round(hrs * 10) / 10} hr${hrs !== 1 ? 's' : ''}`;
+  };
+
+  const initials = (name: string) => name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+
+  const inp: React.CSSProperties = { width: '100%', padding: '9px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', backgroundColor: '#FFFFFF', transition: 'border-color 0.15s' };
+  const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
 
   /* ── Customer search ──────────────────────────────────────── */
   const searchCustomers = useCallback(async (q: string) => {
@@ -742,6 +782,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const handleCustChange = (q: string) => {
     setCustQuery(q);
     setSelectedCustomer(null);
+    setShowQuickAdd(false);
     if (custDebRef.current) clearTimeout(custDebRef.current);
     custDebRef.current = setTimeout(() => searchCustomers(q), 280);
   };
@@ -751,6 +792,31 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
     setCustQuery(c.name);
     setCustResults([]);
     setShowCustDrop(false);
+    setShowQuickAdd(false);
+  };
+
+  const handleQuickAdd = async () => {
+    if (!qaFirst || !qaEmail) { setQaError('First name and email are required'); return; }
+    setQaSaving(true);
+    setQaError('');
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ firstName: qaFirst, lastName: qaLast, email: qaEmail, phone: qaPhone || undefined }),
+      });
+      const body = await res.json() as { id?: string; firstName?: string; lastName?: string; email?: string; error?: string };
+      if (!res.ok) throw new Error(body.error ?? 'Failed to create customer');
+      selectCustomer({ id: body.id!, name: `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim(), email: body.email! });
+      setQaFirst(''); setQaLast(''); setQaEmail(''); setQaPhone('');
+    } catch (err) {
+      setQaError(err instanceof Error ? err.message : 'Failed to create customer');
+    } finally {
+      setQaSaving(false);
+    }
   };
 
   /* ── Dynamic pricing quote ───────────────────────────────── */
@@ -777,28 +843,16 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
     } catch { /* ignore */ } finally { setQuoteLoading(false); }
   }, [getToken]);
 
-  // Debounce the price quote fetch whenever inputs change
   const triggerQuote = useCallback((pid: string, sd: string, st2: string, ed: string, et: string) => {
     if (quoteDebRef.current) clearTimeout(quoteDebRef.current);
-    quoteDebRef.current = setTimeout(() => fetchQuote(pid, sd, st2, ed, et), 500);
+    quoteDebRef.current = setTimeout(() => fetchQuote(pid, sd, st2, ed, et), 400);
   }, [fetchQuote]);
 
   const handleProductSelect = (pid: string) => {
     setProductId(pid);
+    setUnitLabel('');
     setQuote(null);
     triggerQuote(pid, startDate, startTime, endDate, endTime);
-  };
-  const handleDateChange = (field: 'sd' | 'st' | 'ed' | 'et', val: string) => {
-    const sd = field === 'sd' ? val : startDate;
-    const st2 = field === 'st' ? val : startTime;
-    const ed = field === 'ed' ? val : (field === 'sd' && (!endDate || val > endDate) ? val : endDate);
-    const et = field === 'et' ? val : endTime;
-    if (field === 'sd') { setStartDate(val); if (!endDate || val > endDate) setEndDate(val); }
-    else if (field === 'st') setStartTime(val);
-    else if (field === 'ed') setEndDate(val);
-    else setEndTime(val);
-    setQuote(null);
-    triggerQuote(productId, sd, st2, ed, et);
   };
 
   /* ── Submit ──────────────────────────────────────────────── */
@@ -812,6 +866,9 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
       const token = await getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
+      const noteParts = [];
+      if (unitLabel) noteParts.push(`Unit: ${unitLabel}`);
+      if (notes) noteParts.push(notes);
       const res = await fetch('/api/rentals/reservations', {
         method: 'POST',
         headers,
@@ -820,7 +877,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
           rentalProductId: productId,
           startDate: new Date(`${startDate}T${startTime}`).toISOString(),
           endDate: new Date(`${endDate}T${endTime}`).toISOString(),
-          notes: notes || undefined,
+          notes: noteParts.join(' | ') || undefined,
         }),
       });
       if (!res.ok) {
@@ -835,200 +892,341 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
     }
   };
 
-  /* ── Helpers ─────────────────────────────────────────────── */
-  const fmtCents = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const rateLabel = (p: RentalProduct) => p.dailyRate > 0
-    ? `$${p.dailyRate.toFixed(0)}/day`
-    : p.hourlyRate > 0 ? `$${p.hourlyRate.toFixed(0)}/hr` : '';
+  /* ── Step navigation ─────────────────────────────────────── */
+  const step1Valid = !!selectedCustomer;
+  const step2Valid = !!startDate && !!endDate && new Date(`${endDate}T${endTime}`) > new Date(`${startDate}T${startTime}`);
+  const step3Valid = !!productId;
 
-  const catIcon: Record<string, string> = { Boat: '⛵', Kayak: '🚣', 'Paddle Board': '🏄', Dock: '⚓', default: '🚤' };
-  const icon = (cat: string) => catIcon[cat] ?? catIcon.default;
+  const stepLabels = ['Customer', 'Rental Period', 'Product & Unit'];
 
-  const inp: React.CSSProperties = { width: '100%', padding: '9px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', backgroundColor: '#FFFFFF', transition: 'border-color 0.15s' };
-  const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
-
+  /* ── Render ──────────────────────────────────────────────── */
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', width: '860px', maxWidth: '96vw', maxHeight: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(10,35,66,0.25)' }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', width: '900px', maxWidth: '96vw', maxHeight: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(10,35,66,0.25)' }} onClick={(e) => e.stopPropagation()}>
 
         {/* Header */}
-        <div style={{ background: 'linear-gradient(135deg, #0A2342 0%, #1E3A5F 100%)', padding: '24px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+        <div style={{ background: 'linear-gradient(135deg, #0A2342 0%, #1E3A5F 100%)', padding: '20px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
           <div>
             <div style={{ fontSize: '18px', fontWeight: 700, color: '#FFFFFF' }}>New Rental Reservation</div>
-            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', marginTop: '2px' }}>Fill in the details below — pricing is calculated in real time</div>
+            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.55)', marginTop: '2px' }}>Step {step} of 3 — {stepLabels[step - 1]}</div>
           </div>
-          <button style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '8px', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={18} /></button>
+          {/* Step bubbles */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginRight: '20px' }}>
+            {stepLabels.map((label, i) => {
+              const n = i + 1;
+              const done = step > n;
+              const active = step === n;
+              return (
+                <React.Fragment key={n}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, backgroundColor: done ? '#10B981' : active ? '#00D4FF' : 'rgba(255,255,255,0.15)', color: done || active ? '#FFFFFF' : 'rgba(255,255,255,0.5)', border: active ? '2px solid #FFFFFF' : 'none', transition: 'all 0.2s' }}>
+                      {done ? '✓' : n}
+                    </div>
+                    <div style={{ fontSize: '10px', color: active ? '#00D4FF' : done ? '#10B981' : 'rgba(255,255,255,0.4)', fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</div>
+                  </div>
+                  {i < stepLabels.length - 1 && <div style={{ width: '40px', height: '1px', backgroundColor: step > n ? '#10B981' : 'rgba(255,255,255,0.2)', marginBottom: '18px', flexShrink: 0 }} />}
+                </React.Fragment>
+              );
+            })}
+          </div>
+          <button style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '8px', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#FFFFFF', flexShrink: 0 }} onClick={onClose}><X size={18} /></button>
         </div>
 
         {/* Body — two columns */}
         <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
-          {/* ── LEFT: Form ─────────────────────────────────── */}
+          {/* ── LEFT: Step content ─────────────────────────── */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', borderRight: '1px solid #F1F5F9' }}>
 
-            {/* Customer */}
-            <div style={{ marginBottom: '24px' }}>
-              <label style={lbl}>Customer</label>
-              <div style={{ position: 'relative' }}>
+            {/* ── STEP 1: Customer ── */}
+            {step === 1 && (
+              <div>
+                <div style={{ marginBottom: '8px', fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>Who is this reservation for?</div>
+                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>Search for an existing customer or add a new one.</div>
+
+                {/* Selected customer */}
                 {selectedCustomer ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px', border: '1.5px solid #10B981', borderRadius: '8px', backgroundColor: '#F0FDF4' }}>
-                    <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '14px', flexShrink: 0 }}>
-                      {selectedCustomer.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', border: '2px solid #10B981', borderRadius: '10px', backgroundColor: '#F0FDF4', marginBottom: '16px' }}>
+                    <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '15px', flexShrink: 0 }}>
+                      {initials(selectedCustomer.name)}
                     </div>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '14px' }}>{selectedCustomer.name}</div>
-                      <div style={{ fontSize: '12px', color: '#64748B' }}>{selectedCustomer.email}</div>
+                      <div style={{ fontWeight: 700, color: '#0A2342', fontSize: '15px' }}>{selectedCustomer.name}</div>
+                      <div style={{ fontSize: '13px', color: '#64748B' }}>{selectedCustomer.email}</div>
                     </div>
-                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8', padding: '2px' }} onClick={() => { setSelectedCustomer(null); setCustQuery(''); }}>
-                      <X size={14} />
+                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8', padding: '4px' }} title="Change customer" onClick={() => { setSelectedCustomer(null); setCustQuery(''); setShowQuickAdd(false); }}>
+                      <X size={16} />
                     </button>
                   </div>
                 ) : (
                   <>
-                    <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' }} />
-                    <input
-                      style={{ ...inp, paddingLeft: '36px' }}
-                      placeholder="Search customers by name or email…"
-                      value={custQuery}
-                      onChange={(e) => handleCustChange(e.target.value)}
-                      onBlur={() => setTimeout(() => setShowCustDrop(false), 160)}
-                      onFocus={() => custResults.length > 0 && setShowCustDrop(true)}
-                      autoComplete="off"
-                    />
-                    {custSearching && <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: '11px', color: '#94A3B8' }}>searching…</span>}
+                    {/* Search */}
+                    <div style={{ position: 'relative', marginBottom: '12px' }}>
+                      <Search size={15} style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' }} />
+                      <input
+                        style={{ ...inp, paddingLeft: '40px', fontSize: '14px' }}
+                        placeholder="Search by name or email…"
+                        value={custQuery}
+                        onChange={(e) => handleCustChange(e.target.value)}
+                        onBlur={() => setTimeout(() => setShowCustDrop(false), 160)}
+                        onFocus={() => custResults.length > 0 && setShowCustDrop(true)}
+                        autoFocus
+                        autoComplete="off"
+                      />
+                      {custSearching && <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: '11px', color: '#94A3B8' }}>searching…</span>}
+                      {showCustDrop && custResults.length > 0 && (
+                        <div style={{ position: 'absolute', left: 0, right: 0, top: 'calc(100% + 4px)', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 2000, overflow: 'hidden' }}>
+                          {custResults.map((c, i) => (
+                            <div key={c.id}
+                              style={{ padding: '12px 16px', cursor: 'pointer', borderBottom: i < custResults.length - 1 ? '1px solid #F8FAFC' : 'none', display: 'flex', alignItems: 'center', gap: '12px', transition: 'background 0.1s' }}
+                              onMouseDown={() => selectCustomer(c)}
+                              onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F8FAFC'; }}
+                              onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
+                            >
+                              <div style={{ width: '34px', height: '34px', borderRadius: '50%', backgroundColor: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4F46E5', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
+                                {initials(c.name)}
+                              </div>
+                              <div>
+                                <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '14px' }}>{c.name}</div>
+                                <div style={{ fontSize: '12px', color: '#94A3B8' }}>{c.email}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Add new toggle */}
+                    <button
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#0A2342', background: 'none', border: '1.5px dashed #CBD5E1', borderRadius: '8px', padding: '10px 16px', cursor: 'pointer', width: '100%', justifyContent: 'center', transition: 'all 0.15s' }}
+                      onClick={() => setShowQuickAdd((v) => !v)}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#0A2342'; (e.currentTarget as HTMLButtonElement).style.backgroundColor = '#F8FAFC'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#CBD5E1'; (e.currentTarget as HTMLButtonElement).style.backgroundColor = ''; }}
+                    >
+                      <Plus size={14} /> {showQuickAdd ? 'Cancel — search instead' : 'Add new customer'}
+                    </button>
                   </>
                 )}
-                {showCustDrop && custResults.length > 0 && (
-                  <div style={{ position: 'absolute', left: 0, right: 0, top: 'calc(100% + 4px)', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 2000, overflow: 'hidden' }}>
-                    {custResults.map((c, i) => (
-                      <div key={c.id} style={{ padding: '11px 16px', cursor: 'pointer', borderBottom: i < custResults.length - 1 ? '1px solid #F8FAFC' : 'none', display: 'flex', alignItems: 'center', gap: '10px' }}
-                        onMouseDown={() => selectCustomer(c)}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F8FAFC'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
-                      >
-                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4F46E5', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
-                          {c.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '13px' }}>{c.name}</div>
-                          <div style={{ fontSize: '11px', color: '#94A3B8' }}>{c.email}</div>
-                        </div>
+
+                {/* Quick-add form */}
+                {showQuickAdd && !selectedCustomer && (
+                  <div style={{ marginTop: '16px', padding: '20px', backgroundColor: '#F8FAFC', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginBottom: '14px' }}>New Customer Details</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                      <div>
+                        <label style={lbl}>First Name *</label>
+                        <input style={inp} placeholder="Jane" value={qaFirst} onChange={(e) => setQaFirst(e.target.value)} />
                       </div>
-                    ))}
+                      <div>
+                        <label style={lbl}>Last Name</label>
+                        <input style={inp} placeholder="Smith" value={qaLast} onChange={(e) => setQaLast(e.target.value)} />
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: '10px' }}>
+                      <label style={lbl}>Email *</label>
+                      <input style={inp} type="email" placeholder="jane@example.com" value={qaEmail} onChange={(e) => setQaEmail(e.target.value)} />
+                    </div>
+                    <div style={{ marginBottom: '14px' }}>
+                      <label style={lbl}>Phone <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+                      <input style={inp} type="tel" placeholder="+1 (555) 000-0000" value={qaPhone} onChange={(e) => setQaPhone(e.target.value)} />
+                    </div>
+                    {qaError && <div style={{ fontSize: '12px', color: '#DC2626', marginBottom: '10px' }}>{qaError}</div>}
+                    <button
+                      style={{ width: '100%', padding: '10px', fontSize: '14px', fontWeight: 700, color: '#FFFFFF', backgroundColor: qaFirst && qaEmail ? '#0A2342' : '#CBD5E1', border: 'none', borderRadius: '8px', cursor: qaFirst && qaEmail ? 'pointer' : 'not-allowed', transition: 'all 0.15s' }}
+                      onClick={handleQuickAdd}
+                      disabled={qaSaving || !qaFirst || !qaEmail}
+                    >
+                      {qaSaving ? 'Creating…' : 'Create & Select Customer'}
+                    </button>
                   </div>
                 )}
               </div>
-            </div>
+            )}
 
-            {/* Product cards */}
-            <div style={{ marginBottom: '24px' }}>
-              <label style={lbl}>Rental Product</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', paddingRight: '2px' }}>
-                {products.filter((p) => p.status === 'Available').map((p) => {
-                  const sel = productId === p.id;
-                  return (
-                    <div key={p.id}
-                      onClick={() => handleProductSelect(p.id)}
-                      style={{ padding: '12px 14px', borderRadius: '10px', border: `2px solid ${sel ? '#0A2342' : '#E2E8F0'}`, backgroundColor: sel ? '#F0F4FF' : '#FAFAFA', cursor: 'pointer', transition: 'all 0.15s' }}
-                      onMouseEnter={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#94A3B8'; }}
-                      onMouseLeave={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#E2E8F0'; }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                        <div style={{ fontSize: '20px' }}>{icon(p.type)}</div>
-                        {sel && <div style={{ width: '18px', height: '18px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#FFFFFF', fontSize: '11px', fontWeight: 800 }}>✓</span></div>}
-                      </div>
-                      <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '13px', lineHeight: '1.2', marginBottom: '2px' }}>{p.name}</div>
-                      <div style={{ fontSize: '11px', color: '#64748B' }}>{p.type}</div>
-                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginTop: '6px', fontFamily: '"JetBrains Mono", monospace' }}>{rateLabel(p)}</div>
+            {/* ── STEP 2: Rental Period ── */}
+            {step === 2 && (
+              <div>
+                <div style={{ marginBottom: '8px', fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>When is the rental?</div>
+                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '24px' }}>Set the start and end of the rental period. Pricing will be calculated once you select a product.</div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '12px', alignItems: 'start', marginBottom: '24px' }}>
+                  {/* Start */}
+                  <div>
+                    <label style={{ ...lbl, color: '#00D4FF' }}>Start</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <input style={inp} type="date" value={startDate} min={todayStr}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setStartDate(v);
+                          if (!endDate || v > endDate) setEndDate(v);
+                          setQuote(null);
+                        }} />
+                      <input style={inp} type="time" value={startTime}
+                        onChange={(e) => { setStartTime(e.target.value); setQuote(null); }} />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  </div>
 
-            {/* Dates */}
-            <div style={{ marginBottom: '24px' }}>
-              <label style={lbl}>Rental Period</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '8px', alignItems: 'center' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600 }}>START</div>
-                  <input style={inp} type="date" value={startDate} min={todayStr} onChange={(e) => handleDateChange('sd', e.target.value)} />
-                  <input style={inp} type="time" value={startTime} onChange={(e) => handleDateChange('st', e.target.value)} />
+                  <div style={{ color: '#CBD5E1', fontSize: '22px', paddingTop: '28px', textAlign: 'center' }}>→</div>
+
+                  {/* End */}
+                  <div>
+                    <label style={{ ...lbl, color: '#94A3B8' }}>End</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <input style={inp} type="date" value={endDate} min={startDate || todayStr}
+                        onChange={(e) => { setEndDate(e.target.value); setQuote(null); }} />
+                      <input style={inp} type="time" value={endTime}
+                        onChange={(e) => { setEndTime(e.target.value); setQuote(null); }} />
+                    </div>
+                  </div>
                 </div>
-                <div style={{ color: '#CBD5E1', fontSize: '18px', padding: '0 4px', marginTop: '14px' }}>→</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600 }}>END</div>
-                  <input style={inp} type="date" value={endDate} min={startDate || todayStr} onChange={(e) => handleDateChange('ed', e.target.value)} />
-                  <input style={inp} type="time" value={endTime} onChange={(e) => handleDateChange('et', e.target.value)} />
-                </div>
-              </div>
-            </div>
 
-            {/* Notes */}
-            <div>
-              <label style={lbl}>Internal Notes <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
-              <textarea style={{ ...inp, minHeight: '70px', resize: 'vertical' as const, lineHeight: '1.5' }} placeholder="Special requests, equipment notes, etc." value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </div>
-          </div>
+                {/* Duration card */}
+                {durationSummary() && (
+                  <div style={{ backgroundColor: '#EFF6FF', borderRadius: '10px', padding: '16px 20px', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    <div style={{ fontSize: '28px' }}>📅</div>
+                    <div>
+                      <div style={{ fontWeight: 700, color: '#1E40AF', fontSize: '18px' }}>{durationSummary()}</div>
+                      <div style={{ fontSize: '12px', color: '#3B82F6', marginTop: '2px' }}>
+                        {startDate} {startTime} → {endDate} {endTime}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-          {/* ── RIGHT: Pricing Summary ─────────────────────── */}
-          <div style={{ width: '280px', flexShrink: 0, backgroundColor: '#F8FAFC', overflowY: 'auto', padding: '28px 24px', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '16px' }}>Booking Summary</div>
-
-            {/* Customer pill */}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '10px', border: '1px solid #E2E8F0' }}>
-              <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>CUSTOMER</div>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: selectedCustomer ? '#0A2342' : '#CBD5E1' }}>
-                {selectedCustomer ? selectedCustomer.name : 'Not selected'}
-              </div>
-            </div>
-
-            {/* Product pill */}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '10px', border: '1px solid #E2E8F0' }}>
-              <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>PRODUCT</div>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: selectedProduct ? '#0A2342' : '#CBD5E1' }}>
-                {selectedProduct ? selectedProduct.name : 'Not selected'}
-              </div>
-              {selectedProduct && <div style={{ fontSize: '11px', color: '#64748B', marginTop: '1px' }}>{selectedProduct.type} · {rateLabel(selectedProduct)}</div>}
-            </div>
-
-            {/* Duration pill */}
-            {startDate && endDate && (
-              <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>DURATION</div>
-                <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>
-                  {(() => {
-                    const hrs = (new Date(`${endDate}T${endTime}`).getTime() - new Date(`${startDate}T${startTime}`).getTime()) / 3600000;
-                    if (hrs <= 0) return '—';
-                    if (hrs >= 24) return `${Math.round(hrs / 24 * 10) / 10} days`;
-                    return `${Math.round(hrs * 10) / 10} hrs`;
-                  })()}
-                </div>
-                <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '1px' }}>
-                  {startDate === endDate ? startDate : `${startDate} → ${endDate}`}
-                </div>
+                {startDate && endDate && !durationSummary() && (
+                  <div style={{ padding: '12px 16px', backgroundColor: '#FEF2F2', borderRadius: '8px', border: '1px solid #FECACA', fontSize: '13px', color: '#DC2626' }}>
+                    End time must be after start time.
+                  </div>
+                )}
               </div>
             )}
 
+            {/* ── STEP 3: Product + Unit ── */}
+            {step === 3 && (
+              <div>
+                <div style={{ marginBottom: '8px', fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>Select a product and unit</div>
+                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>
+                  Prices shown are calculated for your selected rental period ({durationSummary() ?? '—'}).
+                </div>
+
+                {/* Product cards */}
+                <label style={lbl}>Rental Product</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '24px' }}>
+                  {products.filter((p) => p.status === 'Available').map((p) => {
+                    const sel = productId === p.id;
+                    return (
+                      <div key={p.id}
+                        onClick={() => handleProductSelect(p.id)}
+                        style={{ padding: '14px 16px', borderRadius: '10px', border: `2px solid ${sel ? '#0A2342' : '#E2E8F0'}`, backgroundColor: sel ? '#F0F4FF' : '#FAFAFA', cursor: 'pointer', transition: 'all 0.15s', position: 'relative' }}
+                        onMouseEnter={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#94A3B8'; }}
+                        onMouseLeave={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#E2E8F0'; }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
+                          <div style={{ fontSize: '22px' }}>{icon(p.type)}</div>
+                          {sel && <div style={{ width: '20px', height: '20px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#FFFFFF', fontSize: '11px', fontWeight: 800 }}>✓</span></div>}
+                        </div>
+                        <div style={{ fontWeight: 700, color: '#0A2342', fontSize: '14px', lineHeight: '1.3', marginBottom: '2px' }}>{p.name}</div>
+                        <div style={{ fontSize: '11px', color: '#64748B', marginBottom: '8px' }}>{p.type}</div>
+                        {/* Show live price if this product is selected and quote is ready */}
+                        {sel && quoteLoading && (
+                          <div style={{ fontSize: '12px', color: '#94A3B8' }}>Calculating…</div>
+                        )}
+                        {sel && quote && !quoteLoading && (
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</div>
+                        )}
+                        {!sel && (
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748B', fontFamily: '"JetBrains Mono", monospace' }}>{rateLabel(p)}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Unit selector — appears after product chosen */}
+                {productId && (
+                  <div style={{ marginBottom: '20px' }}>
+                    <label style={lbl}>Unit <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional — specify which physical unit)</span></label>
+                    <input
+                      style={inp}
+                      placeholder={`e.g. ${selectedProduct?.name ?? 'Boat'} #1, Slip A-12, Kayak Blue…`}
+                      value={unitLabel}
+                      onChange={(e) => setUnitLabel(e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {/* Notes */}
+                <div>
+                  <label style={lbl}>Internal Notes <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+                  <textarea style={{ ...inp, minHeight: '72px', resize: 'vertical' as const, lineHeight: '1.5' }} placeholder="Special requests, equipment notes, etc." value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── RIGHT: Booking Summary ─────────────────────── */}
+          <div style={{ width: '276px', flexShrink: 0, backgroundColor: '#F8FAFC', overflowY: 'auto', padding: '28px 22px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Booking Summary</div>
+
+            {/* Customer */}
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px', border: `1px solid ${selectedCustomer ? '#10B981' : '#E2E8F0'}` }}>
+              <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Customer</div>
+              {selectedCustomer ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>{initials(selectedCustomer.name)}</div>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>{selectedCustomer.name}</div>
+                    <div style={{ fontSize: '11px', color: '#64748B' }}>{selectedCustomer.email}</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: '13px', color: '#CBD5E1' }}>Not selected</div>
+              )}
+            </div>
+
+            {/* Period */}
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px', border: `1px solid ${startDate && endDate && durationSummary() ? '#3B82F6' : '#E2E8F0'}` }}>
+              <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Rental Period</div>
+              {durationSummary() ? (
+                <>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#1E40AF' }}>{durationSummary()}</div>
+                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>{startDate} {startTime}</div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>→ {endDate} {endTime}</div>
+                </>
+              ) : (
+                <div style={{ fontSize: '13px', color: '#CBD5E1' }}>Not set</div>
+              )}
+            </div>
+
+            {/* Product */}
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px', border: `1px solid ${selectedProduct ? '#8B5CF6' : '#E2E8F0'}` }}>
+              <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Product</div>
+              {selectedProduct ? (
+                <>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>{selectedProduct.name}</div>
+                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '1px' }}>{selectedProduct.type}</div>
+                  {unitLabel && <div style={{ fontSize: '11px', color: '#7C3AED', marginTop: '3px', fontWeight: 600 }}>Unit: {unitLabel}</div>}
+                </>
+              ) : (
+                <div style={{ fontSize: '13px', color: '#CBD5E1' }}>Not selected</div>
+              )}
+            </div>
+
             {/* Price breakdown */}
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, marginTop: '6px' }}>
               {quoteLoading && (
-                <div style={{ textAlign: 'center', padding: '24px 0', color: '#94A3B8', fontSize: '13px' }}>
-                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>⏳</div>
-                  Calculating price…
+                <div style={{ textAlign: 'center', padding: '20px 0', color: '#94A3B8', fontSize: '13px' }}>
+                  <div style={{ fontSize: '22px', marginBottom: '6px' }}>⏳</div>
+                  Calculating…
                 </div>
               )}
               {quote && !quoteLoading && (
                 <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '14px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '10px' }}>PRICE BREAKDOWN</div>
-
+                  <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Price Breakdown</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '12px', color: '#64748B' }}>
-                      Base ({quote.breakdown.rateUnits} {quote.breakdown.rateType})
-                    </span>
+                    <span style={{ fontSize: '12px', color: '#64748B' }}>Base ({quote.breakdown.rateUnits} {quote.breakdown.rateType})</span>
                     <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.breakdown.baseCents)}</span>
                   </div>
-
                   {quote.breakdown.appliedRuleType && quote.breakdown.ruleMultiplier !== 1 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                       <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
@@ -1039,33 +1237,30 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                       </span>
                     </div>
                   )}
-
                   {quote.breakdown.calendarOverrideCents && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                       <span style={{ fontSize: '12px', color: '#7C3AED' }}>Calendar override</span>
                       <span style={{ fontSize: '12px', color: '#7C3AED' }}>{fmtCents(quote.breakdown.calendarOverrideCents)}/day</span>
                     </div>
                   )}
-
                   {quote.breakdown.surgeMultiplier > 1 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                       <span style={{ fontSize: '12px', color: '#DC2626' }}>🔥 Demand surge ({Math.round((quote.breakdown.surgeMultiplier - 1) * 100)}%)</span>
                       <span style={{ fontSize: '12px', color: '#DC2626' }}>+{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.surgeMultiplier - 1)))}</span>
                     </div>
                   )}
-
                   <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342' }}>Total</span>
                     <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</span>
                   </div>
                 </div>
               )}
-              {!quote && !quoteLoading && productId && startDate && endDate && (
-                <div style={{ textAlign: 'center', padding: '16px 0', color: '#94A3B8', fontSize: '12px' }}>Price will appear here</div>
+              {!quote && !quoteLoading && step === 3 && productId && (
+                <div style={{ textAlign: 'center', padding: '14px 0', color: '#94A3B8', fontSize: '12px' }}>Price will appear here</div>
               )}
-              {!productId && (
-                <div style={{ textAlign: 'center', padding: '24px 8px', color: '#CBD5E1', fontSize: '12px', lineHeight: 1.6 }}>
-                  Select a product and dates to see dynamic pricing
+              {step < 3 && !quote && (
+                <div style={{ textAlign: 'center', padding: '20px 8px', color: '#CBD5E1', fontSize: '12px', lineHeight: 1.6 }}>
+                  Complete all steps to see dynamic pricing
                 </div>
               )}
             </div>
@@ -1074,19 +1269,33 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
 
         {/* Footer */}
         <div style={{ padding: '16px 32px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, backgroundColor: '#FAFAFA' }}>
-          <div style={{ fontSize: '12px', color: '#94A3B8' }}>
-            {!canSubmit && 'Customer, product, and dates are required'}
+          <div>
+            {step > 1 && (
+              <button style={{ padding: '10px 22px', fontSize: '14px', fontWeight: 600, color: '#64748B', background: '#FFFFFF', border: '1.5px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer' }} onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
+                ← Back
+              </button>
+            )}
           </div>
-          {error && <div style={{ fontSize: '12px', color: '#DC2626', flex: 1, marginRight: '16px' }}>{error}</div>}
-          <div style={{ display: 'flex', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {error && <div style={{ fontSize: '12px', color: '#DC2626' }}>{error}</div>}
             <button style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#64748B', background: '#FFFFFF', border: '1.5px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer' }} onClick={onClose}>Cancel</button>
-            <button
-              style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 700, color: '#FFFFFF', background: canSubmit ? 'linear-gradient(135deg, #0A2342, #1E3A5F)' : '#CBD5E1', border: 'none', borderRadius: '8px', cursor: canSubmit ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: canSubmit ? '0 2px 8px rgba(10,35,66,0.3)' : 'none', transition: 'all 0.15s' }}
-              onClick={handleSubmit}
-              disabled={saving || !canSubmit}
-            >
-              {saving ? 'Creating…' : `Confirm Reservation${quote ? ` · ${fmtCents(quote.totalCents)}` : ''}`}
-            </button>
+            {step < 3 ? (
+              <button
+                style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 700, color: '#FFFFFF', background: (step === 1 ? step1Valid : step2Valid) ? 'linear-gradient(135deg, #0A2342, #1E3A5F)' : '#CBD5E1', border: 'none', borderRadius: '8px', cursor: (step === 1 ? step1Valid : step2Valid) ? 'pointer' : 'not-allowed', transition: 'all 0.15s', boxShadow: (step === 1 ? step1Valid : step2Valid) ? '0 2px 8px rgba(10,35,66,0.25)' : 'none' }}
+                disabled={step === 1 ? !step1Valid : !step2Valid}
+                onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}
+              >
+                Next →
+              </button>
+            ) : (
+              <button
+                style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 700, color: '#FFFFFF', background: canSubmit ? 'linear-gradient(135deg, #0A2342, #1E3A5F)' : '#CBD5E1', border: 'none', borderRadius: '8px', cursor: canSubmit ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: canSubmit ? '0 2px 8px rgba(10,35,66,0.3)' : 'none', transition: 'all 0.15s' }}
+                onClick={handleSubmit}
+                disabled={saving || !canSubmit || !step3Valid}
+              >
+                {saving ? 'Creating…' : `Confirm${quote ? ` · ${fmtCents(quote.totalCents)}` : ''}`}
+              </button>
+            )}
           </div>
         </div>
       </div>
