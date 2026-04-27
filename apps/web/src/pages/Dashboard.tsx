@@ -46,12 +46,14 @@ const Dashboard: React.FC = () => {
   const { data: arData, loading: arLoading } = useApi<any>('get', '/api/reports/ar-aging', { immediate: true });
   const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/api/reports/compliance', { immediate: true });
   const { data: trendData, loading: trendLoading } = useApi<any>('get', '/api/reports/revenue-trend', { immediate: true });
-  const { data: invoicesData } = useApi<any>('get', '/api/invoices?take=5&sortBy=issuedDate&sortOrder=desc', { immediate: true });
-  const { data: posData } = useApi<any>('get', '/api/pos/transactions?take=5', { immediate: true });
-  const { data: auditData } = useApi<any>('get', '/api/audit-log?limit=10', { immediate: true });
+  const { data: invoicesData, loading: invoicesLoading } = useApi<any>('get', '/api/invoices?take=5&sortBy=issuedDate&sortOrder=desc', { immediate: true });
+  const { data: posData, loading: posLoading } = useApi<any>('get', '/api/pos/transactions?take=5', { immediate: true });
+  const { data: auditData, loading: auditLoading } = useApi<any>('get', '/api/audit-log?limit=10', { immediate: true });
   const { data: transientData } = useApi<any>('get', '/api/transient?status=CHECKED_IN&take=1', { immediate: true });
   const { data: leadsData } = useApi<any>('get', '/api/leads?limit=100&page=1', { immediate: true });
   const { data: dockWalksData } = useApi<any>('get', '/api/dock-walks?status=IN_PROGRESS&take=25', { immediate: true });
+
+  const txLoading = invoicesLoading || posLoading;
 
   const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading || trendLoading;
 
@@ -714,7 +716,12 @@ const Dashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {transactions.length === 0 && (
+                {txLoading && transactions.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
+                    Loading transactions…
+                  </td></tr>
+                )}
+                {!txLoading && transactions.length === 0 && (
                   <tr><td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
                     No recent transactions
                   </td></tr>
@@ -1093,7 +1100,12 @@ const Dashboard: React.FC = () => {
             Recent Activity
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {activityFeed.length === 0 && (
+            {auditLoading && activityFeed.length === 0 && (
+              <div style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
+                Loading activity…
+              </div>
+            )}
+            {!auditLoading && activityFeed.length === 0 && (
               <div style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
                 No recent activity recorded yet
               </div>
