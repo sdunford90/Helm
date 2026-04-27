@@ -5,12 +5,26 @@ import {
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
 } from 'lucide-react';
-import CustomerForm from '../components/CustomerForm';
+import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
 import { useApi } from '../hooks/useApi';
 
 /* ── Mock Data ─────────────────────────────────────────── */
+
+interface CustomerAddress {
+  address?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+}
+
+interface CustomerEmergencyContact {
+  name?: string;
+  relationship?: string;
+  phone?: string;
+  email?: string;
+}
 
 interface CustomerDetail {
   id: string;
@@ -19,25 +33,39 @@ interface CustomerDetail {
   email: string;
   phone: string;
   company: string;
-  address: string;
-  status: 'Active' | 'Inactive' | 'Waitlist' | 'Collections Hold' | 'Seasonal';
-  dob: string;
-  dlNumber: string;
-  dlState: string;
-  dlExpiry: string;
-  emergencyName: string;
-  emergencyRelationship: string;
-  emergencyPhone: string;
-  emergencyEmail: string;
+  addressJson: CustomerAddress | null;
+  emergencyContactJson: CustomerEmergencyContact | null;
+  status: 'ACTIVE' | 'INACTIVE' | 'WAITLIST' | 'COLLECTIONS_HOLD' | 'SEASONAL';
+  dob: string | null;
+  dlNumber: string | null;
+  dlState: string | null;
+  dlExpiry: string | null;
   taxExempt: boolean;
   achBlocked: boolean;
-  created: string;
+  createdAt: string;
   openInvoices: number;
   credits: number;
   deposits: number;
   totalBoats: number;
   activeContracts: number;
   lifetimeValue: number;
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: 'Active',
+  INACTIVE: 'Inactive',
+  WAITLIST: 'Waitlist',
+  COLLECTIONS_HOLD: 'Collections Hold',
+  SEASONAL: 'Seasonal',
+};
+
+function formatAddress(a: CustomerAddress | null | undefined): string {
+  if (!a) return '—';
+  const parts: string[] = [];
+  if (a.address) parts.push(a.address);
+  const cityLine = [a.city, a.state ? `${a.state}${a.zip ? ' ' + a.zip : ''}` : a.zip].filter(Boolean).join(', ');
+  if (cityLine) parts.push(cityLine);
+  return parts.join('\n') || '—';
 }
 
 /* ── API shapes (from server) ────────────────────────────── */
@@ -191,11 +219,11 @@ const insuranceStatusColors: Record<string, { bg: string; color: string }> = {
 /* ── Styles ────────────────────────────────────────────── */
 
 const statusBadgeColors: Record<string, { bg: string; color: string }> = {
-  Active: { bg: '#E8F5E9', color: '#1B5E20' },
-  Inactive: { bg: '#F2F4F6', color: '#64748B' },
-  Waitlist: { bg: '#0A2342', color: '#FFFFFF' },
-  'Collections Hold': { bg: '#FDECEA', color: '#B71C1C' },
-  Seasonal: { bg: '#FFF3CD', color: '#856404' },
+  ACTIVE: { bg: '#E8F5E9', color: '#1B5E20' },
+  INACTIVE: { bg: '#F2F4F6', color: '#64748B' },
+  WAITLIST: { bg: '#0A2342', color: '#FFFFFF' },
+  COLLECTIONS_HOLD: { bg: '#FDECEA', color: '#B71C1C' },
+  SEASONAL: { bg: '#FFF3CD', color: '#856404' },
 };
 
 const invoiceStatusColors: Record<string, { bg: string; color: string }> = {
@@ -785,7 +813,7 @@ export default function CustomerDetailPage() {
           <div style={s.infoRow}><Mail size={14} color="#64748B" /><span>{c.email}</span></div>
           <div style={s.infoRow}><Phone size={14} color="#64748B" /><span>{c.phone}</span></div>
           <div style={s.infoRow}><Building size={14} color="#64748B" /><span>{c.company || '—'}</span></div>
-          <div style={{ ...s.infoRow, borderBottom: 'none' }}><MapPin size={14} color="#64748B" /><span style={{ whiteSpace: 'pre-line' }}>{c.address || '—'}</span></div>
+          <div style={{ ...s.infoRow, borderBottom: 'none' }}><MapPin size={14} color="#64748B" /><span style={{ whiteSpace: 'pre-line' }}>{formatAddress(c.addressJson)}</span></div>
         </div>
 
         {/* Identity Card */}
@@ -809,8 +837,8 @@ export default function CustomerDetailPage() {
           </div>
           <div style={{ ...s.infoRow, borderBottom: 'none', flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
             <span style={{ ...s.infoLabel, minWidth: 'auto' }}>Emergency Contact</span>
-            <span>{c.emergencyName} ({c.emergencyRelationship})</span>
-            <span style={{ fontSize: '13px', color: '#64748B' }}>{c.emergencyPhone} | {c.emergencyEmail}</span>
+            <span>{c.emergencyContactJson?.name || '—'} {c.emergencyContactJson?.relationship ? `(${c.emergencyContactJson.relationship})` : ''}</span>
+            <span style={{ fontSize: '13px', color: '#64748B' }}>{c.emergencyContactJson?.phone || ''}{c.emergencyContactJson?.email ? ` | ${c.emergencyContactJson.email}` : ''}</span>
           </div>
         </div>
 
@@ -1020,8 +1048,8 @@ export default function CustomerDetailPage() {
       <div style={s.headerRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <h1 style={s.name}>{c.firstName} {c.lastName}</h1>
-          <span style={{ ...s.badge, backgroundColor: badgeStyle.bg, color: badgeStyle.color, fontSize: '13px', padding: '4px 14px' }}>
-            {c.status}
+          <span style={{ ...s.badge, backgroundColor: (badgeStyle ?? statusBadgeColors.ACTIVE).bg, color: (badgeStyle ?? statusBadgeColors.ACTIVE).color, fontSize: '13px', padding: '4px 14px' }}>
+            {STATUS_LABEL[c.status] ?? c.status}
           </span>
         </div>
         <div style={s.btnGroup}>
@@ -1059,23 +1087,26 @@ export default function CustomerDetailPage() {
           initial={{
             firstName: c.firstName,
             lastName: c.lastName,
-            company: c.company,
-            email: c.email,
-            phone: c.phone,
-            address: c.address,
-            dob: c.dob,
-            dlNumber: c.dlNumber,
-            dlState: c.dlState,
-            dlExpiry: c.dlExpiry,
-            emergencyName: c.emergencyName,
-            emergencyRelationship: c.emergencyRelationship,
-            emergencyPhone: c.emergencyPhone,
-            emergencyEmail: c.emergencyEmail,
+            company: c.company ?? '',
+            email: c.email ?? '',
+            phone: c.phone ?? '',
+            address: c.addressJson?.address ?? '',
+            city: c.addressJson?.city ?? '',
+            state: c.addressJson?.state ?? '',
+            zip: c.addressJson?.zip ?? '',
+            dob: c.dob ? new Date(c.dob).toISOString().slice(0, 10) : '',
+            dlNumber: c.dlNumber ?? '',
+            dlState: c.dlState ?? '',
+            dlExpiry: c.dlExpiry ? new Date(c.dlExpiry).toISOString().slice(0, 10) : '',
+            emergencyName: c.emergencyContactJson?.name ?? '',
+            emergencyRelationship: c.emergencyContactJson?.relationship ?? '',
+            emergencyPhone: c.emergencyContactJson?.phone ?? '',
+            emergencyEmail: c.emergencyContactJson?.email ?? '',
             taxExempt: c.taxExempt,
             status: c.status,
           }}
           onClose={() => setShowEdit(false)}
-          onSave={async (data) => {
+          onSave={async (data: CustomerFormPayload) => {
             await updateCustomerApi.execute(data);
             refetchCustomer();
             setShowEdit(false);
@@ -1091,8 +1122,8 @@ export default function CustomerDetailPage() {
             email: c.email,
             phone: c.phone,
             company: c.company,
-            address: c.address,
-            status: c.status,
+            address: formatAddress(c.addressJson),
+            status: STATUS_LABEL[c.status] ?? c.status,
             boats: c.totalBoats,
             invoices: 5,
             payments: 12,

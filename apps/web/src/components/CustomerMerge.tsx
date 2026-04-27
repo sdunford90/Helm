@@ -220,8 +220,17 @@ interface ApiCustomer {
   email?: string;
   phone?: string;
   company?: string | null;
-  address?: string | null;
+  addressJson?: { address?: string; city?: string; state?: string; zip?: string } | null;
   status?: string;
+}
+
+function formatAddressFromJson(a?: { address?: string; city?: string; state?: string; zip?: string } | null): string {
+  if (!a) return '';
+  const parts: string[] = [];
+  if (a.address) parts.push(a.address);
+  const cityLine = [a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  if (cityLine) parts.push(cityLine);
+  return parts.join(', ');
 }
 
 export default function CustomerMerge({ source, onClose, onMerge }: CustomerMergeProps) {
@@ -244,7 +253,7 @@ export default function CustomerMerge({ source, onClose, onMerge }: CustomerMerg
     email: c.email ?? '',
     phone: c.phone ?? '',
     company: c.company ?? '',
-    address: c.address ?? '',
+    address: formatAddressFromJson(c.addressJson),
     status: c.status ?? '',
     boats: 0,
     invoices: 0,

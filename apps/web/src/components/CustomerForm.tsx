@@ -8,6 +8,9 @@ interface CustomerFormData {
   email: string;
   phone: string;
   address: string;
+  city: string;
+  state: string;
+  zip: string;
   dob: string;
   dlNumber: string;
   dlState: string;
@@ -21,10 +24,48 @@ interface CustomerFormData {
   status: string;
 }
 
+export interface CustomerFormPayload {
+  firstName: string;
+  lastName: string;
+  company?: string;
+  email?: string;
+  phone?: string;
+  addressJson?: { address?: string; city?: string; state?: string; zip?: string } | null;
+  dob?: string;
+  dlNumber?: string;
+  dlState?: string;
+  dlExpiry?: string;
+  emergencyContactJson?: { name?: string; relationship?: string; phone?: string; email?: string } | null;
+  taxExempt?: boolean;
+  exemptionExpiry?: string;
+  status?: string;
+}
+
 interface CustomerFormProps {
   onClose: () => void;
-  onSave: (data: CustomerFormData) => void;
-  initial?: Partial<CustomerFormData>;
+  onSave: (data: CustomerFormPayload) => void;
+  initial?: {
+    firstName?: string;
+    lastName?: string;
+    company?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    dob?: string;
+    dlNumber?: string;
+    dlState?: string;
+    dlExpiry?: string;
+    emergencyName?: string;
+    emergencyRelationship?: string;
+    emergencyPhone?: string;
+    emergencyEmail?: string;
+    taxExempt?: boolean;
+    taxCertExpiry?: string;
+    status?: string;
+  };
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -82,6 +123,11 @@ const styles: Record<string, React.CSSProperties> = {
     gridTemplateColumns: '1fr 1fr',
     gap: '16px',
   },
+  threeCol: {
+    display: 'grid',
+    gridTemplateColumns: '2fr 1fr 1fr',
+    gap: '12px',
+  },
   field: {
     display: 'flex',
     flexDirection: 'column' as const,
@@ -99,19 +145,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     color: '#0A2342',
     outline: 'none',
-    boxSizing: 'border-box' as const,
-    width: '100%',
-  },
-  textarea: {
-    padding: '8px 12px',
-    fontSize: '14px',
-    border: '1px solid #CCC',
-    borderRadius: '4px',
-    color: '#0A2342',
-    outline: 'none',
-    resize: 'vertical' as const,
-    minHeight: '72px',
-    fontFamily: 'inherit',
     boxSizing: 'border-box' as const,
     width: '100%',
   },
@@ -189,6 +222,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+const focusStyle = { borderColor: '#2E4A6B', boxShadow: '0 0 0 2px rgba(46,74,107,0.2)' };
+const blurStyle = { borderColor: '#CCC', boxShadow: 'none' };
+
 export default function CustomerForm({ onClose, onSave, initial }: CustomerFormProps) {
   const [form, setForm] = useState<CustomerFormData>({
     firstName: initial?.firstName ?? '',
@@ -197,6 +233,9 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
     email: initial?.email ?? '',
     phone: initial?.phone ?? '',
     address: initial?.address ?? '',
+    city: initial?.city ?? '',
+    state: initial?.state ?? '',
+    zip: initial?.zip ?? '',
     dob: initial?.dob ?? '',
     dlNumber: initial?.dlNumber ?? '',
     dlState: initial?.dlState ?? '',
@@ -219,15 +258,38 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
     const e: typeof errors = {};
     if (!form.firstName.trim()) e.firstName = 'Required';
     if (!form.lastName.trim()) e.lastName = 'Required';
-    if (!form.email.trim()) e.email = 'Required';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = 'Invalid email';
-    if (!form.phone.trim()) e.phone = 'Required';
+    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = 'Invalid email';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
   const handleSave = () => {
-    if (validate()) onSave(form);
+    if (!validate()) return;
+
+    const addressJson = (form.address || form.city || form.state || form.zip)
+      ? { address: form.address || undefined, city: form.city || undefined, state: form.state || undefined, zip: form.zip || undefined }
+      : null;
+
+    const emergencyContactJson = (form.emergencyName || form.emergencyPhone || form.emergencyEmail)
+      ? { name: form.emergencyName || undefined, relationship: form.emergencyRelationship || undefined, phone: form.emergencyPhone || undefined, email: form.emergencyEmail || undefined }
+      : null;
+
+    onSave({
+      firstName: form.firstName,
+      lastName: form.lastName,
+      company: form.company || undefined,
+      email: form.email || undefined,
+      phone: form.phone || undefined,
+      addressJson,
+      dob: form.dob || undefined,
+      dlNumber: form.dlNumber || undefined,
+      dlState: form.dlState || undefined,
+      dlExpiry: form.dlExpiry || undefined,
+      emergencyContactJson,
+      taxExempt: form.taxExempt,
+      exemptionExpiry: form.taxCertExpiry || undefined,
+      status: form.status || undefined,
+    });
   };
 
   const inputStyle = (key: keyof CustomerFormData): React.CSSProperties => ({
@@ -250,51 +312,66 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={styles.field}>
                 <label style={styles.label}>First Name *</label>
-                <input style={inputStyle('firstName')} value={form.firstName} onChange={(e) => set('firstName', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <input style={inputStyle('firstName')} value={form.firstName} onChange={(e) => set('firstName', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
                 {errors.firstName && <span style={styles.error}>{errors.firstName}</span>}
               </div>
               <div style={styles.field}>
                 <label style={styles.label}>Last Name *</label>
-                <input style={inputStyle('lastName')} value={form.lastName} onChange={(e) => set('lastName', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <input style={inputStyle('lastName')} value={form.lastName} onChange={(e) => set('lastName', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
                 {errors.lastName && <span style={styles.error}>{errors.lastName}</span>}
               </div>
               <div style={styles.field}>
                 <label style={styles.label}>Company</label>
-                <input style={styles.input} value={form.company} onChange={(e) => set('company', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <input style={styles.input} value={form.company} onChange={(e) => set('company', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
               </div>
               <div style={styles.field}>
-                <label style={styles.label}>Email *</label>
-                <input style={inputStyle('email')} type="email" value={form.email} onChange={(e) => set('email', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <label style={styles.label}>Email</label>
+                <input style={inputStyle('email')} type="email" value={form.email} onChange={(e) => set('email', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
                 {errors.email && <span style={styles.error}>{errors.email}</span>}
               </div>
               <div style={styles.field}>
-                <label style={styles.label}>Phone *</label>
-                <input style={inputStyle('phone')} value={form.phone} onChange={(e) => set('phone', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
-                {errors.phone && <span style={styles.error}>{errors.phone}</span>}
+                <label style={styles.label}>Phone</label>
+                <input style={styles.input} value={form.phone} onChange={(e) => set('phone', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
               </div>
             </div>
 
             {/* Right column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={styles.field}>
-                <label style={styles.label}>Address</label>
-                <textarea style={styles.textarea} value={form.address} onChange={(e) => set('address', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <label style={styles.label}>Street Address</label>
+                <input style={styles.input} value={form.address} onChange={(e) => set('address', e.target.value)} placeholder="123 Harbor Blvd" onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+              </div>
+              <div style={styles.threeCol}>
+                <div style={styles.field}>
+                  <label style={styles.label}>City</label>
+                  <input style={styles.input} value={form.city} onChange={(e) => set('city', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>State</label>
+                  <input style={styles.input} value={form.state} onChange={(e) => set('state', e.target.value)} placeholder="FL" maxLength={2} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Zip</label>
+                  <input style={styles.input} value={form.zip} onChange={(e) => set('zip', e.target.value)} placeholder="33101" maxLength={10} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+                </div>
               </div>
               <div style={styles.field}>
                 <label style={styles.label}>Date of Birth</label>
-                <input style={styles.input} type="date" value={form.dob} onChange={(e) => set('dob', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <input style={styles.input} type="date" value={form.dob} onChange={(e) => set('dob', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
               </div>
               <div style={styles.field}>
                 <label style={styles.label}>Driver's License #</label>
-                <input style={styles.input} value={form.dlNumber} onChange={(e) => set('dlNumber', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+                <input style={styles.input} value={form.dlNumber} onChange={(e) => set('dlNumber', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
               </div>
-              <div style={styles.field}>
-                <label style={styles.label}>DL State</label>
-                <input style={styles.input} value={form.dlState} onChange={(e) => set('dlState', e.target.value)} placeholder="e.g. FL" onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>DL Expiry</label>
-                <input style={styles.input} type="date" value={form.dlExpiry} onChange={(e) => set('dlExpiry', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+              <div style={styles.twoCol}>
+                <div style={styles.field}>
+                  <label style={styles.label}>DL State</label>
+                  <input style={styles.input} value={form.dlState} onChange={(e) => set('dlState', e.target.value)} placeholder="FL" onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>DL Expiry</label>
+                  <input style={styles.input} type="date" value={form.dlExpiry} onChange={(e) => set('dlExpiry', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
+                </div>
               </div>
             </div>
           </div>
@@ -304,19 +381,19 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
           <div style={styles.twoCol}>
             <div style={styles.field}>
               <label style={styles.label}>Name</label>
-              <input style={styles.input} value={form.emergencyName} onChange={(e) => set('emergencyName', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+              <input style={styles.input} value={form.emergencyName} onChange={(e) => set('emergencyName', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
             </div>
             <div style={styles.field}>
               <label style={styles.label}>Relationship</label>
-              <input style={styles.input} value={form.emergencyRelationship} onChange={(e) => set('emergencyRelationship', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+              <input style={styles.input} value={form.emergencyRelationship} onChange={(e) => set('emergencyRelationship', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
             </div>
             <div style={styles.field}>
               <label style={styles.label}>Phone</label>
-              <input style={styles.input} value={form.emergencyPhone} onChange={(e) => set('emergencyPhone', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+              <input style={styles.input} value={form.emergencyPhone} onChange={(e) => set('emergencyPhone', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
             </div>
             <div style={styles.field}>
               <label style={styles.label}>Email</label>
-              <input style={styles.input} type="email" value={form.emergencyEmail} onChange={(e) => set('emergencyEmail', e.target.value)} onFocus={(e) => { e.target.style.borderColor = '#2E4A6B'; e.target.style.boxShadow = '0 0 0 2px rgba(46,74,107,0.2)'; }} onBlur={(e) => { e.target.style.borderColor = '#CCC'; e.target.style.boxShadow = 'none'; }} />
+              <input style={styles.input} type="email" value={form.emergencyEmail} onChange={(e) => set('emergencyEmail', e.target.value)} onFocus={(e) => Object.assign(e.target.style, focusStyle)} onBlur={(e) => Object.assign(e.target.style, blurStyle)} />
             </div>
           </div>
 
@@ -349,11 +426,11 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
             <div style={styles.field}>
               <label style={styles.label}>Status</label>
               <select style={styles.select} value={form.status} onChange={(e) => set('status', e.target.value)}>
-                <option value="Active">Active</option>
-                <option value="Inactive">Inactive</option>
-                <option value="Waitlist">Waitlist</option>
-                <option value="Collections Hold">Collections Hold</option>
-                <option value="Seasonal">Seasonal</option>
+                <option value="ACTIVE">Active</option>
+                <option value="INACTIVE">Inactive</option>
+                <option value="WAITLIST">Waitlist</option>
+                <option value="COLLECTIONS_HOLD">Collections Hold</option>
+                <option value="SEASONAL">Seasonal</option>
               </select>
             </div>
           </div>

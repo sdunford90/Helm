@@ -306,14 +306,14 @@ export async function syncCustomer(customerId: string, tenantId: string): Promis
     CompanyName: (customer as any).company || undefined,
   };
 
-  // Add billing address if available
-  if ((customer as any).addressLine1) {
+  // Add billing address if available (stored as addressJson JSON object)
+  const addrJson = (customer as any).addressJson as { address?: string; city?: string; state?: string; zip?: string } | null | undefined;
+  if (addrJson?.address) {
     qboCustomerData.BillAddr = {
-      Line1: (customer as any).addressLine1,
-      Line2: (customer as any).addressLine2 || undefined,
-      City: (customer as any).city || undefined,
-      CountrySubDivisionCode: (customer as any).state || undefined,
-      PostalCode: (customer as any).zip || undefined,
+      Line1: addrJson.address,
+      City: addrJson.city || undefined,
+      CountrySubDivisionCode: addrJson.state || undefined,
+      PostalCode: addrJson.zip || undefined,
     };
   }
 

@@ -16,18 +16,38 @@ const CustomerStatusEnum = z.enum([
   "SEASONAL",
 ]);
 
+const CustomerAddressSchema = z
+  .object({
+    address: z.string().optional(),
+    city: z.string().optional(),
+    state: z.string().max(2).optional(),
+    zip: z.string().max(10).optional(),
+  })
+  .optional()
+  .nullable();
+
+const CustomerEmergencyContactSchema = z
+  .object({
+    name: z.string().optional(),
+    relationship: z.string().optional(),
+    phone: z.string().optional(),
+    email: z.string().email().optional().or(z.literal('')).optional(),
+  })
+  .optional()
+  .nullable();
+
 const CreateCustomerSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email().optional().nullable(),
   phone: z.string().optional().nullable(),
   company: z.string().optional().nullable(),
-  addressJson: z.record(z.unknown()).optional().nullable(),
+  addressJson: CustomerAddressSchema,
   dob: z.coerce.date().optional().nullable(),
   dlNumber: z.string().optional().nullable(),
   dlState: z.string().optional().nullable(),
   dlExpiry: z.coerce.date().optional().nullable(),
-  emergencyContactJson: z.record(z.unknown()).optional().nullable(),
+  emergencyContactJson: CustomerEmergencyContactSchema,
   status: CustomerStatusEnum.optional(),
   taxExempt: z.boolean().optional(),
   exemptionCertUrl: z.string().optional().nullable(),
@@ -40,12 +60,12 @@ const UpdateCustomerSchema = z.object({
   email: z.string().email().optional().nullable(),
   phone: z.string().optional().nullable(),
   company: z.string().optional().nullable(),
-  addressJson: z.record(z.unknown()).optional().nullable(),
+  addressJson: CustomerAddressSchema,
   dob: z.coerce.date().optional().nullable(),
   dlNumber: z.string().optional().nullable(),
   dlState: z.string().optional().nullable(),
   dlExpiry: z.coerce.date().optional().nullable(),
-  emergencyContactJson: z.record(z.unknown()).optional().nullable(),
+  emergencyContactJson: CustomerEmergencyContactSchema,
   status: CustomerStatusEnum.optional(),
   taxExempt: z.boolean().optional(),
   exemptionCertUrl: z.string().optional().nullable(),

@@ -68,7 +68,7 @@ const ConvertLeadSchema = z.object({
       company: z.string().optional(),
       phone: z.string().optional(),
       email: z.string().email().optional(),
-      addressJson: z.record(z.unknown()).optional(),
+      addressJson: z.object({ address: z.string().optional(), city: z.string().optional(), state: z.string().optional(), zip: z.string().optional() }).optional(),
     })
     .optional(),
   boat: z
