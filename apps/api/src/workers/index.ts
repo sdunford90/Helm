@@ -20,6 +20,7 @@ import {
   syncPayment,
   getValidAccessToken,
 } from "../services/qbo-sync.js";
+import { generateReportData, type ScheduleFormat } from "../services/report-data.js";
 
 // --------------------------------------------------------------------------
 // Email worker
@@ -401,6 +402,124 @@ deferredRevenueWorker.on("failed", (job, err) => {
 });
 
 // --------------------------------------------------------------------------
+// Report-scheduler worker — sends scheduled reports via email
+// --------------------------------------------------------------------------
+
+const reportSchedulerWorker = new Worker(
+  "report-scheduler",
+  async (job) => {
+    if (job.name !== "send-scheduled-report") {
+      console.warn(`[report-scheduler] Unknown job name: ${job.name}`);
+      return;
+    }
+
+    const { scheduleId, tenantId } = job.data as { scheduleId: string; tenantId: string };
+
+    const schedule = await prisma.scheduledReport.findFirst({
+      where: { id: scheduleId, tenantId },
+    });
+
+    if (!schedule) {
+      console.warn(`[report-scheduler] Schedule ${scheduleId} not found — skipping`);
+      return;
+    }
+
+    const now = new Date();
+
+    // If the schedule is paused, the BullMQ scheduler should have been removed
+    // in the PUT route — but guard here in case of race conditions.
+    if (schedule.status !== "Active") {
+      console.warn(`[report-scheduler] Schedule ${scheduleId} fired while Paused — skipping send`);
+      return;
+    }
+
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true, subdomain: true } });
+    const marinaName = tenant?.name ?? "Marina";
+    const marinaDomain = tenant?.subdomain ?? undefined;
+
+    const recipients = schedule.recipients.split(",").map((r) => r.trim()).filter(Boolean);
+    const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    const format = schedule.format as ScheduleFormat;
+
+    // Generate actual report data for CSV/JSON formats; include summary in email
+    const reportResult = await generateReportData(schedule.reportId, tenantId, format);
+
+    const attachmentNote = reportResult
+      ? `<p style="color:#64748B;margin:0 0 8px 0;">Your <strong>${format}</strong> report is attached to this email.</p>`
+      : `<p style="color:#64748B;margin:0 0 8px 0;">Log in to your Helm dashboard to download the full report in <strong>${format}</strong> format.</p>`;
+
+    const summarySection = reportResult?.summaryHtml
+      ? `<div style="margin-bottom:16px;">${reportResult.summaryHtml}</div>`
+      : "";
+
+    const subject = `Scheduled Report: ${schedule.reportName} — ${dateStr}`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #0A2342; padding: 24px; border-radius: 8px 8px 0 0;">
+          <h1 style="color: #00D4FF; margin: 0; font-size: 20px;">${marinaName}</h1>
+          <p style="color: #ffffff; margin: 4px 0 0 0; font-size: 13px;">Automated Report Delivery</p>
+        </div>
+        <div style="background: #ffffff; padding: 24px; border: 1px solid #E2E8F0; border-top: none; border-radius: 0 0 8px 8px;">
+          <h2 style="color: #0A2342; margin: 0 0 4px 0;">${schedule.reportName}</h2>
+          <p style="color: #94A3B8; font-size: 12px; margin: 0 0 16px 0;">${schedule.frequency} delivery — ${dateStr}</p>
+          ${summarySection}
+          ${attachmentNote}
+          <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px; margin-top: 16px; margin-bottom: 16px;">
+            <p style="color: #0A2342; font-weight: 600; margin: 0 0 4px 0;">View full interactive report</p>
+            <p style="color: #64748B; font-size: 13px; margin: 0;">Log in to view charts, filter by date range, and export in any format.</p>
+          </div>
+          <p style="color: #94A3B8; font-size: 12px; margin: 0;">You're receiving this because you're on the recipient list for this scheduled report. Manage schedules from the Reports section of your Helm dashboard.</p>
+        </div>
+      </div>
+    `;
+
+    const emailOptions = {
+      subject,
+      html,
+      tenantId,
+      ...(reportResult ? { attachments: [{ filename: reportResult.filename, content: reportResult.content }] } : {}),
+    };
+
+    for (const recipient of recipients) {
+      await sendEmail({ to: recipient, ...emailOptions }, marinaDomain);
+    }
+
+    console.log(`[report-scheduler] Sent ${schedule.reportName} (${format}) to ${recipients.length} recipient(s) for tenant ${tenantId}${reportResult ? " (with attachment)" : " (no attachment)"}`);
+
+    // Update lastRun and compute nextRun for display (BullMQ handles actual re-scheduling).
+    const nextRun = calcNextRun(schedule.frequency);
+    await prisma.scheduledReport.update({
+      where: { id: scheduleId },
+      data: { lastRun: now, nextRun },
+    });
+  },
+  { connection: redisConnection, concurrency: 3 },
+);
+
+reportSchedulerWorker.on("failed", (job, err) => {
+  console.error(`[report-scheduler] Job ${job?.id} failed:`, err.message);
+});
+
+function calcNextRun(frequency: string): Date {
+  const now = new Date();
+  if (frequency === "Daily") {
+    const next = new Date(now);
+    next.setUTCDate(next.getUTCDate() + 1);
+    next.setUTCHours(7, 0, 0, 0);
+    return next;
+  }
+  if (frequency === "Weekly") {
+    const next = new Date(now);
+    const daysUntilMonday = (8 - next.getUTCDay()) % 7 || 7;
+    next.setUTCDate(next.getUTCDate() + daysUntilMonday);
+    next.setUTCHours(7, 0, 0, 0);
+    return next;
+  }
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 7, 0, 0, 0));
+  return next;
+}
+
+// --------------------------------------------------------------------------
 // Schedule repeatable cron jobs at startup
 // --------------------------------------------------------------------------
 
@@ -467,6 +586,7 @@ async function shutdown() {
     qboSyncWorker.close(),
     billingWorker.close(),
     deferredRevenueWorker.close(),
+    reportSchedulerWorker.close(),
   ]);
   console.log("[helm-workers] All workers stopped");
   process.exit(0);

@@ -1,6 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { queues } from "../lib/queue.js";
+import { isValidScheduleFormat } from "../services/report-data.js";
 
 const router: Router = Router();
 
@@ -1080,6 +1082,196 @@ router.get("/revenue-trend", async (req: Request, res: Response, next: NextFunct
     }
 
     res.json({ months: results });
+  } catch (err) { next(err); }
+});
+
+// ─── Helpers for schedule next run / cron ────────────────────────────────────
+
+function cronForFrequency(frequency: string): string {
+  if (frequency === "Daily") return "0 7 * * *";
+  if (frequency === "Weekly") return "0 7 * * 1";  // Mondays 07:00 UTC
+  if (frequency === "Monthly") return "0 7 1 * *";  // 1st of month 07:00 UTC
+  throw new Error(`Unknown frequency: ${frequency}`);
+}
+
+function calcNextRun(frequency: string): Date {
+  const now = new Date();
+  if (frequency === "Daily") {
+    const next = new Date(now);
+    next.setUTCDate(next.getUTCDate() + 1);
+    next.setUTCHours(7, 0, 0, 0);
+    return next;
+  }
+  if (frequency === "Weekly") {
+    const next = new Date(now);
+    const daysUntilMonday = (8 - next.getUTCDay()) % 7 || 7;
+    next.setUTCDate(next.getUTCDate() + daysUntilMonday);
+    next.setUTCHours(7, 0, 0, 0);
+    return next;
+  }
+  // Monthly — first of next month at 07:00 UTC
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 7, 0, 0, 0));
+  return next;
+}
+
+// ─── GET /reports/schedules ──────────────────────────────────────────────────
+
+router.get("/schedules", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const schedules = await prisma.scheduledReport.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(schedules.map((s) => ({
+      ...s,
+      recipients: s.recipients.split(",").map((r: string) => r.trim()).filter(Boolean),
+    })));
+  } catch (err) { next(err); }
+});
+
+// ─── POST /reports/schedule ──────────────────────────────────────────────────
+
+router.post("/schedule", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { reportId, reportName, frequency, recipients, format } = req.body as {
+      reportId?: string;
+      reportName?: string;
+      frequency?: string;
+      recipients?: string[];
+      format?: string;
+    };
+
+    if (!reportId || !reportName || !frequency || !recipients || recipients.length === 0) {
+      res.status(400).json({ error: "reportId, reportName, frequency, and recipients are required" });
+      return;
+    }
+    const validFreqs = ["Daily", "Weekly", "Monthly"];
+    if (!validFreqs.includes(frequency)) {
+      res.status(400).json({ error: "frequency must be Daily, Weekly, or Monthly" });
+      return;
+    }
+    const resolvedFormat = format ?? "CSV";
+    if (!isValidScheduleFormat(resolvedFormat)) {
+      res.status(400).json({ error: "format must be CSV or JSON for scheduled delivery" });
+      return;
+    }
+    // Validate email addresses
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const invalidEmails = recipients.filter((r) => !EMAIL_RE.test(r));
+    if (invalidEmails.length > 0) {
+      res.status(400).json({ error: `Invalid email address(es): ${invalidEmails.join(", ")}` });
+      return;
+    }
+
+    const nextRun = calcNextRun(frequency);
+    const schedule = await prisma.scheduledReport.create({
+      data: {
+        tenantId,
+        reportId,
+        reportName,
+        frequency,
+        format: resolvedFormat,
+        recipients: recipients.join(", "),
+        status: "Active",
+        nextRun,
+      },
+    });
+
+    // Register a BullMQ repeatable job scheduler keyed by schedule.id.
+    // Compensate by deleting the DB row if queue registration fails.
+    try {
+      await queues["report-scheduler"].upsertJobScheduler(
+        schedule.id,
+        { pattern: cronForFrequency(frequency) },
+        { name: "send-scheduled-report", data: { scheduleId: schedule.id, tenantId } },
+      );
+    } catch (queueErr) {
+      await prisma.scheduledReport.delete({ where: { id: schedule.id } }).catch(() => {});
+      throw queueErr;
+    }
+
+    res.status(201).json({
+      ...schedule,
+      recipients: schedule.recipients.split(",").map((r: string) => r.trim()).filter(Boolean),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /reports/schedules/:id ──────────────────────────────────────────────
+
+router.put("/schedules/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { id } = req.params;
+    const { status } = req.body as { status?: string };
+
+    const existing = await prisma.scheduledReport.findFirst({ where: { id, tenantId } });
+    if (!existing) {
+      res.status(404).json({ error: "Schedule not found" });
+      return;
+    }
+
+    if (status !== undefined && !["Active", "Paused"].includes(status)) {
+      res.status(400).json({ error: "status must be Active or Paused" });
+      return;
+    }
+
+    const wasResumed = existing.status === "Paused" && status === "Active";
+    const nextRun = wasResumed ? calcNextRun(existing.frequency) : existing.nextRun;
+
+    const updated = await prisma.scheduledReport.update({
+      where: { id },
+      data: { status: status ?? existing.status, nextRun },
+    });
+
+    // Pause: remove the BullMQ scheduler entirely (no jobs will fire while paused).
+    // Resume: upsert a fresh scheduler — removes any stale schedulers first.
+    // Compensate by reverting the DB status update if the queue operation fails.
+    try {
+      if (status === "Paused") {
+        await queues["report-scheduler"].removeJobScheduler(id);
+      } else if (wasResumed) {
+        await queues["report-scheduler"].upsertJobScheduler(
+          id,
+          { pattern: cronForFrequency(existing.frequency) },
+          { name: "send-scheduled-report", data: { scheduleId: id, tenantId } },
+        );
+      }
+    } catch (queueErr) {
+      // Revert DB status to what it was before this request
+      await prisma.scheduledReport.update({
+        where: { id },
+        data: { status: existing.status, nextRun: existing.nextRun },
+      }).catch(() => {});
+      throw queueErr;
+    }
+
+    res.json({
+      ...updated,
+      recipients: updated.recipients.split(",").map((r: string) => r.trim()).filter(Boolean),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /reports/schedules/:id ───────────────────────────────────────────
+
+router.delete("/schedules/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { id } = req.params;
+
+    const existing = await prisma.scheduledReport.findFirst({ where: { id, tenantId } });
+    if (!existing) {
+      res.status(404).json({ error: "Schedule not found" });
+      return;
+    }
+
+    // Cancel the BullMQ scheduler before deleting the DB record.
+    await queues["report-scheduler"].removeJobScheduler(id);
+    await prisma.scheduledReport.delete({ where: { id } });
+    res.status(204).send();
   } catch (err) { next(err); }
 });
 

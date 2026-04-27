@@ -17,6 +17,11 @@ function getResend(): Resend | null {
 // Core send helper
 // --------------------------------------------------------------------------
 
+interface EmailAttachment {
+  filename: string;
+  content: Buffer | string;
+}
+
 interface EmailOptions {
   to: string | string[];
   from?: string;
@@ -24,6 +29,7 @@ interface EmailOptions {
   html: string;
   replyTo?: string;
   tags?: Array<{ name: string; value: string }>;
+  attachments?: EmailAttachment[];
   // Required for suppression gating and List-Unsubscribe header generation.
   // Optional ONLY for system mail with no tenant context (e.g. Helm platform
   // ops) — those should be rare and must be clearly opt-in for the recipient.
@@ -93,6 +99,16 @@ export async function sendEmail(
       headers,
       ...(options.replyTo ? { replyTo: options.replyTo } : {}),
       ...(options.tags ? { tags: options.tags } : {}),
+      ...(options.attachments && options.attachments.length > 0
+        ? {
+            attachments: options.attachments.map((a) => ({
+              filename: a.filename,
+              content: Buffer.isBuffer(a.content)
+                ? a.content.toString("base64")
+                : Buffer.from(a.content as string).toString("base64"),
+            })),
+          }
+        : {}),
     });
 
     if (error) {

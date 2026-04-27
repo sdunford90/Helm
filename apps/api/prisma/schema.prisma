@@ -283,9 +283,10 @@ model Tenant {
   users          User[]
   locations      Location[]
   saasInvoices   SaasInvoice[]
-  supportTickets SupportTicket[]
-  portalMessages PortalMessage[]
-  customRoles    CustomRole[]
+  supportTickets   SupportTicket[]
+  portalMessages   PortalMessage[]
+  customRoles      CustomRole[]
+  scheduledReports ScheduledReport[]
 
   @@map("tenants")
 }
@@ -1724,4 +1725,29 @@ model FuelDelivery {
 
   @@index([tenantId])
   @@map("fuel_deliveries")
+}
+
+// ==========================================================================
+//  SCHEDULED REPORTS
+// ==========================================================================
+
+model ScheduledReport {
+  id          String   @id @default(uuid())
+  tenantId    String
+  reportId    String
+  reportName  String
+  frequency   String   // "Daily" | "Weekly" | "Monthly"
+  format      String   @default("CSV")  // "CSV" | "JSON" (scheduled delivery only)
+  recipients  String   // comma-separated email addresses
+  status      String   @default("Active")  // "Active" | "Paused"
+  nextRun     DateTime
+  lastRun     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("scheduled_reports")
 }

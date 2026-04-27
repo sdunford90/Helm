@@ -95,6 +95,7 @@ const QUEUE_NAMES = [
   "sms",
   "renewals",
   "automation",
+  "report-scheduler",
 ] as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[number];
@@ -111,6 +112,7 @@ export const queues: Record<QueueName, Queue> = {
   sms: createQueue("sms"),
   renewals: createQueue("renewals"),
   automation: createQueue("automation"),
+  "report-scheduler": createQueue("report-scheduler"),
 };
 
 /**
