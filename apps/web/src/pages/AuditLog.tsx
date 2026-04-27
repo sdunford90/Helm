@@ -179,8 +179,11 @@ export default function AuditLog() {
         <select style={st.select} value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
           {ACTIONS.map((a) => <option key={a} value={a}>{a === 'All' ? 'All Actions' : a}</option>)}
         </select>
-        <select style={st.select} value={userFilter} onChange={(e) => setUserFilter(e.target.value)}>
-          {dynamicUsers.map((u) => <option key={u} value={u}>{u === 'All' ? 'All Users' : u}</option>)}
+        <select style={st.select} value={userFilter} onChange={(e) => setUserFilter(e.target.value)} disabled={entriesLoading}>
+          {entriesLoading
+            ? <option value="All">Loading users…</option>
+            : dynamicUsers.map((u) => <option key={u} value={u}>{u === 'All' ? 'All Users' : u}</option>)
+          }
         </select>
         <button style={st.exportBtn}><Download size={14} /> Export CSV</button>
       </div>

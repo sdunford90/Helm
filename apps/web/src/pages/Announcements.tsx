@@ -294,9 +294,9 @@ export default function Announcements() {
   const { data: rawApiAnnouncements, loading: announcementsLoading } = useApi<{ data: ApiAnnouncement[]; pagination: unknown }>('get', '/api/announcements', { immediate: true });
   const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
   const { data: rawDeliveries } = useApi<DeliveryApiResponse>('get', '/api/announcements/deliveries?take=200', { immediate: true });
-  const { data: rawAutoRules } = useApi<{ data: ApiAutoRule[] }>('get', '/api/email-automation/rules', { immediate: true });
-  const { data: rawAutoTemplates } = useApi<{ data: ApiAutoTemplate[] }>('get', '/api/email-automation/templates', { immediate: true });
-  const { data: rawAutoLogs } = useApi<{ data: ApiAutoLog[] }>('get', '/api/email-automation/logs?take=100', { immediate: true });
+  const { data: rawAutoRules, loading: loadingAutoRules } = useApi<{ data: ApiAutoRule[] }>('get', '/api/email-automation/rules', { immediate: true });
+  const { data: rawAutoTemplates, loading: loadingAutoTemplates } = useApi<{ data: ApiAutoTemplate[] }>('get', '/api/email-automation/templates', { immediate: true });
+  const { data: rawAutoLogs, loading: loadingAutoLogs } = useApi<{ data: ApiAutoLog[] }>('get', '/api/email-automation/logs?take=100', { immediate: true });
 
   const deliveryStatusMap: Record<string, DeliveryStatus> = { DELIVERED: 'Delivered', OPENED: 'Opened', BOUNCED: 'Bounced', FAILED: 'Failed' };
 
@@ -418,6 +418,7 @@ export default function Announcements() {
   // Automation state
   const [autoRules, setAutoRules] = useState<AutomationRule[]>([]);
   const [autoTab, setAutoTab] = useState<'rules' | 'templates' | 'log'>('rules');
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [editingAutoTemplate, setEditingAutoTemplate] = useState<AutoEmailTemplate | null>(null);
   const [logStatusFilter, setLogStatusFilter] = useState('All');
   const [showCreateRule, setShowCreateRule] = useState(false);
@@ -445,12 +446,13 @@ export default function Announcements() {
     const rule = autoRules.find(r => r.id === id);
     if (!rule) return;
     const newEnabled = !rule.enabled;
+    setToggleError(null);
     try {
       const token = await getToken();
       await api.put(`/email-automation/rules/${id}`, { enabled: newEnabled }, token);
       setAutoRules(prev => prev.map(r => r.id === id ? { ...r, enabled: newEnabled } : r));
     } catch {
-      // leave state unchanged on failure
+      setToggleError('Failed to save rule change. Please try again.');
     }
   };
 
@@ -828,11 +830,26 @@ export default function Announcements() {
           {/* Rules sub-tab */}
           {autoTab === 'rules' && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                {toggleError && (
+                  <div style={{ color: '#9B1C1C', background: '#FDE8E8', border: '1px solid #F98080', borderRadius: '6px', padding: '6px 12px', fontSize: '13px' }}>
+                    {toggleError}
+                  </div>
+                )}
+                <div style={{ flex: 1 }} />
                 <button style={styles.createBtn} onClick={() => setShowCreateRule(true)}>
                   <Plus size={16} /> Create Rule
                 </button>
               </div>
+              {loadingAutoRules ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>Loading rules…</div>
+              ) : autoRules.length === 0 ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748B', background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                  <CloudLightning size={32} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
+                  <div style={{ fontWeight: 600 }}>No automation rules yet</div>
+                  <div style={{ fontSize: '13px', marginTop: '4px' }}>Create a rule to start sending automated emails based on marina events.</div>
+                </div>
+              ) : (
               <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
                 <table style={styles.table}>
                   <thead>
@@ -889,6 +906,7 @@ export default function Announcements() {
                   </tbody>
                 </table>
               </div>
+              )}
             </>
           )}
 
@@ -900,8 +918,11 @@ export default function Announcements() {
                   <Plus size={16} /> Create Template
                 </button>
               </div>
+              {loadingAutoTemplates ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>Loading templates…</div>
+              ) : null}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-                {apiAutoTemplatesMapped.length === 0 && (
+                {!loadingAutoTemplates && apiAutoTemplatesMapped.length === 0 && (
                   <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px', color: '#64748B' }}>No email templates found.</div>
                 )}
                 {apiAutoTemplatesMapped.map(t => {
@@ -941,6 +962,11 @@ export default function Announcements() {
                   <option>Delivered</option><option>Opened</option><option>Bounced</option><option>Failed</option>
                 </select>
               </div>
+              {loadingAutoLogs ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>Loading send log…</div>
+              ) : apiAutoLogsMapped.length === 0 ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: '#64748B', background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0' }}>No send log entries yet.</div>
+              ) : (
               <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
                 <table style={styles.table}>
                   <thead>
@@ -956,9 +982,6 @@ export default function Announcements() {
                     </tr>
                   </thead>
                   <tbody>
-                    {!rawAutoLogs && (
-                      <tr><td colSpan={8} style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>No send log entries yet.</td></tr>
-                    )}
                     {apiAutoLogsMapped.filter(l => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => {
                       const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                       const sc = AUTO_STATUS_COLORS[l.status];
@@ -982,6 +1005,7 @@ export default function Announcements() {
                   </tbody>
                 </table>
               </div>
+              )}
             </>
           )}
 
