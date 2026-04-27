@@ -117,7 +117,7 @@ const ListReservationsQuerySchema = z.object({
   dateTo: z.string().optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
-  sortBy: z.enum(["createdAt", "startDate", "endDate", "totalCents"]).default("startDate"),
+  sortBy: z.enum(["createdAt", "startDt", "endDt", "totalCents"]).default("startDt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
@@ -723,9 +723,9 @@ router.get(
       if (query.customerId) where.customerId = query.customerId;
 
       if (query.dateFrom || query.dateTo) {
-        where.startDate = {};
-        if (query.dateFrom) (where.startDate as Record<string, unknown>).gte = new Date(query.dateFrom);
-        if (query.dateTo) (where.startDate as Record<string, unknown>).lte = new Date(query.dateTo);
+        where.startDt = {};
+        if (query.dateFrom) (where.startDt as Record<string, unknown>).gte = new Date(query.dateFrom);
+        if (query.dateTo) (where.startDt as Record<string, unknown>).lte = new Date(query.dateTo);
       }
 
       const [reservations, total] = await Promise.all([
@@ -1352,7 +1352,7 @@ router.get(
 
       const products = await prisma.rentalProduct.findMany({
         where: { tenantId },
-        select: { id: true, isActive: true },
+        select: { id: true, active: true },
       });
 
       const reservations = await prisma.reservation.findMany({
@@ -1399,7 +1399,7 @@ router.get(
           date.setUTCDate(date.getUTCDate() + i);
           const dateStr = date.toISOString().slice(0, 10);
 
-          const defaultStatus: SlotStatus = product.isActive
+          const defaultStatus: SlotStatus = product.active
             ? "available"
             : "maintenance";
           const dayData: DayData = {
@@ -1408,7 +1408,7 @@ router.get(
             evening: { status: defaultStatus },
           };
 
-          if (product.isActive) {
+          if (product.active) {
             const dayStart = new Date(`${dateStr}T00:00:00.000Z`);
             const dayEnd = new Date(`${dateStr}T23:59:59.999Z`);
 

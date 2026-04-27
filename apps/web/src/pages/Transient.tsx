@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import {
   Search,
@@ -17,6 +17,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -196,7 +197,8 @@ function getCalWindow(offsetWeeks: number) {
 
 export default function Transient() {
   const { getToken } = useAuth();
-  const { data: apiBookingData, loading } = useApi<{ data: ApiBooking[]; total: number }>('get', '/api/transient?take=100', { immediate: true });
+  const toast = useToast();
+  const { data: apiBookingData, loading, execute: refetchBookings } = useApi<{ data: ApiBooking[]; total: number }>('get', '/api/transient?take=100', { immediate: true });
   const { data: apiSlipsData } = useApi<{ data: ApiSlip[] }>('get', '/api/slips?transientCapable=true&take=50', { immediate: true });
 
   const [localBookings, setLocalBookings] = useState<Booking[]>([]);
@@ -224,6 +226,53 @@ export default function Transient() {
   const [nbRate, setNbRate] = useState('');
   const [nbPayment, setNbPayment] = useState('');
   const [nbSaving, setNbSaving] = useState(false);
+  const [nbError, setNbError] = useState('');
+
+  /* Customer search in booking form */
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [customerResults, setCustomerResults] = useState<{ id: string; name: string; email: string; phone: string }[]>([]);
+  const [customerSearching, setCustomerSearching] = useState(false);
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const customerDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const searchCustomers = useCallback(async (q: string) => {
+    if (q.trim().length < 2) { setCustomerResults([]); setShowCustomerDropdown(false); return; }
+    setCustomerSearching(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/customers?search=${encodeURIComponent(q)}&take=8`, { headers });
+      if (!res.ok) return;
+      const json = await res.json() as { data: Array<{ id: string; firstName: string; lastName: string; email: string; phone: string | null }> };
+      const list = (json.data ?? []).map((c) => ({
+        id: c.id,
+        name: `${c.firstName} ${c.lastName}`.trim(),
+        email: c.email,
+        phone: c.phone ?? '',
+      }));
+      setCustomerResults(list);
+      setShowCustomerDropdown(list.length > 0);
+    } catch { /* ignore */ } finally {
+      setCustomerSearching(false);
+    }
+  }, [getToken]);
+
+  const handleCustomerQueryChange = (q: string) => {
+    setCustomerQuery(q);
+    setNbName(q);
+    if (customerDebounceRef.current) clearTimeout(customerDebounceRef.current);
+    customerDebounceRef.current = setTimeout(() => searchCustomers(q), 300);
+  };
+
+  const selectCustomer = (c: { id: string; name: string; email: string; phone: string }) => {
+    setNbName(c.name);
+    setCustomerQuery(c.name);
+    setNbEmail(c.email);
+    setNbPhone(c.phone);
+    setCustomerResults([]);
+    setShowCustomerDropdown(false);
+  };
 
   // Fetch calendar data when the calendar tab is active or the week offset changes
   useEffect(() => {
@@ -268,7 +317,8 @@ export default function Transient() {
   const resetBookingForm = () => {
     setNbName(''); setNbEmail(''); setNbPhone(''); setNbBoat('');
     setNbLength(''); setNbSlip(''); setNbCheckIn(''); setNbCheckOut('');
-    setNbRate(''); setNbPayment('');
+    setNbRate(''); setNbPayment(''); setNbError('');
+    setCustomerQuery(''); setCustomerResults([]); setShowCustomerDropdown(false);
   };
 
   const { execute: createBookingApi } = useApi<{ data: { id: string; bookingNumber?: string } }>('post', '/api/transient');
@@ -276,6 +326,7 @@ export default function Transient() {
   const handleCreateBooking = async () => {
     if (!nbName || !nbSlip || !nbCheckIn) return;
     setNbSaving(true);
+    setNbError('');
     try {
       const nightCount = nbCheckIn && nbCheckOut
         ? Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))
@@ -284,10 +335,8 @@ export default function Transient() {
       const rateCents = Math.round(rate * 100);
       const totalCents = rateCents * nightCount;
 
-      // POST to API — slipId must be a real UUID; nbSlip holds the slip number
-      // so we use it as the display label and try to match via the slip select
-      await createBookingApi({
-        slipId: nbSlip,   // expected to be slip UUID selected in the form
+      const result = await createBookingApi({
+        slipId: nbSlip,   // UUID from the slip dropdown
         guestName: nbName,
         guestEmail: nbEmail || null,
         guestPhone: nbPhone || null,
@@ -299,14 +348,68 @@ export default function Transient() {
         totalCents,
       });
 
-      // Refresh bookings list from API by resetting localBookings
+      if (!result) throw new Error('Failed to create booking');
+
+      // Refresh data from API
       setLocalBookings([]);
+      await refetchBookings();
       resetBookingForm();
       setShowModal(false);
-    } catch {
-      // Keep modal open so the user can correct the issue
+      toast.success('Booking Created', `Transient booking for ${nbName} has been created.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create booking';
+      setNbError(msg);
     } finally {
       setNbSaving(false);
+    }
+  };
+
+  /* Check-in a booked guest (calls real API) */
+  const handleCheckIn = async (id: string, ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/transient/${id}/check-in`, { method: 'PUT', headers });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? 'Check-in failed');
+      }
+      // Optimistic update + background refresh
+      setLocalBookings((prev) =>
+        (prev.length > 0 ? prev : apiBookings).map((b) =>
+          b.id === id ? { ...b, status: 'Checked In' as BookingStatus } : b
+        )
+      );
+      toast.success('Checked In', 'Guest has been checked in successfully.');
+      void refetchBookings().then(() => setLocalBookings([]));
+    } catch (err) {
+      toast.error('Check-in Failed', err instanceof Error ? err.message : 'Could not check in guest.');
+    }
+  };
+
+  /* Check-out a guest (calls real API) */
+  const handleCheckOut = async (id: string, ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/transient/${id}/check-out`, { method: 'PUT', headers });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? 'Check-out failed');
+      }
+      setLocalBookings((prev) =>
+        (prev.length > 0 ? prev : apiBookings).map((b) =>
+          b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b
+        )
+      );
+      toast.success('Checked Out', 'Guest has been checked out. Slip is now vacant.');
+      void refetchBookings().then(() => setLocalBookings([]));
+    } catch (err) {
+      toast.error('Check-out Failed', err instanceof Error ? err.message : 'Could not check out guest.');
     }
   };
 
@@ -315,14 +418,16 @@ export default function Transient() {
   const allBookings = localBookings.length > 0 ? localBookings : apiBookings;
 
   /* Derived */
+  const todayStr = new Date().toISOString().slice(0, 10);
   const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
-  const checkInsToday = allBookings.filter((b) => b.checkIn === '2026-03-25' && (b.status === 'Booked' || b.status === 'Checked In')).length;
+  const checkInsToday = allBookings.filter((b) => b.checkIn === todayStr && (b.status === 'Booked' || b.status === 'Checked In')).length;
   const avgStay = (() => {
     const stays = allBookings.map((b) => nights(b.checkIn, b.checkOut));
     return stays.length > 0 ? (stays.reduce((a, c) => a + c, 0) / stays.length).toFixed(1) : '0';
   })();
+  const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
   const revenueMonth = allBookings
-    .filter((b) => b.checkIn.startsWith('2026-03') && b.payment !== 'Refunded')
+    .filter((b) => b.checkIn.startsWith(currentMonth) && b.payment !== 'Refunded')
     .reduce((sum, b) => sum + b.nightlyRate * nights(b.checkIn, b.checkOut), 0);
 
   const currentGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay' || b.status === 'Booked');
@@ -337,15 +442,6 @@ export default function Transient() {
     }
     return true;
   });
-
-  const handleCheckOut = (id: string, ev: React.MouseEvent) => {
-    ev.stopPropagation();
-    setLocalBookings((prev) =>
-      (prev.length > 0 ? prev : apiBookings).map((b) =>
-        b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b
-      )
-    );
-  };
 
   return (
     <div style={s.page}>
@@ -435,6 +531,14 @@ export default function Transient() {
                         </span>
                       </td>
                       <td style={s.td}>
+                        {b.status === 'Booked' && (
+                          <button
+                            style={{ ...s.actionBtn, color: '#065F46', borderColor: '#10B981', backgroundColor: '#ECFDF5' }}
+                            onClick={(ev) => handleCheckIn(b.id, ev)}
+                          >
+                            <CheckCircle size={12} /> Check In
+                          </button>
+                        )}
                         {(b.status === 'Checked In' || b.status === 'Overstay') && (
                           <button
                             style={{ ...s.actionBtn, color: '#0A2342', borderColor: '#0A2342' }}
@@ -688,11 +792,41 @@ export default function Transient() {
               <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>
             </div>
             <div style={s.modalBody}>
-              <div style={s.fieldGrid}>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Guest Name *</span>
-                  <input style={s.input} placeholder="Full name" value={nbName} onChange={(e) => setNbName(e.target.value)} />
+              {/* Customer search (live lookup + manual entry) */}
+              <div style={{ marginBottom: '16px', position: 'relative' }}>
+                <span style={s.fieldLabel}>Guest Name * <span style={{ fontWeight: 400, color: '#94A3B8', textTransform: 'none', letterSpacing: 0 }}>(type to search existing customers)</span></span>
+                <div style={{ position: 'relative' }}>
+                  <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#64748B', pointerEvents: 'none' }} />
+                  <input
+                    style={{ ...s.input, paddingLeft: '32px' }}
+                    placeholder="Guest name or search customers…"
+                    value={customerQuery}
+                    onChange={(e) => handleCustomerQueryChange(e.target.value)}
+                    onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 150)}
+                    onFocus={() => customerResults.length > 0 && setShowCustomerDropdown(true)}
+                    autoComplete="off"
+                  />
+                  {customerSearching && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#94A3B8' }}>searching…</span>}
                 </div>
+                {showCustomerDropdown && customerResults.length > 0 && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 2000, maxHeight: '200px', overflowY: 'auto' }}>
+                    {customerResults.map((c) => (
+                      <div
+                        key={c.id}
+                        style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9', transition: 'background 0.1s' }}
+                        onMouseDown={() => selectCustomer(c)}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F0F9FF'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
+                      >
+                        <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '14px' }}>{c.name}</div>
+                        <div style={{ fontSize: '12px', color: '#64748B' }}>{c.email}{c.phone ? ` · ${c.phone}` : ''}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={s.fieldGrid}>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Email</span>
                   <input style={s.input} placeholder="email@example.com" type="email" value={nbEmail} onChange={(e) => setNbEmail(e.target.value)} />
@@ -710,22 +844,24 @@ export default function Transient() {
                   <input style={s.input} placeholder="e.g. 32" type="number" value={nbLength} onChange={(e) => setNbLength(e.target.value)} />
                 </div>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Slip *</span>
+                  <span style={s.fieldLabel}>Slip * <span style={{ fontWeight: 400, color: '#94A3B8', textTransform: 'none', letterSpacing: 0 }}>(transient-capable)</span></span>
                   <select style={{ ...s.input, ...s.select }} value={nbSlip} onChange={(e) => setNbSlip(e.target.value)}>
-                    <option value="">Select slip...</option>
-                    {slipOptions.length === 0 && <option value="">Loading slips...</option>}
+                    <option value="">Select available slip…</option>
+                    {slipOptions.length === 0 && <option disabled>Loading slips…</option>}
                     {slipOptions.map((sl) => (
-                      <option key={sl.id} value={sl.slipNumber}>{sl.slipNumber}</option>
+                      <option key={sl.id} value={sl.id}>
+                        Slip {sl.slipNumber}{sl.lengthFt ? ` (${sl.lengthFt} × ${sl.widthFt} ft)` : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Check-In Date *</span>
-                  <input style={s.input} type="date" value={nbCheckIn} onChange={(e) => setNbCheckIn(e.target.value)} />
+                  <input style={s.input} type="date" value={nbCheckIn} min={todayStr} onChange={(e) => setNbCheckIn(e.target.value)} />
                 </div>
                 <div style={s.field}>
-                  <span style={s.fieldLabel}>Check-Out Date</span>
-                  <input style={s.input} type="date" value={nbCheckOut} onChange={(e) => setNbCheckOut(e.target.value)} />
+                  <span style={s.fieldLabel}>Expected Check-Out</span>
+                  <input style={s.input} type="date" value={nbCheckOut} min={nbCheckIn || todayStr} onChange={(e) => setNbCheckOut(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Nightly Rate ($)</span>
@@ -734,7 +870,7 @@ export default function Transient() {
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Payment Method</span>
                   <select style={{ ...s.input, ...s.select }} value={nbPayment} onChange={(e) => setNbPayment(e.target.value)}>
-                    <option value="">Select...</option>
+                    <option value="">Select…</option>
                     <option value="Credit Card">Credit Card</option>
                     <option value="Cash">Cash</option>
                     <option value="Check">Check</option>
@@ -742,16 +878,31 @@ export default function Transient() {
                   </select>
                 </div>
               </div>
-              {(!nbName || !nbSlip || !nbCheckIn) && (
-                <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Guest name, slip, and check-in date are required</div>
+
+              {/* Price preview */}
+              {nbRate && nbCheckIn && nbCheckOut && (
+                <div style={{ backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '12px 16px', marginTop: '12px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 600, color: '#0369A1', marginBottom: '4px' }}>Estimated Total</div>
+                  <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                    {fmt$(parseFloat(nbRate) * Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000)))}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                    {fmt$(parseFloat(nbRate))} × {Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))} night(s)
+                  </div>
+                </div>
+              )}
+
+              {nbError && <div style={{ fontSize: 12, color: '#EF4444', marginTop: 10, padding: '8px 12px', backgroundColor: '#FEF2F2', borderRadius: '4px', border: '1px solid #FECACA' }}>{nbError}</div>}
+              {(!customerQuery || !nbSlip || !nbCheckIn) && !nbError && (
+                <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>* Guest name, slip, and check-in date are required</div>
               )}
             </div>
             <div style={s.modalFooter}>
               <button style={s.cancelBtn} onClick={() => { setShowModal(false); resetBookingForm(); }}>Cancel</button>
               <button
-                style={{ ...s.primaryBtn, opacity: (!nbName || !nbSlip || !nbCheckIn) ? 0.5 : 1 }}
+                style={{ ...s.primaryBtn, opacity: (!customerQuery || !nbSlip || !nbCheckIn) ? 0.5 : 1 }}
                 onClick={handleCreateBooking}
-                disabled={nbSaving || !nbName || !nbSlip || !nbCheckIn}
+                disabled={nbSaving || !customerQuery || !nbSlip || !nbCheckIn}
               >
                 <CreditCard size={16} /> {nbSaving ? 'Creating…' : 'Create Booking'}
               </button>

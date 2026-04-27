@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
   Star, Clock, Users, Filter, Eye, Edit2, Trash2,
 } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
 import { useApi } from '../hooks/useApi';
@@ -664,6 +665,236 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
   );
 }
 
+/* ── New Reservation Modal ───────────────────────────────── */
+
+interface NewReservationModalProps {
+  products: RentalProduct[];
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}
+
+function NewReservationModal({ products, onClose, onCreated }: NewReservationModalProps) {
+  const { getToken } = useAuth();
+
+  /* Customer search */
+  const [custQuery, setCustQuery] = useState('');
+  const [custResults, setCustResults] = useState<{ id: string; name: string; email: string }[]>([]);
+  const [custSearching, setCustSearching] = useState(false);
+  const [showCustDrop, setShowCustDrop] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* Form fields */
+  const [productId, setProductId] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [startTime, setStartTime] = useState('08:00');
+  const [endDate, setEndDate] = useState('');
+  const [endTime, setEndTime] = useState('17:00');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const searchCustomers = async (q: string) => {
+    if (q.trim().length < 2) { setCustResults([]); setShowCustDrop(false); return; }
+    setCustSearching(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/customers?search=${encodeURIComponent(q)}&take=8`, { headers });
+      if (!res.ok) return;
+      const json = await res.json() as { data: Array<{ id: string; firstName: string; lastName: string; email: string }> };
+      const list = (json.data ?? []).map((c) => ({
+        id: c.id,
+        name: `${c.firstName} ${c.lastName}`.trim(),
+        email: c.email,
+      }));
+      setCustResults(list);
+      setShowCustDrop(list.length > 0);
+    } catch { /* ignore */ } finally {
+      setCustSearching(false);
+    }
+  };
+
+  const handleCustChange = (q: string) => {
+    setCustQuery(q);
+    setSelectedCustomerId('');
+    if (debRef.current) clearTimeout(debRef.current);
+    debRef.current = setTimeout(() => searchCustomers(q), 300);
+  };
+
+  const selectCustomer = (c: { id: string; name: string; email: string }) => {
+    setCustQuery(`${c.name} — ${c.email}`);
+    setSelectedCustomerId(c.id);
+    setCustResults([]);
+    setShowCustDrop(false);
+  };
+
+  /* Price estimate (client-side, based on product rates) */
+  const selectedProduct = products.find((p) => p.id === productId);
+  const priceEstimate = (() => {
+    if (!selectedProduct || !startDate || !endDate) return null;
+    const start = new Date(`${startDate}T${startTime}`);
+    const end = new Date(`${endDate}T${endTime}`);
+    const hrs = (end.getTime() - start.getTime()) / 3600000;
+    if (hrs <= 0) return null;
+    const days = hrs / 24;
+    if (days >= 1 && selectedProduct.dailyRate > 0) {
+      return { amount: Math.ceil(days) * selectedProduct.dailyRate, label: `${Math.ceil(days)} day(s) × $${selectedProduct.dailyRate.toFixed(2)}/day` };
+    }
+    return { amount: Math.ceil(hrs) * selectedProduct.hourlyRate, label: `${Math.ceil(hrs)} hour(s) × $${selectedProduct.hourlyRate.toFixed(2)}/hr` };
+  })();
+
+  const canSubmit = !!selectedCustomerId && !!productId && !!startDate && !!endDate;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSaving(true);
+    setError('');
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch('/api/rentals/reservations', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          customerId: selectedCustomerId,
+          rentalProductId: productId,
+          startDate: new Date(`${startDate}T${startTime}`).toISOString(),
+          endDate: new Date(`${endDate}T${endTime}`).toISOString(),
+          notes: notes || null,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? `Request failed (${res.status})`);
+      }
+      await onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create reservation');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const iStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', width: '100%' };
+  const lStyle: React.CSSProperties = { fontSize: '13px', fontWeight: 600, color: '#0A2342', marginBottom: '4px', display: 'block' };
+
+  return (
+    <div style={st.overlay} onClick={onClose}>
+      <div style={{ ...st.modal, width: '600px', maxWidth: '95vw' }} onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>New Rental Reservation</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={st.modalBody}>
+          {/* Customer search */}
+          <div style={{ marginBottom: '16px', position: 'relative' }}>
+            <label style={lStyle}>Customer * <span style={{ fontWeight: 400, color: '#94A3B8', fontSize: '12px' }}>type to search</span></label>
+            <div style={{ position: 'relative' }}>
+              <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#64748B', pointerEvents: 'none' }} />
+              <input
+                style={{ ...iStyle, paddingLeft: '32px' }}
+                placeholder="Search by name or email…"
+                value={custQuery}
+                onChange={(e) => handleCustChange(e.target.value)}
+                onBlur={() => setTimeout(() => setShowCustDrop(false), 150)}
+                onFocus={() => custResults.length > 0 && setShowCustDrop(true)}
+                autoComplete="off"
+              />
+              {custSearching && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#94A3B8' }}>searching…</span>}
+              {selectedCustomerId && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: '#10B981' }}>✓</span>}
+            </div>
+            {showCustDrop && custResults.length > 0 && (
+              <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 2000, maxHeight: '200px', overflowY: 'auto' }}>
+                {custResults.map((c) => (
+                  <div
+                    key={c.id}
+                    style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}
+                    onMouseDown={() => selectCustomer(c)}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F0F9FF'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
+                  >
+                    <div style={{ fontWeight: 600, color: '#0A2342' }}>{c.name}</div>
+                    <div style={{ fontSize: '12px', color: '#64748B' }}>{c.email}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Product select */}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={lStyle}>Rental Product *</label>
+            <select style={{ ...iStyle, cursor: 'pointer' }} value={productId} onChange={(e) => setProductId(e.target.value)}>
+              <option value="">Select a product…</option>
+              {products.filter((p) => p.status === 'Available').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.type}) — ${p.dailyRate > 0 ? `${p.dailyRate.toFixed(2)}/day` : `${p.hourlyRate.toFixed(2)}/hr`}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date range */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+            <div>
+              <label style={lStyle}>Start Date *</label>
+              <input style={iStyle} type="date" value={startDate} min={todayStr} onChange={(e) => { setStartDate(e.target.value); if (!endDate || e.target.value > endDate) setEndDate(e.target.value); }} />
+            </div>
+            <div>
+              <label style={lStyle}>Start Time</label>
+              <input style={iStyle} type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </div>
+            <div>
+              <label style={lStyle}>End Date *</label>
+              <input style={iStyle} type="date" value={endDate} min={startDate || todayStr} onChange={(e) => setEndDate(e.target.value)} />
+            </div>
+            <div>
+              <label style={lStyle}>End Time</label>
+              <input style={iStyle} type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={lStyle}>Notes</label>
+            <textarea style={{ ...iStyle, minHeight: '64px', resize: 'vertical' as const }} placeholder="Any special requests or notes…" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+
+          {/* Price estimate */}
+          {priceEstimate && (
+            <div style={{ backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '12px 16px', marginBottom: '16px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: '#0369A1', marginBottom: '2px' }}>Estimated Total</div>
+              <div style={{ fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                ${priceEstimate.amount.toFixed(2)}
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>{priceEstimate.label} · Final price calculated with dynamic pricing</div>
+            </div>
+          )}
+
+          {error && (
+            <div style={{ fontSize: 13, color: '#9B1C1C', padding: '10px 14px', backgroundColor: '#FDE8E8', borderRadius: '4px', border: '1px solid #FCA5A5', marginBottom: '8px' }}>{error}</div>
+          )}
+        </div>
+        <div style={st.modalFooter}>
+          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button
+            style={{ ...st.saveBtn, opacity: canSubmit ? 1 : 0.5 }}
+            onClick={handleSubmit}
+            disabled={saving || !canSubmit}
+          >
+            {saving ? 'Creating…' : 'Create Reservation'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Duration CRUD ───────────────────────────────────────── */
 
 interface Duration {
@@ -831,12 +1062,13 @@ export default function Rentals() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
+  const [showNewRes, setShowNewRes] = useState(false);
   const [selectedRes, setSelectedRes] = useState<Reservation | null>(null);
   const [localProducts, setLocalProducts] = useState<RentalProduct[]>([]);
 
   // API calls
   const { data: apiProductData, loading: loadingProducts } = useApi<{ data: ApiRentalProduct[]; pagination: unknown }>('get', '/api/rentals/products', { immediate: true });
-  const { data: apiReservationData, loading: loadingRes } = useApi<{ data: ApiReservation[]; pagination: unknown }>('get', '/api/rentals/reservations?take=100', { immediate: true });
+  const { data: apiReservationData, loading: loadingRes, execute: refetchReservations } = useApi<{ data: ApiReservation[]; pagination: unknown }>('get', '/api/rentals/reservations?take=100', { immediate: true });
   const { data: apiPricingRuleData } = useApi<{ data: ApiPricingRule[]; pagination: unknown }>('get', '/api/rentals/pricing-rules', { immediate: true });
   const { data: apiAvailabilityData } = useApi<{ data: Record<string, Record<string, DayAvailability>> }>('get', '/api/rentals/availability', { immediate: true });
   const availabilityData: Record<string, Record<string, DayAvailability>> = apiAvailabilityData?.data ?? {};
@@ -1017,6 +1249,10 @@ export default function Rentals() {
               <option>Cancelled</option>
               <option>No Show</option>
             </select>
+            <div style={{ flex: 1 }} />
+            <button style={{ ...st.addBtn }} onClick={() => setShowNewRes(true)}>
+              <Plus size={16} /> New Reservation
+            </button>
           </div>
           <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
@@ -1201,6 +1437,17 @@ export default function Rentals() {
 
       {showAdd && <AddProductModal onClose={() => setShowAdd(false)} onSave={handleAddProduct} />}
       {selectedRes && <ReservationDetail res={selectedRes} onClose={() => setSelectedRes(null)} />}
+      {showNewRes && (
+        <NewReservationModal
+          products={products}
+          onClose={() => setShowNewRes(false)}
+          onCreated={async () => {
+            setShowNewRes(false);
+            await refetchReservations();
+            toast.success('Reservation Created', 'The rental reservation has been confirmed.');
+          }}
+        />
+      )}
     </div>
   );
 }
