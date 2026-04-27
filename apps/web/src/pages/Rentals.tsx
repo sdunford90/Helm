@@ -519,20 +519,23 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Add Product Modal ─────────────────────────────────── */
 
-function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p: RentalProduct) => void }) {
+function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p: RentalProduct & { floorPriceCents?: number; ceilingPriceCents?: number; damageWaiverCents?: number }) => void }) {
   const [name, setName] = useState('');
   const [type, setType] = useState('');
   const [capacity, setCapacity] = useState('');
   const [hourlyRate, setHourlyRate] = useState('');
   const [halfDayRate, setHalfDayRate] = useState('');
   const [dailyRate, setDailyRate] = useState('');
+  const [floorPrice, setFloorPrice] = useState('');
+  const [ceilingPrice, setCeilingPrice] = useState('');
+  const [damageWaiver, setDamageWaiver] = useState('');
   const [status, setStatus] = useState<ProductStatus>('Available');
   const [saving, setSaving] = useState(false);
 
   const handleSave = () => {
     if (!name || !type) return;
     setSaving(true);
-    const product: RentalProduct = {
+    const product = {
       id: `prod-${Date.now()}`,
       name,
       type,
@@ -543,11 +546,18 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
       status,
       rating: 0,
       totalBookings: 0,
+      floorPriceCents: floorPrice ? Math.round(parseFloat(floorPrice) * 100) : undefined,
+      ceilingPriceCents: ceilingPrice ? Math.round(parseFloat(ceilingPrice) * 100) : undefined,
+      damageWaiverCents: damageWaiver ? Math.round(parseFloat(damageWaiver) * 100) : undefined,
     };
     onSave(product);
     setSaving(false);
     onClose();
   };
+
+  const labelWithHint = (label: string, hint: string) => (
+    <label style={st.label}>{label} <span style={{ fontWeight: 400, color: '#94A3B8', fontSize: '11px' }}>{hint}</span></label>
+  );
 
   return (
     <div style={st.overlay} onClick={onClose}>
@@ -572,6 +582,7 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
                 <option>Paddleboard</option>
                 <option>Sailboat</option>
                 <option>Powerboat</option>
+                <option>Other</option>
               </select>
             </div>
             <div style={st.field}>
@@ -591,14 +602,34 @@ function AddProductModal({ onClose, onSave }: { onClose: () => void; onSave: (p:
               <input style={st.input} type="number" placeholder="450.00" value={dailyRate} onChange={(e) => setDailyRate(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Status</label>
-              <select style={{ ...st.input, cursor: 'pointer' }} value={status} onChange={(e) => setStatus(e.target.value as ProductStatus)}>
-                <option>Available</option>
-                <option>Maintenance</option>
-                <option>Retired</option>
-              </select>
+              <label style={st.label}>Damage Waiver ($)</label>
+              <input style={st.input} type="number" placeholder="0.00" value={damageWaiver} onChange={(e) => setDamageWaiver(e.target.value)} />
             </div>
           </div>
+
+          <div style={{ borderTop: '1px solid #E2E8F0', margin: '16px 0 12px', paddingTop: '12px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '12px' }}>Price Limits (optional)</div>
+            <div style={st.twoCol} className="helm-form-grid">
+              <div style={st.field}>
+                {labelWithHint('Floor Price ($)', '— minimum charge')}
+                <input style={st.input} type="number" placeholder="e.g. 50.00" value={floorPrice} onChange={(e) => setFloorPrice(e.target.value)} />
+              </div>
+              <div style={st.field}>
+                {labelWithHint('Ceiling Price ($)', '— maximum charge')}
+                <input style={st.input} type="number" placeholder="e.g. 150.00" value={ceilingPrice} onChange={(e) => setCeilingPrice(e.target.value)} />
+              </div>
+            </div>
+          </div>
+
+          <div style={st.field}>
+            <label style={st.label}>Status</label>
+            <select style={{ ...st.input, cursor: 'pointer' }} value={status} onChange={(e) => setStatus(e.target.value as ProductStatus)}>
+              <option>Available</option>
+              <option>Maintenance</option>
+              <option>Retired</option>
+            </select>
+          </div>
+
           {(!name || !type) && <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Name and Type are required</div>}
         </div>
         <div style={st.modalFooter}>
@@ -1981,7 +2012,7 @@ function DurationsTab() {
 export default function Rentals() {
   const toast = useToast();
   const [tab, setTab] = useState<'products' | 'reservations' | 'availability' | 'settings'>('products');
-  const [settingsTab, setSettingsTab] = useState<'timeslots' | 'units' | 'durations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('timeslots');
+  const [settingsTab, setSettingsTab] = useState<'timeslots' | 'units' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('timeslots');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -1997,9 +2028,21 @@ export default function Rentals() {
   const availabilityData: Record<string, Record<string, DayAvailability>> = apiAvailabilityData?.data ?? {};
   const createProduct = useApi<ApiRentalProduct>('post', '/api/rentals/products');
 
-  const handleAddProduct = (p: RentalProduct) => {
+  const handleAddProduct = (p: RentalProduct & { floorPriceCents?: number; ceilingPriceCents?: number; damageWaiverCents?: number }) => {
     setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : products)]);
-    createProduct.execute({ body: { name: p.name, category: p.type, basePriceCents: Math.round(p.hourlyRate * 100), hourlyRateCents: Math.round(p.hourlyRate * 100), dailyRateCents: Math.round(p.dailyRate * 100), active: true } }).catch(() => {});
+    createProduct.execute({
+      body: {
+        name: p.name,
+        category: p.type,
+        basePriceCents: Math.round(p.hourlyRate * 100),
+        hourlyRateCents: Math.round(p.hourlyRate * 100),
+        dailyRateCents: Math.round(p.dailyRate * 100),
+        ...(p.floorPriceCents != null && { floorPriceCents: p.floorPriceCents }),
+        ...(p.ceilingPriceCents != null && { ceilingPriceCents: p.ceilingPriceCents }),
+        ...(p.damageWaiverCents != null && { damageWaiverCents: p.damageWaiverCents }),
+        isActive: true,
+      },
+    }).catch(() => {});
   };
 
   const products = useMemo(
@@ -2027,7 +2070,6 @@ export default function Rentals() {
   const settingsTabs: { key: typeof settingsTab; label: string }[] = [
     { key: 'timeslots', label: 'Time Slots' },
     { key: 'units', label: 'Units' },
-    { key: 'durations', label: 'Durations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
     { key: 'calendar', label: 'Pricing Calendar' },
@@ -2263,8 +2305,6 @@ export default function Rentals() {
           {settingsTab === 'timeslots' && <TimeSlotsTab />}
 
           {settingsTab === 'units' && <UnitsTab products={products} />}
-
-          {settingsTab === 'durations' && <DurationsTab />}
 
           {settingsTab === 'pricing' && (
             <>
