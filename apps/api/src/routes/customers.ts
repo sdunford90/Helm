@@ -171,8 +171,31 @@ router.get(
         prisma.customer.count({ where }),
       ]);
 
+      // Aggregate open invoice balance per customer
+      const customerIds = customers.map((c) => c.id);
+      const balanceRows = customerIds.length > 0
+        ? await prisma.invoice.groupBy({
+            by: ["customerId"],
+            _sum: { balanceCents: true },
+            where: {
+              customerId: { in: customerIds },
+              tenantId,
+              status: { in: ["ISSUED", "PAST_DUE"] },
+            },
+          })
+        : [];
+
+      const balanceMap = new Map(
+        balanceRows.map((r) => [r.customerId, r._sum.balanceCents ?? 0]),
+      );
+
+      const data = customers.map((c) => ({
+        ...c,
+        openBalanceCents: balanceMap.get(c.id) ?? 0,
+      }));
+
       res.json({
-        data: customers,
+        data,
         pagination: {
           skip: query.skip,
           take: query.take,

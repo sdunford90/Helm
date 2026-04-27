@@ -19,6 +19,7 @@ interface Customer {
   status: 'ACTIVE' | 'INACTIVE' | 'WAITLIST' | 'COLLECTIONS_HOLD' | 'SEASONAL';
   boats: Boat[];
   _count: { invoices: number; slipContracts: number };
+  openBalanceCents: number;
   taxExempt: boolean;
   achBlocked: boolean;
   createdAt: string;
@@ -274,7 +275,7 @@ export default function Customers() {
                 <th style={styles.th}>Phone</th>
                 <th style={styles.th}>Status</th>
                 <th style={{ ...styles.th, textAlign: 'center' }}>Boats</th>
-                <th style={{ ...styles.th, textAlign: 'center' }}>Invoices</th>
+                <th style={{ ...styles.th, textAlign: 'right' }}>Open Balance</th>
                 <th style={styles.th}>Created</th>
               </tr>
             </thead>
@@ -307,8 +308,8 @@ export default function Customers() {
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>
                       {c.boats.length}
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>
-                      {c._count.invoices}
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {(c.openBalanceCents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
                     </td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
                       {new Date(c.createdAt).toLocaleDateString()}
