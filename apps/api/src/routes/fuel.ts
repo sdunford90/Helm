@@ -76,7 +76,7 @@ router.get("/types", async (_req: Request, res: Response) => {
 
 // ─── PUT /fuel/types/:id/price ────────────────────────────────────────────────
 
-router.put("/types/:id/price", requireRole("admin", "manager"), async (req: Request, res: Response, next: NextFunction) => {
+router.put("/types/:id/price", requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER"), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = UpdatePriceSchema.parse(req.body);
     const ft = FUEL_TYPES.find((f) => f.id === req.params.id);
@@ -169,7 +169,7 @@ router.get("/sales", async (req: Request, res: Response, next: NextFunction) => 
 
 // ─── POST /fuel/deliveries ────────────────────────────────────────────────────
 
-router.post("/deliveries", requireRole("admin", "manager"), async (req: Request, res: Response, next: NextFunction) => {
+router.post("/deliveries", requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER"), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.tenantId!;
     const body = LogDeliverySchema.parse(req.body);
@@ -256,7 +256,7 @@ router.get("/tank-levels", async (_req: Request, res: Response) => {
 
 // ─── GET /fuel/reports ────────────────────────────────────────────────────────
 
-router.get("/reports", requireRole("admin", "manager", "accounting"), async (req: Request, res: Response, next: NextFunction) => {
+router.get("/reports", requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER", "ACCOUNTING"), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.tenantId!;
     const sales = await prisma.fuelSale.findMany({ where: { tenantId } });

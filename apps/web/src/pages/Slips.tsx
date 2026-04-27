@@ -35,6 +35,63 @@ interface Slip {
   meterReadings: Array<{ date: string; kWh: number; amount: number }>;
 }
 
+// Shape returned by the API
+interface ApiSlip {
+  id: string;
+  slipNumber: string;
+  dockId: string;
+  lengthFt: number;
+  beamFt: number;
+  depthFt: number;
+  slipType: string;
+  shorePower: string;
+  electricityMode: string;
+  status: string;
+  currentOccupant?: {
+    customer: { firstName: string; lastName: string } | null;
+    boat?: { name: string; lengthFt: number } | null;
+    startDate?: string;
+    endDate?: string;
+  } | null;
+}
+
+const API_TO_SLIP_STATUS: Record<string, SlipStatus> = {
+  OCCUPIED: 'Occupied',
+  VACANT: 'Vacant',
+  MAINTENANCE: 'Maintenance',
+  RESERVED: 'Reserved',
+};
+
+function toSlip(s: ApiSlip): Slip {
+  const occupant = s.currentOccupant?.customer
+    ? `${s.currentOccupant.customer.firstName} ${s.currentOccupant.customer.lastName}`
+    : '';
+  return {
+    id: s.id,
+    number: s.slipNumber,
+    dock: s.dockId,
+    length: s.lengthFt,
+    beam: s.beamFt,
+    draft: s.depthFt,
+    height: 0,
+    type: s.slipType,
+    power: s.shorePower,
+    electricityMode: s.electricityMode,
+    status: API_TO_SLIP_STATUS[s.status] ?? 'Vacant',
+    occupant,
+    compliance: 100,
+    occupantDetail: s.currentOccupant
+      ? {
+          name: occupant,
+          boat: s.currentOccupant.boat?.name ?? '',
+          contractStart: s.currentOccupant.startDate ?? '',
+          contractEnd: s.currentOccupant.endDate ?? '',
+        }
+      : undefined,
+    meterReadings: [],
+  };
+}
+
 /* ── Styles ─────────────────────────────────────────────── */
 
 const statusColors: Record<SlipStatus, { bg: string; color: string; border?: string }> = {
@@ -743,11 +800,11 @@ export default function Slips() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
 
-  const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
+  const { data: apiResp, loading, error } = useApi<{ data: ApiSlip[] }>('get', '/api/slips', { immediate: true });
   const createSlip = useApi<Slip>('post', '/api/slips');
   const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
 
-  const slips = (apiSlips || []).map((s) => ({ ...s, ...localOverrides[s.id] }));
+  const slips = (apiResp?.data ?? []).map((s) => ({ ...toSlip(s), ...localOverrides[s.id] }));
 
   const updateSlipLocally = (id: string, patch: Partial<Slip>) => {
     setLocalOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));

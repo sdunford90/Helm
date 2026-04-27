@@ -7,7 +7,7 @@ import { isValidScheduleFormat } from "../services/report-data.js";
 const router: Router = Router();
 
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager", "accounting"));
+router.use(requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER", "ACCOUNTING"));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
