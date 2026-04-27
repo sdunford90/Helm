@@ -296,7 +296,7 @@ export default function Announcements() {
   const { data: rawDeliveries } = useApi<DeliveryApiResponse>('get', '/api/announcements/deliveries?take=200', { immediate: true });
   const { data: rawAutoRules, loading: loadingAutoRules } = useApi<{ data: ApiAutoRule[] }>('get', '/api/email-automation/rules', { immediate: true });
   const { data: rawAutoTemplates, loading: loadingAutoTemplates } = useApi<{ data: ApiAutoTemplate[] }>('get', '/api/email-automation/templates', { immediate: true });
-  const { data: rawAutoLogs, loading: loadingAutoLogs } = useApi<{ data: ApiAutoLog[] }>('get', '/api/email-automation/logs?take=100', { immediate: true });
+  const { data: rawAutoLogs, loading: loadingAutoLogs } = useApi<{ data: ApiAutoLog[] }>('get', '/api/email-automation/logs?take=50', { immediate: true });
 
   const deliveryStatusMap: Record<string, DeliveryStatus> = { DELIVERED: 'Delivered', OPENED: 'Opened', BOUNCED: 'Bounced', FAILED: 'Failed' };
 
