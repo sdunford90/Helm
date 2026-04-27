@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { useBranding } from '../context/BrandingContext';
 import {
   Building2, Palette, CreditCard, Link, ShieldCheck,
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
@@ -330,6 +331,7 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 export default function Settings() {
   const { getToken } = useAuth();
   const { modules, setModule } = useModules();
+  const { applyBranding } = useBranding();
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations'>('profile');
 
   // API calls
@@ -369,6 +371,7 @@ export default function Settings() {
     setBrandingError(null);
     const result = await saveBranding({ logoUrl: logoUrl ?? '', primaryColor, secondaryColor, faviconUrl, companyDisplayName, tagline });
     if (result) {
+      applyBranding(primaryColor, secondaryColor);
       setSavedMsg('Branding saved successfully!');
       setTimeout(() => setSavedMsg(null), 2000);
     } else {

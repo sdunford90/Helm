@@ -32,6 +32,7 @@ import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
 import ESignPage from './pages/ESignPage';
 import { ModulesProvider, useModules } from './context/ModulesContext';
+import { BrandingProvider } from './context/BrandingContext';
 
 function AppRoutes() {
   const { modules } = useModules();
@@ -82,8 +83,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <ModulesProvider>
-      <AppRoutes />
-    </ModulesProvider>
+    <BrandingProvider>
+      <ModulesProvider>
+        <AppRoutes />
+      </ModulesProvider>
+    </BrandingProvider>
   );
 }

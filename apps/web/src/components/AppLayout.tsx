@@ -85,7 +85,7 @@ const styles = {
   } as React.CSSProperties,
   sidebar: {
     width: 260,
-    backgroundColor: '#0A2342',
+    backgroundColor: 'var(--brand-primary)',
     color: '#FFFFFF',
     display: 'flex',
     flexDirection: 'column',
@@ -126,7 +126,7 @@ const styles = {
   navItemActive: {
     color: '#FFFFFF',
     backgroundColor: 'rgba(255,255,255,0.08)',
-    borderLeftColor: '#00D4FF',
+    borderLeftColor: 'var(--brand-secondary)',
   } as React.CSSProperties,
   main: {
     marginLeft: 260,
@@ -172,13 +172,13 @@ const styles = {
     width: 32,
     height: 32,
     borderRadius: '50%',
-    backgroundColor: '#00D4FF',
+    backgroundColor: 'var(--brand-secondary)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: '13px',
     fontWeight: 600,
-    color: '#0A2342',
+    color: 'var(--brand-primary)',
   } as React.CSSProperties,
   content: {
     flex: 1,
@@ -222,7 +222,7 @@ export default function AppLayout() {
   if (!isLoaded) {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#F7F9FB' }}>
-        <div style={{ width: 260, backgroundColor: '#0A2342', flexShrink: 0, position: 'fixed', top: 0, left: 0, bottom: 0 }} />
+        <div style={{ width: 260, backgroundColor: 'var(--brand-primary)', flexShrink: 0, position: 'fixed', top: 0, left: 0, bottom: 0 }} />
         <div style={{ marginLeft: 260, flex: 1, display: 'flex', flexDirection: 'column' }}>
           <div style={{ height: 64, backgroundColor: '#FFFFFF', borderBottom: '1px solid #F2F4F6' }} />
         </div>
@@ -325,7 +325,7 @@ export default function AppLayout() {
                   whiteSpace: 'nowrap' as const,
                 }}
               >
-                <MapPin size={14} style={{ color: '#00D4FF' }} />
+                <MapPin size={14} style={{ color: 'var(--brand-secondary)' }} />
                 {selectedLocation?.name ?? 'Select location'}
                 <ChevronDown size={14} style={{ color: '#64748B' }} />
               </button>
@@ -368,9 +368,9 @@ export default function AppLayout() {
                         fontWeight: loc.id === currentLocationId ? 600 : 400,
                       }}
                     >
-                      <MapPin size={14} style={{ color: loc.id === currentLocationId ? '#00D4FF' : '#94A3B8' }} />
+                      <MapPin size={14} style={{ color: loc.id === currentLocationId ? 'var(--brand-secondary)' : '#94A3B8' }} />
                       {loc.name}
-                      {loc.id === currentLocationId && <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Current</span>}
+                      {loc.id === currentLocationId && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
                     </button>
                   ))}
                 </div>

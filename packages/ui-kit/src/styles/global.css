@@ -1,6 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=DM+Serif+Display&family=JetBrains+Mono:wght@400;600&display=swap');
 
 :root {
+  /* Brand colors — overridden at runtime by BrandingProvider */
+  --brand-primary: #0A2342;
+  --brand-secondary: #00D4FF;
+
   /* Colors */
   --color-navy: #0A2342;
   --color-cyan: #00D4FF;
