@@ -905,7 +905,10 @@ export default function Reports() {
       )}
 
       {/* -------- Delete Confirmation Dialog -------- */}
-      {deleteConfirmId && (
+      {deleteConfirmId && (() => {
+        const scheduleToDelete = scheduledReports.find(s => s.id === deleteConfirmId);
+        const reportName = scheduleToDelete?.reportName;
+        return (
         <div style={styles.overlay} onClick={() => setDeleteConfirmId(null)}>
           <div
             style={{ ...styles.modal, width: '400px', padding: '28px' }}
@@ -916,10 +919,15 @@ export default function Reports() {
               <div style={{ width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)', flexShrink: 0 }}>
                 <Trash2 size={20} color="#EF4444" />
               </div>
-              <h2 style={{ ...styles.modalTitle, fontSize: '18px' }}>Delete Schedule?</h2>
+              <h2 style={{ ...styles.modalTitle, fontSize: '18px' }}>
+                {reportName ? <>Delete &lsquo;{reportName}&rsquo; schedule?</> : 'Delete schedule?'}
+              </h2>
             </div>
             <p style={{ margin: '0 0 24px 0', fontSize: '14px', color: '#64748B', lineHeight: 1.6 }}>
-              This scheduled report will stop being delivered. This action cannot be undone.
+              {reportName
+                ? <>&ldquo;{reportName}&rdquo; will stop being delivered. This action cannot be undone.</>
+                : 'This scheduled report will stop being delivered. This action cannot be undone.'
+              }
             </p>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
               <button
@@ -941,7 +949,8 @@ export default function Reports() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* -------- In-App Report Viewer -------- */}
       {viewingReport && (
