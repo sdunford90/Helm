@@ -1205,7 +1205,12 @@ router.put("/schedules/:id", async (req: Request, res: Response, next: NextFunct
   try {
     const tenantId = (req as any).tenantId;
     const { id } = req.params;
-    const { status } = req.body as { status?: string };
+    const { status, frequency, format, recipients } = req.body as {
+      status?: string;
+      frequency?: string;
+      format?: string;
+      recipients?: string[];
+    };
 
     const existing = await prisma.scheduledReport.findFirst({ where: { id, tenantId } });
     if (!existing) {
@@ -1218,32 +1223,80 @@ router.put("/schedules/:id", async (req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const wasResumed = existing.status === "Paused" && status === "Active";
-    const nextRun = wasResumed ? calcNextRun(existing.frequency) : existing.nextRun;
+    if (frequency !== undefined && !["Daily", "Weekly", "Monthly"].includes(frequency)) {
+      res.status(400).json({ error: "frequency must be Daily, Weekly, or Monthly" });
+      return;
+    }
+
+    if (format !== undefined && !isValidScheduleFormat(format)) {
+      res.status(400).json({ error: "format must be CSV or JSON for scheduled delivery" });
+      return;
+    }
+
+    if (recipients !== undefined) {
+      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const emails = Array.isArray(recipients) ? recipients : [];
+      const invalidEmails = emails.filter((r) => !EMAIL_RE.test(r));
+      if (invalidEmails.length > 0) {
+        res.status(400).json({ error: `Invalid email address(es): ${invalidEmails.join(", ")}` });
+        return;
+      }
+      if (emails.length === 0) {
+        res.status(400).json({ error: "At least one recipient email is required" });
+        return;
+      }
+    }
+
+    const newStatus = status ?? existing.status;
+    const newFrequency = (frequency ?? existing.frequency) as "Daily" | "Weekly" | "Monthly";
+    const frequencyChanged = frequency !== undefined && frequency !== existing.frequency;
+    const wasResumed = existing.status === "Paused" && newStatus === "Active";
+
+    // Recalculate nextRun when frequency changes or schedule is resumed
+    const nextRun =
+      frequencyChanged || wasResumed ? calcNextRun(newFrequency) : existing.nextRun;
+
+    const updateData: Record<string, unknown> = {
+      status: newStatus,
+      frequency: newFrequency,
+      nextRun,
+    };
+
+    if (format !== undefined) updateData.format = format;
+    if (recipients !== undefined) {
+      updateData.recipients = Array.isArray(recipients)
+        ? recipients.join(",")
+        : String(recipients);
+    }
 
     const updated = await prisma.scheduledReport.update({
       where: { id },
-      data: { status: status ?? existing.status, nextRun },
+      data: updateData,
     });
 
     // Pause: remove the BullMQ scheduler entirely (no jobs will fire while paused).
-    // Resume: upsert a fresh scheduler — removes any stale schedulers first.
-    // Compensate by reverting the DB status update if the queue operation fails.
+    // Resume or frequency change on active schedule: upsert a fresh scheduler.
+    // Compensate by reverting the DB update if the queue operation fails.
     try {
-      if (status === "Paused") {
+      if (newStatus === "Paused") {
         await queues["report-scheduler"].removeJobScheduler(id);
-      } else if (wasResumed) {
+      } else if (wasResumed || (frequencyChanged && newStatus === "Active")) {
         await queues["report-scheduler"].upsertJobScheduler(
           id,
-          { pattern: cronForFrequency(existing.frequency) },
+          { pattern: cronForFrequency(newFrequency) },
           { name: "send-scheduled-report", data: { scheduleId: id, tenantId } },
         );
       }
     } catch (queueErr) {
-      // Revert DB status to what it was before this request
       await prisma.scheduledReport.update({
         where: { id },
-        data: { status: existing.status, nextRun: existing.nextRun },
+        data: {
+          status: existing.status,
+          frequency: existing.frequency,
+          format: existing.format,
+          recipients: existing.recipients,
+          nextRun: existing.nextRun,
+        },
       }).catch(() => {});
       throw queueErr;
     }

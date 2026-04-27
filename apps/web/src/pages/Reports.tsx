@@ -28,6 +28,7 @@ import {
   Target,
   Package,
   Filter,
+  Pencil,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -223,6 +224,7 @@ export default function Reports() {
 
   // Schedule form modal
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
   const [scheduleReportId, setScheduleReportId] = useState(reportCards[0].id);
   const [scheduleFrequency, setScheduleFrequency] = useState<'Daily' | 'Weekly' | 'Monthly'>('Weekly');
   const [scheduleFormat, setScheduleFormat] = useState<ScheduleFormat>('CSV');
@@ -248,11 +250,22 @@ export default function Reports() {
     loadSchedules();
   }, [loadSchedules]);
 
-  const openScheduleModal = () => {
-    setScheduleReportId(reportCards[0].id);
-    setScheduleFrequency('Weekly');
-    setScheduleFormat('CSV');
-    setScheduleRecipients('');
+  const openScheduleModal = (existing?: ScheduledReport) => {
+    if (existing) {
+      setEditingScheduleId(existing.id);
+      setScheduleReportId(existing.reportId);
+      setScheduleFrequency(existing.frequency);
+      setScheduleFormat(existing.format as ScheduleFormat);
+      setScheduleRecipients(
+        Array.isArray(existing.recipients) ? existing.recipients.join(', ') : existing.recipients,
+      );
+    } else {
+      setEditingScheduleId(null);
+      setScheduleReportId(reportCards[0].id);
+      setScheduleFrequency('Weekly');
+      setScheduleFormat('CSV');
+      setScheduleRecipients('');
+    }
     setScheduleModalOpen(true);
   };
 
@@ -267,12 +280,21 @@ export default function Reports() {
     setScheduleSaving(true);
     try {
       const token = await getToken();
-      await api.post(
-        '/api/reports/schedule',
-        { reportId: scheduleReportId, reportName: card.title, frequency: scheduleFrequency, format: scheduleFormat, recipients: emails },
-        token,
-      );
-      toast.success('Schedule created', `${card.title} will be emailed ${scheduleFrequency.toLowerCase()} to ${emails.length} recipient(s)`);
+      if (editingScheduleId) {
+        await api.put(
+          `/api/reports/schedules/${editingScheduleId}`,
+          { frequency: scheduleFrequency, format: scheduleFormat, recipients: emails },
+          token,
+        );
+        toast.success('Schedule updated', `${card.title} updated — next run recalculated`);
+      } else {
+        await api.post(
+          '/api/reports/schedule',
+          { reportId: scheduleReportId, reportName: card.title, frequency: scheduleFrequency, format: scheduleFormat, recipients: emails },
+          token,
+        );
+        toast.success('Schedule created', `${card.title} will be emailed ${scheduleFrequency.toLowerCase()} to ${emails.length} recipient(s)`);
+      }
       setScheduleModalOpen(false);
       await loadSchedules();
     } catch (err) {
@@ -493,7 +515,7 @@ export default function Reports() {
           <div style={styles.tableWrap} className="helm-table-wrap">
             <div style={styles.tableHeader}>
               <h3 style={styles.tableTitle}>Scheduled Reports</h3>
-              <button style={styles.btnPrimary} onClick={openScheduleModal}>
+              <button style={styles.btnPrimary} onClick={() => openScheduleModal()}>
                 <Plus size={14} /> Add Schedule
               </button>
             </div>
@@ -515,7 +537,11 @@ export default function Reports() {
                 ) : scheduledReports.length === 0 ? (
                   <tr><td colSpan={7} style={{ padding: '48px 24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px' }}>No scheduled reports configured. Click "Add Schedule" to set up automated report delivery.</td></tr>
                 ) : scheduledReports.map((sr) => (
-                  <tr key={sr.id}>
+                  <tr
+                    key={sr.id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => openScheduleModal(sr)}
+                  >
                     <td style={styles.td}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                         <Calendar size={14} color="#64748B" />
@@ -543,8 +569,16 @@ export default function Reports() {
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
                           style={{ ...styles.btnSecondary, padding: '4px 10px', fontSize: '12px' }}
+                          title="Edit schedule"
+                          onClick={(e) => { e.stopPropagation(); openScheduleModal(sr); }}
+                        >
+                          <Pencil size={12} />
+                          Edit
+                        </button>
+                        <button
+                          style={{ ...styles.btnSecondary, padding: '4px 10px', fontSize: '12px' }}
                           title={sr.status === 'Active' ? 'Pause' : 'Resume'}
-                          onClick={() => toggleSchedule(sr)}
+                          onClick={(e) => { e.stopPropagation(); toggleSchedule(sr); }}
                         >
                           {sr.status === 'Active' ? <Pause size={12} /> : <Play size={12} />}
                           {sr.status === 'Active' ? 'Pause' : 'Resume'}
@@ -552,7 +586,7 @@ export default function Reports() {
                         <button
                           style={{ ...styles.btnSecondary, padding: '4px 8px', fontSize: '12px', color: '#EF4444', borderColor: '#FECACA' }}
                           title="Delete schedule"
-                          onClick={() => deleteSchedule(sr.id)}
+                          onClick={(e) => { e.stopPropagation(); deleteSchedule(sr.id); }}
                         >
                           <Trash2 size={12} />
                         </button>
@@ -739,12 +773,12 @@ export default function Reports() {
         </div>
       )}
 
-      {/* -------- Schedule Creation Modal -------- */}
+      {/* -------- Schedule Create / Edit Modal -------- */}
       {scheduleModalOpen && (
         <div style={styles.overlay} onClick={() => setScheduleModalOpen(false)}>
           <div style={styles.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h2 style={styles.modalTitle}>Add Scheduled Report</h2>
+              <h2 style={styles.modalTitle}>{editingScheduleId ? 'Edit Scheduled Report' : 'Add Scheduled Report'}</h2>
               <button style={styles.closeBtn} onClick={() => setScheduleModalOpen(false)}>
                 <X size={20} />
               </button>
@@ -753,14 +787,18 @@ export default function Reports() {
             <div style={styles.formGroup}>
               <label style={styles.label}>Report</label>
               <select
-                style={styles.select}
+                style={{ ...styles.select, opacity: editingScheduleId ? 0.6 : 1, cursor: editingScheduleId ? 'not-allowed' : 'pointer' }}
                 value={scheduleReportId}
+                disabled={!!editingScheduleId}
                 onChange={(e) => setScheduleReportId(e.target.value)}
               >
                 {reportCards.map((r) => (
                   <option key={r.id} value={r.id}>{r.title}</option>
                 ))}
               </select>
+              {editingScheduleId && (
+                <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#94A3B8' }}>Report type cannot be changed — delete and recreate to switch reports</p>
+              )}
             </div>
 
             <div style={styles.formGroup}>
@@ -819,7 +857,7 @@ export default function Reports() {
               disabled={scheduleSaving}
               onClick={saveSchedule}
             >
-              {scheduleSaving ? 'Saving...' : 'Create Schedule'}
+              {scheduleSaving ? 'Saving...' : editingScheduleId ? 'Save Changes' : 'Create Schedule'}
             </button>
           </div>
         </div>
