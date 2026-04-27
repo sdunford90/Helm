@@ -45,8 +45,14 @@ const Dashboard: React.FC = () => {
   const { data: revenueApiData, loading: revenueLoading } = useApi<any>('get', '/api/reports/revenue', { immediate: true });
   const { data: arData, loading: arLoading } = useApi<any>('get', '/api/reports/ar-aging', { immediate: true });
   const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/api/reports/compliance', { immediate: true });
+  const { data: trendData, loading: trendLoading } = useApi<any>('get', '/api/reports/revenue-trend', { immediate: true });
+  const { data: invoicesData } = useApi<any>('get', '/api/invoices?take=5&sortBy=issuedDate&sortOrder=desc', { immediate: true });
+  const { data: posData } = useApi<any>('get', '/api/pos/transactions?take=5', { immediate: true });
+  const { data: auditData } = useApi<any>('get', '/api/audit-log?take=10', { immediate: true });
+  const { data: transientData } = useApi<any>('get', '/api/transient?status=CHECKED_IN&take=1', { immediate: true });
+  const { data: leadsData } = useApi<any>('get', '/api/leads?take=200', { immediate: true });
 
-  const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading;
+  const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading || trendLoading;
 
   const periods: TimePeriod[] = ['Today', 'This Week', 'This Month', 'This Quarter'];
 
@@ -228,131 +234,186 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // --- KPI metadata; values are merged from API below ---
-  const kpiDefinitions = [
+  // --- Helpers ---
+  const fmtDollars = (cents: number) =>
+    '$' + Math.round(cents / 100).toLocaleString('en-US');
+
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  // --- KPI values derived from API ---
+  const occupancyRate = occupancyData?.summary
+    ? `${Math.round(parseFloat(occupancyData.summary.occupancyRate))}%`
+    : '—';
+  const occupancySub = occupancyData?.summary
+    ? `${occupancyData.summary.occupied} / ${occupancyData.summary.total} slips occupied`
+    : 'Loading…';
+
+  const monthlyRevenue = revenueApiData?.revenue
+    ? fmtDollars(revenueApiData.revenue.totalCents)
+    : '—';
+  const revenueSub = (() => {
+    const now = new Date();
+    return now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + ' to date';
+  })();
+
+  const arTotal = arData ? fmtDollars(arData.totalOutstanding ?? 0) : '—';
+  const arOverdueCents = arData?.buckets
+    ? (arData.buckets.days30 ?? 0) + (arData.buckets.days60 ?? 0) + (arData.buckets.days90 ?? 0) + (arData.buckets.days120plus ?? 0)
+    : 0;
+  const arSub = arData ? `${fmtDollars(arOverdueCents)} overdue (30+ days)` : 'Loading…';
+  const arTrendText = arData ? `${fmtDollars(arOverdueCents)} overdue` : '';
+
+  const reservationCount = transientData?.pagination?.total ?? '—';
+  const checkedInCount = transientData?.data?.filter((b: any) => b.status === 'CHECKED_IN').length ?? 0;
+
+  const now30DaysAgo = new Date();
+  now30DaysAgo.setDate(now30DaysAgo.getDate() - 30);
+  const recentLeads = leadsData?.data?.filter((l: any) => new Date(l.createdAt) >= now30DaysAgo) ?? [];
+  const qualifiedLeads = recentLeads.filter((l: any) => l.stage === 'Qualified' || l.stage === 'QUALIFIED').length;
+
+  const insCompliant = complianceData?.insurance?.compliant ?? 0;
+  const insTotal = complianceData?.insurance?.total ?? 0;
+  const insExpiringSoon = complianceData?.insurance?.expiringSoon ?? 0;
+  const insExpired = complianceData?.insurance?.expired ?? 0;
+  const complianceScore = insTotal > 0
+    ? `${Math.round((insCompliant / insTotal) * 100)}%`
+    : insTotal === 0 ? 'N/A' : '—';
+  const complianceSub = insTotal > 0
+    ? `${insExpiringSoon} expiring · ${insExpired} expired`
+    : 'No insurance records yet';
+
+  const kpis = [
     {
       label: 'Occupancy Rate',
-      value: '87%',
-      sub: '78 / 90 slips occupied',
+      value: occupancyRate,
+      sub: occupancySub,
       trend: 'up' as const,
-      trendText: '+3% vs last month',
+      trendText: occupancyRate,
       icon: <Anchor size={18} color={colors.cyan} />,
     },
     {
       label: 'Monthly Revenue',
-      value: '$124,850',
-      sub: 'March 2026 to date',
+      value: monthlyRevenue,
+      sub: revenueSub,
       trend: 'up' as const,
-      trendText: '+12% vs last month',
+      trendText: 'Current month',
       icon: <DollarSign size={18} color={colors.cyan} />,
     },
     {
       label: 'Outstanding A/R',
-      value: '$18,420',
-      sub: '$4,200 overdue (30+ days)',
+      value: arTotal,
+      sub: arSub,
       trend: 'down' as const,
-      trendText: '$4,200 overdue',
+      trendText: arTrendText,
       icon: <FileText size={18} color={colors.cyan} />,
     },
     {
       label: 'Active Reservations',
-      value: '14',
-      sub: '6 checked in today',
+      value: String(reservationCount),
+      sub: checkedInCount > 0 ? `${checkedInCount} checked in today` : 'Transient dock',
       trend: 'up' as const,
-      trendText: '+4 this week',
+      trendText: 'Checked in',
       icon: <CalendarCheck size={18} color={colors.cyan} />,
     },
     {
       label: 'New Leads',
-      value: '8',
-      sub: 'This week \u00B7 3 qualified',
+      value: String(recentLeads.length),
+      sub: `Last 30 days · ${qualifiedLeads} qualified`,
       trend: 'up' as const,
-      trendText: '+2 vs last week',
+      trendText: 'Last 30 days',
       icon: <Users size={18} color={colors.cyan} />,
     },
     {
       label: 'Compliance Score',
-      value: '94%',
-      sub: '2 items expiring this week',
-      trend: 'up' as const,
-      trendText: 'On track',
+      value: complianceScore,
+      sub: complianceSub,
+      trend: (insExpired > 0 || insExpiringSoon > 0) ? 'down' as const : 'up' as const,
+      trendText: insExpired > 0 ? `${insExpired} expired` : insExpiringSoon > 0 ? `${insExpiringSoon} expiring soon` : 'On track',
       icon: <ShieldCheck size={18} color={colors.cyan} />,
     },
   ];
 
-  // Merge API data into KPIs when available
-  const kpis = kpiDefinitions.map((kpi) => {
-    if (kpi.label === 'Occupancy Rate' && occupancyData) {
-      return { ...kpi, value: `${occupancyData.rate ?? kpi.value}`, sub: occupancyData.sub ?? kpi.sub, trendText: occupancyData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Monthly Revenue' && revenueApiData) {
-      return { ...kpi, value: revenueApiData.total ?? kpi.value, sub: revenueApiData.sub ?? kpi.sub, trendText: revenueApiData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Outstanding A/R' && arData) {
-      return { ...kpi, value: arData.total ?? kpi.value, sub: arData.sub ?? kpi.sub, trendText: arData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Compliance Score' && complianceData) {
-      return { ...kpi, value: complianceData.score ?? kpi.value, sub: complianceData.sub ?? kpi.sub, trendText: complianceData.trendText ?? kpi.trendText };
-    }
-    return kpi;
-  });
+  const revenueData: { month: string; value: number }[] = trendData?.months
+    ? trendData.months.map((m: any) => ({ month: m.month, value: m.totalCents / 100 }))
+    : [];
 
-  const revenueData = [
-    { month: 'Oct', value: 98200 },
-    { month: 'Nov', value: 105400 },
-    { month: 'Dec', value: 87600 },
-    { month: 'Jan', value: 92300 },
-    { month: 'Feb', value: 111500 },
-    { month: 'Mar', value: 124850 },
-  ];
+  const maxRevenue = revenueData.length > 0 ? Math.max(...revenueData.map((d) => d.value), 1) : 1;
+  const trendTotal = revenueData.reduce((s, d) => s + d.value, 0);
+  const trendAvg = revenueData.length > 0 ? trendTotal / revenueData.length : 0;
 
-  const maxRevenue = Math.max(...revenueData.map((d) => d.value));
-
-  const transactions = [
-    { id: '1049', date: 'Mar 25', desc: 'Slip Rental - B12', customer: 'James Harlow', amount: '$2,450.00', status: 'Paid', type: 'invoice' },
-    { id: 'pos-201', date: 'Mar 25', desc: 'POS Sale - Fuel', customer: 'Sarah Mitchell', amount: '$387.50', status: 'Completed', type: 'pos' },
-    { id: '1048', date: 'Mar 24', desc: 'Invoice #1048', customer: 'Coastal Charters LLC', amount: '$6,800.00', status: 'Pending', type: 'invoice' },
-    { id: '1047', date: 'Mar 24', desc: 'Slip Rental - A05', customer: 'Robert Chen', amount: '$1,950.00', status: 'Paid', type: 'invoice' },
-    { id: '1045', date: 'Mar 23', desc: 'Maintenance Fee', customer: 'David Thompson', amount: '$425.00', status: 'Overdue', type: 'invoice' },
-    { id: 'pos-200', date: 'Mar 23', desc: 'POS Sale - Ship Store', customer: 'Maria Garcia', amount: '$128.75', status: 'Completed', type: 'pos' },
-    { id: '1046', date: 'Mar 22', desc: 'Invoice #1046', customer: 'Blue Water Excursions', amount: '$3,200.00', status: 'Paid', type: 'invoice' },
-    { id: '1044', date: 'Mar 22', desc: 'Rental Booking - C08', customer: "Kevin O\u2019Malley", amount: '$1,875.00', status: 'Pending', type: 'invoice' },
-  ];
+  const INV_STATUS_MAP: Record<string, string> = {
+    PAID: 'Paid', ISSUED: 'Pending', PAST_DUE: 'Overdue', VOID: 'Void', DRAFT: 'Draft', COLLECTIONS: 'Collections',
+  };
+  const invoiceRows = (invoicesData?.data ?? []).map((inv: any) => ({
+    id: inv.id,
+    date: fmtDate(inv.issuedDate || inv.createdAt),
+    desc: inv.invoiceNumber ? `Invoice ${inv.invoiceNumber}` : 'Invoice',
+    customer: inv.customer ? `${inv.customer.firstName} ${inv.customer.lastName}`.trim() : '—',
+    amount: fmtDollars(inv.totalCents ?? 0),
+    status: INV_STATUS_MAP[inv.status] ?? inv.status,
+    type: 'invoice',
+    sortKey: inv.issuedDate || inv.createdAt,
+  }));
+  const posRows = (posData?.data ?? []).map((tx: any) => ({
+    id: tx.id,
+    date: fmtDate(tx.createdAt),
+    desc: tx.lineItems?.[0]?.product?.name ? `POS – ${tx.lineItems[0].product.name}` : 'POS Sale',
+    customer: 'Walk-in',
+    amount: fmtDollars(tx.totalCents ?? 0),
+    status: 'Completed',
+    type: 'pos',
+    sortKey: tx.createdAt,
+  }));
+  const transactions = [...invoiceRows, ...posRows]
+    .sort((a, b) => new Date(b.sortKey).getTime() - new Date(a.sortKey).getTime())
+    .slice(0, 8);
 
   const tasks: {
     text: string; detail: string; icon: React.ReactNode; urgent: boolean;
     route?: string;
     drawer?: { title: string; items: { label: string; sub: string; urgent: boolean }[] };
-  }[] = [
-    {
-      text: '3 contracts expiring this week',
-      detail: 'James Harborview - Mar 30 · Elena Windward - Mar 28 · Tom Seaside - Mar 29',
-      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
-      drawer: {
-        title: 'Expiring Contracts',
-        items: [
-          { label: 'Elena Windward', sub: 'Expires Mar 28 — Slip A-12', urgent: true },
-          { label: 'Tom Seaside', sub: 'Expires Mar 29 — Slip B-03', urgent: true },
-          { label: 'James Harborview', sub: 'Expires Mar 30 — Slip C-07', urgent: true },
-        ],
-      },
-    },
-    {
-      text: '2 insurance documents expiring',
-      detail: 'Elena Windward - Insurance expires Mar 28 · Sarah Mitchell - Insurance expires Mar 31',
-      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
-      drawer: {
-        title: 'Expiring Insurance',
-        items: [
-          { label: 'Elena Windward', sub: 'Insurance expires Mar 28 — Action required', urgent: true },
-          { label: 'Sarah Mitchell', sub: 'Insurance expires Mar 31 — Reminder sent', urgent: false },
-        ],
-      },
-    },
-    { text: '1 maintenance request pending', detail: 'Dock C, Slip 08 - Cleat replacement requested by David Thompson', icon: <Clock size={16} color={colors.cyan} />, urgent: false, route: '/concierge' },
-    { text: 'ACH return to review', detail: 'Coastal Charters LLC - $6,800.00 returned Mar 24', icon: <CreditCard size={16} color={colors.red} />, urgent: true, route: '/billing' },
-    { text: 'Dock walk overdue (Dock C)', detail: 'Last completed Mar 20 - 5 days overdue', icon: <Footprints size={16} color={colors.red} />, urgent: true, route: '/dock-walks' },
-  ];
+  }[] = [];
+
+  if (arData) {
+    const overdueInvoices = (arData.details ?? []).filter((d: any) => d.daysOverdue > 0);
+    if (overdueInvoices.length > 0) {
+      tasks.push({
+        text: `${overdueInvoices.length} overdue invoice${overdueInvoices.length > 1 ? 's' : ''}`,
+        detail: overdueInvoices.slice(0, 3).map((d: any) =>
+          `${d.customer ? `${d.customer.firstName} ${d.customer.lastName}` : 'Unknown'} — ${fmtDollars(d.balanceCents)} (${d.daysOverdue}d)`
+        ).join(' · '),
+        icon: <CreditCard size={16} color={colors.red} />,
+        urgent: overdueInvoices.some((d: any) => d.daysOverdue >= 30),
+        route: '/billing',
+      });
+    }
+  }
+
+  if (complianceData) {
+    const total = (insExpiringSoon + insExpired);
+    if (total > 0) {
+      tasks.push({
+        text: `${total} insurance ${total === 1 ? 'document' : 'documents'} need attention`,
+        detail: `${insExpired} expired · ${insExpiringSoon} expiring within 30 days`,
+        icon: <AlertTriangle size={16} color={colors.orange} />,
+        urgent: insExpired > 0,
+        route: '/customers',
+      });
+    }
+  }
+
+  if (tasks.length === 0) {
+    tasks.push({
+      text: 'All items up to date',
+      detail: 'No overdue invoices or compliance issues',
+      icon: <CheckCircle2 size={16} color={colors.green} />,
+      urgent: false,
+      route: '/reports',
+    });
+  }
 
   const quickActions: { label: string; icon: React.ReactNode; route?: string; action?: () => void }[] = [
     { label: 'New Invoice', icon: <Plus size={18} />, action: () => setShowInvoiceModal(true) },
@@ -363,25 +424,58 @@ const Dashboard: React.FC = () => {
     { label: 'Generate Report', icon: <BarChart3 size={18} />, route: '/reports' },
   ];
 
-  const docks = [
-    { name: 'Dock A', total: 24, occupied: 22, vacant: 1, maintenance: 1 },
-    { name: 'Dock B', total: 20, occupied: 18, vacant: 2, maintenance: 0 },
-    { name: 'Dock C', total: 26, occupied: 21, vacant: 3, maintenance: 2 },
-    { name: 'Dock D', total: 20, occupied: 17, vacant: 2, maintenance: 1 },
-  ];
+  const docks: { name: string; total: number; occupied: number; vacant: number; maintenance: number }[] =
+    occupancyData?.byDock
+      ? occupancyData.byDock
+          .filter((d: any) => d.dock != null)
+          .sort((a: any, b: any) => String(a.dock).localeCompare(String(b.dock)))
+          .map((d: any) => ({
+            name: `Dock ${d.dock}`,
+            total: d.total,
+            occupied: d.occupied,
+            maintenance: d.maintenance ?? 0,
+            vacant: d.vacant ?? Math.max(0, d.total - d.occupied - (d.maintenance ?? 0)),
+          }))
+      : [];
 
-  const activityFeed = [
-    { time: '9:42 AM', text: 'Payment of $2,450.00 received from James Harlow', type: 'payment' },
-    { time: '9:15 AM', text: 'Contract signed by Coastal Charters LLC (Slip B14)', type: 'contract' },
-    { time: '8:58 AM', text: "Lead converted: Kevin O\u2019Malley \u2192 Active Customer", type: 'lead' },
-    { time: '8:30 AM', text: 'Dock walk completed for Dock A by Mike Reynolds', type: 'dockwalk' },
-    { time: 'Yesterday 4:45 PM', text: 'Maintenance request #312 submitted for Dock C, Slip 08', type: 'maintenance' },
-    { time: 'Yesterday 3:20 PM', text: 'Invoice #1048 sent to Coastal Charters LLC', type: 'invoice' },
-    { time: 'Yesterday 2:10 PM', text: 'Insurance document uploaded by Sarah Mitchell', type: 'document' },
-    { time: 'Yesterday 11:30 AM', text: 'POS transaction: $387.50 fuel sale to Sarah Mitchell', type: 'payment' },
-    { time: 'Yesterday 10:15 AM', text: 'New lead: Patricia Nguyen \u2014 interested in 40ft slip', type: 'lead' },
-    { time: 'Yesterday 9:00 AM', text: 'Automated rent reminders sent (12 recipients)', type: 'system' },
-  ];
+  const fmtActivityTime = (iso: string) => {
+    const d = new Date(iso);
+    const now2 = new Date();
+    const diffMs = now2.getTime() - d.getTime();
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffDays === 0) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    if (diffDays === 1) return `Yesterday ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    return `${diffDays}d ago`;
+  };
+
+  const ACTION_TYPE_MAP: Record<string, string> = {
+    PAYMENT_CREATED: 'payment', PAYMENT_RECEIVED: 'payment',
+    INVOICE_CREATED: 'invoice', INVOICE_ISSUED: 'invoice', INVOICE_VOID: 'invoice',
+    CONTRACT_CREATED: 'contract', CONTRACT_SIGNED: 'contract', ESIGN_SENT: 'contract',
+    CUSTOMER_CREATED: 'lead', LEAD_CONVERTED: 'lead',
+    DOCK_WALK_COMPLETED: 'dockwalk', DOCK_WALK_STARTED: 'dockwalk',
+    INSURANCE_UPLOADED: 'document', INSURANCE_APPROVED: 'document',
+    POS_TRANSACTION_CREATED: 'payment',
+  };
+
+  const auditEntries: { time: string; text: string; type: string }[] = (auditData?.data ?? []).map((entry: any) => {
+    const action = entry.action ?? '';
+    const recordType = entry.recordType ?? '';
+    const user = entry.userName || entry.user?.email || 'System';
+    const type = ACTION_TYPE_MAP[action] ?? (recordType.toLowerCase().includes('payment') ? 'payment' : recordType.toLowerCase().includes('invoice') ? 'invoice' : 'system');
+    const changed = entry.changedFieldsJson ?? {};
+    let text = `${user}: ${action.replace(/_/g, ' ').toLowerCase()} (${recordType})`;
+    if (action === 'ESIGN_SENT' && changed.signerName) text = `Contract sent for signature to ${changed.signerName}`;
+    else if (action === 'CONTRACT_SIGNED') text = `Contract signed`;
+    else if (action === 'INVOICE_CREATED' || action === 'INVOICE_ISSUED') text = `Invoice created by ${user}`;
+    else if (action === 'PAYMENT_CREATED' || action === 'PAYMENT_RECEIVED') text = `Payment recorded by ${user}`;
+    else if (action === 'CUSTOMER_CREATED') text = `New customer added by ${user}`;
+    else if (action === 'DOCK_WALK_COMPLETED') text = `Dock walk completed by ${user}`;
+    else if (action === 'INSURANCE_UPLOADED' || action === 'INSURANCE_APPROVED') text = `Insurance document updated`;
+    return { time: fmtActivityTime(entry.createdAt), text, type };
+  });
+
+  const activityFeed = auditEntries.length > 0 ? auditEntries : [];
 
   const activityDot = (type: string): string => {
     const map: Record<string, string> = {
@@ -474,6 +568,11 @@ const Dashboard: React.FC = () => {
                 padding: '0 8px',
               }}
             >
+              {revenueData.length === 0 && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.gray, fontSize: '13px' }}>
+                  {trendLoading ? 'Loading revenue data…' : 'No payment data for the last 6 months'}
+                </div>
+              )}
               {revenueData.map((d, i) => {
                 const pct = (d.value / maxRevenue) * 100;
                 const isCurrentMonth = i === revenueData.length - 1;
@@ -562,15 +661,17 @@ const Dashboard: React.FC = () => {
               }}
             >
               <span style={{ color: colors.darkGray }}>
-                6-month total: <strong style={{ color: colors.navy }}>$619,850</strong>
+                6-month total: <strong style={{ color: colors.navy }}>${Math.round(trendTotal).toLocaleString('en-US')}</strong>
               </span>
               <span style={{ color: colors.darkGray }}>
-                Monthly avg: <strong style={{ color: colors.navy }}>$103,308</strong>
+                Monthly avg: <strong style={{ color: colors.navy }}>${Math.round(trendAvg).toLocaleString('en-US')}</strong>
               </span>
-              <span style={{ color: colors.green, fontWeight: 600 }}>
-                <TrendingUp size={14} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
-                +12% this month
-              </span>
+              {revenueData.length >= 2 && revenueData[revenueData.length - 2].value > 0 && (
+                <span style={{ color: colors.green, fontWeight: 600 }}>
+                  <TrendingUp size={14} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
+                  {(((revenueData[revenueData.length - 1].value - revenueData[revenueData.length - 2].value) / revenueData[revenueData.length - 2].value) * 100).toFixed(1)}% vs prev month
+                </span>
+              )}
             </div>
           </div>
 
@@ -591,6 +692,11 @@ const Dashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
+                {transactions.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
+                    No recent transactions
+                  </td></tr>
+                )}
                 {transactions.map((t, i) => (
                   <tr
                     key={i}
@@ -822,6 +928,11 @@ const Dashboard: React.FC = () => {
             Occupancy by Dock
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {docks.length === 0 && (
+              <div style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
+                {occupancyLoading ? 'Loading occupancy…' : 'No dock data available'}
+              </div>
+            )}
             {docks.map((dock) => (
               <div key={dock.name}>
                 <div
@@ -960,6 +1071,11 @@ const Dashboard: React.FC = () => {
             Recent Activity
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {activityFeed.length === 0 && (
+              <div style={{ padding: '24px', textAlign: 'center', color: colors.gray, fontSize: '13px' }}>
+                No recent activity recorded yet
+              </div>
+            )}
             {activityFeed.map((item, i) => (
               <div
                 key={i}

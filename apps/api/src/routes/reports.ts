@@ -43,13 +43,24 @@ router.get("/occupancy", async (req: Request, res: Response, next: NextFunction)
       _count: { id: true },
     });
 
+    const maintenanceByDock = await prisma.slip.groupBy({
+      by: ["dockId"],
+      where: { tenantId, status: "MAINTENANCE" },
+      _count: { id: true },
+    });
+
     const docks = byDock.map((d) => {
       const occ = occupiedByDock.find((o) => o.dockId === d.dockId);
+      const maint = maintenanceByDock.find((m) => m.dockId === d.dockId);
+      const occupiedCount = occ?._count.id ?? 0;
+      const maintCount = maint?._count.id ?? 0;
       return {
         dock: d.dockId,
         total: d._count.id,
-        occupied: occ?._count.id ?? 0,
-        rate: d._count.id > 0 ? ((occ?._count.id ?? 0) / d._count.id * 100).toFixed(1) : "0.0",
+        occupied: occupiedCount,
+        maintenance: maintCount,
+        vacant: Math.max(0, d._count.id - occupiedCount - maintCount),
+        rate: d._count.id > 0 ? ((occupiedCount / d._count.id) * 100).toFixed(1) : "0.0",
       };
     });
 
@@ -1039,6 +1050,38 @@ router.post(
     }
   },
 );
+
+// ─── GET /reports/revenue-trend ──────────────────────────────────────────────
+
+router.get("/revenue-trend", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const months = Math.min(parseInt((req.query.months as string) || "6", 10) || 6, 24);
+    const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    const now = new Date();
+    const results: { month: string; year: number; totalCents: number }[] = [];
+
+    for (let i = months - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+      const agg = await prisma.payment.aggregate({
+        where: { tenantId, status: "COMPLETED", postedDate: { gte: start, lte: end } },
+        _sum: { amountCents: true },
+      });
+
+      results.push({
+        month: MONTH_LABELS[d.getMonth()],
+        year: d.getFullYear(),
+        totalCents: agg._sum.amountCents ?? 0,
+      });
+    }
+
+    res.json({ months: results });
+  } catch (err) { next(err); }
+});
 
 export default router;
 
