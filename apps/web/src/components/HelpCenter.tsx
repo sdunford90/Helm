@@ -72,9 +72,18 @@ const STATUS_LABEL: Record<string, string> = {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function HelpCenter() {
+export default function HelpCenter({ openFromOutside = false, onOutsideClosed }: { openFromOutside?: boolean; onOutsideClosed?: () => void }) {
   const { getToken } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    if (openFromOutside) setIsOpen(true);
+  }, [openFromOutside]);
+
+  const handleClose = () => {
+    setIsOpen(false);
+    onOutsideClosed?.();
+  };
   const [tab, setTab] = useState<'articles' | 'submit' | 'tickets'>('articles');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
@@ -155,11 +164,11 @@ export default function HelpCenter() {
 
   return (
     <>
-      <div style={st.overlay} onClick={() => setIsOpen(false)} />
+      <div style={st.overlay} onClick={handleClose} />
       <div style={st.panel} className="helm-detail-panel">
         <div style={st.header}>
           <h2 style={st.headerTitle}><BookOpen size={20} /> Help Center</h2>
-          <button style={st.closeBtn} onClick={() => setIsOpen(false)}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={handleClose}><X size={20} /></button>
         </div>
 
         <div style={st.tabs}>

@@ -10,7 +10,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 import { loadStripeTerminal } from '@stripe/terminal-js';
-import { Elements, CardNumberElement, CardExpiryElement, CardCvcElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { getStripe } from '../lib/stripe.js';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -262,9 +262,9 @@ function CnpForm({
     setCnpLoading(true);
     setCnpError('');
     try {
-      const cardNumberEl = elements.getElement(CardNumberElement);
-      if (!cardNumberEl) throw new Error('Card fields not found');
-      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardNumberEl });
+      const cardEl = elements.getElement(CardElement);
+      if (!cardEl) throw new Error('Card element not found');
+      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
       if (pmErr) throw new Error(pmErr.message ?? 'Card error');
       await apiCall('POST', '/api/pos/payments/cnp', { amountCents, paymentMethodId: paymentMethod!.id });
       onComplete('Card Not Present');
@@ -272,14 +272,6 @@ function CnpForm({
       setCnpError((err as Error).message ?? 'Payment failed');
       setCnpLoading(false);
     }
-  };
-
-  const fieldStyle = {
-    base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#CBD5E1' } },
-    invalid: { color: '#DC2626' },
-  };
-  const fieldBox: React.CSSProperties = {
-    padding: '12px 14px', border: '1px solid #CBD5E1', borderRadius: '8px', background: '#FFFFFF',
   };
 
   return (
@@ -290,21 +282,15 @@ function CnpForm({
         <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Card Not Present — keyed entry</div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
-        <div>
-          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Card Number</div>
-          <div style={fieldBox}><CardNumberElement options={{ style: fieldStyle, showIcon: true }} /></div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-          <div>
-            <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Expiration</div>
-            <div style={fieldBox}><CardExpiryElement options={{ style: fieldStyle }} /></div>
-          </div>
-          <div>
-            <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>CVC</div>
-            <div style={fieldBox}><CardCvcElement options={{ style: fieldStyle }} /></div>
-          </div>
-        </div>
+      <div style={{ padding: '14px 16px', border: '1px solid #CBD5E1', borderRadius: '8px', background: '#FFFFFF', marginBottom: '16px' }}>
+        <CardElement options={{
+          hidePostalCode: true,
+          disableLink: true,
+          style: {
+            base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#94A3B8' } },
+            invalid: { color: '#DC2626' },
+          },
+        } as any} />
       </div>
 
       {cnpError && (
@@ -412,7 +398,7 @@ function CardPaymentModal({
       const piId: string = (processed as any).id;
       await apiCall('POST', `/api/pos/terminal/payment-intents/${piId}/capture`);
       setStatus('terminal_done');
-      setTimeout(() => onComplete('Card (Terminal)'), 1500);
+      setTimeout(() => { onComplete('Card (Terminal)'); onClose(); }, 1800);
     } catch (err: any) {
       setErrorMsg((err as Error).message ?? 'Terminal payment failed');
       setStatus('terminal_error');
@@ -1466,7 +1452,7 @@ export default function POS() {
           amountCents={Math.round(total * 100)}
           cartItems={paymentModal.cartSnapshot}
           onClose={() => setPaymentModal(null)}
-          onComplete={(method) => { setPaymentModal(null); handlePaymentComplete(method); }}
+          onComplete={(method) => { handlePaymentComplete(method); }}
           getToken={getToken}
         />
       )}

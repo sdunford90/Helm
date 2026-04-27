@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, useLocation, Link } from 'react-router-dom';
+import { Outlet, useLocation, Link, useNavigate } from 'react-router-dom';
 import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import { useModules } from '../context/ModulesContext';
@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Users,
   UserPlus,
-  ClipboardList,
   Anchor,
   FileText,
   DollarSign,
@@ -27,8 +26,130 @@ import {
   MapPin,
   ChevronDown,
   Package,
-  FileSpreadsheet,
+  X,
+  User,
+  LogOut,
 } from 'lucide-react';
+
+/* ── User Preferences ──────────────────────────────────── */
+
+const USER_PREFS_KEY = 'helm_user_prefs';
+
+interface UserPrefs {
+  landingPage: string;
+  dateFormat: string;
+  timeFormat: string;
+  compactSidebar: boolean;
+}
+
+function getUserPrefs(): UserPrefs {
+  try { return { landingPage: '/', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', compactSidebar: false, ...JSON.parse(localStorage.getItem(USER_PREFS_KEY) || '{}') }; }
+  catch { return { landingPage: '/', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', compactSidebar: false }; }
+}
+
+function UserPrefsPanel({ onClose, userEmail, userName }: { onClose: () => void; userEmail: string; userName: string }) {
+  const [prefs, setPrefs] = useState<UserPrefs>(getUserPrefs);
+  const [saved, setSaved] = useState(false);
+  const navigate = useNavigate();
+
+  const handleSave = () => {
+    localStorage.setItem(USER_PREFS_KEY, JSON.stringify(prefs));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const ps: Record<string, React.CSSProperties> = {
+    overlay: { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 1100 },
+    panel: { position: 'fixed', top: 0, right: 0, width: '360px', height: '100vh', background: '#FFFFFF', boxShadow: '-4px 0 20px rgba(0,0,0,0.15)', zIndex: 1101, display: 'flex', flexDirection: 'column' },
+    header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px', borderBottom: '1px solid #E2E8F0', background: '#0A2342', color: '#FFFFFF' },
+    body: { flex: 1, overflowY: 'auto', padding: '20px 24px' },
+    section: { marginBottom: '24px' },
+    sectionTitle: { fontSize: '11px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.06em', color: '#94A3B8', marginBottom: '12px' },
+    field: { display: 'flex', flexDirection: 'column' as const, gap: '4px', marginBottom: '14px' },
+    label: { fontSize: '13px', fontWeight: 600, color: '#0A2342' },
+    select: { padding: '9px 12px', fontSize: '14px', border: '1px solid #E2E8F0', borderRadius: '8px', background: '#FFFFFF', color: '#0A2342', outline: 'none', width: '100%' },
+    toggle: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #F1F5F9' },
+    toggleLabel: { fontSize: '14px', color: '#0A2342', fontWeight: 500 },
+    saveBtn: { width: '100%', padding: '11px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 },
+    footer: { padding: '16px 24px', borderTop: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column' as const, gap: '8px' },
+    userCard: { display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 0', borderBottom: '1px solid #E2E8F0', marginBottom: '16px' },
+    avatar: { width: 42, height: 42, borderRadius: '50%', background: '#00D4FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px', fontWeight: 700, color: '#0A2342', flexShrink: 0 },
+  };
+
+  return (
+    <>
+      <div style={ps.overlay} onClick={onClose} />
+      <div style={ps.panel}>
+        <div style={ps.header}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '16px' }}>
+            <User size={18} /> My Preferences
+          </div>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={ps.body}>
+          {/* User info */}
+          <div style={ps.userCard}>
+            <div style={ps.avatar}>{userName.slice(0, 2).toUpperCase()}</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '15px', color: '#0A2342' }}>{userName}</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>{userEmail}</div>
+            </div>
+          </div>
+
+          {/* Navigation prefs */}
+          <div style={ps.section}>
+            <div style={ps.sectionTitle}>Navigation</div>
+            <div style={ps.field}>
+              <label style={ps.label}>Default landing page</label>
+              <select style={ps.select} value={prefs.landingPage} onChange={(e) => setPrefs((p) => ({ ...p, landingPage: e.target.value }))}>
+                <option value="/">Dashboard</option>
+                <option value="/slips">Slips</option>
+                <option value="/billing">Billing</option>
+                <option value="/pos">POS</option>
+                <option value="/customers">Customers</option>
+                <option value="/transient">Transient</option>
+                <option value="/rentals">Rentals</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Display prefs */}
+          <div style={ps.section}>
+            <div style={ps.sectionTitle}>Display</div>
+            <div style={ps.field}>
+              <label style={ps.label}>Date format</label>
+              <select style={ps.select} value={prefs.dateFormat} onChange={(e) => setPrefs((p) => ({ ...p, dateFormat: e.target.value }))}>
+                <option value="MM/DD/YYYY">MM/DD/YYYY (US)</option>
+                <option value="DD/MM/YYYY">DD/MM/YYYY (International)</option>
+                <option value="YYYY-MM-DD">YYYY-MM-DD (ISO)</option>
+              </select>
+            </div>
+            <div style={ps.field}>
+              <label style={ps.label}>Time format</label>
+              <select style={ps.select} value={prefs.timeFormat} onChange={(e) => setPrefs((p) => ({ ...p, timeFormat: e.target.value }))}>
+                <option value="12h">12-hour (1:30 PM)</option>
+                <option value="24h">24-hour (13:30)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style={ps.footer}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button style={ps.saveBtn} onClick={handleSave}>Save Preferences</button>
+            {saved && <span style={{ fontSize: '13px', color: '#22C55E', fontWeight: 600, whiteSpace: 'nowrap' }}>✓ Saved</span>}
+          </div>
+          <button
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '9px 14px', background: 'none', border: '1px solid #FCA5A5', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#DC2626', fontWeight: 600 }}
+            onClick={() => { void navigate('/sign-out'); onClose(); }}
+          >
+            <LogOut size={15} /> Sign Out
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 
 const NAV_SECTIONS = [
@@ -213,6 +334,8 @@ export default function AppLayout() {
   const { modules, locations, currentLocationId, setCurrentLocationId } = useModules();
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
 
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
@@ -378,17 +501,28 @@ export default function AppLayout() {
                 </div>
               )}
             </div>
-            <button style={styles.helpBtn} title="Help">
+            <button style={styles.helpBtn} title="Help Center" onClick={() => setHelpOpen(true)}>
               <HelpCircle size={16} />
             </button>
-            <div style={styles.avatar}>{initials}</div>
+            <button
+              title="My Preferences"
+              onClick={() => setPrefsOpen(true)}
+              style={{ ...styles.avatar, border: 'none', cursor: 'pointer' }}
+            >{initials || <User size={16} />}</button>
           </div>
         </header>
         <main style={styles.content} className="helm-content">
           <Outlet />
         </main>
       </div>
-      <HelpCenter />
+      <HelpCenter openFromOutside={helpOpen} onOutsideClosed={() => setHelpOpen(false)} />
+      {prefsOpen && (
+        <UserPrefsPanel
+          onClose={() => setPrefsOpen(false)}
+          userName={user ? `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() || user.username || 'User' : 'User'}
+          userEmail={user?.primaryEmailAddress?.emailAddress ?? ''}
+        />
+      )}
     </div>
   );
 }
