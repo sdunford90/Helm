@@ -246,7 +246,7 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
     emergencyEmail: initial?.emergencyEmail ?? '',
     taxExempt: initial?.taxExempt ?? false,
     taxCertExpiry: initial?.taxCertExpiry ?? '',
-    status: initial?.status ?? 'Active',
+    status: initial?.status ?? 'ACTIVE',
   });
 
   const [errors, setErrors] = useState<Partial<Record<keyof CustomerFormData, string>>>({});
