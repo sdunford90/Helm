@@ -269,8 +269,8 @@ router.post("/:tenantId/stripe", async (req, res, next) => {
     const appUrl = process.env.APP_URL ?? "http://localhost:5000";
     const link = await s.accountLinks.create({
       account: stripeAccountId,
-      refresh_url: `${appUrl}/settings/stripe?refresh=true`,
-      return_url: `${appUrl}/settings/stripe?success=true`,
+      refresh_url: `${appUrl}/oauth-complete?provider=stripe&success=false`,
+      return_url: `${appUrl}/oauth-complete?provider=stripe&success=true`,
       type: "account_onboarding",
     });
 
@@ -386,7 +386,8 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
       data: { qboRealmId: realmId as string },
     });
 
-    res.json({ success: true, qboRealmId: realmId, tenant });
+    const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
+    res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true`);
   } catch (err) {
     next(err);
   }

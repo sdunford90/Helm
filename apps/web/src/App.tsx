@@ -31,6 +31,7 @@ import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
 import ESignPage from './pages/ESignPage';
+import OAuthComplete from './pages/OAuthComplete';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 import { BrandingProvider } from './context/BrandingContext';
 
@@ -41,6 +42,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/signup" element={<Navigate to="/onboarding" replace />} />
       <Route path="/onboarding" element={<Onboarding />} />
+      <Route path="/oauth-complete" element={<OAuthComplete />} />
       <Route path="/esign/:requestId" element={<ESignPage />} />
       <Route element={<AppLayout />}>
         <Route path="/" element={<Dashboard />} />

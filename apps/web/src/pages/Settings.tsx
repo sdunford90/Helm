@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
@@ -12,6 +12,41 @@ import {
   Lock, Shield, Users,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
+
+/* ── OAuth Popup utility ────────────────────────────────── */
+
+function openOAuthPopup(url: string, onComplete: () => void): void {
+  const w = 660, h = 740;
+  const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+  const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+  const popup = window.open(
+    url, 'helm_oauth',
+    `width=${w},height=${h},left=${left},top=${top},scrollbars=yes,resizable=yes,toolbar=no,menubar=no`,
+  );
+
+  if (!popup) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
+
+  const handleMessage = (e: MessageEvent) => {
+    if (e.data?.type === 'helm_oauth_complete') {
+      cleanup();
+      onComplete();
+    }
+  };
+
+  const poll = setInterval(() => {
+    if (popup.closed) { cleanup(); onComplete(); }
+  }, 600);
+
+  function cleanup() {
+    clearInterval(poll);
+    window.removeEventListener('message', handleMessage);
+  }
+
+  window.addEventListener('message', handleMessage);
+}
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -459,7 +494,13 @@ export default function Settings() {
 
   const handleQboConnect = async () => {
     const res = await qboConnect({});
-    if (res?.url) window.open(res.url, '_blank', 'noopener,noreferrer');
+    if (res?.url) {
+      openOAuthPopup(res.url, () => {
+        setTimeout(() => fetchQboStatus(), 800);
+        setSavedMsg('QuickBooks Online connected');
+        setTimeout(() => setSavedMsg(null), 3000);
+      });
+    }
   };
 
   const handleQboSync = async () => {
@@ -481,7 +522,13 @@ export default function Settings() {
 
   const handleStripeConnect = async () => {
     const res = await stripeConnect({});
-    if (res?.url) window.location.href = res.url;
+    if (res?.url) {
+      openOAuthPopup(res.url, () => {
+        setTimeout(() => fetchStripeStatus(), 800);
+        setSavedMsg('Stripe connected successfully');
+        setTimeout(() => setSavedMsg(null), 3000);
+      });
+    }
   };
 
   const handleStripeDisconnect = async () => {
@@ -583,7 +630,13 @@ export default function Settings() {
         body: JSON.stringify({ locationId: selectedLocationId }),
       });
       const body = await res.json();
-      if (body.url) window.open(body.url, '_blank', 'noopener,noreferrer');
+      if (body.url) {
+        openOAuthPopup(body.url, () => {
+          setTimeout(() => fetchQboStatus(), 800);
+          setSavedMsg('QuickBooks Online connected for this location');
+          setTimeout(() => setSavedMsg(null), 3000);
+        });
+      }
     } finally {
       setLocationQboActing(false);
     }

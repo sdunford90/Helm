@@ -392,8 +392,8 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
 
     const accountLink = await requireStripe().accountLinks.create({
       account: accountId,
-      refresh_url: `${process.env.APP_URL}/settings?section=stripe&refresh=true`,
-      return_url: `${process.env.APP_URL}/settings?section=stripe&success=true`,
+      refresh_url: `${process.env.APP_URL}/oauth-complete?provider=stripe&success=false`,
+      return_url: `${process.env.APP_URL}/oauth-complete?provider=stripe&success=true`,
       type: "account_onboarding",
     });
 

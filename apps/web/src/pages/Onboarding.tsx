@@ -4,6 +4,18 @@ import { useNavigate } from 'react-router-dom';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
+function openOAuthPopup(url: string, onComplete: () => void): void {
+  const w = 660, h = 740;
+  const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+  const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+  const popup = window.open(url, 'helm_oauth', `width=${w},height=${h},left=${left},top=${top},scrollbars=yes,resizable=yes,toolbar=no,menubar=no`);
+  if (!popup) { window.open(url, '_blank', 'noopener,noreferrer'); return; }
+  const handle = (e: MessageEvent) => { if (e.data?.type === 'helm_oauth_complete') { done(); } };
+  const poll = setInterval(() => { if (popup.closed) done(); }, 600);
+  function done() { clearInterval(poll); window.removeEventListener('message', handle); onComplete(); }
+  window.addEventListener('message', handle);
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -423,8 +435,7 @@ function OnboardingInner() {
         throw new Error(body.error ?? `Request failed (${res.status})`);
       }
       const data = await res.json();
-      // Open Stripe OAuth in a new window
-      window.open(data.url, '_blank', 'noopener,noreferrer');
+      openOAuthPopup(data.url, () => setStripeConnected(true));
       setStripeConnected(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -447,7 +458,7 @@ function OnboardingInner() {
         throw new Error(body.error ?? `Request failed (${res.status})`);
       }
       const data = await res.json();
-      window.open(data.url, '_blank', 'noopener,noreferrer');
+      openOAuthPopup(data.url, () => setQboConnected(true));
       setQboConnected(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');

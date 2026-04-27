@@ -71,10 +71,8 @@ router.get(
 
       await handleCallback(code, realmId, tenantId);
 
-      res.json({
-        success: true,
-        message: "QuickBooks Online connected successfully. Initial sync started.",
-      });
+      const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
+      res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true`);
     } catch (err) {
       next(err);
     }
