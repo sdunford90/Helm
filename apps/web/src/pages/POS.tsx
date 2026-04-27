@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
@@ -292,6 +293,7 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function POS() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<'sale' | 'transactions'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -487,7 +489,13 @@ export default function POS() {
                 <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 24px', color: '#64748B' }}>
                   <Package size={36} style={{ color: '#CBD5E1', marginBottom: '12px' }} />
                   <div style={{ fontWeight: 600 }}>No products found</div>
-                  <div style={{ fontSize: '13px', marginTop: '4px' }}>Add products via the inventory module to see them here.</div>
+                  <div style={{ fontSize: '13px', marginTop: '4px', marginBottom: '16px' }}>Add products in inventory to make them available here.</div>
+                  <button
+                    onClick={() => navigate('/inventory')}
+                    style={{ background: '#2E4A6B', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                  >
+                    Go to Inventory
+                  </button>
                 </div>
               )}
               {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (

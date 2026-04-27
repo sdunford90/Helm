@@ -425,12 +425,12 @@ export default function Fuel() {
 
   const handleSaveSale = async (payload: SalePayload) => {
     await createSale.execute(payload);
-    await refreshSales();
+    await Promise.all([refreshSales(), refreshTypes()]);
   };
 
   const handleSaveDelivery = async (payload: DeliveryPayload) => {
     await createDelivery.execute(payload);
-    await refreshDeliveries();
+    await Promise.all([refreshDeliveries(), refreshTypes()]);
   };
 
   const handleUpdatePrice = async (id: string, priceCents: number, costCents: number) => {
