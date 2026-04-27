@@ -231,6 +231,7 @@ export default function Reports() {
   const [scheduleRecipients, setScheduleRecipients] = useState('');
   const [scheduleStatus, setScheduleStatus] = useState<'Active' | 'Paused'>('Active');
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const { getToken } = useAuth();
 
@@ -589,7 +590,7 @@ export default function Reports() {
                         <button
                           style={{ ...styles.btnSecondary, padding: '4px 8px', fontSize: '12px', color: '#EF4444', borderColor: '#FECACA' }}
                           title="Delete schedule"
-                          onClick={(e) => { e.stopPropagation(); deleteSchedule(sr.id); }}
+                          onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(sr.id); }}
                         >
                           <Trash2 size={12} />
                         </button>
@@ -899,6 +900,45 @@ export default function Reports() {
             >
               {scheduleSaving ? 'Saving...' : editingScheduleId ? 'Save Changes' : 'Create Schedule'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* -------- Delete Confirmation Dialog -------- */}
+      {deleteConfirmId && (
+        <div style={styles.overlay} onClick={() => setDeleteConfirmId(null)}>
+          <div
+            style={{ ...styles.modal, width: '400px', padding: '28px' }}
+            className="helm-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <div style={{ width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)', flexShrink: 0 }}>
+                <Trash2 size={20} color="#EF4444" />
+              </div>
+              <h2 style={{ ...styles.modalTitle, fontSize: '18px' }}>Delete Schedule?</h2>
+            </div>
+            <p style={{ margin: '0 0 24px 0', fontSize: '14px', color: '#64748B', lineHeight: 1.6 }}>
+              This scheduled report will stop being delivered. This action cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                style={styles.btnSecondary}
+                onClick={() => setDeleteConfirmId(null)}
+              >
+                Cancel
+              </button>
+              <button
+                style={{ ...styles.btnPrimary, backgroundColor: '#EF4444' }}
+                onClick={() => {
+                  const id = deleteConfirmId;
+                  setDeleteConfirmId(null);
+                  deleteSchedule(id);
+                }}
+              >
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       )}
