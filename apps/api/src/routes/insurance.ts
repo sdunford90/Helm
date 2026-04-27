@@ -53,6 +53,15 @@ const ReviewQueueQuerySchema = z.object({
   take: z.coerce.number().int().positive().max(100).default(25),
 });
 
+const ManualInsuranceSchema = z.object({
+  customerId: z.string().uuid(),
+  boatId: z.string().uuid().optional().nullable(),
+  insurer: z.string().optional().nullable(),
+  policyNumber: z.string().optional().nullable(),
+  startDate: z.coerce.date().optional().nullable(),
+  expiryDate: z.coerce.date().optional().nullable(),
+});
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function appError(message: string, statusCode: number, code: string): Error {
@@ -116,6 +125,53 @@ router.post(
           boat: {
             select: { id: true, name: true, make: true, model: true },
           },
+        },
+      });
+
+      res.status(201).json(record);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /manual — Create insurance record without document upload ──────────
+
+router.post(
+  "/manual",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = ManualInsuranceSchema.parse(req.body);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: data.customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) {
+        throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
+      }
+
+      if (data.boatId) {
+        const boat = await prisma.boat.findFirst({
+          where: { id: data.boatId, tenantId },
+          select: { id: true },
+        });
+        if (!boat) {
+          throw appError("Boat not found", 404, "BOAT_NOT_FOUND");
+        }
+      }
+
+      const record = await prisma.insuranceRecord.create({
+        data: {
+          tenantId,
+          customerId: data.customerId,
+          boatId: data.boatId ?? null,
+          insurer: data.insurer ?? null,
+          policyNumber: data.policyNumber ?? null,
+          startDate: data.startDate ?? null,
+          expiryDate: data.expiryDate ?? null,
+          status: "APPROVED",
         },
       });
 

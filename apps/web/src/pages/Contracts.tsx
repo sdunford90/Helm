@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 import ESignatureFlow from '../components/ESignatureFlow';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -13,6 +15,7 @@ interface Contract {
   id: string;
   number: string;
   customer: string;
+  customerId: string;
   customerEmail: string;
   slip: string;
   rate: number;
@@ -355,6 +358,7 @@ function mapApiContract(c: ApiContract): Contract {
     id: c.id,
     number: c.id.slice(0, 8).toUpperCase(),
     customer: [c.customer.firstName, c.customer.lastName].filter(Boolean).join(' '),
+    customerId: c.customer.id,
     customerEmail: c.customer.email ?? '',
     slip: c.slip.slipNumber,
     rate: c.rateCents / 100,
@@ -517,6 +521,40 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   );
 }
 
+/* ── Boat & Customer detail types ────────────────────────── */
+
+interface BoatDetail {
+  id: string;
+  hin: string | null;
+  registrationNumber: string | null;
+  registrationState: string | null;
+  registrationExpiry: string | null;
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  lengthFt: number;
+  beamFt: number | null;
+  draftFt: number | null;
+  fuelType: string | null;
+  engineCount: number | null;
+  engineHp: number | null;
+  insuranceRecords: Array<{
+    id: string;
+    insurer: string | null;
+    policyNumber: string | null;
+    startDate: string | null;
+    expiryDate: string | null;
+    status: string;
+  }>;
+}
+
+interface CustomerDetail {
+  id: string;
+  firstName: string;
+  lastName: string;
+  emergencyContactJson: { name?: string; phone?: string; relationship?: string } | null;
+}
+
 /* ── Contract Detail / Transfer Modal ───────────────────── */
 
 const AVAILABLE_SLIPS = [
@@ -535,7 +573,8 @@ function ContractDetailModal({
   onTransfer: (contractId: string, newSlip: string, effectiveDate: string, notes: string) => void;
   onUpdate: (id: string, changes: Partial<Contract>) => void;
 }) {
-  const [mode, setMode] = useState<'view' | 'edit' | 'transfer'>('view');
+  const { getToken } = useAuth();
+  const [mode, setMode] = useState<'view' | 'edit' | 'transfer' | 'compliance'>('view');
 
   /* ── Edit state ── */
   const [rate, setRate] = useState(String(contract.rate));
@@ -554,6 +593,104 @@ function ContractDetailModal({
   const [effectiveDate, setEffectiveDate] = useState('');
   const [transferNotes, setTransferNotes] = useState('');
   const [transferring, setTransferring] = useState(false);
+
+  /* ── Compliance state ── */
+  const [hin, setHin] = useState('');
+  const [regNumber, setRegNumber] = useState('');
+  const [regState, setRegState] = useState('');
+  const [regExpiry, setRegExpiry] = useState('');
+  const [boatMake, setBoatMake] = useState('');
+  const [boatModel, setBoatModel] = useState('');
+  const [boatYear, setBoatYear] = useState('');
+  const [insurer, setInsurer] = useState('');
+  const [policyNumber, setPolicyNumber] = useState('');
+  const [insStart, setInsStart] = useState('');
+  const [insExpiry, setInsExpiry] = useState('');
+  const [ecName, setEcName] = useState('');
+  const [ecPhone, setEcPhone] = useState('');
+  const [ecRelationship, setEcRelationship] = useState('');
+  const [savingCompliance, setSavingCompliance] = useState(false);
+  const [complianceSaved, setComplianceSaved] = useState(false);
+  const [complianceError, setComplianceError] = useState('');
+
+  /* ── Compliance data fetch ── */
+  const { data: boatDetail, loading: loadingBoat } = useApi<BoatDetail>(
+    'get', contract.boat ? `/api/boats/${contract.boat}` : '/api/boats/noop', { immediate: !!contract.boat },
+  );
+  const { data: customerDetail } = useApi<CustomerDetail>(
+    'get', contract.customerId ? `/api/customers/${contract.customerId}` : '/api/customers/noop', { immediate: !!contract.customerId },
+  );
+
+  useEffect(() => {
+    if (boatDetail) {
+      setHin(boatDetail.hin ?? '');
+      setRegNumber(boatDetail.registrationNumber ?? '');
+      setRegState(boatDetail.registrationState ?? '');
+      setRegExpiry(boatDetail.registrationExpiry ? boatDetail.registrationExpiry.split('T')[0] : '');
+      setBoatMake(boatDetail.make ?? '');
+      setBoatModel(boatDetail.model ?? '');
+      setBoatYear(boatDetail.year != null ? String(boatDetail.year) : '');
+      const latestIns = boatDetail.insuranceRecords?.[0];
+      if (latestIns) {
+        setInsurer(latestIns.insurer ?? '');
+        setPolicyNumber(latestIns.policyNumber ?? '');
+        setInsStart(latestIns.startDate ? latestIns.startDate.split('T')[0] : '');
+        setInsExpiry(latestIns.expiryDate ? latestIns.expiryDate.split('T')[0] : '');
+      }
+    }
+  }, [boatDetail]);
+
+  useEffect(() => {
+    if (customerDetail?.emergencyContactJson) {
+      const ec = customerDetail.emergencyContactJson;
+      setEcName(ec.name ?? '');
+      setEcPhone(ec.phone ?? '');
+      setEcRelationship(ec.relationship ?? '');
+    }
+  }, [customerDetail]);
+
+  const handleSaveCompliance = async () => {
+    setSavingCompliance(true);
+    setComplianceError('');
+    setComplianceSaved(false);
+    try {
+      const token = await getToken();
+      const saves: Promise<unknown>[] = [];
+      if (contract.boat) {
+        saves.push(api.put(`/api/boats/${contract.boat}`, {
+          hin: hin || null,
+          registrationNumber: regNumber || null,
+          registrationState: regState || null,
+          registrationExpiry: regExpiry || null,
+          make: boatMake || null,
+          model: boatModel || null,
+          year: boatYear ? parseInt(boatYear) : null,
+        }, token));
+      }
+      if (contract.customerId) {
+        saves.push(api.put(`/api/customers/${contract.customerId}`, {
+          emergencyContactJson: ecName || ecPhone ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelationship || null } : null,
+        }, token));
+      }
+      if ((insurer || policyNumber) && contract.customerId) {
+        saves.push(api.post('/api/insurance/manual', {
+          customerId: contract.customerId,
+          boatId: contract.boat || null,
+          insurer: insurer || null,
+          policyNumber: policyNumber || null,
+          startDate: insStart || null,
+          expiryDate: insExpiry || null,
+        }, token));
+      }
+      await Promise.all(saves);
+      setComplianceSaved(true);
+      setTimeout(() => setComplianceSaved(false), 3000);
+    } catch {
+      setComplianceError('Failed to save. Please try again.');
+    } finally {
+      setSavingCompliance(false);
+    }
+  };
 
   const fmt = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
 
@@ -605,7 +742,15 @@ function ContractDetailModal({
                 <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(0,212,255,0.5)', backgroundColor: 'rgba(0,212,255,0.15)', color: '#00D4FF', cursor: 'pointer' }} onClick={() => setMode('transfer')}>
                   <Repeat size={13} /> Transfer Slip
                 </button>
+                <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(52,211,153,0.5)', backgroundColor: 'rgba(52,211,153,0.15)', color: '#34D399', cursor: 'pointer' }} onClick={() => setMode('compliance')}>
+                  <Shield size={13} /> Vessel & Compliance
+                </button>
               </>
+            )}
+            {mode === 'compliance' && (
+              <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }} onClick={() => setMode('view')}>
+                ← Back
+              </button>
             )}
             <button style={{ ...st.closeBtn, color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
           </div>
@@ -702,6 +847,127 @@ function ContractDetailModal({
             <div style={st.modalFooter}>
               <button style={st.cancelBtn} onClick={() => setMode('view')}>Cancel</button>
               <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
+            </div>
+          </>
+        )}
+
+        {/* ── Compliance Mode ── */}
+        {mode === 'compliance' && (
+          <>
+            <div style={st.modalBody}>
+              {loadingBoat && (
+                <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading vessel data…</div>
+              )}
+              {complianceSaved && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '8px', backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', marginBottom: '16px', fontSize: '13px', color: '#15803D' }}>
+                  <CheckCircle size={15} /> Saved successfully
+                </div>
+              )}
+              {complianceError && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '8px', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', marginBottom: '16px', fontSize: '13px', color: '#DC2626' }}>
+                  <AlertCircle size={15} /> {complianceError}
+                </div>
+              )}
+
+              {/* Vessel Info */}
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Ship size={14} /> Vessel Information
+              </div>
+              <div style={st.twoCol} className="helm-form-grid">
+                <div style={st.field}>
+                  <label style={st.label}>Hull ID (HIN)</label>
+                  <input style={st.input} placeholder="US-ABCD12345E678" value={hin} onChange={(e) => setHin(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Make</label>
+                  <input style={st.input} placeholder="e.g. Sea Ray" value={boatMake} onChange={(e) => setBoatMake(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Model</label>
+                  <input style={st.input} placeholder="e.g. Sundancer 320" value={boatModel} onChange={(e) => setBoatModel(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Year</label>
+                  <input style={st.input} type="number" placeholder="e.g. 2019" value={boatYear} onChange={(e) => setBoatYear(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Registration #</label>
+                  <input style={st.input} placeholder="FL1234AB" value={regNumber} onChange={(e) => setRegNumber(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Registration State</label>
+                  <input style={st.input} placeholder="FL" maxLength={2} value={regState} onChange={(e) => setRegState(e.target.value.toUpperCase())} />
+                </div>
+                <div style={{ ...st.field, gridColumn: '1 / -1' }}>
+                  <label style={st.label}>Registration Expiry</label>
+                  <input style={{ ...st.input, maxWidth: '240px' }} type="date" value={regExpiry} onChange={(e) => setRegExpiry(e.target.value)} />
+                </div>
+              </div>
+
+              {/* Insurance */}
+              <div style={{ borderTop: '2px solid #E2E8F0', marginTop: '8px', paddingTop: '20px', marginBottom: '14px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Shield size={14} /> Insurance
+                </div>
+                <div style={st.twoCol} className="helm-form-grid">
+                  <div style={st.field}>
+                    <label style={st.label}>Insurer</label>
+                    <input style={st.input} placeholder="e.g. Progressive Marine" value={insurer} onChange={(e) => setInsurer(e.target.value)} />
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>Policy Number</label>
+                    <input style={st.input} placeholder="POL-000000" value={policyNumber} onChange={(e) => setPolicyNumber(e.target.value)} />
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>Coverage Start</label>
+                    <input style={st.input} type="date" value={insStart} onChange={(e) => setInsStart(e.target.value)} />
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>Coverage Expiry</label>
+                    <input style={st.input} type="date" value={insExpiry} onChange={(e) => setInsExpiry(e.target.value)} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Emergency Contact */}
+              <div style={{ borderTop: '2px solid #E2E8F0', paddingTop: '20px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <AlertCircle size={14} /> Emergency Contact
+                </div>
+                <div style={st.twoCol} className="helm-form-grid">
+                  <div style={st.field}>
+                    <label style={st.label}>Contact Name</label>
+                    <input style={st.input} placeholder="Full name" value={ecName} onChange={(e) => setEcName(e.target.value)} />
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>Phone Number</label>
+                    <input style={st.input} type="tel" placeholder="(555) 000-0000" value={ecPhone} onChange={(e) => setEcPhone(e.target.value)} />
+                  </div>
+                  <div style={{ ...st.field, gridColumn: '1 / -1' }}>
+                    <label style={st.label}>Relationship</label>
+                    <select style={st.formSelect} value={ecRelationship} onChange={(e) => setEcRelationship(e.target.value)}>
+                      <option value="">Select…</option>
+                      <option value="Spouse">Spouse</option>
+                      <option value="Partner">Partner</option>
+                      <option value="Parent">Parent</option>
+                      <option value="Sibling">Sibling</option>
+                      <option value="Child">Child</option>
+                      <option value="Friend">Friend</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={st.modalFooter}>
+              <button style={st.cancelBtn} onClick={() => setMode('view')}>Cancel</button>
+              <button
+                style={{ ...st.saveBtn, opacity: savingCompliance ? 0.7 : 1 }}
+                onClick={handleSaveCompliance}
+                disabled={savingCompliance}
+              >
+                {savingCompliance ? 'Saving…' : 'Save Vessel & Compliance'}
+              </button>
             </div>
           </>
         )}
