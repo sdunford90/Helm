@@ -343,14 +343,25 @@ function CardPaymentModal({
         onUnexpectedReaderDisconnect: () => { setStatus('terminal_error'); setErrorMsg('Reader disconnected unexpectedly.'); },
       });
       terminalRef.current = terminal;
+      // Discover via SDK (internet-connected readers on the account)
       const result = await (terminal as any).discoverReaders({ simulated: false });
       const sdkReaders: any[] = result.discoveredReaders ?? [];
-      // Store raw SDK objects keyed by id so connectReader gets the original shape
       sdkReaders.forEach((r: any) => rawReadersRef.current.set(r.id, r));
-      const discovered: StripeReader[] = sdkReaders.map((r: any) => ({
-        id: r.id, label: r.label || r.serial_number || 'Reader', status: r.status ?? 'online', device_type: r.device_type ?? '',
-      }));
-      setReaders(discovered);
+
+      // Also pull the backend list (registered readers), merge so neither is missed
+      const { data: backendList } = await apiCall('GET', '/api/pos/terminal/readers').catch(() => ({ data: [] }));
+      const backendReaders: any[] = backendList ?? [];
+      // Backend readers that weren't found by SDK discovery won't have a raw ref; skip them for connect
+      backendReaders.forEach((r: any) => { if (!rawReadersRef.current.has(r.id)) rawReadersRef.current.set(r.id, null); });
+
+      const seen = new Set<string>();
+      const merged: StripeReader[] = [...sdkReaders, ...backendReaders]
+        .filter((r: any) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; })
+        .map((r: any) => ({
+          id: r.id, label: r.label || r.serial_number || 'Reader', status: r.status ?? 'online', device_type: r.device_type ?? '',
+        }));
+
+      setReaders(merged);
       setStatus('readers');
     } catch {
       setStatus('readers');
@@ -386,13 +397,7 @@ function CardPaymentModal({
   }, [amountCents, apiCall, onComplete]);
 
   const handlePrintReceipt = useCallback(() => {
-    const receiptWindow = window.open('', '_blank', 'width=400,height=600');
-    if (!receiptWindow) return;
-    const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-    const rows = cartItems.map((ci) => `<tr><td>${ci.product.name}</td><td style="text-align:right">x${ci.quantity}</td><td style="text-align:right">$${(ci.product.price * ci.quantity).toFixed(2)}</td></tr>`).join('');
-    receiptWindow.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:monospace;padding:20px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px}hr{border:none;border-top:1px dashed #999;margin:10px 0}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0}.footer{text-align:center;font-size:12px;color:#666;margin-top:16px}</style></head><body><h2>Point of Sale Receipt</h2><div style="text-align:center;font-size:12px;color:#666">${now}</div><hr/><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><hr/><div style="text-align:right;font-weight:bold;font-size:16px">Total: $${total.toFixed(2)}</div><div style="text-align:right;font-size:12px;color:#666">Payment: Card Not Present</div><hr/><div class="footer">Thank you for your business!</div></body></html>`);
-    receiptWindow.document.close();
-    receiptWindow.print();
+    printReceipt({ cartItems, total, paymentMethod: 'Card Not Present' });
   }, [cartItems, total]);
 
   useEffect(() => { void discoverReaders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -522,7 +527,7 @@ function CardPaymentModal({
 
           {/* ── Card Not Present entry ── */}
           {status === 'cnp' && (
-            <Elements stripe={getStripe()}>
+            <Elements stripe={getStripe()} options={{ paymentMethodCreation: 'manual', wallets: { link: 'never' } } as any}>
               <CnpForm
                 total={total}
                 amountCents={amountCents}
@@ -577,13 +582,7 @@ function PaymentModal({
   };
 
   const handlePrintReceipt = () => {
-    const receiptWindow = window.open('', '_blank', 'width=400,height=600');
-    if (!receiptWindow) return;
-    const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-    const rows = cartItems.map((ci) => `<tr><td>${ci.product.name}</td><td style="text-align:right">x${ci.quantity}</td><td style="text-align:right">$${(ci.product.price * ci.quantity).toFixed(2)}</td></tr>`).join('');
-    receiptWindow.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:monospace;padding:20px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px}hr{border:none;border-top:1px dashed #999;margin:10px 0}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0}.footer{text-align:center;font-size:12px;color:#666;margin-top:16px}</style></head><body><h2>Point of Sale Receipt</h2><div style="text-align:center;font-size:12px;color:#666">${now}</div><hr/><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><hr/><div style="text-align:right;font-weight:bold;font-size:16px">Total: $${total.toFixed(2)}</div>${change > 0 ? `<div style="text-align:right;font-size:13px">Change: $${change.toFixed(2)}</div>` : ''}<div style="text-align:right;font-size:12px;color:#666">Payment: ${method}</div><hr/><div class="footer">Thank you for your business!</div></body></html>`);
-    receiptWindow.document.close();
-    receiptWindow.print();
+    printReceipt({ cartItems, total, paymentMethod: method, change });
   };
 
   return (
@@ -618,11 +617,34 @@ function PaymentModal({
               </div>
               {method === 'Cash' && (
                 <>
+                  {/* Quick-tender denomination buttons */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Quick Amounts</div>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' as const }}>
+                      {[
+                        { label: 'Exact', value: total },
+                        ...[1, 5, 10, 20, 50, 100].filter((d) => d > total).slice(0, 5).map((d) => ({ label: `$${d}`, value: d })),
+                      ].map((btn) => (
+                        <button
+                          key={btn.label}
+                          style={{
+                            flex: '1 1 auto', minWidth: '60px', padding: '10px 8px',
+                            background: parseFloat(tendered) === btn.value ? '#0A2342' : '#F8FAFC',
+                            color: parseFloat(tendered) === btn.value ? '#FFFFFF' : '#0A2342',
+                            border: `1px solid ${parseFloat(tendered) === btn.value ? '#0A2342' : '#E2E8F0'}`,
+                            borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
+                          }}
+                          onClick={() => setTendered(btn.value.toFixed(2))}
+                        >{btn.label}</button>
+                      ))}
+                    </div>
+                  </div>
                   <div style={st.field}>
                     <label style={st.label}>Amount Tendered</label>
                     <input
                       style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontFamily: '"JetBrains Mono", monospace' }}
                       type="number"
+                      step="0.01"
                       value={tendered}
                       onChange={(e) => setTendered(e.target.value)}
                       autoFocus
@@ -804,6 +826,156 @@ function ReadersSettings({ getToken }: { getToken: () => Promise<string | null> 
           <li>Enter that code in the form above along with a label for this reader</li>
           <li>Once registered, the reader will appear in the Card payment modal</li>
         </ol>
+      </div>
+    </div>
+  );
+}
+
+/* ── Receipt Settings + shared print helper ────────────── */
+
+const RECEIPT_SETTINGS_KEY = 'helm_pos_receipt_settings';
+
+interface ReceiptConfig {
+  businessName: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  returnPolicy: string;
+}
+
+function getReceiptConfig(): ReceiptConfig {
+  try {
+    return JSON.parse(localStorage.getItem(RECEIPT_SETTINGS_KEY) || '{}');
+  } catch { return {} as ReceiptConfig; }
+}
+
+function printReceipt({
+  cartItems, total, paymentMethod, change = 0,
+}: { cartItems: CartItem[]; total: number; paymentMethod: string; change?: number }) {
+  const win = window.open('', '_blank', 'width=400,height=640');
+  if (!win) return;
+  const cfg = getReceiptConfig();
+  const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const rows = cartItems.map((ci) =>
+    `<tr><td>${ci.product.name}</td><td style="text-align:right">x${ci.quantity}</td><td style="text-align:right">$${(ci.product.price * ci.quantity).toFixed(2)}</td></tr>`
+  ).join('');
+  const businessName = cfg.businessName || 'Point of Sale';
+  const headerLines = [
+    cfg.address ? `<div>${cfg.address.replace(/\n/g, '<br/>')}</div>` : '',
+    cfg.phone ? `<div>Tel: ${cfg.phone}</div>` : '',
+    cfg.email ? `<div>${cfg.email}</div>` : '',
+    cfg.website ? `<div>${cfg.website}</div>` : '',
+  ].filter(Boolean).join('');
+  const footer = cfg.returnPolicy
+    ? `<div class="policy"><strong>Return Policy:</strong><br/>${cfg.returnPolicy}</div><hr/><div class="footer">Thank you for your business!</div>`
+    : `<div class="footer">Thank you for your business!</div>`;
+  win.document.write(`<!DOCTYPE html><html><head><title>Receipt</title>
+  <style>
+    body{font-family:monospace;padding:16px;max-width:320px;margin:0 auto}
+    h2{text-align:center;font-size:17px;margin:0 0 4px}
+    .info{text-align:center;font-size:11px;color:#555;margin-bottom:4px}
+    hr{border:none;border-top:1px dashed #999;margin:8px 0}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    td{padding:2px 0}
+    .total{text-align:right;font-weight:bold;font-size:15px;margin:6px 0 2px}
+    .sub{text-align:right;font-size:12px;color:#555}
+    .footer{text-align:center;font-size:11px;color:#666;margin-top:10px}
+    .policy{font-size:11px;color:#444;margin-top:8px;line-height:1.5}
+  </style>
+  </head><body>
+  <h2>${businessName}</h2>
+  ${headerLines ? `<div class="info">${headerLines}</div>` : ''}
+  <div class="info">${now}</div>
+  <hr/>
+  <table>
+    <thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amt</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <hr/>
+  <div class="total">Total: $${total.toFixed(2)}</div>
+  ${change > 0 ? `<div class="sub">Change: $${change.toFixed(2)}</div>` : ''}
+  <div class="sub">Payment: ${paymentMethod}</div>
+  <hr/>
+  ${footer}
+  </body></html>`);
+  win.document.close();
+  win.print();
+}
+
+function ReceiptSettings() {
+  const [cfg, setCfg] = useState<ReceiptConfig>(() => ({
+    businessName: '', address: '', phone: '', email: '', website: '', returnPolicy: '',
+    ...getReceiptConfig(),
+  }));
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    localStorage.setItem(RECEIPT_SETTINGS_KEY, JSON.stringify(cfg));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const rs: Record<string, React.CSSProperties> = {
+    card: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', padding: '24px', marginBottom: '20px' },
+    cardTitle: { fontSize: '15px', fontWeight: 700, color: '#0A2342', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' },
+    field: { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '14px' } as React.CSSProperties,
+    label: { fontSize: '12px', fontWeight: 600, color: '#64748B' },
+    input: { padding: '9px 12px', fontSize: '14px', border: '1px solid #E2E8F0', borderRadius: '8px', outline: 'none', width: '100%', boxSizing: 'border-box' as const },
+    hint: { fontSize: '11px', color: '#94A3B8' },
+    saveBtn: { padding: '10px 24px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 },
+  };
+
+  return (
+    <div style={{ maxWidth: '640px', marginTop: '8px' }}>
+      <div style={rs.card}>
+        <div style={rs.cardTitle}><Printer size={16} /> Receipt Header</div>
+        <div style={rs.field}>
+          <label style={rs.label}>Business Name</label>
+          <input style={rs.input} placeholder="Bayshore Marina" value={cfg.businessName} onChange={(e) => setCfg((c) => ({ ...c, businessName: e.target.value }))} />
+          <div style={rs.hint}>Appears as the receipt title</div>
+        </div>
+        <div style={rs.field}>
+          <label style={rs.label}>Address</label>
+          <textarea
+            style={{ ...rs.input, resize: 'vertical', minHeight: '64px', fontFamily: 'inherit' }}
+            placeholder={'123 Harbor Dr\nMarinetown, FL 33101'}
+            value={cfg.address}
+            onChange={(e) => setCfg((c) => ({ ...c, address: e.target.value }))}
+          />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div style={rs.field}>
+            <label style={rs.label}>Phone</label>
+            <input style={rs.input} placeholder="(555) 123-4567" value={cfg.phone} onChange={(e) => setCfg((c) => ({ ...c, phone: e.target.value }))} />
+          </div>
+          <div style={rs.field}>
+            <label style={rs.label}>Email</label>
+            <input style={rs.input} placeholder="info@marina.com" value={cfg.email} onChange={(e) => setCfg((c) => ({ ...c, email: e.target.value }))} />
+          </div>
+        </div>
+        <div style={rs.field}>
+          <label style={rs.label}>Website</label>
+          <input style={rs.input} placeholder="www.marina.com" value={cfg.website} onChange={(e) => setCfg((c) => ({ ...c, website: e.target.value }))} />
+        </div>
+      </div>
+
+      <div style={rs.card}>
+        <div style={rs.cardTitle}><Package size={16} /> Receipt Footer</div>
+        <div style={rs.field}>
+          <label style={rs.label}>Return Policy</label>
+          <textarea
+            style={{ ...rs.input, resize: 'vertical', minHeight: '80px', fontFamily: 'inherit' }}
+            placeholder="All sales final. No refunds on fuel or perishable goods."
+            value={cfg.returnPolicy}
+            onChange={(e) => setCfg((c) => ({ ...c, returnPolicy: e.target.value }))}
+          />
+          <div style={rs.hint}>Printed at the bottom of every receipt. Leave blank to omit.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button style={rs.saveBtn} onClick={handleSave}>Save Receipt Settings</button>
+          {saved && <span style={{ fontSize: '13px', color: '#22C55E', fontWeight: 600 }}>✓ Saved</span>}
+        </div>
       </div>
     </div>
   );
@@ -1243,7 +1415,10 @@ export default function POS() {
       )}
 
       {tab === 'settings' && (
-        <ReadersSettings getToken={getToken} />
+        <>
+          <ReadersSettings getToken={getToken} />
+          <ReceiptSettings />
+        </>
       )}
 
       {showShiftModal && (

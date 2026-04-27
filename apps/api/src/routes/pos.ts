@@ -1215,17 +1215,20 @@ router.post(
         return;
       }
 
-      const intent = await stripeClient.paymentIntents.create(
-        {
-          amount: amountCents,
-          currency: "usd",
-          payment_method: paymentMethodId,
-          payment_method_types: ["card"],
-          confirm: true,
-          description: description ?? "POS card-not-present payment",
-        },
-        { stripeAccount: tenant.stripeAccountId },
-      );
+      // Destination charge: platform creates the PI with on_behalf_of so the
+      // platform-owned PaymentMethod (pm_xxx) can be used directly without
+      // cloning, while funds settle on the connected account.
+      const intent = await stripeClient.paymentIntents.create({
+        amount: amountCents,
+        currency: "usd",
+        payment_method: paymentMethodId,
+        payment_method_types: ["card"],
+        confirm: true,
+        off_session: true,
+        on_behalf_of: tenant.stripeAccountId,
+        transfer_data: { destination: tenant.stripeAccountId },
+        description: description ?? "POS card-not-present payment",
+      });
 
       res.json({ id: intent.id, status: intent.status, amount: intent.amount });
     } catch (err) {
