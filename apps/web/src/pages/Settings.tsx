@@ -343,6 +343,15 @@ export default function Settings() {
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
 
+  const { data: brandingData } = useApi<{ logoUrl: string; primaryColor: string; secondaryColor: string; faviconUrl: string }>('get', '/api/settings/branding', { immediate: true });
+  const { execute: saveBranding } = useApi<any>('put', '/api/settings/branding');
+
+  React.useEffect(() => {
+    if (brandingData?.logoUrl) {
+      setLogoUrl(brandingData.logoUrl);
+    }
+  }, [brandingData]);
+
   const handleLogoUpload = async (file: File) => {
     if (!file) return;
     const validTypes = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp'];
@@ -357,6 +366,13 @@ export default function Settings() {
       const verify = await api.post<{ ok: boolean; publicUrl?: string }>('/storage/verify-upload', { key: presign.key, contentType: file.type }, token);
       if (verify.ok && verify.publicUrl) {
         setLogoUrl(verify.publicUrl);
+        const saved = await saveBranding({ logoUrl: verify.publicUrl });
+        if (saved) {
+          setSavedMsg('Logo saved successfully!');
+          setTimeout(() => setSavedMsg(null), 2000);
+        } else {
+          setLogoError('Logo uploaded but could not be saved. Please try again.');
+        }
       }
     } catch (err) {
       setLogoError('Upload failed. Please try again.');
@@ -1337,7 +1353,7 @@ export default function Settings() {
             </div>
             {logoError && <div style={{ fontSize: '12px', color: '#DC2626', marginBottom: '8px' }}>{logoError}</div>}
             {logoUrl && (
-              <button style={{ fontSize: '12px', padding: '4px 10px', marginBottom: '8px', background: 'none', border: '1px solid #CBD5E1', borderRadius: '4px', cursor: 'pointer', color: '#64748B' }} onClick={() => { setLogoUrl(null); if (logoInputRef.current) logoInputRef.current.value = ''; }}>Remove</button>
+              <button style={{ fontSize: '12px', padding: '4px 10px', marginBottom: '8px', background: 'none', border: '1px solid #CBD5E1', borderRadius: '4px', cursor: 'pointer', color: '#64748B' }} onClick={async () => { setLogoUrl(null); if (logoInputRef.current) logoInputRef.current.value = ''; const removed = await saveBranding({ logoUrl: '' }); if (!removed) { setLogoError('Could not remove logo. Please try again.'); } }}>Remove</button>
             )}
             <div style={{ fontSize: '11px', color: '#94A3B8' }}>PNG, JPG, SVG or WebP · Max 5 MB</div>
           </div>
