@@ -1152,11 +1152,15 @@ export default function POS() {
   const transactions = apiTransactionsMapped;
 
   const handlePaymentComplete = async (method: string) => {
-    const lineItems = cart.map((i) => ({
-      productId: i.product.id,
-      quantity: Math.max(1, Math.round(i.quantity)),
-      unitPriceCents: Math.round(i.product.price * 100),
-    }));
+    const lineItems = cart.map((i) => {
+      const unitPriceCents = Math.round(i.product.price * 100);
+      const qty = Math.max(1, Math.round(i.quantity));
+      const lineSubtotalCents = unitPriceCents * qty;
+      const tc = i.product.taxClass;
+      const rate = (!tc || tc === 'Tax Exempt') ? 0 : (locationTaxRates[tc] ?? 0);
+      const taxCents = Math.round(lineSubtotalCents * (rate / 100));
+      return { productId: i.product.id, quantity: qty, unitPriceCents, taxCents };
+    });
 
     const result = await createTransaction.execute({
       lineItems,

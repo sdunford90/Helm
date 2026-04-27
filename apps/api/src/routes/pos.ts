@@ -56,6 +56,7 @@ const TransactionLineItemSchema = z.object({
   quantity: z.number().int().positive(),
   unitPriceCents: z.number().int().min(0),
   discountCents: z.number().int().min(0).default(0),
+  taxCents: z.number().int().min(0).optional(),
 });
 
 const CreateTransactionSchema = z.object({
@@ -377,9 +378,8 @@ router.post(
         const product = productMap.get(li.productId);
         const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
         const lineSubtotal = unitPrice * li.quantity - li.discountCents;
-        // Calculate tax based on taxClass; use 7% default if taxClass exists
-        const taxRate = product?.taxClass ? 0.07 : 0;
-        const lineTax = Math.round(lineSubtotal * taxRate);
+        // Use client-supplied taxCents (computed from real jurisdiction rates) when present
+        const lineTax = li.taxCents !== undefined ? li.taxCents : 0;
         const lineTotal = lineSubtotal + lineTax;
 
         subtotalCents += lineSubtotal;
