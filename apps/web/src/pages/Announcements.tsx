@@ -116,6 +116,20 @@ interface ApiAutoLog {
   sentAt: string | null; createdAt: string;
 }
 
+const TRIGGER_OPTIONS = [
+  { value: 'invoice_created', label: 'Invoice Created' },
+  { value: 'payment_received', label: 'Payment Received' },
+  { value: 'invoice_past_due_7', label: '7 Days Past Due' },
+  { value: 'invoice_past_due_14', label: '14 Days Past Due' },
+  { value: 'invoice_past_due_30', label: '30 Days Past Due' },
+  { value: 'ach_return', label: 'ACH Return' },
+  { value: 'contract_expiring_30', label: 'Contract Expiring (30d)' },
+  { value: 'insurance_expiring_30', label: 'Insurance Expiring (30d)' },
+  { value: 'rental_booking_confirmed', label: 'Rental Booked' },
+  { value: 'rental_pre_arrival', label: 'Pre-Arrival (48hr)' },
+  { value: 'rental_post_return', label: 'Rental Returned' },
+];
+
 const TRIGGER_LABEL_MAP: Record<string, string> = Object.fromEntries(
   TRIGGER_OPTIONS.map(t => [t.value, t.label])
 );
@@ -159,20 +173,6 @@ const AUTO_STATUS_COLORS: Record<string, { bg: string; color: string }> = {
   Bounced: { bg: '#FFF3CD', color: '#856404' },
   Failed: { bg: '#FDE8E8', color: '#9B1C1C' },
 };
-
-const TRIGGER_OPTIONS = [
-  { value: 'invoice_created', label: 'Invoice Created' },
-  { value: 'payment_received', label: 'Payment Received' },
-  { value: 'invoice_past_due_7', label: '7 Days Past Due' },
-  { value: 'invoice_past_due_14', label: '14 Days Past Due' },
-  { value: 'invoice_past_due_30', label: '30 Days Past Due' },
-  { value: 'ach_return', label: 'ACH Return' },
-  { value: 'contract_expiring_30', label: 'Contract Expiring (30d)' },
-  { value: 'insurance_expiring_30', label: 'Insurance Expiring (30d)' },
-  { value: 'rental_booking_confirmed', label: 'Rental Booked' },
-  { value: 'rental_pre_arrival', label: 'Pre-Arrival (48hr)' },
-  { value: 'rental_post_return', label: 'Rental Returned' },
-];
 
 /* ─── Helpers ─── */
 const channelIcon = (ch: Channel, size = 16) => {
