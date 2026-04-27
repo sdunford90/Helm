@@ -313,6 +313,29 @@ export default function Settings() {
   const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
   const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/api/settings/team', { immediate: true });
 
+  // QBO integration
+  interface QboStatus { connected: boolean; realmId: string | null; lastSync: string | null; }
+  const { data: qboStatus, loading: qboLoading, execute: fetchQboStatus } = useApi<QboStatus>('get', '/api/settings/qbo', { immediate: true });
+  const { execute: qboConnect, loading: qboConnecting } = useApi<{ url: string }>('post', '/api/settings/qbo/connect');
+  const { execute: qboSync, loading: qboSyncing } = useApi<{ syncing: boolean; startedAt: string }>('post', '/api/settings/qbo/sync');
+  const { execute: qboDisconnect, loading: qboDisconnecting } = useApi<{ disconnected: boolean }>('post', '/api/settings/qbo/disconnect');
+
+  const handleQboConnect = async () => {
+    const res = await qboConnect({});
+    if (res?.url) window.open(res.url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleQboSync = async () => {
+    const res = await qboSync({});
+    if (res?.syncing) { setSavedMsg('QuickBooks sync started'); setTimeout(() => setSavedMsg(null), 3000); fetchQboStatus(); }
+  };
+
+  const handleQboDisconnect = async () => {
+    if (!window.confirm('Disconnect QuickBooks Online? Existing synced records will remain but future changes will not sync.')) return;
+    const res = await qboDisconnect({ confirm: true });
+    if (res?.disconnected) { setSavedMsg('QuickBooks disconnected'); setTimeout(() => setSavedMsg(null), 3000); fetchQboStatus(); }
+  };
+
   // Use API data when available, fall back to mock
   const teamMembers = apiTeam ?? TEAM;
 
@@ -1130,14 +1153,39 @@ export default function Settings() {
                 <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>QuickBooks Online</div>
                 <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Sync invoices, payments, and customers</div>
                 <div style={{ marginTop: '8px' }}>
-                  <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
-                  <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>Realm: 12345678 | Last sync: Mar 25, 2026 8:00 AM</span>
+                  {qboLoading ? (
+                    <span style={{ fontSize: '12px', color: '#94A3B8' }}>Checking connection…</span>
+                  ) : qboStatus?.connected ? (
+                    <>
+                      <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
+                      {qboStatus.realmId && (
+                        <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>
+                          Realm: {qboStatus.realmId}
+                          {qboStatus.lastSync && ` | Last sync: ${new Date(qboStatus.lastSync).toLocaleString()}`}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
+                  )}
                 </div>
               </div>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button style={st.outlineBtn} onClick={() => { setSavedMsg('QuickBooks sync started...'); setTimeout(() => setSavedMsg(null), 2000); }}><RefreshCw size={14} /> Sync Now</button>
-              <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={() => { setSavedMsg('QuickBooks disconnected'); setTimeout(() => setSavedMsg(null), 2000); }}>Disconnect</button>
+              {qboStatus?.connected ? (
+                <>
+                  <button style={st.outlineBtn} onClick={handleQboSync} disabled={qboSyncing}>
+                    <RefreshCw size={14} />{qboSyncing ? ' Syncing…' : ' Sync Now'}
+                  </button>
+                  <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleQboDisconnect} disabled={qboDisconnecting}>
+                    {qboDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </button>
+                </>
+              ) : (
+                <button style={st.addBtn} onClick={handleQboConnect} disabled={qboConnecting}>
+                  {qboConnecting ? 'Connecting…' : 'Connect QuickBooks'}
+                </button>
+              )}
             </div>
           </div>
 
