@@ -426,8 +426,8 @@ export default function PricingCalendar({ products, onOverrideChange }: PricingC
 
       {/* Edit Override Modal */}
       {editDate && (
-        <div style={s.editOverlay} onClick={() => setEditDate(null)}>
-          <div style={s.editModal} onClick={(e) => e.stopPropagation()}>
+        <div style={s.editOverlay} onMouseDown={(e) => { if (e.target === e.currentTarget) setEditDate(null); }}>
+          <div style={s.editModal}>
             <div style={s.editTitle}>
               <span>Set Price Override{editDate.includes('~') ? ' (Range)' : ''}</span>
               <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }} onClick={() => setEditDate(null)}>
