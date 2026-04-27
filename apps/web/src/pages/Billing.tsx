@@ -29,6 +29,44 @@ interface Invoice {
   balance: number;
 }
 
+// Shape returned by the API
+interface ApiInvoice {
+  id: string;
+  invoiceNumber: string;
+  issuedDate: string;
+  dueDate: string;
+  status: string;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  balanceCents: number;
+  customer: { firstName: string; lastName: string; email?: string } | null;
+}
+
+const API_STATUS_MAP: Record<string, InvoiceStatus> = {
+  DRAFT: 'Draft',
+  ISSUED: 'Issued',
+  PAID: 'Paid',
+  PAST_DUE: 'Past Due',
+  VOID: 'Void',
+  COLLECTIONS: 'Collections',
+};
+
+function toInvoice(a: ApiInvoice): Invoice {
+  return {
+    id: a.id,
+    number: a.invoiceNumber,
+    customer: a.customer ? `${a.customer.firstName} ${a.customer.lastName}` : '—',
+    issued: a.issuedDate ? a.issuedDate.slice(0, 10) : '',
+    due: a.dueDate ? a.dueDate.slice(0, 10) : '',
+    status: API_STATUS_MAP[a.status] ?? (a.status as InvoiceStatus),
+    subtotal: a.subtotalCents,
+    tax: a.taxCents,
+    total: a.totalCents,
+    balance: a.balanceCents,
+  };
+}
+
 const STATUS_ALL = ['All', 'Draft', 'Issued', 'Paid', 'Past Due', 'Void', 'Collections'] as const;
 
 /* ─── Helpers ─── */
@@ -86,9 +124,9 @@ export default function Billing() {
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
-  const createInvoiceApi = useApi<Invoice>('post', '/api/invoices');
-  const invoices = useMemo(() => apiInvoices ?? [], [apiInvoices]);
+  const { data: apiResponse, loading } = useApi<{ data: ApiInvoice[] }>('get', '/api/invoices', { immediate: true });
+  const createInvoiceApi = useApi<{ id: string }>('post', '/api/invoices');
+  const invoices = useMemo(() => (apiResponse?.data ?? []).map(toInvoice), [apiResponse]);
 
   const filtered = invoices.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
@@ -116,7 +154,6 @@ export default function Billing() {
       <hr style={styles.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
-
       {/* Summary Cards */}
       <div style={styles.summaryRow} className="helm-stats-grid">
         {summaryCards.map((c) => (

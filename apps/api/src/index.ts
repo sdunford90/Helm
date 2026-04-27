@@ -69,6 +69,11 @@ import supportRouter from "./routes/support.js";
 const app: Application = express();
 const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
 
+// Trust the first proxy hop (Replit's reverse proxy / nginx).
+// Required for express-rate-limit to read X-Forwarded-For correctly and
+// for req.ip to reflect the real client IP rather than the proxy's address.
+app.set('trust proxy', 1);
+
 // --------------------------------------------------------------------------
 // Global middleware
 // --------------------------------------------------------------------------
@@ -85,25 +90,29 @@ const ALLOWED_ORIGINS = [
   'http://localhost:5173',
 ].filter(Boolean) as string[];
 
+const isDev = process.env.NODE_ENV !== 'production';
+
 // Global rate limit: 300 requests per minute per IP.
-// Tighten per-route (e.g. auth endpoints) as needed.
+// Skipped entirely in development — Replit's shared proxy IP would cause
+// legitimate dev requests to hit the limit almost immediately.
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
-  skip: (req) => req.path === '/api/health',
+  skip: (req) => isDev || req.path === '/api/health',
 });
 app.use(globalLimiter);
 
-// Stricter limiter for authentication + webhook endpoints
+// Stricter limiter for authentication + webhook endpoints (production only)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please slow down.' },
+  skip: () => isDev,
 });
 app.use('/api/auth', authLimiter);
 

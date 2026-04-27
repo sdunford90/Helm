@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = '';
 
 class ApiClientError extends Error {
   status: number;

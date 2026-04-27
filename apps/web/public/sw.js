@@ -1,6 +1,6 @@
 /// Helm Marina – Service Worker for Offline Dock Walks
 
-const CACHE_NAME = 'helm-app-shell-v4';
+const CACHE_NAME = 'helm-app-shell-v5';
 const APP_SHELL_ASSETS = [
   '/',
   '/manifest.json',
@@ -54,13 +54,21 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Everything else: cache-first, then network
+  // JS/CSS bundles from Vite – always network-first.
+  // Vite produces content-hashed filenames so caching them in the SW is
+  // unnecessary and causes stale-bundle problems during development/deployment.
+  if (url.pathname.startsWith('/assets/') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
+  // Everything else (HTML navigation, icons, manifest): cache-first, then network
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
       return fetch(event.request).then((response) => {
-        // Cache successful GET responses for navigation/assets
-        if (event.request.method === 'GET' && response.status === 200) {
+        // Only cache navigation/shell assets, not arbitrary resources
+        if (event.request.method === 'GET' && response.status === 200 && event.request.mode === 'navigate') {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }

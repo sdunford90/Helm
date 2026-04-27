@@ -75,14 +75,24 @@ const MissingKeyScreen = () => (
   </div>
 );
 
-// Register service worker for offline dock walk PWA support
+// Register service worker for offline dock walk PWA support.
+// Skipped in development — the SW's cache-first strategy for JS/CSS assets
+// would serve stale Vite bundles and prevent hot updates from landing.
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then(
-      (reg) => console.log('[helm] SW registered:', reg.scope),
-      (err) => console.warn('[helm] SW registration failed:', err),
-    );
-  });
+  if (import.meta.env.PROD) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').then(
+        (reg) => console.log('[helm] SW registered:', reg.scope),
+        (err) => console.warn('[helm] SW registration failed:', err),
+      );
+    });
+  } else {
+    // In dev: unregister any previously-installed SWs so cached assets
+    // don't shadow fresh Vite-compiled bundles.
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      regs.forEach((reg) => reg.unregister());
+    });
+  }
 }
 
 if (!CLERK_KEY) {
