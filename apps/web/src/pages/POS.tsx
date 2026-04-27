@@ -613,6 +613,144 @@ function PaymentModal({
   );
 }
 
+/* ── Readers Settings ─────────────────────────────────── */
+
+interface RegisteredReader { id: string; label: string; status: string; device_type: string }
+
+function ReadersSettings({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [readers, setReaders] = useState<RegisteredReader[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [registering, setRegistering] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [regCode, setRegCode] = useState('');
+  const [label, setLabel] = useState('');
+  const [error, setError] = useState('');
+
+  const authFetch = useCallback(async (method: string, path: string, body?: unknown) => {
+    const token = await getToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as any).error ?? 'Request failed'); }
+    return res.json() as Promise<any>;
+  }, [getToken]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await authFetch('GET', '/api/pos/terminal/readers').catch(() => ({ data: [] }));
+      setReaders((data ?? []) as RegisteredReader[]);
+    } finally { setLoading(false); }
+  }, [authFetch]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleRegister = async () => {
+    if (!regCode.trim() || !label.trim()) { setError('Both label and registration code are required.'); return; }
+    setError('');
+    setRegistering(true);
+    try {
+      await authFetch('POST', '/api/pos/terminal/readers/register', { registrationCode: regCode.trim(), label: label.trim() });
+      setRegCode(''); setLabel(''); setShowForm(false);
+      await load();
+    } catch (err: any) {
+      setError((err as Error).message ?? 'Registration failed. Check the code and try again.');
+    } finally { setRegistering(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Remove this reader from your Stripe account?')) return;
+    setDeleting(id);
+    try {
+      await authFetch('DELETE', `/api/pos/terminal/readers/${id}`);
+      await load();
+    } catch { /* ignore */ } finally { setDeleting(null); }
+  };
+
+  const ss: Record<string, React.CSSProperties> = {
+    wrap: { maxWidth: '640px', marginTop: '8px' },
+    card: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', padding: '24px', marginBottom: '20px' },
+    cardTitle: { fontSize: '15px', fontWeight: 700, color: '#0A2342', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' },
+    row: { display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 0', borderBottom: '1px solid #F1F5F9' },
+    readerLabel: { fontWeight: 600, fontSize: '14px', color: '#0A2342' },
+    readerMeta: { fontSize: '12px', color: '#64748B', marginTop: '2px' },
+    badge: { fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '99px', background: '#DEF7EC', color: '#03543F' },
+    delBtn: { marginLeft: 'auto', background: 'none', border: '1px solid #FCA5A5', borderRadius: '6px', color: '#DC2626', padding: '4px 10px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 },
+    field: { display: 'flex', flexDirection: 'column' as const, gap: '4px', marginBottom: '12px' },
+    label: { fontSize: '12px', fontWeight: 600, color: '#64748B' },
+    input: { padding: '9px 12px', fontSize: '14px', border: '1px solid #E2E8F0', borderRadius: '8px', outline: 'none', width: '100%', boxSizing: 'border-box' as const },
+    hint: { fontSize: '12px', color: '#94A3B8', marginTop: '2px' },
+    addBtn: { display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '9px 18px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
+    cancelBtn: { padding: '9px 18px', background: 'none', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#64748B', marginLeft: '8px' },
+  };
+
+  return (
+    <div style={ss.wrap}>
+      <div style={ss.card}>
+        <div style={ss.cardTitle}>
+          <Wifi size={16} /> Card Readers
+          <button style={{ ...ss.addBtn, marginLeft: 'auto', padding: '6px 14px', fontSize: '12px' }} onClick={() => { setShowForm((v) => !v); setError(''); }}>
+            {showForm ? 'Cancel' : '+ Register Reader'}
+          </button>
+        </div>
+
+        {showForm && (
+          <div style={{ background: '#F8FAFC', borderRadius: '8px', padding: '16px', marginBottom: '16px', border: '1px solid #E2E8F0' }}>
+            <div style={ss.field}>
+              <label style={ss.label}>Reader Label</label>
+              <input style={ss.input} placeholder="e.g. Front Desk" value={label} onChange={(e) => setLabel(e.target.value)} />
+            </div>
+            <div style={ss.field}>
+              <label style={ss.label}>Registration Code</label>
+              <input style={ss.input} placeholder="e.g. quick-fox-1" value={regCode} onChange={(e) => setRegCode(e.target.value)} />
+              <div style={ss.hint}>Shown on the reader's screen when you tap "Generate pairing code"</div>
+            </div>
+            {error && <div style={{ fontSize: '13px', color: '#DC2626', marginBottom: '12px' }}>{error}</div>}
+            <div>
+              <button style={{ ...ss.addBtn, opacity: registering ? 0.7 : 1 }} onClick={() => void handleRegister()} disabled={registering}>
+                {registering ? 'Registering…' : 'Register'}
+              </button>
+              <button style={ss.cancelBtn} onClick={() => { setShowForm(false); setError(''); }}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {loading && <div style={{ fontSize: '14px', color: '#94A3B8', padding: '8px 0' }}>Loading readers…</div>}
+        {!loading && readers.length === 0 && (
+          <div style={{ fontSize: '14px', color: '#64748B', padding: '12px 0', textAlign: 'center' }}>
+            <WifiOff size={24} style={{ display: 'block', margin: '0 auto 8px', opacity: 0.4 }} />
+            No readers registered. Click "Register Reader" to pair a physical device.
+          </div>
+        )}
+        {!loading && readers.map((r, i) => (
+          <div key={r.id} style={{ ...ss.row, borderBottom: i === readers.length - 1 ? 'none' : '1px solid #F1F5F9' }}>
+            <Wifi size={18} style={{ color: r.status === 'online' ? '#22C55E' : '#94A3B8', flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={ss.readerLabel}>{r.label || r.id}</div>
+              <div style={ss.readerMeta}>{r.device_type} · {r.id}</div>
+            </div>
+            <span style={{ ...ss.badge, background: r.status === 'online' ? '#DEF7EC' : '#F1F5F9', color: r.status === 'online' ? '#03543F' : '#64748B' }}>{r.status}</span>
+            <button style={{ ...ss.delBtn, opacity: deleting === r.id ? 0.5 : 1 }} disabled={deleting === r.id} onClick={() => void handleDelete(r.id)}>
+              {deleting === r.id ? '…' : 'Remove'}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ ...ss.card, background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+        <div style={{ fontSize: '13px', fontWeight: 600, color: '#92400E', marginBottom: '6px' }}>How to pair a physical reader</div>
+        <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', color: '#78350F', lineHeight: 1.8 }}>
+          <li>Power on your Stripe Terminal reader (S700, WisePOS E, etc.)</li>
+          <li>On the reader, tap <strong>Settings → Generate pairing code</strong></li>
+          <li>Enter that code in the form above along with a label for this reader</li>
+          <li>Once registered, the reader will appear in the Card payment modal</li>
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 /* ── Recalled Transaction Banner ───────────────────────── */
 
 function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () => void }) {
@@ -630,7 +768,7 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
 export default function POS() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<'sale' | 'transactions'>('sale');
+  const [tab, setTab] = useState<'sale' | 'transactions' | 'settings'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [shiftOpen, setShiftOpen] = useState(false);
@@ -826,6 +964,7 @@ export default function POS() {
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sale', label: 'New Sale' },
     { key: 'transactions', label: 'Transactions' },
+    { key: 'settings', label: 'Settings' },
   ];
 
   return (
@@ -1043,6 +1182,10 @@ export default function POS() {
             </table>
           </div>
         </>
+      )}
+
+      {tab === 'settings' && (
+        <ReadersSettings getToken={getToken} />
       )}
 
       {showShiftModal && (

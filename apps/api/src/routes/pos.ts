@@ -5,6 +5,8 @@ import { prisma } from "../lib/prisma.js";
 import {
   createConnectionToken,
   listReaders,
+  registerReader,
+  deleteReader,
   createPaymentIntent as createTerminalPaymentIntent,
   capturePayment,
 } from "../services/stripe-terminal.js";
@@ -1086,6 +1088,56 @@ router.get(
       }
       const readers = await listReaders(tenant.stripeAccountId);
       res.json({ data: readers });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /terminal/readers/register — pair a physical reader ────────────────
+
+const RegisterReaderSchema = z.object({
+  registrationCode: z.string().min(1),
+  label: z.string().min(1).max(80),
+});
+
+router.post(
+  "/terminal/readers/register",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res.status(400).json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+      const { registrationCode, label } = RegisterReaderSchema.parse(req.body);
+      const reader = await registerReader(tenant.stripeAccountId, registrationCode, label);
+      res.json(reader);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── DELETE /terminal/readers/:id — unregister a reader ──────────────────────
+
+router.delete(
+  "/terminal/readers/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res.status(400).json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+      await deleteReader(tenant.stripeAccountId, req.params.id);
+      res.json({ deleted: true });
     } catch (err) {
       next(err);
     }

@@ -276,38 +276,37 @@ router.get(
       }
 
       // Balance summary
-      const openInvoices = await prisma.invoice.aggregate({
-        _sum: { balanceCents: true },
-        where: {
-          customerId: customer.id,
-          tenantId,
-          status: { in: ["ISSUED", "PAST_DUE"] },
-        },
-      });
-
-      const credits = await prisma.payment.aggregate({
-        _sum: { amountCents: true },
-        where: {
-          customerId: customer.id,
-          tenantId,
-          invoiceId: null,
-          status: "COMPLETED",
-        },
-      });
-
-      const depositsHeld = await prisma.securityDeposit.aggregate({
-        _sum: { amountCents: true },
-        where: {
-          customerId: customer.id,
-          tenantId,
-          status: "HELD",
-        },
-      });
+      const [openInvoices, credits, depositsHeld, lifetimeValueAgg] = await Promise.all([
+        prisma.invoice.aggregate({
+          _sum: { balanceCents: true },
+          where: { customerId: customer.id, tenantId, status: { in: ["ISSUED", "PAST_DUE"] } },
+        }),
+        prisma.payment.aggregate({
+          _sum: { amountCents: true },
+          where: { customerId: customer.id, tenantId, invoiceId: null, status: "COMPLETED" },
+        }),
+        prisma.securityDeposit.aggregate({
+          _sum: { amountCents: true },
+          where: { customerId: customer.id, tenantId, status: "HELD" },
+        }),
+        prisma.invoice.aggregate({
+          _sum: { totalCents: true },
+          where: { customerId: customer.id, tenantId, status: "PAID" },
+        }),
+      ]);
 
       res.json({
         ...customer,
         invoiceSummary,
         complianceScore,
+        // Flat fields expected by CustomerDetail.tsx
+        totalBoats: customer.boats.length,
+        activeContracts: customer.slipContracts.filter((c: any) => c.status === "ACTIVE").length,
+        lifetimeValue: ((lifetimeValueAgg._sum.totalCents ?? 0) / 100),
+        openInvoices: ((openInvoices._sum.balanceCents ?? 0) / 100),
+        credits: ((credits._sum.amountCents ?? 0) / 100),
+        deposits: ((depositsHeld._sum.amountCents ?? 0) / 100),
+        // Also keep nested for any other consumers
         balanceSummary: {
           openInvoicesTotalCents: openInvoices._sum.balanceCents ?? 0,
           creditsCents: credits._sum.amountCents ?? 0,

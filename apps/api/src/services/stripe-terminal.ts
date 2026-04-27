@@ -39,6 +39,31 @@ export async function listReaders(connectedAccountId: string): Promise<any[]> {
 }
 
 /**
+ * Register a new hardware reader using its pairing registration code.
+ * The registration code is displayed on the reader's screen during setup.
+ */
+export async function registerReader(
+  connectedAccountId: string,
+  registrationCode: string,
+  label: string,
+): Promise<any> {
+  return stripe.terminal.readers.create(
+    { registration_code: registrationCode, label } as any,
+    { stripeAccount: connectedAccountId },
+  );
+}
+
+/**
+ * Delete (unregister) a registered reader by its Stripe reader ID.
+ */
+export async function deleteReader(
+  connectedAccountId: string,
+  readerId: string,
+): Promise<void> {
+  await (stripe.terminal.readers as any).del(readerId, {}, { stripeAccount: connectedAccountId });
+}
+
+/**
  * Create a PaymentIntent configured for terminal capture with optional tip support.
  * Returns the client_secret for the Terminal SDK to collect the payment.
  */
