@@ -95,11 +95,45 @@ const ReservationStatusEnum = z.enum([
 const CreateReservationSchema = z.object({
   customerId: z.string().min(1),
   rentalProductId: z.string().min(1),
+  unitId: z.string().optional().nullable(),
+  timeSlotId: z.string().optional().nullable(),
   startDate: z.string().min(1),
   endDate: z.string().min(1),
   notes: z.string().optional().nullable(),
   cancellationPolicyId: z.string().optional().nullable(),
   depositCents: z.number().int().min(0).optional().default(0),
+});
+
+const CreateUnitSchema = z.object({
+  name: z.string().min(1),
+  serialNumber: z.string().optional().nullable(),
+  status: z.enum(["AVAILABLE", "MAINTENANCE", "RETIRED"]).optional().default("AVAILABLE"),
+  notes: z.string().optional().nullable(),
+});
+
+const UpdateUnitSchema = z.object({
+  name: z.string().min(1).optional(),
+  serialNumber: z.string().optional().nullable(),
+  status: z.enum(["AVAILABLE", "MAINTENANCE", "RETIRED"]).optional(),
+  notes: z.string().optional().nullable(),
+});
+
+const CreateTimeSlotSchema = z.object({
+  name: z.string().min(1),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/),
+  locationId: z.string().optional().nullable(),
+  sortOrder: z.number().int().min(0).optional().default(0),
+  active: z.boolean().optional().default(true),
+});
+
+const UpdateTimeSlotSchema = z.object({
+  name: z.string().min(1).optional(),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  locationId: z.string().optional().nullable(),
+  sortOrder: z.number().int().min(0).optional(),
+  active: z.boolean().optional(),
 });
 
 const UpdateReservationSchema = z.object({
@@ -162,7 +196,7 @@ async function calculateDynamicPrice(
   productId: string,
   startDate: Date,
   endDate: Date,
-): Promise<{ totalCents: number; breakdown: Record<string, unknown> }> {
+): Promise<{ totalCents: number; baseRentalCents: number; damageWaiverCents: number; breakdown: Record<string, unknown> }> {
   // Fetch product with its pricing rules and demand surge tiers in one query
   const product = await prisma.rentalProduct.findFirst({
     where: { id: productId, tenantId },
@@ -295,8 +329,14 @@ async function calculateDynamicPrice(
     totalCents = product.ceilingPriceCents;
   }
 
+  const baseRentalCents = totalCents;
+  const damageWaiverCents = product.damageWaiverCents ?? 0;
+  const grandTotalCents = baseRentalCents + damageWaiverCents;
+
   return {
-    totalCents,
+    totalCents: grandTotalCents,
+    baseRentalCents,
+    damageWaiverCents,
     breakdown: {
       baseCents,
       rateType,
@@ -310,7 +350,9 @@ async function calculateDynamicPrice(
       surgeMultiplier,
       surgeThreshold,
       utilizationPct: Math.round(utilizationPct * 100) / 100,
-      totalCents,
+      baseRentalCents,
+      damageWaiverCents,
+      totalCents: grandTotalCents,
     },
   };
 }
@@ -766,6 +808,162 @@ router.post(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RENTAL UNITS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /products/:id/units — List units for a product ─────────────────────
+router.get(
+  "/products/:id/units",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) { res.status(404).json({ error: "Product not found" }); return; }
+
+      const units = await (prisma as any).rentalUnit.findMany({
+        where: { rentalProductId: req.params.id },
+        orderBy: { name: "asc" },
+      });
+      res.json(units);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── POST /products/:id/units — Create unit ──────────────────────────────────
+router.post(
+  "/products/:id/units",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreateUnitSchema.parse(req.body);
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!product) { res.status(404).json({ error: "Product not found" }); return; }
+
+      const unit = await (prisma as any).rentalUnit.create({
+        data: { rentalProductId: req.params.id, ...data },
+      });
+      res.status(201).json(unit);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── PATCH /products/:id/units/:unitId — Update unit ────────────────────────
+router.patch(
+  "/products/:id/units/:unitId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = UpdateUnitSchema.parse(req.body);
+      const existing = await (prisma as any).rentalUnit.findFirst({
+        where: { id: req.params.unitId, rentalProductId: req.params.id },
+        include: { rentalProduct: { select: { tenantId: true } } },
+      });
+      if (!existing || existing.rentalProduct.tenantId !== tenantId) {
+        res.status(404).json({ error: "Unit not found" }); return;
+      }
+      const unit = await (prisma as any).rentalUnit.update({
+        where: { id: req.params.unitId },
+        data,
+      });
+      res.json(unit);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── DELETE /products/:id/units/:unitId — Delete unit ───────────────────────
+router.delete(
+  "/products/:id/units/:unitId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const existing = await (prisma as any).rentalUnit.findFirst({
+        where: { id: req.params.unitId, rentalProductId: req.params.id },
+        include: { rentalProduct: { select: { tenantId: true } } },
+      });
+      if (!existing || existing.rentalProduct.tenantId !== tenantId) {
+        res.status(404).json({ error: "Unit not found" }); return;
+      }
+      await (prisma as any).rentalUnit.delete({ where: { id: req.params.unitId } });
+      res.status(204).send();
+    } catch (err) { next(err); }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIME SLOTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /time-slots — List time slots for tenant ────────────────────────────
+router.get(
+  "/time-slots",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const slots = await (prisma as any).rentalTimeSlot.findMany({
+        where: { tenantId },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      });
+      res.json(slots);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── POST /time-slots — Create time slot ─────────────────────────────────────
+router.post(
+  "/time-slots",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreateTimeSlotSchema.parse(req.body);
+      const slot = await (prisma as any).rentalTimeSlot.create({
+        data: { tenantId, ...data },
+      });
+      res.status(201).json(slot);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── PATCH /time-slots/:id — Update time slot ────────────────────────────────
+router.patch(
+  "/time-slots/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = UpdateTimeSlotSchema.parse(req.body);
+      const existing = await (prisma as any).rentalTimeSlot.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!existing) { res.status(404).json({ error: "Time slot not found" }); return; }
+      const slot = await (prisma as any).rentalTimeSlot.update({
+        where: { id: req.params.id },
+        data,
+      });
+      res.json(slot);
+    } catch (err) { next(err); }
+  },
+);
+
+// ─── DELETE /time-slots/:id — Delete time slot ───────────────────────────────
+router.delete(
+  "/time-slots/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const existing = await (prisma as any).rentalTimeSlot.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!existing) { res.status(404).json({ error: "Time slot not found" }); return; }
+      await (prisma as any).rentalTimeSlot.delete({ where: { id: req.params.id } });
+      res.status(204).send();
+    } catch (err) { next(err); }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // RESERVATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -803,6 +1001,8 @@ router.get(
             rentalProduct: {
               select: { id: true, name: true, category: true },
             },
+            unit: { select: { id: true, name: true } },
+            timeSlot: { select: { id: true, name: true, startTime: true, endTime: true } },
           },
         }),
         prisma.reservation.count({ where }),
@@ -908,15 +1108,38 @@ router.post(
         }
       }
 
+      // If a time slot is provided, apply slot times to the dates
+      let startDt = startDate;
+      let endDt = endDate;
+      if (data.timeSlotId) {
+        const slot = await (prisma as any).rentalTimeSlot.findFirst({
+          where: { id: data.timeSlotId, tenantId },
+        });
+        if (slot) {
+          const [sh, sm] = slot.startTime.split(":").map(Number);
+          const [eh, em] = slot.endTime.split(":").map(Number);
+          startDt = new Date(startDate);
+          startDt.setHours(sh, sm, 0, 0);
+          endDt = new Date(startDate); // same date, different time
+          endDt.setHours(eh, em, 0, 0);
+          // If slot crosses midnight or is full-day spanning multiple dates keep endDate
+          if (endDt <= startDt) endDt = endDate;
+        }
+      }
+
       const reservation = await prisma.reservation.create({
         data: {
           tenantId,
           customerId: data.customerId,
           rentalProductId: data.rentalProductId,
-          startDt: startDate,
-          endDt: endDate,
+          unitId: data.unitId ?? null,
+          timeSlotId: data.timeSlotId ?? null,
+          startDt,
+          endDt,
           status: "CONFIRMED",
           totalCents: pricing.totalCents,
+          damageWaiverCents: pricing.damageWaiverCents,
+          notes: data.notes ?? null,
         } as any,
         include: {
           customer: {
@@ -925,6 +1148,8 @@ router.post(
           rentalProduct: {
             select: { id: true, name: true, category: true },
           },
+          unit: { select: { id: true, name: true } },
+          timeSlot: { select: { id: true, name: true, startTime: true, endTime: true } },
         },
       });
 

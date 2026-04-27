@@ -1042,6 +1042,7 @@ model RentalProduct {
   demandSurgeTiers      DemandSurgeTier[]
   algorithmicSuggestions AlgorithmicSuggestion[]
   reservations          Reservation[]
+  units                 RentalUnit[]
 
   @@index([tenantId])
   @@map("rental_products")
@@ -1108,9 +1109,13 @@ model Reservation {
   tenantId             String
   customerId           String
   rentalProductId      String
+  unitId               String?
+  timeSlotId           String?
   startDt              DateTime
   endDt                DateTime
   totalCents           Int
+  damageWaiverCents    Int               @default(0)
+  notes                String?
   waiverSelected       Boolean           @default(false)
   depositAuthId        String?
   status               ReservationStatus @default(PENDING)
@@ -1123,11 +1128,48 @@ model Reservation {
 
   customer        Customer              @relation(fields: [customerId], references: [id])
   rentalProduct   RentalProduct         @relation(fields: [rentalProductId], references: [id])
+  unit            RentalUnit?           @relation(fields: [unitId], references: [id])
+  timeSlot        RentalTimeSlot?       @relation(fields: [timeSlotId], references: [id])
   automationEvents RentalAutomationEvent[]
   npsSurveys      NpsSurvey[]
 
   @@index([tenantId])
   @@map("reservations")
+}
+
+model RentalUnit {
+  id              String   @id @default(uuid())
+  rentalProductId String
+  name            String
+  serialNumber    String?
+  status          String   @default("AVAILABLE")
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
+  reservations  Reservation[]
+
+  @@index([rentalProductId])
+  @@map("rental_units")
+}
+
+model RentalTimeSlot {
+  id         String   @id @default(uuid())
+  tenantId   String
+  locationId String?
+  name       String
+  startTime  String
+  endTime    String
+  sortOrder  Int      @default(0)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  reservations Reservation[]
+
+  @@index([tenantId])
+  @@map("rental_time_slots")
 }
 
 model RentalAutomationEvent {

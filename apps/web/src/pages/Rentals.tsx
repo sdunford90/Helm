@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import {
   Ship, Search, Plus, X, Calendar, Tag, DollarSign,
   Star, Clock, Users, Filter, Eye, Edit2, Trash2,
@@ -675,6 +675,8 @@ interface NewReservationModalProps {
 
 interface PriceQuote {
   totalCents: number;
+  baseRentalCents: number;
+  damageWaiverCents: number;
   breakdown: {
     baseCents: number;
     rateType: string;
@@ -688,7 +690,28 @@ interface PriceQuote {
     surgeMultiplier: number;
     surgeThreshold: number | null;
     utilizationPct: number;
+    baseRentalCents: number;
+    damageWaiverCents: number;
+    totalCents: number;
   };
+}
+
+interface ApiRentalUnit {
+  id: string;
+  rentalProductId: string;
+  name: string;
+  serialNumber: string | null;
+  status: string;
+  notes: string | null;
+}
+
+interface ApiRentalTimeSlot {
+  id: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  sortOrder: number;
+  active: boolean;
 }
 
 function NewReservationModal({ products, onClose, onCreated }: NewReservationModalProps) {
@@ -720,9 +743,16 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('17:00');
 
+  /* ── Step 2: Time Slots ───────────────────────────────────── */
+  const [timeSlots, setTimeSlots] = useState<ApiRentalTimeSlot[]>([]);
+  const [timeSlotsLoading, setTimeSlotsLoading] = useState(false);
+  const [selectedTimeSlotId, setSelectedTimeSlotId] = useState<string | null>(null);
+
   /* ── Step 3: Product + Unit ───────────────────────────────── */
-  const [productId, setProductId] = useState('');
-  const [unitLabel, setUnitLabel] = useState('');
+  const [productId, setProductId] = useState<string>('');
+  const [units, setUnits] = useState<ApiRentalUnit[]>([]);
+  const [unitsLoading, setUnitsLoading] = useState(false);
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
 
   /* Pricing */
@@ -761,6 +791,45 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
 
   const inp: React.CSSProperties = { width: '100%', padding: '9px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', backgroundColor: '#FFFFFF', transition: 'border-color 0.15s' };
   const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
+
+  /* ── Fetch time slots on mount ───────────────────────────── */
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setTimeSlotsLoading(true);
+      try {
+        const token = await getToken();
+        const headers: Record<string, string> = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch('/api/rentals/time-slots', { headers });
+        if (!cancelled && res.ok) {
+          const data = await res.json() as ApiRentalTimeSlot[];
+          setTimeSlots(data.filter((s) => s.active));
+        }
+      } catch { /* ignore */ } finally {
+        if (!cancelled) setTimeSlotsLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [getToken]);
+
+  /* ── Fetch units for a product ───────────────────────────── */
+  const fetchUnits = useCallback(async (pid: string) => {
+    setUnitsLoading(true);
+    setUnits([]);
+    setSelectedUnitId(null);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/rentals/products/${pid}/units`, { headers });
+      if (res.ok) {
+        const data = await res.json() as ApiRentalUnit[];
+        setUnits(data.filter((u) => u.status === 'AVAILABLE'));
+      }
+    } catch { /* ignore */ } finally { setUnitsLoading(false); }
+  }, [getToken]);
 
   /* ── Customer search ──────────────────────────────────────── */
   const searchCustomers = useCallback(async (q: string) => {
@@ -820,7 +889,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   };
 
   /* ── Dynamic pricing quote ───────────────────────────────── */
-  const fetchQuote = useCallback(async (pid: string, sd: string, st2: string, ed: string, et: string) => {
+  const fetchQuote = useCallback(async (pid: string, sd: string, ed: string, slotId: string | null) => {
     if (!pid || !sd || !ed) return;
     setQuoteLoading(true);
     setQuote(null);
@@ -828,31 +897,36 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
       const token = await getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
+      // Use time slot times if selected, else raw time inputs
+      const slot = slotId ? timeSlots.find((s) => s.id === slotId) : null;
+      const startISO = slot
+        ? new Date(`${sd}T${slot.startTime}:00`).toISOString()
+        : new Date(`${sd}T${startTime}`).toISOString();
+      const endISO = slot
+        ? new Date(`${sd}T${slot.endTime}:00`).toISOString()
+        : new Date(`${ed}T${endTime}`).toISOString();
       const res = await fetch('/api/rentals/price-quote', {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          rentalProductId: pid,
-          startDate: new Date(`${sd}T${st2}`).toISOString(),
-          endDate: new Date(`${ed}T${et}`).toISOString(),
-        }),
+        body: JSON.stringify({ rentalProductId: pid, startDate: startISO, endDate: endISO }),
       });
       if (!res.ok) return;
       const data = await res.json() as PriceQuote;
       setQuote(data);
     } catch { /* ignore */ } finally { setQuoteLoading(false); }
-  }, [getToken]);
+  }, [getToken, timeSlots, startTime, endTime]);
 
-  const triggerQuote = useCallback((pid: string, sd: string, st2: string, ed: string, et: string) => {
+  const triggerQuote = useCallback((pid: string, sd: string, ed: string, slotId: string | null) => {
     if (quoteDebRef.current) clearTimeout(quoteDebRef.current);
-    quoteDebRef.current = setTimeout(() => fetchQuote(pid, sd, st2, ed, et), 400);
+    quoteDebRef.current = setTimeout(() => fetchQuote(pid, sd, ed, slotId), 400);
   }, [fetchQuote]);
 
   const handleProductSelect = (pid: string) => {
     setProductId(pid);
-    setUnitLabel('');
+    setSelectedUnitId(null);
     setQuote(null);
-    triggerQuote(pid, startDate, startTime, endDate, endTime);
+    fetchUnits(pid);
+    triggerQuote(pid, startDate, endDate, selectedTimeSlotId);
   };
 
   /* ── Submit ──────────────────────────────────────────────── */
@@ -866,18 +940,25 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
       const token = await getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
-      const noteParts = [];
-      if (unitLabel) noteParts.push(`Unit: ${unitLabel}`);
-      if (notes) noteParts.push(notes);
+      // Determine start/end from slot or raw inputs
+      const slot = selectedTimeSlotId ? timeSlots.find((s) => s.id === selectedTimeSlotId) : null;
+      const startISO = slot
+        ? new Date(`${startDate}T${slot.startTime}:00`).toISOString()
+        : new Date(`${startDate}T${startTime}`).toISOString();
+      const endISO = slot
+        ? new Date(`${startDate}T${slot.endTime}:00`).toISOString()
+        : new Date(`${endDate}T${endTime}`).toISOString();
       const res = await fetch('/api/rentals/reservations', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           customerId: selectedCustomer!.id,
           rentalProductId: productId,
-          startDate: new Date(`${startDate}T${startTime}`).toISOString(),
-          endDate: new Date(`${endDate}T${endTime}`).toISOString(),
-          notes: noteParts.join(' | ') || undefined,
+          unitId: selectedUnitId || undefined,
+          timeSlotId: selectedTimeSlotId || undefined,
+          startDate: startISO,
+          endDate: endISO,
+          notes: notes || undefined,
         }),
       });
       if (!res.ok) {
@@ -894,8 +975,15 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
 
   /* ── Step navigation ─────────────────────────────────────── */
   const step1Valid = !!selectedCustomer;
-  const step2Valid = !!startDate && !!endDate && new Date(`${endDate}T${endTime}`) > new Date(`${startDate}T${startTime}`);
-  const step3Valid = !!productId;
+  // Step 2 valid: date required, plus either a time slot selected OR valid raw time window
+  const slot2 = selectedTimeSlotId ? timeSlots.find((s) => s.id === selectedTimeSlotId) : null;
+  const step2Valid = !!startDate && (
+    timeSlots.length === 0
+      ? (!!endDate && new Date(`${endDate}T${endTime}`) > new Date(`${startDate}T${startTime}`))
+      : !!selectedTimeSlotId && (slot2 ? slot2.endTime > slot2.startTime : false)
+  );
+  // Step 3 valid: product required, unit required only if units are loaded and available
+  const step3Valid = !!productId && (units.length === 0 || !!selectedUnitId);
 
   const stepLabels = ['Customer', 'Rental Period', 'Product & Unit'];
 
@@ -1047,53 +1135,114 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
             {step === 2 && (
               <div>
                 <div style={{ marginBottom: '8px', fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>When is the rental?</div>
-                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '24px' }}>Set the start and end of the rental period. Pricing will be calculated once you select a product.</div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '12px', alignItems: 'start', marginBottom: '24px' }}>
-                  {/* Start */}
-                  <div>
-                    <label style={{ ...lbl, color: '#00D4FF' }}>Start</label>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <input style={inp} type="date" value={startDate} min={todayStr}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setStartDate(v);
-                          if (!endDate || v > endDate) setEndDate(v);
-                          setQuote(null);
-                        }} />
-                      <input style={inp} type="time" value={startTime}
-                        onChange={(e) => { setStartTime(e.target.value); setQuote(null); }} />
-                    </div>
-                  </div>
-
-                  <div style={{ color: '#CBD5E1', fontSize: '22px', paddingTop: '28px', textAlign: 'center' }}>→</div>
-
-                  {/* End */}
-                  <div>
-                    <label style={{ ...lbl, color: '#94A3B8' }}>End</label>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <input style={inp} type="date" value={endDate} min={startDate || todayStr}
-                        onChange={(e) => { setEndDate(e.target.value); setQuote(null); }} />
-                      <input style={inp} type="time" value={endTime}
-                        onChange={(e) => { setEndTime(e.target.value); setQuote(null); }} />
-                    </div>
-                  </div>
+                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>
+                  {timeSlots.length > 0
+                    ? 'Choose a date and select a time slot. Pricing is calculated automatically.'
+                    : 'Set the start and end of the rental period.'}
                 </div>
 
-                {/* Duration card */}
-                {durationSummary() && (
-                  <div style={{ backgroundColor: '#EFF6FF', borderRadius: '10px', padding: '16px 20px', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', gap: '14px' }}>
-                    <div style={{ fontSize: '28px' }}>📅</div>
+                {/* Date row */}
+                <div style={{ display: 'grid', gridTemplateColumns: timeSlots.length > 0 ? '1fr' : '1fr auto 1fr', gap: '12px', alignItems: 'start', marginBottom: '20px' }}>
+                  {timeSlots.length > 0 ? (
                     <div>
-                      <div style={{ fontWeight: 700, color: '#1E40AF', fontSize: '18px' }}>{durationSummary()}</div>
-                      <div style={{ fontSize: '12px', color: '#3B82F6', marginTop: '2px' }}>
-                        {startDate} {startTime} → {endDate} {endTime}
+                      <label style={{ ...lbl, color: '#00D4FF' }}>Rental Date</label>
+                      <input style={inp} type="date" value={startDate} min={todayStr}
+                        onChange={(e) => {
+                          setStartDate(e.target.value);
+                          setEndDate(e.target.value);
+                          setSelectedTimeSlotId(null);
+                          setQuote(null);
+                        }} />
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label style={{ ...lbl, color: '#00D4FF' }}>Start</label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <input style={inp} type="date" value={startDate} min={todayStr}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setStartDate(v);
+                              if (!endDate || v > endDate) setEndDate(v);
+                              setQuote(null);
+                            }} />
+                          <input style={inp} type="time" value={startTime}
+                            onChange={(e) => { setStartTime(e.target.value); setQuote(null); }} />
+                        </div>
                       </div>
+                      <div style={{ color: '#CBD5E1', fontSize: '22px', paddingTop: '28px', textAlign: 'center' }}>→</div>
+                      <div>
+                        <label style={{ ...lbl, color: '#94A3B8' }}>End</label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <input style={inp} type="date" value={endDate} min={startDate || todayStr}
+                            onChange={(e) => { setEndDate(e.target.value); setQuote(null); }} />
+                          <input style={inp} type="time" value={endTime}
+                            onChange={(e) => { setEndTime(e.target.value); setQuote(null); }} />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Time slot chips */}
+                {startDate && timeSlots.length > 0 && (
+                  <div style={{ marginBottom: '20px' }}>
+                    <label style={lbl}>Time Slot <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#DC2626' }}>*</span></label>
+                    {timeSlotsLoading ? (
+                      <div style={{ fontSize: '13px', color: '#94A3B8' }}>Loading slots…</div>
+                    ) : (
+                      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: '10px' }}>
+                        {timeSlots.map((slot) => {
+                          const sel = selectedTimeSlotId === slot.id;
+                          return (
+                            <div key={slot.id}
+                              onClick={() => {
+                                setSelectedTimeSlotId(sel ? null : slot.id);
+                                setQuote(null);
+                                if (productId && startDate) triggerQuote(productId, startDate, startDate, sel ? null : slot.id);
+                              }}
+                              style={{
+                                padding: '10px 18px', borderRadius: '10px', cursor: 'pointer', transition: 'all 0.15s',
+                                border: `2px solid ${sel ? '#0A2342' : '#E2E8F0'}`,
+                                backgroundColor: sel ? '#0A2342' : '#FAFAFA',
+                                color: sel ? '#FFFFFF' : '#0A2342',
+                                boxShadow: sel ? '0 2px 8px rgba(10,35,66,0.2)' : 'none',
+                              }}
+                            >
+                              <div style={{ fontWeight: 700, fontSize: '13px' }}>{slot.name}</div>
+                              <div style={{ fontSize: '11px', opacity: 0.75, marginTop: '2px' }}>{slot.startTime} – {slot.endTime}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {!timeSlotsLoading && timeSlots.length === 0 && (
+                      <div style={{ fontSize: '12px', color: '#94A3B8' }}>No time slots configured. Go to Settings → Time Slots to add them.</div>
+                    )}
+                  </div>
+                )}
+
+                {/* Duration summary */}
+                {step2Valid && (
+                  <div style={{ backgroundColor: '#EFF6FF', borderRadius: '10px', padding: '14px 18px', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    <div style={{ fontSize: '26px' }}>📅</div>
+                    <div>
+                      {selectedTimeSlotId && slot2 ? (
+                        <>
+                          <div style={{ fontWeight: 700, color: '#1E40AF', fontSize: '16px' }}>{slot2.name}</div>
+                          <div style={{ fontSize: '12px', color: '#3B82F6', marginTop: '2px' }}>{startDate} · {slot2.startTime} – {slot2.endTime}</div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontWeight: 700, color: '#1E40AF', fontSize: '16px' }}>{durationSummary()}</div>
+                          <div style={{ fontSize: '12px', color: '#3B82F6', marginTop: '2px' }}>{startDate} {startTime} → {endDate} {endTime}</div>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {startDate && endDate && !durationSummary() && (
+                {startDate && !step2Valid && timeSlots.length === 0 && endDate && (
                   <div style={{ padding: '12px 16px', backgroundColor: '#FEF2F2', borderRadius: '8px', border: '1px solid #FECACA', fontSize: '13px', color: '#DC2626' }}>
                     End time must be after start time.
                   </div>
@@ -1145,13 +1294,41 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                 {/* Unit selector — appears after product chosen */}
                 {productId && (
                   <div style={{ marginBottom: '20px' }}>
-                    <label style={lbl}>Unit <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional — specify which physical unit)</span></label>
-                    <input
-                      style={inp}
-                      placeholder={`e.g. ${selectedProduct?.name ?? 'Boat'} #1, Slip A-12, Kayak Blue…`}
-                      value={unitLabel}
-                      onChange={(e) => setUnitLabel(e.target.value)}
-                    />
+                    <label style={lbl}>
+                      Unit{' '}
+                      {units.length > 0
+                        ? <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#DC2626' }}>*</span>
+                        : <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(no units configured)</span>
+                      }
+                    </label>
+                    {unitsLoading ? (
+                      <div style={{ fontSize: '13px', color: '#94A3B8', padding: '8px 0' }}>Loading units…</div>
+                    ) : units.length > 0 ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: '10px' }}>
+                        {units.map((u) => {
+                          const sel = selectedUnitId === u.id;
+                          return (
+                            <div key={u.id}
+                              onClick={() => setSelectedUnitId(sel ? null : u.id)}
+                              style={{
+                                padding: '10px 18px', borderRadius: '10px', cursor: 'pointer', transition: 'all 0.15s',
+                                border: `2px solid ${sel ? '#7C3AED' : '#E2E8F0'}`,
+                                backgroundColor: sel ? '#F5F3FF' : '#FAFAFA',
+                                color: '#0A2342',
+                              }}
+                            >
+                              <div style={{ fontWeight: 700, fontSize: '13px' }}>{u.name}</div>
+                              {u.serialNumber && <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>S/N: {u.serialNumber}</div>}
+                              {sel && <div style={{ fontSize: '11px', color: '#7C3AED', marginTop: '4px', fontWeight: 600 }}>✓ Selected</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '12px', color: '#94A3B8', padding: '8px 0' }}>
+                        No units configured for this product. Go to Settings → Units to add them. Reservation can still be created without a unit.
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1185,13 +1362,22 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
             </div>
 
             {/* Period */}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px', border: `1px solid ${startDate && endDate && durationSummary() ? '#3B82F6' : '#E2E8F0'}` }}>
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '8px', border: `1px solid ${step2Valid ? '#3B82F6' : '#E2E8F0'}` }}>
               <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Rental Period</div>
-              {durationSummary() ? (
+              {step2Valid ? (
                 <>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#1E40AF' }}>{durationSummary()}</div>
-                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>{startDate} {startTime}</div>
-                  <div style={{ fontSize: '11px', color: '#64748B' }}>→ {endDate} {endTime}</div>
+                  {slot2 ? (
+                    <>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#1E40AF' }}>{slot2.name}</div>
+                      <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>{startDate} · {slot2.startTime} – {slot2.endTime}</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#1E40AF' }}>{durationSummary()}</div>
+                      <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>{startDate} {startTime}</div>
+                      <div style={{ fontSize: '11px', color: '#64748B' }}>→ {endDate} {endTime}</div>
+                    </>
+                  )}
                 </>
               ) : (
                 <div style={{ fontSize: '13px', color: '#CBD5E1' }}>Not set</div>
@@ -1205,7 +1391,11 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                 <>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>{selectedProduct.name}</div>
                   <div style={{ fontSize: '11px', color: '#64748B', marginTop: '1px' }}>{selectedProduct.type}</div>
-                  {unitLabel && <div style={{ fontSize: '11px', color: '#7C3AED', marginTop: '3px', fontWeight: 600 }}>Unit: {unitLabel}</div>}
+                  {selectedUnitId && units.find((u) => u.id === selectedUnitId) && (
+                    <div style={{ fontSize: '11px', color: '#7C3AED', marginTop: '3px', fontWeight: 600 }}>
+                      Unit: {units.find((u) => u.id === selectedUnitId)!.name}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div style={{ fontSize: '13px', color: '#CBD5E1' }}>Not selected</div>
@@ -1247,6 +1437,12 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                       <span style={{ fontSize: '12px', color: '#DC2626' }}>🔥 Demand surge ({Math.round((quote.breakdown.surgeMultiplier - 1) * 100)}%)</span>
                       <span style={{ fontSize: '12px', color: '#DC2626' }}>+{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.surgeMultiplier - 1)))}</span>
+                    </div>
+                  )}
+                  {quote.damageWaiverCents > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: '#0A2342' }}>🛡 Damage waiver</span>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.damageWaiverCents)}</span>
                     </div>
                   )}
                   <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1398,6 +1594,300 @@ function DurationModal({ duration, onClose, onSave }: { duration?: Duration | nu
   );
 }
 
+/* ── Time Slots Tab ─────────────────────────────────────── */
+
+function TimeSlotsTab() {
+  const { getToken } = useAuth();
+  const toast = useToast();
+  const [slots, setSlots] = useState<ApiRentalTimeSlot[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<ApiRentalTimeSlot | null>(null);
+  const [form, setForm] = useState({ name: '', startTime: '', endTime: '', sortOrder: 0 });
+  const [saving, setSaving] = useState(false);
+
+  const loadSlots = useCallback(async () => {
+    setLoading(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch('/api/rentals/time-slots', { headers });
+      if (res.ok) setSlots(await res.json() as ApiRentalTimeSlot[]);
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, [getToken]);
+
+  useEffect(() => { loadSlots(); }, [loadSlots]);
+
+  const openAdd = () => { setEditing(null); setForm({ name: '', startTime: '', endTime: '', sortOrder: slots.length }); setShowForm(true); };
+  const openEdit = (s: ApiRentalTimeSlot) => { setEditing(s); setForm({ name: s.name, startTime: s.startTime, endTime: s.endTime, sortOrder: s.sortOrder }); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.name || !form.startTime || !form.endTime) { toast.error('Validation', 'Name, start time, and end time are required.'); return; }
+    setSaving(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const url = editing ? `/api/rentals/time-slots/${editing.id}` : '/api/rentals/time-slots';
+      const method = editing ? 'PATCH' : 'POST';
+      const res = await fetch(url, { method, headers, body: JSON.stringify(form) });
+      if (!res.ok) throw new Error((await res.json() as { error?: string }).error ?? 'Save failed');
+      toast.success('Saved', `Time slot "${form.name}" ${editing ? 'updated' : 'created'}.`);
+      setShowForm(false);
+      await loadSlots();
+    } catch (err) { toast.error('Error', err instanceof Error ? err.message : 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Delete "${name}"?`)) return;
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/rentals/time-slots/${id}`, { method: 'DELETE', headers });
+      if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+      toast.success('Deleted', `Time slot "${name}" removed.`);
+      await loadSlots();
+    } catch (err) { toast.error('Error', err instanceof Error ? err.message : 'Delete failed'); }
+  };
+
+  const handleToggle = async (s: ApiRentalTimeSlot) => {
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      await fetch(`/api/rentals/time-slots/${s.id}`, { method: 'PATCH', headers, body: JSON.stringify({ active: !s.active }) });
+      await loadSlots();
+    } catch { /* ignore */ }
+  };
+
+  const thS: React.CSSProperties = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF', whiteSpace: 'nowrap' };
+  const tdS: React.CSSProperties = { padding: '10px 14px', color: '#0A2342', borderBottom: '1px solid #E2E8F0', fontSize: '13px' };
+  const inp: React.CSSProperties = { width: '100%', padding: '8px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box' };
+  const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div style={{ fontSize: '14px', color: '#64748B' }}>Define time slots that customers can book. These appear in the New Reservation wizard.</div>
+        <button style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }} onClick={openAdd}>
+          <Plus size={16} /> Add Time Slot
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ backgroundColor: '#F8FAFC', border: '1.5px solid #E2E8F0', borderRadius: '12px', padding: '20px 24px', marginBottom: '20px' }}>
+          <div style={{ fontWeight: 700, color: '#0A2342', marginBottom: '16px' }}>{editing ? 'Edit Time Slot' : 'New Time Slot'}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: '12px', alignItems: 'end', marginBottom: '16px' }}>
+            <div><label style={lbl}>Name</label><input style={inp} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Morning, Full Day…" /></div>
+            <div><label style={lbl}>Start Time</label><input style={inp} type="time" value={form.startTime} onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))} /></div>
+            <div><label style={lbl}>End Time</label><input style={inp} type="time" value={form.endTime} onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))} /></div>
+            <div><label style={lbl}>Sort Order</label><input style={inp} type="number" min={0} value={form.sortOrder} onChange={(e) => setForm((f) => ({ ...f, sortOrder: parseInt(e.target.value) || 0 }))} /></div>
+          </div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button style={{ padding: '8px 22px', fontWeight: 700, fontSize: '14px', color: '#FFFFFF', backgroundColor: saving ? '#94A3B8' : '#0A2342', border: 'none', borderRadius: '6px', cursor: saving ? 'not-allowed' : 'pointer' }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+            <button style={{ padding: '8px 18px', fontWeight: 600, fontSize: '14px', color: '#64748B', backgroundColor: '#FFFFFF', border: '1.5px solid #E2E8F0', borderRadius: '6px', cursor: 'pointer' }} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px', color: '#94A3B8' }}>Loading…</div>
+      ) : (
+        <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <thead><tr>
+              <th style={thS}>Name</th>
+              <th style={thS}>Start</th>
+              <th style={thS}>End</th>
+              <th style={thS}>Sort</th>
+              <th style={thS}>Status</th>
+              <th style={thS}>Actions</th>
+            </tr></thead>
+            <tbody>
+              {slots.length === 0 ? (
+                <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: '#94A3B8', padding: '32px' }}>No time slots yet. Add one to enable slot-based booking.</td></tr>
+              ) : slots.map((s, idx) => (
+                <tr key={s.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
+                  <td style={{ ...tdS, fontWeight: 600 }}>{s.name}</td>
+                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.startTime}</td>
+                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.endTime}</td>
+                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.sortOrder}</td>
+                  <td style={tdS}>
+                    <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: s.active ? '#DEF7EC' : '#F3F4F6', color: s.active ? '#03543F' : '#64748B', cursor: 'pointer' }} onClick={() => handleToggle(s)}>
+                      {s.active ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td style={tdS}>
+                    <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => openEdit(s)} title="Edit"><Edit2 size={14} /></button>
+                    <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => handleDelete(s.id, s.name)} title="Delete"><Trash2 size={14} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Units Tab ──────────────────────────────────────────── */
+
+function UnitsTab({ products }: { products: RentalProduct[] }) {
+  const { getToken } = useAuth();
+  const toast = useToast();
+  const [selectedProductId, setSelectedProductId] = useState<string>(products[0]?.id ?? '');
+  const [units, setUnits] = useState<ApiRentalUnit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<ApiRentalUnit | null>(null);
+  const [form, setForm] = useState({ name: '', serialNumber: '', status: 'AVAILABLE' as 'AVAILABLE' | 'MAINTENANCE' | 'RETIRED', notes: '' });
+  const [saving, setSaving] = useState(false);
+
+  const loadUnits = useCallback(async (pid: string) => {
+    if (!pid) return;
+    setLoading(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/rentals/products/${pid}/units`, { headers });
+      if (res.ok) setUnits(await res.json() as ApiRentalUnit[]);
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, [getToken]);
+
+  useEffect(() => { if (selectedProductId) loadUnits(selectedProductId); }, [selectedProductId, loadUnits]);
+
+  const openAdd = () => { setEditing(null); setForm({ name: '', serialNumber: '', status: 'AVAILABLE', notes: '' }); setShowForm(true); };
+  const openEdit = (u: ApiRentalUnit) => { setEditing(u); setForm({ name: u.name, serialNumber: u.serialNumber ?? '', status: u.status as 'AVAILABLE' | 'MAINTENANCE' | 'RETIRED', notes: u.notes ?? '' }); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.name) { toast.error('Validation', 'Unit name is required.'); return; }
+    setSaving(true);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const body = { ...form, serialNumber: form.serialNumber || null, notes: form.notes || null };
+      const url = editing
+        ? `/api/rentals/products/${selectedProductId}/units/${editing.id}`
+        : `/api/rentals/products/${selectedProductId}/units`;
+      const method = editing ? 'PATCH' : 'POST';
+      const res = await fetch(url, { method, headers, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.json() as { error?: string }).error ?? 'Save failed');
+      toast.success('Saved', `Unit "${form.name}" ${editing ? 'updated' : 'created'}.`);
+      setShowForm(false);
+      await loadUnits(selectedProductId);
+    } catch (err) { toast.error('Error', err instanceof Error ? err.message : 'Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Delete unit "${name}"?`)) return;
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      await fetch(`/api/rentals/products/${selectedProductId}/units/${id}`, { method: 'DELETE', headers });
+      toast.success('Deleted', `Unit "${name}" removed.`);
+      await loadUnits(selectedProductId);
+    } catch { /* ignore */ }
+  };
+
+  const thS: React.CSSProperties = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF', whiteSpace: 'nowrap' };
+  const tdS: React.CSSProperties = { padding: '10px 14px', color: '#0A2342', borderBottom: '1px solid #E2E8F0', fontSize: '13px' };
+  const inp: React.CSSProperties = { width: '100%', padding: '8px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box' };
+  const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
+
+  const statusColors: Record<string, { bg: string; color: string }> = {
+    AVAILABLE: { bg: '#DEF7EC', color: '#03543F' },
+    MAINTENANCE: { bg: '#FFF3CD', color: '#856404' },
+    RETIRED: { bg: '#F3F4F6', color: '#6B7280' },
+  };
+
+  return (
+    <div>
+      {/* Product selector */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap' as const, gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ fontSize: '14px', color: '#64748B' }}>Product:</div>
+          <select
+            value={selectedProductId}
+            onChange={(e) => { setSelectedProductId(e.target.value); setShowForm(false); }}
+            style={{ ...inp, width: 'auto', minWidth: '200px' }}
+          >
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <button style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }} onClick={openAdd} disabled={!selectedProductId}>
+          <Plus size={16} /> Add Unit
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ backgroundColor: '#F8FAFC', border: '1.5px solid #E2E8F0', borderRadius: '12px', padding: '20px 24px', marginBottom: '20px' }}>
+          <div style={{ fontWeight: 700, color: '#0A2342', marginBottom: '16px' }}>{editing ? 'Edit Unit' : 'New Unit'}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+            <div><label style={lbl}>Unit Name <span style={{ color: '#DC2626' }}>*</span></label><input style={inp} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Kayak #1, Pontoon A…" /></div>
+            <div><label style={lbl}>Serial / ID</label><input style={inp} value={form.serialNumber} onChange={(e) => setForm((f) => ({ ...f, serialNumber: e.target.value }))} placeholder="Optional" /></div>
+            <div>
+              <label style={lbl}>Status</label>
+              <select style={inp} value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'AVAILABLE' | 'MAINTENANCE' | 'RETIRED' }))}>
+                <option value="AVAILABLE">Available</option>
+                <option value="MAINTENANCE">Maintenance</option>
+                <option value="RETIRED">Retired</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom: '16px' }}><label style={lbl}>Notes</label><input style={inp} value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Optional notes" /></div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button style={{ padding: '8px 22px', fontWeight: 700, fontSize: '14px', color: '#FFFFFF', backgroundColor: saving ? '#94A3B8' : '#0A2342', border: 'none', borderRadius: '6px', cursor: saving ? 'not-allowed' : 'pointer' }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+            <button style={{ padding: '8px 18px', fontWeight: 600, fontSize: '14px', color: '#64748B', backgroundColor: '#FFFFFF', border: '1.5px solid #E2E8F0', borderRadius: '6px', cursor: 'pointer' }} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px', color: '#94A3B8' }}>Loading…</div>
+      ) : (
+        <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <thead><tr>
+              <th style={thS}>Unit Name</th>
+              <th style={thS}>Serial / ID</th>
+              <th style={thS}>Status</th>
+              <th style={thS}>Notes</th>
+              <th style={thS}>Actions</th>
+            </tr></thead>
+            <tbody>
+              {units.length === 0 ? (
+                <tr><td colSpan={5} style={{ ...tdS, textAlign: 'center', color: '#94A3B8', padding: '32px' }}>No units configured for this product. Add units to enable unit selection during booking.</td></tr>
+              ) : units.map((u, idx) => {
+                const sc = statusColors[u.status] ?? statusColors.AVAILABLE;
+                return (
+                  <tr key={u.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
+                    <td style={{ ...tdS, fontWeight: 600 }}>{u.name}</td>
+                    <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace', color: '#64748B' }}>{u.serialNumber ?? '—'}</td>
+                    <td style={tdS}><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: sc.bg, color: sc.color }}>{u.status}</span></td>
+                    <td style={{ ...tdS, color: '#64748B' }}>{u.notes ?? '—'}</td>
+                    <td style={tdS}>
+                      <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => openEdit(u)} title="Edit"><Edit2 size={14} /></button>
+                      <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => handleDelete(u.id, u.name)} title="Delete"><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DurationsTab() {
   const [durations, setDurations] = useState<Duration[]>(INIT_DURATIONS);
   const [modal, setModal] = useState<'add' | 'edit' | null>(null);
@@ -1466,7 +1956,7 @@ function DurationsTab() {
 export default function Rentals() {
   const toast = useToast();
   const [tab, setTab] = useState<'products' | 'reservations' | 'availability' | 'settings'>('products');
-  const [settingsTab, setSettingsTab] = useState<'durations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('durations');
+  const [settingsTab, setSettingsTab] = useState<'timeslots' | 'units' | 'durations' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('timeslots');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -1510,6 +2000,8 @@ export default function Rentals() {
   ];
 
   const settingsTabs: { key: typeof settingsTab; label: string }[] = [
+    { key: 'timeslots', label: 'Time Slots' },
+    { key: 'units', label: 'Units' },
     { key: 'durations', label: 'Durations' },
     { key: 'pricing', label: 'Pricing Rules' },
     { key: 'promos', label: 'Promo Codes' },
@@ -1742,6 +2234,10 @@ export default function Rentals() {
               </button>
             ))}
           </div>
+
+          {settingsTab === 'timeslots' && <TimeSlotsTab />}
+
+          {settingsTab === 'units' && <UnitsTab products={products} />}
 
           {settingsTab === 'durations' && <DurationsTab />}
 
