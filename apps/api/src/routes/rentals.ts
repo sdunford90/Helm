@@ -1,7 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+
+const MANAGER_ROLES = ["MARINA_OWNER", "MARINA_MANAGER", "TENANT_ADMIN", "PLATFORM_ADMIN"] as const;
 
 const router: Router = Router();
 
@@ -423,6 +425,7 @@ router.get(
 
 router.post(
   "/products",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -457,6 +460,7 @@ router.post(
 
 router.put(
   "/products/:id",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -523,6 +527,7 @@ router.get(
 
 router.post(
   "/products/:id/pricing",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -919,6 +924,7 @@ router.get(
 // ─── POST /time-slots — Create time slot ─────────────────────────────────────
 router.post(
   "/time-slots",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -934,6 +940,7 @@ router.post(
 // ─── PATCH /time-slots/:id — Update time slot ────────────────────────────────
 router.patch(
   "/time-slots/:id",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -954,6 +961,7 @@ router.patch(
 // ─── DELETE /time-slots/:id — Delete time slot ───────────────────────────────
 router.delete(
   "/time-slots/:id",
+  ...clerkAuth(), requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

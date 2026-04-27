@@ -7,6 +7,7 @@ import { useAuth } from '@clerk/clerk-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
 import { useApi } from '../hooks/useApi';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -2011,6 +2012,7 @@ function DurationsTab() {
 
 export default function Rentals() {
   const toast = useToast();
+  const { isAtLeastManager } = useCurrentUser();
   const [tab, setTab] = useState<'products' | 'reservations' | 'availability' | 'settings'>('products');
   const [settingsTab, setSettingsTab] = useState<'timeslots' | 'units' | 'pricing' | 'promos' | 'calendar' | 'simulator'>('timeslots');
   const [search, setSearch] = useState('');
@@ -2064,7 +2066,7 @@ export default function Rentals() {
     { key: 'products', label: 'Products' },
     { key: 'availability', label: 'Availability' },
     { key: 'reservations', label: 'Reservations' },
-    { key: 'settings', label: 'Settings' },
+    ...(isAtLeastManager ? [{ key: 'settings' as const, label: 'Settings' }] : []),
   ];
 
   const settingsTabs: { key: typeof settingsTab; label: string }[] = [
