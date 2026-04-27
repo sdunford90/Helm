@@ -1,29 +1,48 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Search, Plus, ChevronDown } from 'lucide-react';
+import { Users, Search, Plus } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
 import { useApi } from '../hooks/useApi';
+
+interface Boat {
+  id: string;
+  name: string;
+  lengthFt: number | null;
+}
 
 interface Customer {
   id: string;
   firstName: string;
   lastName: string;
-  email: string;
-  phone: string;
-  status: 'Active' | 'Inactive' | 'Waitlist' | 'Collections Hold' | 'Seasonal';
-  boats: number;
-  balance: number;
+  email: string | null;
+  phone: string | null;
+  status: 'ACTIVE' | 'INACTIVE' | 'WAITLIST' | 'COLLECTIONS_HOLD' | 'SEASONAL';
+  boats: Boat[];
+  _count: { invoices: number; slipContracts: number };
   taxExempt: boolean;
   achBlocked: boolean;
-  created: string;
+  createdAt: string;
 }
 
-const statusBadgeColors: Record<string, { bg: string; color: string; border?: string }> = {
-  Active: { bg: '#E8F5E9', color: '#1B5E20' },
-  Inactive: { bg: '#F2F4F6', color: '#64748B' },
-  Waitlist: { bg: '#0A2342', color: '#FFFFFF' },
-  'Collections Hold': { bg: '#FDECEA', color: '#B71C1C' },
-  Seasonal: { bg: '#FFF3CD', color: '#856404' },
+interface ApiResponse {
+  data: Customer[];
+  pagination: { skip: number; take: number; total: number };
+}
+
+const STATUS_LABELS: Record<Customer['status'], string> = {
+  ACTIVE: 'Active',
+  INACTIVE: 'Inactive',
+  WAITLIST: 'Waitlist',
+  COLLECTIONS_HOLD: 'Collections Hold',
+  SEASONAL: 'Seasonal',
+};
+
+const statusBadgeColors: Record<Customer['status'], { bg: string; color: string }> = {
+  ACTIVE: { bg: '#E8F5E9', color: '#1B5E20' },
+  INACTIVE: { bg: '#F2F4F6', color: '#64748B' },
+  WAITLIST: { bg: '#0A2342', color: '#FFFFFF' },
+  COLLECTIONS_HOLD: { bg: '#FDECEA', color: '#B71C1C' },
+  SEASONAL: { bg: '#FFF3CD', color: '#856404' },
 };
 
 const styles: Record<string, React.CSSProperties> = {
@@ -145,10 +164,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     borderRadius: '9999px',
   },
-  mono: {
-    fontFamily: '"JetBrains Mono", monospace',
-    fontSize: '14px',
-  },
   emptyState: {
     maxWidth: '480px',
     margin: '0 auto',
@@ -163,17 +178,16 @@ const styles: Record<string, React.CSSProperties> = {
 
 export default function Customers() {
   const navigate = useNavigate();
-  const [statusFilter, setStatusFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | Customer['status']>('All');
   const [search, setSearch] = useState('');
   const [taxExemptFilter, setTaxExemptFilter] = useState(false);
   const [achBlockedFilter, setAchBlockedFilter] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  // API calls
-  const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/api/customers', { immediate: true });
+  const { data: apiResponse, loading, error, execute: refetchCustomers } = useApi<ApiResponse>('get', '/api/customers', { immediate: true });
   const createCustomerApi = useApi<Customer>('post', '/api/customers');
 
-  const customers = apiCustomers || [];
+  const customers = apiResponse?.data ?? [];
 
   const filtered = customers.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;
@@ -183,8 +197,8 @@ export default function Customers() {
       const q = search.toLowerCase();
       const match =
         `${c.firstName} ${c.lastName}`.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        c.phone.includes(q);
+        (c.email ?? '').toLowerCase().includes(q) ||
+        (c.phone ?? '').includes(q);
       if (!match) return false;
     }
     return true;
@@ -196,20 +210,21 @@ export default function Customers() {
       <hr style={styles.divider} />
 
       {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {error && <div style={{ textAlign: 'center', padding: '20px', color: '#B71C1C' }}>{error}</div>}
 
       {/* Filter Bar */}
       <div style={styles.filterBar} className="helm-filter-bar">
         <select
           style={styles.select}
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
         >
           <option value="All">All Statuses</option>
-          <option value="Active">Active</option>
-          <option value="Inactive">Inactive</option>
-          <option value="Waitlist">Waitlist</option>
-          <option value="Collections Hold">Collections Hold</option>
-          <option value="Seasonal">Seasonal</option>
+          <option value="ACTIVE">Active</option>
+          <option value="INACTIVE">Inactive</option>
+          <option value="WAITLIST">Waitlist</option>
+          <option value="COLLECTIONS_HOLD">Collections Hold</option>
+          <option value="SEASONAL">Seasonal</option>
         </select>
 
         <div style={styles.searchWrap}>
@@ -258,8 +273,8 @@ export default function Customers() {
                 <th style={styles.th}>Email</th>
                 <th style={styles.th}>Phone</th>
                 <th style={styles.th}>Status</th>
-                <th style={styles.th}>Boats</th>
-                <th style={styles.th}>Balance</th>
+                <th style={{ ...styles.th, textAlign: 'center' }}>Boats</th>
+                <th style={{ ...styles.th, textAlign: 'center' }}>Invoices</th>
                 <th style={styles.th}>Created</th>
               </tr>
             </thead>
@@ -282,18 +297,22 @@ export default function Customers() {
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, fontWeight: 600 }}>
                       {c.firstName} {c.lastName}
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.email}</td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.phone}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.email ?? '—'}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.phone ?? '—'}</td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
                       <span style={{ ...styles.badge, backgroundColor: badgeStyle.bg, color: badgeStyle.color }}>
-                        {c.status}
+                        {STATUS_LABELS[c.status]}
                       </span>
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>{c.boats}</td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, ...styles.mono }}>
-                      ${c.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>
+                      {c.boats.length}
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>{c.created}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>
+                      {c._count.invoices}
+                    </td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
+                      {new Date(c.createdAt).toLocaleDateString()}
+                    </td>
                   </tr>
                 );
               })}
@@ -301,21 +320,23 @@ export default function Customers() {
           </table>
         </div>
       ) : (
-        <div style={styles.emptyState}>
-          <Users size={32} style={{ marginBottom: '16px', color: '#2E4A6B' }} />
-          <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px 0' }}>
-            No customers found
-          </h3>
-          <p style={{ fontSize: '15px', color: '#64748B', lineHeight: 1.6, margin: '0 0 24px 0' }}>
-            {search || statusFilter !== 'All'
-              ? 'Try adjusting your filters or search terms.'
-              : 'Add your first customer or import from your previous system.'}
-          </p>
-          <button style={styles.addButton} onClick={() => setShowForm(true)}>
-            <Plus size={16} />
-            Add Customer
-          </button>
-        </div>
+        !loading && (
+          <div style={styles.emptyState}>
+            <Users size={32} style={{ marginBottom: '16px', color: '#2E4A6B' }} />
+            <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px 0' }}>
+              No customers found
+            </h3>
+            <p style={{ fontSize: '15px', color: '#64748B', lineHeight: 1.6, margin: '0 0 24px 0' }}>
+              {search || statusFilter !== 'All'
+                ? 'Try adjusting your filters or search terms.'
+                : 'Add your first customer or import from your previous system.'}
+            </p>
+            <button style={styles.addButton} onClick={() => setShowForm(true)}>
+              <Plus size={16} />
+              Add Customer
+            </button>
+          </div>
+        )
       )}
 
       {showForm && (
