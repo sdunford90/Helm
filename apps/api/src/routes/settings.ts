@@ -417,60 +417,65 @@ router.post("/stripe/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), a
 });
 
 // --------------------------------------------------------------------------
-// GET /api/settings/qbo
+// GET /api/settings/qbo?locationId=xxx
 // --------------------------------------------------------------------------
 router.get("/qbo", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.tenantId! },
-    });
+    const { locationId } = req.query as { locationId?: string };
 
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
+    if (locationId) {
+      // Location-scoped QBO status
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId: req.tenantId! },
+        select: { qboRealmId: true, qboConnectedAt: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+      res.json({
+        connected: !!location.qboRealmId,
+        realmId: location.qboRealmId ?? null,
+        connectedAt: location.qboConnectedAt ?? null,
+        lastSync: null,
+      });
       return;
     }
 
+    // Legacy tenant-level fallback
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" }); return; }
     const t = tenant as unknown as Record<string, unknown>;
     const settings = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object")
-      ? t.invoiceTemplateJson as Record<string, unknown>
-      : {};
-
-    const realmId = tenant.qboRealmId;
-    const connected = !!realmId;
-
-    res.json({
-      connected,
-      realmId: realmId ?? null,
-      lastSync: settings.qboLastSync ?? null,
-    });
+      ? t.invoiceTemplateJson as Record<string, unknown> : {};
+    res.json({ connected: !!tenant.qboRealmId, realmId: tenant.qboRealmId ?? null, lastSync: settings.qboLastSync ?? null });
   } catch (err) {
     next(err);
   }
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/qbo/connect
+// POST /api/settings/qbo/connect  { locationId? }
 // --------------------------------------------------------------------------
 router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.tenantId! },
-    });
+    const { locationId } = req.body as { locationId?: string };
 
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
-      return;
+    if (locationId) {
+      const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
+      if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
     }
 
     const clientId = process.env.QBO_CLIENT_ID;
     const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;
     const scope = "com.intuit.quickbooks.accounting";
-    const state = req.tenantId!;
+    // Encode tenantId:locationId so the callback can write to the right record
+    const state = locationId ? `${req.tenantId!}:${locationId}` : req.tenantId!;
 
     const authUrl =
       `https://appcenter.intuit.com/connect/oauth2?` +
       `client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}&response_type=code&state=${state}`;
+      `&scope=${scope}&response_type=code&state=${encodeURIComponent(state)}`;
 
     res.json({ url: authUrl });
   } catch (err) {
@@ -479,20 +484,26 @@ router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/qbo/disconnect
+// POST /api/settings/qbo/disconnect  { locationId?, confirm }
 // --------------------------------------------------------------------------
 router.post("/qbo/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
-    const { confirm } = req.body;
+    const { confirm, locationId } = req.body as { confirm: boolean; locationId?: string };
     if (confirm !== true) {
       res.status(400).json({ error: "Confirmation required", code: "CONFIRMATION_REQUIRED" });
       return;
     }
 
-    await prisma.tenant.update({
-      where: { id: req.tenantId! },
-      data: { qboRealmId: null },
-    });
+    if (locationId) {
+      const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
+      if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
+      await prisma.location.update({
+        where: { id: locationId },
+        data: { qboRealmId: null, qboAccessToken: null, qboRefreshToken: null, qboTokenExpiresAt: null, qboConnectedAt: null },
+      });
+    } else {
+      await prisma.tenant.update({ where: { id: req.tenantId! }, data: { qboRealmId: null } });
+    }
 
     res.json({ disconnected: true });
   } catch (err) {
@@ -501,41 +512,120 @@ router.post("/qbo/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/qbo/sync
+// POST /api/settings/qbo/sync  { locationId? }
 // --------------------------------------------------------------------------
 router.post("/qbo/sync", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.tenantId! },
-    });
+    const { locationId } = req.body as { locationId?: string };
 
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
-      return;
+    if (locationId) {
+      const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
+      if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
+      if (!location.qboRealmId) { res.status(400).json({ error: "QuickBooks is not connected for this location", code: "QBO_NOT_CONNECTED" }); return; }
+    } else {
+      const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+      if (!tenant) { res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" }); return; }
+      if (!tenant.qboRealmId) { res.status(400).json({ error: "QuickBooks is not connected", code: "QBO_NOT_CONNECTED" }); return; }
+      const t = tenant as unknown as Record<string, unknown>;
+      const existingTemplate = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object")
+        ? t.invoiceTemplateJson as Record<string, unknown> : {};
+      await prisma.tenant.update({ where: { id: req.tenantId! }, data: { invoiceTemplateJson: { ...existingTemplate, qboLastSync: new Date().toISOString() } } });
     }
 
-    if (!tenant.qboRealmId) {
-      res.status(400).json({ error: "QuickBooks is not connected", code: "QBO_NOT_CONNECTED" });
-      return;
-    }
+    res.json({ syncing: true, startedAt: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    // Update last sync timestamp
-    const t = tenant as unknown as Record<string, unknown>;
-    const existingTemplate = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object")
-      ? t.invoiceTemplateJson as Record<string, unknown>
-      : {};
-
-    await prisma.tenant.update({
-      where: { id: req.tenantId! },
-      data: {
-        invoiceTemplateJson: {
-          ...existingTemplate,
-          qboLastSync: new Date().toISOString(),
-        },
+// --------------------------------------------------------------------------
+// GET /api/settings/locations/:id  — per-location settings
+// --------------------------------------------------------------------------
+router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const location = await prisma.location.findFirst({
+      where: { id: req.params.id, tenantId: req.tenantId! },
+      select: {
+        id: true,
+        name: true,
+        address: true,
+        city: true,
+        state: true,
+        zip: true,
+        phone: true,
+        timezone: true,
+        active: true,
+        transientEnabled: true,
+        rentalsEnabled: true,
+        autoExecuteRenewals: true,
+        logoUrl: true,
+        brandingJson: true,
+        qboRealmId: true,
+        qboConnectedAt: true,
       },
     });
 
-    res.json({ syncing: true, startedAt: new Date().toISOString() });
+    if (!location) {
+      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+      return;
+    }
+
+    res.json({
+      location: {
+        ...location,
+        qboConnected: !!location.qboRealmId,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/settings/locations/:id  — update per-location settings
+// --------------------------------------------------------------------------
+router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const location = await prisma.location.findFirst({
+      where: { id: req.params.id, tenantId: req.tenantId! },
+    });
+
+    if (!location) {
+      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+      return;
+    }
+
+    const { name, address, city, state, zip, phone, timezone, active, transientEnabled, rentalsEnabled, autoExecuteRenewals, logoUrl } =
+      req.body as Partial<{
+        name: string; address: string; city: string; state: string; zip: string; phone: string;
+        timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
+        autoExecuteRenewals: boolean; logoUrl: string;
+      }>;
+
+    const updated = await prisma.location.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(address !== undefined && { address }),
+        ...(city !== undefined && { city }),
+        ...(state !== undefined && { state }),
+        ...(zip !== undefined && { zip }),
+        ...(phone !== undefined && { phone }),
+        ...(timezone !== undefined && { timezone }),
+        ...(active !== undefined && { active }),
+        ...(transientEnabled !== undefined && { transientEnabled }),
+        ...(rentalsEnabled !== undefined && { rentalsEnabled }),
+        ...(autoExecuteRenewals !== undefined && { autoExecuteRenewals }),
+        ...(logoUrl !== undefined && { logoUrl }),
+      },
+      select: {
+        id: true, name: true, address: true, city: true, state: true, zip: true, phone: true,
+        timezone: true, active: true, transientEnabled: true, rentalsEnabled: true,
+        autoExecuteRenewals: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
+      },
+    });
+
+    res.json({ location: { ...updated, qboConnected: !!updated.qboRealmId } });
   } catch (err) {
     next(err);
   }

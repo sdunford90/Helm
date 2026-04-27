@@ -308,20 +308,35 @@ model EmailSuppression {
 }
 
 model Location {
-  id                String   @id @default(uuid())
-  tenantId          String
-  name              String
-  address           String?
-  city              String?
-  state             String?
-  zip               String?
-  phone             String?
-  timezone          String   @default("America/New_York")
-  active            Boolean  @default(true)
-  transientEnabled  Boolean  @default(true)
-  rentalsEnabled    Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                  String    @id @default(uuid())
+  tenantId            String
+  name                String
+  address             String?
+  city                String?
+  state               String?
+  zip                 String?
+  phone               String?
+  timezone            String    @default("America/New_York")
+  active              Boolean   @default(true)
+  transientEnabled    Boolean   @default(true)
+  rentalsEnabled      Boolean   @default(true)
+
+  // Per-location branding
+  logoUrl             String?
+  brandingJson        Json?
+
+  // Per-location QuickBooks connection (each property files its own books)
+  qboRealmId          String?
+  qboAccessToken      String?
+  qboRefreshToken     String?
+  qboTokenExpiresAt   DateTime?
+  qboConnectedAt      DateTime?
+
+  // Per-location renewal behavior
+  autoExecuteRenewals Boolean   @default(false)
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id])
   dockageRates DockageRate[]

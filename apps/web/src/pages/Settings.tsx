@@ -327,7 +327,7 @@ const PAYMENT_TYPE_DEFAULTS: PaymentTypeRow[] = [
 
 export default function Settings() {
   const { modules, setModule } = useModules();
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules'>('profile');
+  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations'>('profile');
 
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
@@ -441,6 +441,117 @@ export default function Settings() {
       setCatalogLocation((prev) => prev || apiLocations.data[0].id);
     }
   }, [apiLocations]);
+
+  // Per-location settings state (after marinaLocations is declared)
+  interface LocationDetail {
+    id: string; name: string; address: string; city: string; state: string; zip: string; phone: string;
+    timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
+    autoExecuteRenewals: boolean; logoUrl: string; qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
+  }
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
+  const [locationDetail, setLocationDetail] = useState<LocationDetail | null>(null);
+  const [locationForm, setLocationForm] = useState<Partial<LocationDetail>>({});
+  const [locationSaving, setLocationSaving] = useState(false);
+  const [locationQboLoading, setLocationQboLoading] = useState(false);
+  const [locationQboActing, setLocationQboActing] = useState(false);
+
+  const fetchLocationDetail = React.useCallback(async (id: string) => {
+    const r = await fetch(`/api/settings/locations/${id}`, { credentials: 'include' });
+    if (r.ok) {
+      const body = await r.json();
+      setLocationDetail(body.location);
+      setLocationForm(body.location);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (tab === 'locations' && marinaLocations.length > 0 && !selectedLocationId) {
+      setSelectedLocationId(marinaLocations[0].id);
+    }
+  }, [tab, marinaLocations, selectedLocationId]);
+
+  React.useEffect(() => {
+    if (selectedLocationId) fetchLocationDetail(selectedLocationId);
+  }, [selectedLocationId, fetchLocationDetail]);
+
+  const handleLocationFormChange = (field: keyof LocationDetail, value: any) => {
+    setLocationForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleLocationSave = async () => {
+    if (!selectedLocationId) return;
+    setLocationSaving(true);
+    try {
+      const res = await fetch(`/api/settings/locations/${selectedLocationId}`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(locationForm),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        setLocationDetail(body.location);
+        setLocationForm(body.location);
+        setSavedMsg('Location settings saved');
+        setTimeout(() => setSavedMsg(null), 2500);
+      }
+    } finally {
+      setLocationSaving(false);
+    }
+  };
+
+  const handleLocationQboConnect = async () => {
+    if (!selectedLocationId) return;
+    setLocationQboActing(true);
+    try {
+      const res = await fetch('/api/settings/qbo/connect', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId }),
+      });
+      const body = await res.json();
+      if (body.url) window.open(body.url, '_blank', 'noopener,noreferrer');
+    } finally {
+      setLocationQboActing(false);
+    }
+  };
+
+  const handleLocationQboDisconnect = async () => {
+    if (!selectedLocationId) return;
+    if (!window.confirm('Disconnect QuickBooks for this location? Existing synced records will remain.')) return;
+    setLocationQboActing(true);
+    try {
+      const res = await fetch('/api/settings/qbo/disconnect', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId, confirm: true }),
+      });
+      if (res.ok) {
+        setSavedMsg('QuickBooks disconnected for this location');
+        setTimeout(() => setSavedMsg(null), 3000);
+        fetchLocationDetail(selectedLocationId);
+      }
+    } finally {
+      setLocationQboActing(false);
+    }
+  };
+
+  const handleLocationQboSync = async () => {
+    if (!selectedLocationId) return;
+    setLocationQboLoading(true);
+    try {
+      const res = await fetch('/api/settings/qbo/sync', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId }),
+      });
+      if (res.ok) {
+        setSavedMsg('QuickBooks sync started');
+        setTimeout(() => setSavedMsg(null), 3000);
+      }
+    } finally {
+      setLocationQboLoading(false);
+    }
+  };
 
   // Catalog: Dockage Rates — individual CRUD per row
   const [dockageRates, setDockageRates] = useState<DockageRate[]>(DOCKAGE_RATES_DATA);
@@ -895,6 +1006,7 @@ export default function Settings() {
 
   const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
+    { key: 'locations', label: 'Locations', icon: MapPin },
     { key: 'branding', label: 'Branding', icon: Palette },
     { key: 'billing', label: 'Billing', icon: CreditCard },
     { key: 'catalog', label: 'Catalog', icon: Package },
@@ -996,6 +1108,150 @@ export default function Settings() {
           <button style={st.saveBtn} onClick={() => handleSave('profile')} disabled={savingSettings}>
             {savingSettings ? 'Saving...' : 'Save Changes'}
           </button>
+        </div>
+      )}
+
+      {/* Locations */}
+      {tab === 'locations' && (
+        <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+          {/* Sidebar — location list */}
+          <div style={{ width: '220px', flexShrink: 0 }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#94A3B8', marginBottom: '10px' }}>Properties</div>
+            {marinaLocations.length === 0 ? (
+              <div style={{ fontSize: '13px', color: '#94A3B8', padding: '12px 0' }}>No locations found</div>
+            ) : marinaLocations.map((loc) => (
+              <button
+                key={loc.id}
+                onClick={() => setSelectedLocationId(loc.id)}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '10px 14px', borderRadius: '8px', border: 'none',
+                  cursor: 'pointer', fontSize: '14px', fontWeight: selectedLocationId === loc.id ? 600 : 400,
+                  backgroundColor: selectedLocationId === loc.id ? '#EFF6FF' : 'transparent',
+                  color: selectedLocationId === loc.id ? '#1D4ED8' : '#374151',
+                  marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px',
+                }}
+              >
+                <MapPin size={14} style={{ flexShrink: 0 }} /> {loc.name}
+              </button>
+            ))}
+          </div>
+
+          {/* Detail panel */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {!locationDetail ? (
+              <div style={{ ...st.card, color: '#94A3B8', textAlign: 'center', padding: '48px' }}>Select a location to edit its settings</div>
+            ) : (
+              <>
+                {/* Basic Info */}
+                <div style={st.card}>
+                  <h3 style={st.sectionTitle}><MapPin size={20} /> {locationDetail.name}</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div style={st.field}>
+                      <label style={st.label}>Location Name</label>
+                      <input style={st.input} value={locationForm.name ?? ''} onChange={(e) => handleLocationFormChange('name', e.target.value)} />
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>Phone</label>
+                      <input style={st.input} value={locationForm.phone ?? ''} onChange={(e) => handleLocationFormChange('phone', e.target.value)} />
+                    </div>
+                    <div style={{ ...st.field, gridColumn: '1 / -1' }}>
+                      <label style={st.label}>Address</label>
+                      <input style={st.input} value={locationForm.address ?? ''} onChange={(e) => handleLocationFormChange('address', e.target.value)} />
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>City</label>
+                      <input style={st.input} value={locationForm.city ?? ''} onChange={(e) => handleLocationFormChange('city', e.target.value)} />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                      <div style={st.field}>
+                        <label style={st.label}>State</label>
+                        <input style={st.input} value={locationForm.state ?? ''} onChange={(e) => handleLocationFormChange('state', e.target.value)} placeholder="FL" maxLength={2} />
+                      </div>
+                      <div style={st.field}>
+                        <label style={st.label}>ZIP</label>
+                        <input style={st.input} value={locationForm.zip ?? ''} onChange={(e) => handleLocationFormChange('zip', e.target.value)} />
+                      </div>
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>Timezone</label>
+                      <select style={st.select} value={locationForm.timezone ?? 'America/New_York'} onChange={(e) => handleLocationFormChange('timezone', e.target.value)}>
+                        {['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'America/Halifax', 'America/St_Johns'].map((tz) => (
+                          <option key={tz} value={tz}>{tz.replace('America/', '').replace('Pacific/', '').replace('_', ' ')}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>Logo URL</label>
+                      <input style={st.input} value={locationForm.logoUrl ?? ''} onChange={(e) => handleLocationFormChange('logoUrl', e.target.value)} placeholder="https://..." />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: '16px', display: 'flex', gap: '24px' }}>
+                    <label style={st.checkbox}>
+                      <input type="checkbox" checked={!!locationForm.autoExecuteRenewals} onChange={(e) => handleLocationFormChange('autoExecuteRenewals', e.target.checked)} />
+                      Auto-execute renewals at this location
+                    </label>
+                    <label style={st.checkbox}>
+                      <input type="checkbox" checked={!!locationForm.transientEnabled} onChange={(e) => handleLocationFormChange('transientEnabled', e.target.checked)} />
+                      Transient dockage enabled
+                    </label>
+                    <label style={st.checkbox}>
+                      <input type="checkbox" checked={!!locationForm.rentalsEnabled} onChange={(e) => handleLocationFormChange('rentalsEnabled', e.target.checked)} />
+                      Rentals enabled
+                    </label>
+                  </div>
+
+                  <button style={{ ...st.saveBtn, marginTop: '20px' }} onClick={handleLocationSave} disabled={locationSaving}>
+                    {locationSaving ? 'Saving…' : 'Save Location Settings'}
+                  </button>
+                </div>
+
+                {/* QuickBooks per-location */}
+                <div style={{ ...st.integrationCard, marginTop: '20px' }}>
+                  <div style={st.integrationInfo}>
+                    <div style={st.integrationIcon}><Building2 size={24} style={{ color: '#2CA01C' }} /></div>
+                    <div>
+                      <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>QuickBooks Online</div>
+                      <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Each location connects its own QuickBooks company file</div>
+                      <div style={{ marginTop: '8px' }}>
+                        {locationDetail.qboConnected ? (
+                          <>
+                            <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
+                            {locationDetail.qboRealmId && (
+                              <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>Realm: {locationDetail.qboRealmId}</span>
+                            )}
+                            {locationDetail.qboConnectedAt && (
+                              <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>
+                                Since {new Date(locationDetail.qboConnectedAt).toLocaleDateString()}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {locationDetail.qboConnected ? (
+                      <>
+                        <button style={st.outlineBtn} onClick={handleLocationQboSync} disabled={locationQboLoading}>
+                          <RefreshCw size={14} />{locationQboLoading ? ' Syncing…' : ' Sync Now'}
+                        </button>
+                        <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleLocationQboDisconnect} disabled={locationQboActing}>
+                          {locationQboActing ? 'Disconnecting…' : 'Disconnect'}
+                        </button>
+                      </>
+                    ) : (
+                      <button style={st.addBtn} onClick={handleLocationQboConnect} disabled={locationQboActing}>
+                        {locationQboActing ? 'Connecting…' : 'Connect QuickBooks'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
