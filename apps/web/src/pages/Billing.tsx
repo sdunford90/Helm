@@ -101,8 +101,7 @@ export default function Billing() {
   const totalOutstanding = invoices.reduce((s, i) => s + i.balance, 0);
   const paidThisMonth = invoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
   const pastDue = invoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
-  // TODO(api): customer credits balance endpoint
-  const credits = 0;
+  const credits = invoices.filter((i) => i.balance < 0).reduce((s, i) => s + Math.abs(i.balance), 0);
 
   const summaryCards = [
     { label: 'Total Outstanding', value: totalOutstanding, icon: DollarSign, color: totalOutstanding > 0 ? '#B71C1C' : '#0A2342' },

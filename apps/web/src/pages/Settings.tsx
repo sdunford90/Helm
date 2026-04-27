@@ -17,9 +17,49 @@ interface TeamMember {
   name: string;
   email: string;
   role: string;
+  roleEnum: string;
   status: 'Active' | 'Invited' | 'Disabled';
   lastLogin: string;
   locations: string[];
+}
+
+interface ApiUser {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  role: string;
+  active: boolean;
+  createdAt: string;
+}
+
+const ROLE_ENUM_TO_DISPLAY: Record<string, string> = {
+  MARINA_OWNER: 'Marina Owner',
+  MARINA_MANAGER: 'Marina Manager',
+  DOCK_STAFF: 'Dock Staff',
+  POS_CASHIER: 'POS Cashier',
+  ACCOUNTING: 'Accounting',
+};
+
+const ROLE_DISPLAY_TO_ENUM: Record<string, string> = {
+  'Marina Owner': 'MARINA_OWNER',
+  'Marina Manager': 'MARINA_MANAGER',
+  'Dock Staff': 'DOCK_STAFF',
+  'POS Cashier': 'POS_CASHIER',
+  'Accounting': 'ACCOUNTING',
+};
+
+function normalizeApiUser(u: ApiUser): TeamMember {
+  return {
+    id: u.id,
+    name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
+    email: u.email,
+    role: ROLE_ENUM_TO_DISPLAY[u.role] ?? u.role,
+    roleEnum: u.role,
+    status: u.active ? 'Active' : 'Disabled',
+    lastLogin: '—',
+    locations: [],
+  };
 }
 
 interface RolePermission {
@@ -131,12 +171,12 @@ const MARINA_LOCATIONS = [
 ];
 
 const TEAM: TeamMember[] = [
-  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
-  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', status: 'Active', lastLogin: '2026-03-25 8:02 AM', locations: ['Main Dock', 'Fuel Dock'] },
-  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', status: 'Active', lastLogin: '2026-03-24 6:45 PM', locations: ['Main Dock'] },
-  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', status: 'Active', lastLogin: '2026-03-24 5:30 PM', locations: ['Main Dock', 'Rental Center'] },
-  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', status: 'Active', lastLogin: '2026-03-23 3:15 PM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
-  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'] },
+  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', roleEnum: 'MARINA_OWNER', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
+  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', roleEnum: 'MARINA_MANAGER', status: 'Active', lastLogin: '2026-03-25 8:02 AM', locations: ['Main Dock', 'Fuel Dock'] },
+  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Active', lastLogin: '2026-03-24 6:45 PM', locations: ['Main Dock'] },
+  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', roleEnum: 'POS_CASHIER', status: 'Active', lastLogin: '2026-03-24 5:30 PM', locations: ['Main Dock', 'Rental Center'] },
+  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', roleEnum: 'ACCOUNTING', status: 'Active', lastLogin: '2026-03-23 3:15 PM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
+  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'] },
 ];
 
 const DOCKAGE_RATES_DATA: DockageRate[] = [
@@ -307,11 +347,51 @@ export default function Settings() {
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules'>('profile');
 
   // API calls
-  const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
-  const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/api/settings/team', { immediate: true });
+
+  // Team
+  const { data: apiTeamRaw, execute: refetchTeam } = useApi<{ members: ApiUser[] }>('get', '/api/settings/team', { immediate: true });
+  const { execute: inviteTeamMember, loading: inviting } = useApi<any>('post', '/api/settings/team/invite');
+  const [teamMembers, setTeamMembers] = React.useState<TeamMember[]>(TEAM);
+
+  React.useEffect(() => {
+    if (apiTeamRaw?.members) {
+      setTeamMembers(apiTeamRaw.members.map(normalizeApiUser));
+    }
+  }, [apiTeamRaw]);
+
+  // Team edit modal
+  const [editingMember, setEditingMember] = React.useState<TeamMember | null>(null);
+  const [editingMemberRole, setEditingMemberRole] = React.useState('');
+
+  const handleTeamEditSave = async () => {
+    if (!editingMember) return;
+    const enumRole = ROLE_DISPLAY_TO_ENUM[editingMemberRole] ?? editingMemberRole;
+    const res = await fetch(`/api/settings/team/${editingMember.id}/role`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: enumRole }),
+    });
+    if (res.ok) {
+      setTeamMembers((prev) => prev.map((m) => m.id === editingMember.id ? { ...m, role: editingMemberRole, roleEnum: enumRole } : m));
+      setSavedMsg('Role updated');
+      setTimeout(() => setSavedMsg(null), 2000);
+    }
+    setEditingMember(null);
+  };
+
+  const handleTeamRemove = async (member: TeamMember) => {
+    if (!window.confirm(`Remove ${member.name} from the team?`)) return;
+    const res = await fetch(`/api/settings/team/${member.id}`, { method: 'DELETE', credentials: 'include' });
+    if (res.ok) {
+      setTeamMembers((prev) => prev.filter((m) => m.id !== member.id));
+      setSavedMsg('Team member removed');
+      setTimeout(() => setSavedMsg(null), 2000);
+    }
+  };
 
   // QBO integration
   interface QboStatus { connected: boolean; realmId: string | null; lastSync: string | null; }
@@ -336,8 +416,22 @@ export default function Settings() {
     if (res?.disconnected) { setSavedMsg('QuickBooks disconnected'); setTimeout(() => setSavedMsg(null), 3000); fetchQboStatus(); }
   };
 
-  // Use API data when available, fall back to mock
-  const teamMembers = apiTeam ?? TEAM;
+  // Stripe integration
+  interface StripeStatus { connected: boolean; accountId: string | null; dashboardUrl: string | null; }
+  const { data: stripeStatus, loading: stripeLoading, execute: fetchStripeStatus } = useApi<StripeStatus>('get', '/api/settings/stripe', { immediate: true });
+  const { execute: stripeConnect, loading: stripeConnecting } = useApi<{ url: string }>('post', '/api/settings/stripe/connect');
+  const { execute: stripeDisconnect, loading: stripeDisconnecting } = useApi<{ disconnected: boolean }>('post', '/api/settings/stripe/disconnect');
+
+  const handleStripeConnect = async () => {
+    const res = await stripeConnect({});
+    if (res?.url) window.location.href = res.url;
+  };
+
+  const handleStripeDisconnect = async () => {
+    if (!window.confirm('Disconnect Stripe? Payment processing will stop working until you reconnect.')) return;
+    const res = await stripeDisconnect({ confirm: true });
+    if (res?.disconnected) { setSavedMsg('Stripe disconnected'); setTimeout(() => setSavedMsg(null), 3000); fetchStripeStatus(); }
+  };
 
   // GL Account Mapping state
   const [revenueMapping, setRevenueMapping] = useState<Record<string, string>>(
@@ -354,29 +448,211 @@ export default function Settings() {
   const [catalogSection, setCatalogSection] = useState<'dockage' | 'rentals' | 'pos' | 'fees'>('dockage');
   const [catalogSearch, setCatalogSearch] = useState('');
 
+  // Catalog: Dockage Rates (stored in tenant settings JSON)
+  const { execute: saveDockageRatesApi } = useApi<{ data: DockageRate[] }>('put', '/api/settings/catalog/dockage-rates');
+  const { data: apiDockageRatesGet } = useApi<{ data: DockageRate[] }>('get', '/api/settings/catalog/dockage-rates', { immediate: true });
   const [dockageRates, setDockageRates] = useState<DockageRate[]>(DOCKAGE_RATES_DATA);
   const [editingDockageId, setEditingDockageId] = useState<string | null>(null);
   const [editingDockage, setEditingDockage] = useState<DockageRate | null>(null);
   const [addingDockage, setAddingDockage] = useState(false);
   const [newDockage, setNewDockage] = useState<DockageRate>({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true });
 
+  React.useEffect(() => {
+    if (apiDockageRatesGet?.data && apiDockageRatesGet.data.length > 0) {
+      setDockageRates(apiDockageRatesGet.data);
+    }
+  }, [apiDockageRatesGet]);
+
+  const persistDockageRates = async (rates: DockageRate[]) => {
+    setDockageRates(rates);
+    await saveDockageRatesApi({ rates });
+  };
+
+  // Catalog: Rental Products (from rentals API)
+  const { data: apiRentalProducts } = useApi<{ data: any[] }>('get', '/api/rentals/products', { immediate: true });
   const [rentalProducts, setRentalProducts] = useState<RentalProduct[]>(RENTAL_PRODUCTS_DATA);
   const [editingRentalId, setEditingRentalId] = useState<string | null>(null);
   const [editingRental, setEditingRental] = useState<RentalProduct | null>(null);
   const [addingRental, setAddingRental] = useState(false);
   const [newRental, setNewRental] = useState<RentalProduct>({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true });
 
+  React.useEffect(() => {
+    if (apiRentalProducts?.data && apiRentalProducts.data.length > 0) {
+      setRentalProducts(apiRentalProducts.data.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        type: p.category ?? 'Watercraft',
+        hourlyRate: p.hourlyRateCents != null ? p.hourlyRateCents / 100 : 0,
+        halfDayRate: p.weeklyRateCents != null ? Math.round(p.weeklyRateCents / 100 * 0.4) : 0,
+        dailyRate: p.dailyRateCents != null ? p.dailyRateCents / 100 : 0,
+        damageWaiver: p.damageWaiverCents != null ? p.damageWaiverCents / 100 : 0,
+        deposit: p.depositCents != null ? p.depositCents / 100 : 0,
+        glAccount: '4300',
+        active: p.active ?? true,
+      })));
+    }
+  }, [apiRentalProducts]);
+
+  const handleSaveNewRental = async (rental: RentalProduct) => {
+    try {
+      const res = await fetch('/api/rentals/products', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: rental.name,
+          category: 'WATERCRAFT',
+          hourlyRateCents: Math.round(rental.hourlyRate * 100),
+          dailyRateCents: Math.round(rental.dailyRate * 100),
+          damageWaiverCents: Math.round(rental.damageWaiver * 100),
+          depositCents: Math.round(rental.deposit * 100),
+          basePriceCents: Math.round(rental.dailyRate * 100),
+          isActive: rental.active,
+          totalQuantity: 1,
+        }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        setRentalProducts((prev) => [...prev, { ...rental, id: body.id ?? rental.id }]);
+        setAddingRental(false);
+      } else {
+        setRentalProducts((prev) => [...prev, { ...rental, id: 'r' + Date.now() }]);
+        setAddingRental(false);
+      }
+    } catch {
+      setRentalProducts((prev) => [...prev, { ...rental, id: 'r' + Date.now() }]);
+      setAddingRental(false);
+    }
+  };
+
+  const handleEditRental = async (rental: RentalProduct) => {
+    try {
+      await fetch(`/api/rentals/products/${rental.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: rental.name,
+          hourlyRateCents: Math.round(rental.hourlyRate * 100),
+          dailyRateCents: Math.round(rental.dailyRate * 100),
+          damageWaiverCents: Math.round(rental.damageWaiver * 100),
+          depositCents: Math.round(rental.deposit * 100),
+          isActive: rental.active,
+        }),
+      });
+    } catch { /* ignore */ }
+    setRentalProducts((prev) => prev.map((p) => p.id === rental.id ? rental : p));
+    setEditingRentalId(null);
+  };
+
+  const handleDeleteRental = async (id: string) => {
+    try {
+      await fetch(`/api/rentals/products/${id}`, { method: 'DELETE', credentials: 'include' });
+    } catch { /* ignore */ }
+    setRentalProducts((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  // Catalog: POS Items (from pos/products API)
+  const { data: apiPosProducts } = useApi<{ data: any[] }>('get', '/api/pos/products', { immediate: true });
   const [posItems, setPosItems] = useState<POSItem[]>(POS_ITEMS_DATA);
   const [editingPosId, setEditingPosId] = useState<string | null>(null);
   const [editingPos, setEditingPos] = useState<POSItem | null>(null);
   const [addingPos, setAddingPos] = useState(false);
   const [newPos, setNewPos] = useState<POSItem>({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true });
 
+  React.useEffect(() => {
+    if (apiPosProducts?.data && apiPosProducts.data.length > 0) {
+      setPosItems(apiPosProducts.data.map((p: any) => ({
+        id: p.id,
+        sku: p.sku ?? '',
+        name: p.name,
+        category: p.departmentId ?? 'Marine',
+        cost: p.costCents != null ? p.costCents / 100 : 0,
+        price: p.priceCents / 100,
+        taxClass: p.taxClass ?? 'Standard',
+        glRevenueAccount: '4500',
+        glCogsAccount: '5200',
+        trackInventory: p.trackInventory ?? false,
+        active: true,
+      })));
+    }
+  }, [apiPosProducts]);
+
+  const handleSaveNewPos = async (item: POSItem) => {
+    try {
+      const res = await fetch('/api/pos/products', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: item.name,
+          sku: item.sku || null,
+          priceCents: Math.round(item.price * 100),
+          costCents: Math.round(item.cost * 100),
+          taxClass: item.taxClass,
+          trackInventory: item.trackInventory,
+        }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        setPosItems((prev) => [...prev, { ...item, id: body.id ?? item.id }]);
+        setAddingPos(false);
+      } else {
+        setPosItems((prev) => [...prev, { ...item, id: 'p' + Date.now() }]);
+        setAddingPos(false);
+      }
+    } catch {
+      setPosItems((prev) => [...prev, { ...item, id: 'p' + Date.now() }]);
+      setAddingPos(false);
+    }
+  };
+
+  const handleEditPos = async (item: POSItem) => {
+    try {
+      await fetch(`/api/pos/products/${item.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: item.name,
+          sku: item.sku || null,
+          priceCents: Math.round(item.price * 100),
+          costCents: Math.round(item.cost * 100),
+          taxClass: item.taxClass,
+          trackInventory: item.trackInventory,
+        }),
+      });
+    } catch { /* ignore */ }
+    setPosItems((prev) => prev.map((p) => p.id === item.id ? item : p));
+    setEditingPosId(null);
+  };
+
+  const handleDeletePos = async (id: string) => {
+    try {
+      await fetch(`/api/pos/products/${id}`, { method: 'DELETE', credentials: 'include' });
+    } catch { /* ignore */ }
+    setPosItems((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  // Catalog: Service Fees (stored in tenant settings JSON)
+  const { data: apiServiceFeesGet } = useApi<{ data: ServiceFee[] }>('get', '/api/settings/catalog/service-fees', { immediate: true });
+  const { execute: saveServiceFeesApi } = useApi<{ data: ServiceFee[] }>('put', '/api/settings/catalog/service-fees');
   const [serviceFees, setServiceFees] = useState<ServiceFee[]>(SERVICE_FEES_DATA);
   const [editingFeeId, setEditingFeeId] = useState<string | null>(null);
   const [editingFee, setEditingFee] = useState<ServiceFee | null>(null);
   const [addingFee, setAddingFee] = useState(false);
   const [newFee, setNewFee] = useState<ServiceFee>({ id: '', name: '', amount: 0, glAccount: '4800', active: true });
+
+  React.useEffect(() => {
+    if (apiServiceFeesGet?.data && apiServiceFeesGet.data.length > 0) {
+      setServiceFees(apiServiceFeesGet.data);
+    }
+  }, [apiServiceFeesGet]);
+
+  const persistServiceFees = async (fees: ServiceFee[]) => {
+    setServiceFees(fees);
+    await saveServiceFeesApi({ fees });
+  };
 
   // Team invite modal state
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -384,6 +660,21 @@ export default function Settings() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('Dock Staff');
   const [inviteLocations, setInviteLocations] = useState<string[]>([]);
+
+  const handleSendInvite = async () => {
+    if (!inviteEmail || !inviteName) { setSavedMsg('Please fill in name and email'); setTimeout(() => setSavedMsg(null), 2000); return; }
+    const nameParts = inviteName.trim().split(' ');
+    const firstName = nameParts[0] ?? '';
+    const lastName = nameParts.slice(1).join(' ') || '—';
+    const roleEnum = ROLE_DISPLAY_TO_ENUM[inviteRole] ?? 'DOCK_STAFF';
+    const res = await inviteTeamMember({ email: inviteEmail, firstName, lastName, role: roleEnum });
+    if (res) {
+      setShowInviteModal(false);
+      setSavedMsg(`Invitation sent to ${inviteEmail}`);
+      setTimeout(() => setSavedMsg(null), 3000);
+      refetchTeam();
+    }
+  };
 
   // Roles state
   const { data: rolesData, loading: rolesLoading } = useApi<{ data: CustomRole[] }>('get', '/api/roles', { immediate: true });
@@ -854,7 +1145,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newDockage.active} onChange={(e) => setNewDockage({ ...newDockage, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setDockageRates([...dockageRates, { ...newDockage, id: 'd' + Date.now() }]); setAddingDockage(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistDockageRates([...dockageRates, { ...newDockage, id: 'd' + Date.now() }]); setAddingDockage(false); }}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingDockage(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -876,13 +1167,13 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setDockageRates(dockageRates.map((r) => r.id === d.id ? editingDockage! : r)); setEditingDockageId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistDockageRates(dockageRates.map((r) => r.id === d.id ? editingDockage! : r)); setEditingDockageId(null); }}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingDockageId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingDockageId(d.id); setEditingDockage({ ...d }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setDockageRates(dockageRates.filter((r) => r.id !== d.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => persistDockageRates(dockageRates.filter((r) => r.id !== d.id))}>Delete</button>
                             </>
                           )}
                         </td>
@@ -933,7 +1224,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newRental.active} onChange={(e) => setNewRental({ ...newRental, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setRentalProducts([...rentalProducts, { ...newRental, id: 'r' + Date.now() }]); setAddingRental(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleSaveNewRental({ ...newRental, id: 'r' + Date.now() })}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingRental(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -956,13 +1247,13 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setRentalProducts(rentalProducts.map((p) => p.id === r.id ? editingRental! : p)); setEditingRentalId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleEditRental(editingRental!)}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingRentalId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingRentalId(r.id); setEditingRental({ ...r }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setRentalProducts(rentalProducts.filter((p) => p.id !== r.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeleteRental(r.id)}>Delete</button>
                             </>
                           )}
                         </td>
@@ -1023,7 +1314,7 @@ export default function Settings() {
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newPos.trackInventory} onChange={(e) => setNewPos({ ...newPos, trackInventory: e.target.checked })} /></td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newPos.active} onChange={(e) => setNewPos({ ...newPos, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setPosItems([...posItems, { ...newPos, id: 'p' + Date.now() }]); setAddingPos(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleSaveNewPos({ ...newPos, id: 'p' + Date.now() })}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingPos(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -1047,13 +1338,13 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setPosItems(posItems.map((i) => i.id === p.id ? editingPos! : i)); setEditingPosId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleEditPos(editingPos!)}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingPosId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingPosId(p.id); setEditingPos({ ...p }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setPosItems(posItems.filter((i) => i.id !== p.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeletePos(p.id)}>Delete</button>
                             </>
                           )}
                         </td>
@@ -1090,7 +1381,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newFee.active} onChange={(e) => setNewFee({ ...newFee, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setServiceFees([...serviceFees, { ...newFee, id: 'sf' + Date.now() }]); setAddingFee(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistServiceFees([...serviceFees, { ...newFee, id: 'sf' + Date.now() }]); setAddingFee(false); }}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingFee(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -1108,13 +1399,13 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setServiceFees(serviceFees.map((s) => s.id === f.id ? editingFee! : s)); setEditingFeeId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistServiceFees(serviceFees.map((s) => s.id === f.id ? editingFee! : s)); setEditingFeeId(null); }}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingFeeId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingFeeId(f.id); setEditingFee({ ...f }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setServiceFees(serviceFees.filter((s) => s.id !== f.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => persistServiceFees(serviceFees.filter((s) => s.id !== f.id))}>Delete</button>
                             </>
                           )}
                         </td>
@@ -1138,12 +1429,37 @@ export default function Settings() {
                 <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>Stripe Connect</div>
                 <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Accept payments and process payouts</div>
                 <div style={{ marginTop: '8px' }}>
-                  <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
-                  <span style={{ ...st.mono, fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>acct_1Nq****Yz8x</span>
+                  {stripeLoading ? (
+                    <span style={{ fontSize: '12px', color: '#94A3B8' }}>Checking connection…</span>
+                  ) : stripeStatus?.connected ? (
+                    <>
+                      <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
+                      {stripeStatus.accountId && (
+                        <span style={{ ...st.mono, fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>{stripeStatus.accountId}</span>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
+                  )}
                 </div>
               </div>
             </div>
-            <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={() => { setSavedMsg('Stripe disconnected'); setTimeout(() => setSavedMsg(null), 2000); }}>Disconnect</button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {stripeStatus?.connected ? (
+                <>
+                  {stripeStatus.dashboardUrl && (
+                    <a href={stripeStatus.dashboardUrl} target="_blank" rel="noopener noreferrer" style={{ ...st.outlineBtn, textDecoration: 'none' }}>Dashboard</a>
+                  )}
+                  <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleStripeDisconnect} disabled={stripeDisconnecting}>
+                    {stripeDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </button>
+                </>
+              ) : (
+                <button style={st.addBtn} onClick={handleStripeConnect} disabled={stripeConnecting}>
+                  {stripeConnecting ? 'Connecting…' : 'Connect Stripe'}
+                </button>
+              )}
+            </div>
           </div>
 
           <div style={st.integrationCard}>
@@ -1191,27 +1507,11 @@ export default function Settings() {
 
           <div style={{ ...st.card, marginTop: '24px' }}>
             <h3 style={st.sectionTitle}><Webhook size={20} /> Webhook Endpoints</h3>
-            <div style={st.tableWrap} className="helm-table-wrap">
-              <table style={st.table}>
-                <thead>
-                  <tr>
-                    <th style={st.th}>URL</th>
-                    <th style={st.th}>Events</th>
-                    <th style={st.th}>Status</th>
-                    <th style={st.th}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td style={{ ...st.td, ...st.mono, fontSize: '13px' }}>https://hooks.example.com/helm</td>
-                    <td style={st.td}>invoice.created, payment.received</td>
-                    <td style={st.td}><span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Active</span></td>
-                    <td style={st.td}><button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setSavedMsg('Editing webhook endpoint...'); setTimeout(() => setSavedMsg(null), 2000); }}>Edit</button></td>
-                  </tr>
-                </tbody>
-              </table>
+            <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px', background: '#F8FAFC', borderRadius: '6px', border: '1px dashed #CBD5E1' }}>
+              <Webhook size={28} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
+              <p style={{ margin: '0 0 6px', fontWeight: 600, color: '#64748B' }}>No webhook endpoints configured</p>
+              <p style={{ margin: 0, fontSize: '13px' }}>Webhook management is coming soon. You will be able to subscribe to events like invoice.created, payment.received, and more.</p>
             </div>
-            <button style={{ ...st.outlineBtn, marginTop: '16px' }} onClick={() => { setSavedMsg('Add endpoint form would open here'); setTimeout(() => setSavedMsg(null), 2000); }}><Plus size={14} /> Add Endpoint</button>
           </div>
         </>
       )}
@@ -1266,7 +1566,33 @@ export default function Settings() {
                 </div>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
                   <button style={st.outlineBtn} onClick={() => setShowInviteModal(false)}>Cancel</button>
-                  <button style={st.addBtn} onClick={() => { setShowInviteModal(false); setSavedMsg(`Invitation sent to ${inviteEmail || 'team member'}`); setTimeout(() => setSavedMsg(null), 2000); }}>Send Invite</button>
+                  <button style={st.addBtn} onClick={handleSendInvite} disabled={inviting}>{inviting ? 'Sending…' : 'Send Invite'}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Team Edit Modal */}
+          {editingMember && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+              <div style={{ background: '#FFFFFF', borderRadius: '12px', padding: '32px', width: '420px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342', margin: 0 }}>Edit Team Member</h3>
+                  <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }} onClick={() => setEditingMember(null)}><X size={20} /></button>
+                </div>
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>{editingMember.name}</div>
+                  <div style={{ fontSize: '13px', color: '#64748B' }}>{editingMember.email}</div>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Role</label>
+                  <select style={st.select} value={editingMemberRole} onChange={(e) => setEditingMemberRole(e.target.value)}>
+                    {Object.keys(ROLE_DISPLAY_TO_ENUM).map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
+                  <button style={st.outlineBtn} onClick={() => setEditingMember(null)}>Cancel</button>
+                  <button style={st.addBtn} onClick={handleTeamEditSave}>Save Changes</button>
                 </div>
               </div>
             </div>
@@ -1313,7 +1639,8 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px', color: m.lastLogin === '—' ? '#94A3B8' : '#0A2342' }}>{m.lastLogin}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setSavedMsg(`Editing ${m.name}...`); setTimeout(() => setSavedMsg(null), 2000); }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '12px' }} onClick={() => { setEditingMember(m); setEditingMemberRole(m.role); }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleTeamRemove(m)}>Remove</button>
                       </td>
                     </tr>
                   );

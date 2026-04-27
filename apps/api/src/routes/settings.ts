@@ -743,6 +743,64 @@ router.put("/notifications", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
   }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/settings/catalog/dockage-rates
+// --------------------------------------------------------------------------
+router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+    const t = tenant as unknown as Record<string, unknown>;
+    const s = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
+    res.json({ data: (s.catalogDockageRates as unknown[]) ?? [] });
+  } catch (err) { next(err); }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/settings/catalog/dockage-rates
+// --------------------------------------------------------------------------
+router.put("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const { rates } = req.body;
+    if (!Array.isArray(rates)) { res.status(400).json({ error: "rates must be an array" }); return; }
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+    const t = tenant as unknown as Record<string, unknown>;
+    const existing = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
+    await prisma.tenant.update({ where: { id: req.tenantId! }, data: { invoiceTemplateJson: { ...existing, catalogDockageRates: rates } } });
+    res.json({ data: rates });
+  } catch (err) { next(err); }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/settings/catalog/service-fees
+// --------------------------------------------------------------------------
+router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+    const t = tenant as unknown as Record<string, unknown>;
+    const s = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
+    res.json({ data: (s.catalogServiceFees as unknown[]) ?? [] });
+  } catch (err) { next(err); }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/settings/catalog/service-fees
+// --------------------------------------------------------------------------
+router.put("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const { fees } = req.body;
+    if (!Array.isArray(fees)) { res.status(400).json({ error: "fees must be an array" }); return; }
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+    const t = tenant as unknown as Record<string, unknown>;
+    const existing = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
+    await prisma.tenant.update({ where: { id: req.tenantId! }, data: { invoiceTemplateJson: { ...existing, catalogServiceFees: fees } } });
+    res.json({ data: fees });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /settings/gl-accounts ───────────────────────────────────────────────
 // Flat list of tenant GL accounts for use in dropdowns.  Includes qboAccountId
 // so the frontend can show which accounts are already linked to QuickBooks.
