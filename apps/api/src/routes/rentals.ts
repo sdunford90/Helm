@@ -155,7 +155,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 
 /**
  * Calculate dynamic price for a reservation based on pricing rules, demand
- * surge tiers, and calendar overrides.
+ * surge tiers, and calendar overrides. Uses the actual Prisma schema field names.
  */
 async function calculateDynamicPrice(
   tenantId: string,
@@ -163,9 +163,13 @@ async function calculateDynamicPrice(
   startDate: Date,
   endDate: Date,
 ): Promise<{ totalCents: number; breakdown: Record<string, unknown> }> {
-  // Get the product
+  // Fetch product with its pricing rules and demand surge tiers in one query
   const product = await prisma.rentalProduct.findFirst({
     where: { id: productId, tenantId },
+    include: {
+      pricingRules: { orderBy: { priority: "asc" } },
+      demandSurgeTiers: { orderBy: { priority: "asc" } },
+    },
   });
   if (!product) throw appError("Product not found", 404, "NOT_FOUND");
 
@@ -173,75 +177,84 @@ async function calculateDynamicPrice(
   const durationHours = durationMs / (1000 * 60 * 60);
   const durationDays = durationHours / 24;
 
-  // Base price from product rates
+  // ── Base price ────────────────────────────────────────────
   let baseCents = 0;
   let rateType = "hourly";
+  let rateUnits = 0;
 
   if (durationDays >= 7 && product.weeklyRateCents) {
-    const weeks = Math.ceil(durationDays / 7);
-    baseCents = weeks * product.weeklyRateCents;
+    rateUnits = Math.ceil(durationDays / 7);
+    baseCents = rateUnits * product.weeklyRateCents;
     rateType = "weekly";
   } else if (durationDays >= 1 && product.dailyRateCents) {
-    const days = Math.ceil(durationDays);
-    baseCents = days * product.dailyRateCents;
+    rateUnits = Math.ceil(durationDays);
+    baseCents = rateUnits * product.dailyRateCents;
     rateType = "daily";
-  } else if (product.hourlyRateCents) {
-    const hours = Math.ceil(durationHours);
-    baseCents = hours * product.hourlyRateCents;
+  } else {
+    rateUnits = Math.max(1, Math.ceil(durationHours));
+    baseCents = rateUnits * (product.hourlyRateCents ?? product.basePriceCents);
     rateType = "hourly";
   }
 
-  // Apply pricing rules (get active rules sorted by priority)
-  const pricingRules = (await (prisma as any).pricingRule.findMany({
-    where: { rentalProductId: productId },
-    orderBy: { priority: "asc" },
-  })) as any[];
-
+  // ── Pricing rules (SEASONAL, PEAK_DAY, MULTI_DAY, LEAD_TIME) ─
   let ruleMultiplier = 1.0;
-  let appliedRule: string | null = null;
+  let appliedRuleType: string | null = null;
+  const startDow = startDate.getDay(); // 0=Sun
+  const leadTimeDays = Math.max(0, (startDate.getTime() - Date.now()) / 86400000);
 
-  for (const rule of pricingRules) {
-    if (rule.type === "SEASONAL" && rule.seasonStart && rule.seasonEnd && rule.seasonMultiplier) {
-      const mmdd = `${String(startDate.getMonth() + 1).padStart(2, "0")}-${String(startDate.getDate()).padStart(2, "0")}`;
-      if (mmdd >= rule.seasonStart && mmdd <= rule.seasonEnd) {
-        ruleMultiplier = rule.seasonMultiplier;
-        appliedRule = rule.name;
+  for (const rule of product.pricingRules) {
+    const rType = rule.ruleType;
+    if (rType === "SEASONAL") {
+      if (rule.startDate && rule.endDate &&
+          startDate >= rule.startDate && startDate <= rule.endDate) {
+        ruleMultiplier = rule.value;
+        appliedRuleType = "Seasonal";
         break;
       }
-    } else if (rule.type === "FLAT") {
-      baseCents = rule.baseRateCents;
-      appliedRule = rule.name;
+    } else if (rType === "PEAK_DAY") {
+      const peakDays: number[] = Array.isArray(rule.daysJson) ? rule.daysJson as number[] : [];
+      if (peakDays.includes(startDow)) {
+        ruleMultiplier = rule.value;
+        appliedRuleType = "Peak day";
+        break;
+      }
+    } else if (rType === "MULTI_DAY" && durationDays >= 2) {
+      ruleMultiplier = rule.value;
+      appliedRuleType = "Multi-day";
       break;
-    } else if (rule.type === "DEMAND") {
-      // handled separately by surge tiers
+    } else if (rType === "LEAD_TIME") {
+      // value = max lead-time days that qualifies for this rate
+      if (leadTimeDays <= rule.value) {
+        ruleMultiplier = rule.value < 1 ? rule.value : 0.9; // treat as 10% early-bird discount
+        appliedRuleType = "Lead time";
+        break;
+      }
     }
   }
 
-  // Apply calendar overrides
-  let calendarMultiplier = 1.0;
-  let calendarLabel: string | null = null;
+  // ── Calendar date overrides ───────────────────────────────
+  // PricingCalendarOverride has overrideDate (single date) and priceCents
+  let calendarOverrideCents: number | null = null;
+  let calendarNote: string | null = null;
 
   const overrides = await (prisma as any).pricingCalendarOverride.findMany({
     where: {
-      tenantId,
       rentalProductId: productId,
-      startDate: { lte: endDate },
-      endDate: { gte: startDate },
+      overrideDate: { gte: startDate, lte: endDate },
     },
-  });
+  }) as Array<{ priceCents: number; note?: string | null }>;
 
   if (overrides.length > 0) {
-    // Use the highest multiplier from overlapping overrides
-    const maxOverride = overrides.reduce((max: any, o: any) => o.multiplier > max.multiplier ? o : max, overrides[0]);
-    calendarMultiplier = maxOverride.multiplier;
-    calendarLabel = maxOverride.label;
+    // Highest per-day price override wins
+    const best = overrides.reduce((m, o) => o.priceCents > m.priceCents ? o : m, overrides[0]);
+    calendarOverrideCents = best.priceCents;
+    calendarNote = best.note ?? null;
   }
 
-  // Apply demand surge tiers
+  // ── Demand surge tiers ────────────────────────────────────
   let surgeMultiplier = 1.0;
   let surgeThreshold: number | null = null;
 
-  // Calculate current utilization
   const activeReservations = await prisma.reservation.count({
     where: {
       tenantId,
@@ -252,39 +265,52 @@ async function calculateDynamicPrice(
     },
   });
 
-  const utilizationPct = (product as any).totalQuantity > 0
-    ? (activeReservations / (product as any).totalQuantity) * 100
-    : 0;
+  // Products don't have totalQuantity in schema — default capacity to 1
+  const capacity = 1;
+  const utilizationPct = (activeReservations / capacity) * 100;
 
-  const surgeTiers = await (prisma as any).demandSurgeTier.findMany({
-    where: { tenantId, isActive: true },
-    orderBy: { occupancyThresholdPct: "desc" },
-  });
-
-  for (const tier of surgeTiers) {
-    if (utilizationPct >= tier.occupancyThresholdPct) {
+  for (const tier of product.demandSurgeTiers) {
+    if (utilizationPct >= tier.availabilityThresholdPct) {
       surgeMultiplier = tier.multiplier;
-      surgeThreshold = tier.occupancyThresholdPct;
+      surgeThreshold = tier.availabilityThresholdPct;
       break;
     }
   }
 
-  const totalCents = Math.round(baseCents * ruleMultiplier * calendarMultiplier * surgeMultiplier);
+  // ── Final price ───────────────────────────────────────────
+  let totalCents: number;
+  if (calendarOverrideCents !== null) {
+    // Calendar override replaces base (per day)
+    const days = Math.max(1, Math.ceil(durationDays));
+    totalCents = Math.round(calendarOverrideCents * days * surgeMultiplier);
+  } else {
+    totalCents = Math.round(baseCents * ruleMultiplier * surgeMultiplier);
+  }
+
+  // Floor / ceiling
+  if (product.floorPriceCents && totalCents < product.floorPriceCents) {
+    totalCents = product.floorPriceCents;
+  }
+  if (product.ceilingPriceCents && totalCents > product.ceilingPriceCents) {
+    totalCents = product.ceilingPriceCents;
+  }
 
   return {
     totalCents,
     breakdown: {
       baseCents,
       rateType,
+      rateUnits,
       durationHours: Math.round(durationHours * 100) / 100,
       durationDays: Math.round(durationDays * 100) / 100,
-      appliedRule,
+      appliedRuleType,
       ruleMultiplier,
-      calendarMultiplier,
-      calendarLabel,
+      calendarOverrideCents,
+      calendarNote,
       surgeMultiplier,
       surgeThreshold,
       utilizationPct: Math.round(utilizationPct * 100) / 100,
+      totalCents,
     },
   };
 }
@@ -681,6 +707,7 @@ router.get(
 );
 
 // ─── GET /pricing-rules — List all pricing rules for tenant ─────────────────
+// PricingRule has no tenantId — filter via rentalProduct relation
 
 router.get(
   "/pricing-rules",
@@ -689,14 +716,49 @@ router.get(
       const tenantId = req.tenantId!;
 
       const [rules, total] = await Promise.all([
-        (prisma as any).pricingRule.findMany({
-          where: { tenantId },
+        prisma.pricingRule.findMany({
+          where: { rentalProduct: { tenantId } },
           orderBy: { priority: "asc" },
+          include: { rentalProduct: { select: { id: true, name: true } } },
         }),
-        (prisma as any).pricingRule.count({ where: { tenantId } }),
+        prisma.pricingRule.count({ where: { rentalProduct: { tenantId } } }),
       ]);
 
       res.json({ data: rules, pagination: { total } });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /price-quote — Get dynamic price quote for given dates ─────────────
+
+router.post(
+  "/price-quote",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { rentalProductId, startDate, endDate } = req.body as {
+        rentalProductId: string;
+        startDate: string;
+        endDate: string;
+      };
+
+      if (!rentalProductId || !startDate || !endDate) {
+        res.status(400).json({ error: "rentalProductId, startDate, endDate are required" });
+        return;
+      }
+
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+
+      if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+        res.status(400).json({ error: "Invalid date range" });
+        return;
+      }
+
+      const pricing = await calculateDynamicPrice(tenantId, rentalProductId, start, end);
+      res.json(pricing);
     } catch (err) {
       next(err);
     }

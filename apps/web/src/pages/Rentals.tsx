@@ -673,6 +673,24 @@ interface NewReservationModalProps {
   onCreated: () => Promise<void>;
 }
 
+interface PriceQuote {
+  totalCents: number;
+  breakdown: {
+    baseCents: number;
+    rateType: string;
+    rateUnits: number;
+    durationDays: number;
+    durationHours: number;
+    appliedRuleType: string | null;
+    ruleMultiplier: number;
+    calendarOverrideCents: number | null;
+    calendarNote: string | null;
+    surgeMultiplier: number;
+    surgeThreshold: number | null;
+    utilizationPct: number;
+  };
+}
+
 function NewReservationModal({ products, onClose, onCreated }: NewReservationModalProps) {
   const { getToken } = useAuth();
 
@@ -681,22 +699,31 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const [custResults, setCustResults] = useState<{ id: string; name: string; email: string }[]>([]);
   const [custSearching, setCustSearching] = useState(false);
   const [showCustDrop, setShowCustDrop] = useState(false);
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const debRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<{ id: string; name: string; email: string } | null>(null);
+  const custDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* Form fields */
   const [productId, setProductId] = useState('');
   const [startDate, setStartDate] = useState('');
-  const [startTime, setStartTime] = useState('08:00');
+  const [startTime, setStartTime] = useState('09:00');
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('17:00');
   const [notes, setNotes] = useState('');
+
+  /* Pricing */
+  const [quote, setQuote] = useState<PriceQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const quoteDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* Submit */
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const todayStr = new Date().toISOString().slice(0, 10);
+  const selectedProduct = products.find((p) => p.id === productId) ?? null;
 
-  const searchCustomers = async (q: string) => {
+  /* ── Customer search ──────────────────────────────────────── */
+  const searchCustomers = useCallback(async (q: string) => {
     if (q.trim().length < 2) { setCustResults([]); setShowCustDrop(false); return; }
     setCustSearching(true);
     try {
@@ -706,48 +733,76 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
       const res = await fetch(`/api/customers?search=${encodeURIComponent(q)}&take=8`, { headers });
       if (!res.ok) return;
       const json = await res.json() as { data: Array<{ id: string; firstName: string; lastName: string; email: string }> };
-      const list = (json.data ?? []).map((c) => ({
-        id: c.id,
-        name: `${c.firstName} ${c.lastName}`.trim(),
-        email: c.email,
-      }));
+      const list = (json.data ?? []).map((c) => ({ id: c.id, name: `${c.firstName} ${c.lastName}`.trim(), email: c.email }));
       setCustResults(list);
       setShowCustDrop(list.length > 0);
-    } catch { /* ignore */ } finally {
-      setCustSearching(false);
-    }
-  };
+    } catch { /* ignore */ } finally { setCustSearching(false); }
+  }, [getToken]);
 
   const handleCustChange = (q: string) => {
     setCustQuery(q);
-    setSelectedCustomerId('');
-    if (debRef.current) clearTimeout(debRef.current);
-    debRef.current = setTimeout(() => searchCustomers(q), 300);
+    setSelectedCustomer(null);
+    if (custDebRef.current) clearTimeout(custDebRef.current);
+    custDebRef.current = setTimeout(() => searchCustomers(q), 280);
   };
 
   const selectCustomer = (c: { id: string; name: string; email: string }) => {
-    setCustQuery(`${c.name} — ${c.email}`);
-    setSelectedCustomerId(c.id);
+    setSelectedCustomer(c);
+    setCustQuery(c.name);
     setCustResults([]);
     setShowCustDrop(false);
   };
 
-  /* Price estimate (client-side, based on product rates) */
-  const selectedProduct = products.find((p) => p.id === productId);
-  const priceEstimate = (() => {
-    if (!selectedProduct || !startDate || !endDate) return null;
-    const start = new Date(`${startDate}T${startTime}`);
-    const end = new Date(`${endDate}T${endTime}`);
-    const hrs = (end.getTime() - start.getTime()) / 3600000;
-    if (hrs <= 0) return null;
-    const days = hrs / 24;
-    if (days >= 1 && selectedProduct.dailyRate > 0) {
-      return { amount: Math.ceil(days) * selectedProduct.dailyRate, label: `${Math.ceil(days)} day(s) × $${selectedProduct.dailyRate.toFixed(2)}/day` };
-    }
-    return { amount: Math.ceil(hrs) * selectedProduct.hourlyRate, label: `${Math.ceil(hrs)} hour(s) × $${selectedProduct.hourlyRate.toFixed(2)}/hr` };
-  })();
+  /* ── Dynamic pricing quote ───────────────────────────────── */
+  const fetchQuote = useCallback(async (pid: string, sd: string, st2: string, ed: string, et: string) => {
+    if (!pid || !sd || !ed) return;
+    setQuoteLoading(true);
+    setQuote(null);
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch('/api/rentals/price-quote', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          rentalProductId: pid,
+          startDate: new Date(`${sd}T${st2}`).toISOString(),
+          endDate: new Date(`${ed}T${et}`).toISOString(),
+        }),
+      });
+      if (!res.ok) return;
+      const data = await res.json() as PriceQuote;
+      setQuote(data);
+    } catch { /* ignore */ } finally { setQuoteLoading(false); }
+  }, [getToken]);
 
-  const canSubmit = !!selectedCustomerId && !!productId && !!startDate && !!endDate;
+  // Debounce the price quote fetch whenever inputs change
+  const triggerQuote = useCallback((pid: string, sd: string, st2: string, ed: string, et: string) => {
+    if (quoteDebRef.current) clearTimeout(quoteDebRef.current);
+    quoteDebRef.current = setTimeout(() => fetchQuote(pid, sd, st2, ed, et), 500);
+  }, [fetchQuote]);
+
+  const handleProductSelect = (pid: string) => {
+    setProductId(pid);
+    setQuote(null);
+    triggerQuote(pid, startDate, startTime, endDate, endTime);
+  };
+  const handleDateChange = (field: 'sd' | 'st' | 'ed' | 'et', val: string) => {
+    const sd = field === 'sd' ? val : startDate;
+    const st2 = field === 'st' ? val : startTime;
+    const ed = field === 'ed' ? val : (field === 'sd' && (!endDate || val > endDate) ? val : endDate);
+    const et = field === 'et' ? val : endTime;
+    if (field === 'sd') { setStartDate(val); if (!endDate || val > endDate) setEndDate(val); }
+    else if (field === 'st') setStartTime(val);
+    else if (field === 'ed') setEndDate(val);
+    else setEndTime(val);
+    setQuote(null);
+    triggerQuote(productId, sd, st2, ed, et);
+  };
+
+  /* ── Submit ──────────────────────────────────────────────── */
+  const canSubmit = !!selectedCustomer && !!productId && !!startDate && !!endDate;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -761,11 +816,11 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
         method: 'POST',
         headers,
         body: JSON.stringify({
-          customerId: selectedCustomerId,
+          customerId: selectedCustomer!.id,
           rentalProductId: productId,
           startDate: new Date(`${startDate}T${startTime}`).toISOString(),
           endDate: new Date(`${endDate}T${endTime}`).toISOString(),
-          notes: notes || null,
+          notes: notes || undefined,
         }),
       });
       if (!res.ok) {
@@ -780,115 +835,259 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
     }
   };
 
-  const iStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', width: '100%' };
-  const lStyle: React.CSSProperties = { fontSize: '13px', fontWeight: 600, color: '#0A2342', marginBottom: '4px', display: 'block' };
+  /* ── Helpers ─────────────────────────────────────────────── */
+  const fmtCents = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rateLabel = (p: RentalProduct) => p.dailyRate > 0
+    ? `$${p.dailyRate.toFixed(0)}/day`
+    : p.hourlyRate > 0 ? `$${p.hourlyRate.toFixed(0)}/hr` : '';
+
+  const catIcon: Record<string, string> = { Boat: '⛵', Kayak: '🚣', 'Paddle Board': '🏄', Dock: '⚓', default: '🚤' };
+  const icon = (cat: string) => catIcon[cat] ?? catIcon.default;
+
+  const inp: React.CSSProperties = { width: '100%', padding: '9px 12px', fontSize: '14px', border: '1.5px solid #E2E8F0', borderRadius: '8px', color: '#0A2342', outline: 'none', boxSizing: 'border-box', backgroundColor: '#FFFFFF', transition: 'border-color 0.15s' };
+  const lbl: React.CSSProperties = { fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '6px', display: 'block' };
 
   return (
-    <div style={st.overlay} onClick={onClose}>
-      <div style={{ ...st.modal, width: '600px', maxWidth: '95vw' }} onClick={(e) => e.stopPropagation()}>
-        <div style={st.modalHeader}>
-          <h2 style={st.modalTitle}>New Rental Reservation</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(10,35,66,0.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '16px', width: '860px', maxWidth: '96vw', maxHeight: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(10,35,66,0.25)' }} onClick={(e) => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ background: 'linear-gradient(135deg, #0A2342 0%, #1E3A5F 100%)', padding: '24px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+          <div>
+            <div style={{ fontSize: '18px', fontWeight: 700, color: '#FFFFFF' }}>New Rental Reservation</div>
+            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', marginTop: '2px' }}>Fill in the details below — pricing is calculated in real time</div>
+          </div>
+          <button style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '8px', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={18} /></button>
         </div>
-        <div style={st.modalBody}>
-          {/* Customer search */}
-          <div style={{ marginBottom: '16px', position: 'relative' }}>
-            <label style={lStyle}>Customer * <span style={{ fontWeight: 400, color: '#94A3B8', fontSize: '12px' }}>type to search</span></label>
-            <div style={{ position: 'relative' }}>
-              <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#64748B', pointerEvents: 'none' }} />
-              <input
-                style={{ ...iStyle, paddingLeft: '32px' }}
-                placeholder="Search by name or email…"
-                value={custQuery}
-                onChange={(e) => handleCustChange(e.target.value)}
-                onBlur={() => setTimeout(() => setShowCustDrop(false), 150)}
-                onFocus={() => custResults.length > 0 && setShowCustDrop(true)}
-                autoComplete="off"
-              />
-              {custSearching && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#94A3B8' }}>searching…</span>}
-              {selectedCustomerId && <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: '#10B981' }}>✓</span>}
-            </div>
-            {showCustDrop && custResults.length > 0 && (
-              <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 2000, maxHeight: '200px', overflowY: 'auto' }}>
-                {custResults.map((c) => (
-                  <div
-                    key={c.id}
-                    style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}
-                    onMouseDown={() => selectCustomer(c)}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F0F9FF'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
-                  >
-                    <div style={{ fontWeight: 600, color: '#0A2342' }}>{c.name}</div>
-                    <div style={{ fontSize: '12px', color: '#64748B' }}>{c.email}</div>
+
+        {/* Body — two columns */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+          {/* ── LEFT: Form ─────────────────────────────────── */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', borderRight: '1px solid #F1F5F9' }}>
+
+            {/* Customer */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={lbl}>Customer</label>
+              <div style={{ position: 'relative' }}>
+                {selectedCustomer ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px', border: '1.5px solid #10B981', borderRadius: '8px', backgroundColor: '#F0FDF4' }}>
+                    <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFFFFF', fontWeight: 700, fontSize: '14px', flexShrink: 0 }}>
+                      {selectedCustomer.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '14px' }}>{selectedCustomer.name}</div>
+                      <div style={{ fontSize: '12px', color: '#64748B' }}>{selectedCustomer.email}</div>
+                    </div>
+                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8', padding: '2px' }} onClick={() => { setSelectedCustomer(null); setCustQuery(''); }}>
+                      <X size={14} />
+                    </button>
                   </div>
-                ))}
+                ) : (
+                  <>
+                    <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' }} />
+                    <input
+                      style={{ ...inp, paddingLeft: '36px' }}
+                      placeholder="Search customers by name or email…"
+                      value={custQuery}
+                      onChange={(e) => handleCustChange(e.target.value)}
+                      onBlur={() => setTimeout(() => setShowCustDrop(false), 160)}
+                      onFocus={() => custResults.length > 0 && setShowCustDrop(true)}
+                      autoComplete="off"
+                    />
+                    {custSearching && <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: '11px', color: '#94A3B8' }}>searching…</span>}
+                  </>
+                )}
+                {showCustDrop && custResults.length > 0 && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, top: 'calc(100% + 4px)', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 2000, overflow: 'hidden' }}>
+                    {custResults.map((c, i) => (
+                      <div key={c.id} style={{ padding: '11px 16px', cursor: 'pointer', borderBottom: i < custResults.length - 1 ? '1px solid #F8FAFC' : 'none', display: 'flex', alignItems: 'center', gap: '10px' }}
+                        onMouseDown={() => selectCustomer(c)}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#F8FAFC'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.backgroundColor = ''; }}
+                      >
+                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4F46E5', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
+                          {c.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '13px' }}>{c.name}</div>
+                          <div style={{ fontSize: '11px', color: '#94A3B8' }}>{c.email}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Product cards */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={lbl}>Rental Product</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', paddingRight: '2px' }}>
+                {products.filter((p) => p.status === 'Available').map((p) => {
+                  const sel = productId === p.id;
+                  return (
+                    <div key={p.id}
+                      onClick={() => handleProductSelect(p.id)}
+                      style={{ padding: '12px 14px', borderRadius: '10px', border: `2px solid ${sel ? '#0A2342' : '#E2E8F0'}`, backgroundColor: sel ? '#F0F4FF' : '#FAFAFA', cursor: 'pointer', transition: 'all 0.15s' }}
+                      onMouseEnter={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#94A3B8'; }}
+                      onMouseLeave={(e) => { if (!sel) (e.currentTarget as HTMLDivElement).style.borderColor = '#E2E8F0'; }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+                        <div style={{ fontSize: '20px' }}>{icon(p.type)}</div>
+                        {sel && <div style={{ width: '18px', height: '18px', borderRadius: '50%', backgroundColor: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#FFFFFF', fontSize: '11px', fontWeight: 800 }}>✓</span></div>}
+                      </div>
+                      <div style={{ fontWeight: 600, color: '#0A2342', fontSize: '13px', lineHeight: '1.2', marginBottom: '2px' }}>{p.name}</div>
+                      <div style={{ fontSize: '11px', color: '#64748B' }}>{p.type}</div>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginTop: '6px', fontFamily: '"JetBrains Mono", monospace' }}>{rateLabel(p)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Dates */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={lbl}>Rental Period</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '8px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600 }}>START</div>
+                  <input style={inp} type="date" value={startDate} min={todayStr} onChange={(e) => handleDateChange('sd', e.target.value)} />
+                  <input style={inp} type="time" value={startTime} onChange={(e) => handleDateChange('st', e.target.value)} />
+                </div>
+                <div style={{ color: '#CBD5E1', fontSize: '18px', padding: '0 4px', marginTop: '14px' }}>→</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600 }}>END</div>
+                  <input style={inp} type="date" value={endDate} min={startDate || todayStr} onChange={(e) => handleDateChange('ed', e.target.value)} />
+                  <input style={inp} type="time" value={endTime} onChange={(e) => handleDateChange('et', e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label style={lbl}>Internal Notes <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+              <textarea style={{ ...inp, minHeight: '70px', resize: 'vertical' as const, lineHeight: '1.5' }} placeholder="Special requests, equipment notes, etc." value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
+          </div>
+
+          {/* ── RIGHT: Pricing Summary ─────────────────────── */}
+          <div style={{ width: '280px', flexShrink: 0, backgroundColor: '#F8FAFC', overflowY: 'auto', padding: '28px 24px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '16px' }}>Booking Summary</div>
+
+            {/* Customer pill */}
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '10px', border: '1px solid #E2E8F0' }}>
+              <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>CUSTOMER</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: selectedCustomer ? '#0A2342' : '#CBD5E1' }}>
+                {selectedCustomer ? selectedCustomer.name : 'Not selected'}
+              </div>
+            </div>
+
+            {/* Product pill */}
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '10px', border: '1px solid #E2E8F0' }}>
+              <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>PRODUCT</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: selectedProduct ? '#0A2342' : '#CBD5E1' }}>
+                {selectedProduct ? selectedProduct.name : 'Not selected'}
+              </div>
+              {selectedProduct && <div style={{ fontSize: '11px', color: '#64748B', marginTop: '1px' }}>{selectedProduct.type} · {rateLabel(selectedProduct)}</div>}
+            </div>
+
+            {/* Duration pill */}
+            {startDate && endDate && (
+              <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', border: '1px solid #E2E8F0' }}>
+                <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '3px' }}>DURATION</div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>
+                  {(() => {
+                    const hrs = (new Date(`${endDate}T${endTime}`).getTime() - new Date(`${startDate}T${startTime}`).getTime()) / 3600000;
+                    if (hrs <= 0) return '—';
+                    if (hrs >= 24) return `${Math.round(hrs / 24 * 10) / 10} days`;
+                    return `${Math.round(hrs * 10) / 10} hrs`;
+                  })()}
+                </div>
+                <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '1px' }}>
+                  {startDate === endDate ? startDate : `${startDate} → ${endDate}`}
+                </div>
               </div>
             )}
+
+            {/* Price breakdown */}
+            <div style={{ flex: 1 }}>
+              {quoteLoading && (
+                <div style={{ textAlign: 'center', padding: '24px 0', color: '#94A3B8', fontSize: '13px' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>⏳</div>
+                  Calculating price…
+                </div>
+              )}
+              {quote && !quoteLoading && (
+                <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '14px', border: '1px solid #E2E8F0' }}>
+                  <div style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 600, marginBottom: '10px' }}>PRICE BREAKDOWN</div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '12px', color: '#64748B' }}>
+                      Base ({quote.breakdown.rateUnits} {quote.breakdown.rateType})
+                    </span>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.breakdown.baseCents)}</span>
+                  </div>
+
+                  {quote.breakdown.appliedRuleType && quote.breakdown.ruleMultiplier !== 1 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
+                        {quote.breakdown.appliedRuleType} ({quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{Math.round((quote.breakdown.ruleMultiplier - 1) * 100)}%)
+                      </span>
+                      <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
+                        {quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.ruleMultiplier - 1)))}
+                      </span>
+                    </div>
+                  )}
+
+                  {quote.breakdown.calendarOverrideCents && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: '#7C3AED' }}>Calendar override</span>
+                      <span style={{ fontSize: '12px', color: '#7C3AED' }}>{fmtCents(quote.breakdown.calendarOverrideCents)}/day</span>
+                    </div>
+                  )}
+
+                  {quote.breakdown.surgeMultiplier > 1 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: '#DC2626' }}>🔥 Demand surge ({Math.round((quote.breakdown.surgeMultiplier - 1) * 100)}%)</span>
+                      <span style={{ fontSize: '12px', color: '#DC2626' }}>+{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.surgeMultiplier - 1)))}</span>
+                    </div>
+                  )}
+
+                  <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342' }}>Total</span>
+                    <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</span>
+                  </div>
+                </div>
+              )}
+              {!quote && !quoteLoading && productId && startDate && endDate && (
+                <div style={{ textAlign: 'center', padding: '16px 0', color: '#94A3B8', fontSize: '12px' }}>Price will appear here</div>
+              )}
+              {!productId && (
+                <div style={{ textAlign: 'center', padding: '24px 8px', color: '#CBD5E1', fontSize: '12px', lineHeight: 1.6 }}>
+                  Select a product and dates to see dynamic pricing
+                </div>
+              )}
+            </div>
           </div>
-
-          {/* Product select */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={lStyle}>Rental Product *</label>
-            <select style={{ ...iStyle, cursor: 'pointer' }} value={productId} onChange={(e) => setProductId(e.target.value)}>
-              <option value="">Select a product…</option>
-              {products.filter((p) => p.status === 'Available').map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.type}) — ${p.dailyRate > 0 ? `${p.dailyRate.toFixed(2)}/day` : `${p.hourlyRate.toFixed(2)}/hr`}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Date range */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-            <div>
-              <label style={lStyle}>Start Date *</label>
-              <input style={iStyle} type="date" value={startDate} min={todayStr} onChange={(e) => { setStartDate(e.target.value); if (!endDate || e.target.value > endDate) setEndDate(e.target.value); }} />
-            </div>
-            <div>
-              <label style={lStyle}>Start Time</label>
-              <input style={iStyle} type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-            </div>
-            <div>
-              <label style={lStyle}>End Date *</label>
-              <input style={iStyle} type="date" value={endDate} min={startDate || todayStr} onChange={(e) => setEndDate(e.target.value)} />
-            </div>
-            <div>
-              <label style={lStyle}>End Time</label>
-              <input style={iStyle} type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
-            </div>
-          </div>
-
-          {/* Notes */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={lStyle}>Notes</label>
-            <textarea style={{ ...iStyle, minHeight: '64px', resize: 'vertical' as const }} placeholder="Any special requests or notes…" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </div>
-
-          {/* Price estimate */}
-          {priceEstimate && (
-            <div style={{ backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '12px 16px', marginBottom: '16px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, color: '#0369A1', marginBottom: '2px' }}>Estimated Total</div>
-              <div style={{ fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
-                ${priceEstimate.amount.toFixed(2)}
-              </div>
-              <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>{priceEstimate.label} · Final price calculated with dynamic pricing</div>
-            </div>
-          )}
-
-          {error && (
-            <div style={{ fontSize: 13, color: '#9B1C1C', padding: '10px 14px', backgroundColor: '#FDE8E8', borderRadius: '4px', border: '1px solid #FCA5A5', marginBottom: '8px' }}>{error}</div>
-          )}
         </div>
-        <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button
-            style={{ ...st.saveBtn, opacity: canSubmit ? 1 : 0.5 }}
-            onClick={handleSubmit}
-            disabled={saving || !canSubmit}
-          >
-            {saving ? 'Creating…' : 'Create Reservation'}
-          </button>
+
+        {/* Footer */}
+        <div style={{ padding: '16px 32px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, backgroundColor: '#FAFAFA' }}>
+          <div style={{ fontSize: '12px', color: '#94A3B8' }}>
+            {!canSubmit && 'Customer, product, and dates are required'}
+          </div>
+          {error && <div style={{ fontSize: '12px', color: '#DC2626', flex: 1, marginRight: '16px' }}>{error}</div>}
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#64748B', background: '#FFFFFF', border: '1.5px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer' }} onClick={onClose}>Cancel</button>
+            <button
+              style={{ padding: '10px 28px', fontSize: '14px', fontWeight: 700, color: '#FFFFFF', background: canSubmit ? 'linear-gradient(135deg, #0A2342, #1E3A5F)' : '#CBD5E1', border: 'none', borderRadius: '8px', cursor: canSubmit ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '8px', boxShadow: canSubmit ? '0 2px 8px rgba(10,35,66,0.3)' : 'none', transition: 'all 0.15s' }}
+              onClick={handleSubmit}
+              disabled={saving || !canSubmit}
+            >
+              {saving ? 'Creating…' : `Confirm Reservation${quote ? ` · ${fmtCents(quote.totalCents)}` : ''}`}
+            </button>
+          </div>
         </div>
       </div>
     </div>
