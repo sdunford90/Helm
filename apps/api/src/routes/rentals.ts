@@ -1093,16 +1093,8 @@ router.post(
       // Calculate dynamic price
       const pricing = await calculateDynamicPrice(tenantId, data.rentalProductId, startDate, endDate);
 
-      // Apply cancellation policy — use default if none specified
-      let cancellationPolicyId = data.cancellationPolicyId;
-      if (!cancellationPolicyId) {
-        const defaultPolicy = await (prisma as any).cancellationPolicy.findFirst({
-          where: { tenantId, isDefault: true },
-        });
-        if (defaultPolicy) {
-          cancellationPolicyId = defaultPolicy.id;
-        }
-      }
+      // Apply cancellation policy — use whichever was passed in (no schema-level default)
+      const cancellationPolicyId = data.cancellationPolicyId ?? null;
 
       // If a time slot is provided, apply slot times to the dates
       let startDt = startDate;

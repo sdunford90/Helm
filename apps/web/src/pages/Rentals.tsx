@@ -756,9 +756,11 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const [notes, setNotes] = useState('');
 
   /* Pricing */
-  const [quote, setQuote] = useState<PriceQuote | null>(null);
-  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [productQuotes, setProductQuotes] = useState<Record<string, PriceQuote>>({});
+  const [quotesLoadingPids, setQuotesLoadingPids] = useState<Set<string>>(new Set());
   const quoteDebRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quote = productId ? (productQuotes[productId] ?? null) : null;
+  const quoteLoading = productId ? quotesLoadingPids.has(productId) : false;
 
   /* Submit */
   const [saving, setSaving] = useState(false);
@@ -891,13 +893,11 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   /* ── Dynamic pricing quote ───────────────────────────────── */
   const fetchQuote = useCallback(async (pid: string, sd: string, ed: string, slotId: string | null) => {
     if (!pid || !sd || !ed) return;
-    setQuoteLoading(true);
-    setQuote(null);
+    setQuotesLoadingPids((prev) => new Set([...prev, pid]));
     try {
       const token = await getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
-      // Use time slot times if selected, else raw time inputs
       const slot = slotId ? timeSlots.find((s) => s.id === slotId) : null;
       const startISO = slot
         ? new Date(`${sd}T${slot.startTime}:00`).toISOString()
@@ -912,8 +912,10 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
       });
       if (!res.ok) return;
       const data = await res.json() as PriceQuote;
-      setQuote(data);
-    } catch { /* ignore */ } finally { setQuoteLoading(false); }
+      setProductQuotes((prev) => ({ ...prev, [pid]: data }));
+    } catch { /* ignore */ } finally {
+      setQuotesLoadingPids((prev) => { const n = new Set(prev); n.delete(pid); return n; });
+    }
   }, [getToken, timeSlots, startTime, endTime]);
 
   const triggerQuote = useCallback((pid: string, sd: string, ed: string, slotId: string | null) => {
@@ -924,10 +926,21 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
   const handleProductSelect = (pid: string) => {
     setProductId(pid);
     setSelectedUnitId(null);
-    setQuote(null);
     fetchUnits(pid);
-    triggerQuote(pid, startDate, endDate, selectedTimeSlotId);
+    // Only re-fetch if we don't already have a quote for this product
+    if (!productQuotes[pid]) triggerQuote(pid, startDate, endDate, selectedTimeSlotId);
   };
+
+  /* ── Pre-fetch quotes for all products when entering step 3 ── */
+  useEffect(() => {
+    if (step === 3 && startDate && endDate) {
+      products.filter((p) => p.status === 'Available').forEach((p) => {
+        fetchQuote(p.id, startDate, endDate, selectedTimeSlotId);
+      });
+    }
+    // Only run when step changes to 3
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   /* ── Submit ──────────────────────────────────────────────── */
   const canSubmit = !!selectedCustomer && !!productId && !!startDate && !!endDate;
@@ -1151,7 +1164,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                           setStartDate(e.target.value);
                           setEndDate(e.target.value);
                           setSelectedTimeSlotId(null);
-                          setQuote(null);
+                          setProductQuotes({});
                         }} />
                     </div>
                   ) : (
@@ -1164,10 +1177,10 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                               const v = e.target.value;
                               setStartDate(v);
                               if (!endDate || v > endDate) setEndDate(v);
-                              setQuote(null);
+                              setProductQuotes({});
                             }} />
                           <input style={inp} type="time" value={startTime}
-                            onChange={(e) => { setStartTime(e.target.value); setQuote(null); }} />
+                            onChange={(e) => { setStartTime(e.target.value); setProductQuotes({}); }} />
                         </div>
                       </div>
                       <div style={{ color: '#CBD5E1', fontSize: '22px', paddingTop: '28px', textAlign: 'center' }}>→</div>
@@ -1175,9 +1188,9 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                         <label style={{ ...lbl, color: '#94A3B8' }}>End</label>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           <input style={inp} type="date" value={endDate} min={startDate || todayStr}
-                            onChange={(e) => { setEndDate(e.target.value); setQuote(null); }} />
+                            onChange={(e) => { setEndDate(e.target.value); setProductQuotes({}); }} />
                           <input style={inp} type="time" value={endTime}
-                            onChange={(e) => { setEndTime(e.target.value); setQuote(null); }} />
+                            onChange={(e) => { setEndTime(e.target.value); setProductQuotes({}); }} />
                         </div>
                       </div>
                     </>
@@ -1198,7 +1211,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                             <div key={slot.id}
                               onClick={() => {
                                 setSelectedTimeSlotId(sel ? null : slot.id);
-                                setQuote(null);
+                                setProductQuotes({});
                                 if (productId && startDate) triggerQuote(productId, startDate, startDate, sel ? null : slot.id);
                               }}
                               style={{
@@ -1276,14 +1289,16 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                         </div>
                         <div style={{ fontWeight: 700, color: '#0A2342', fontSize: '14px', lineHeight: '1.3', marginBottom: '2px' }}>{p.name}</div>
                         <div style={{ fontSize: '11px', color: '#64748B', marginBottom: '8px' }}>{p.type}</div>
-                        {/* Show live price if this product is selected and quote is ready */}
-                        {sel && quoteLoading && (
+                        {/* Show live price on all cards — loading, real quote, or fallback rate */}
+                        {quotesLoadingPids.has(p.id) && (
                           <div style={{ fontSize: '12px', color: '#94A3B8' }}>Calculating…</div>
                         )}
-                        {sel && quote && !quoteLoading && (
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</div>
+                        {!quotesLoadingPids.has(p.id) && productQuotes[p.id] && (
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: sel ? '#0A2342' : '#374151', fontFamily: '"JetBrains Mono", monospace' }}>
+                            {fmtCents(productQuotes[p.id].totalCents)}
+                          </div>
                         )}
-                        {!sel && (
+                        {!quotesLoadingPids.has(p.id) && !productQuotes[p.id] && (
                           <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748B', fontFamily: '"JetBrains Mono", monospace' }}>{rateLabel(p)}</div>
                         )}
                       </div>
@@ -1410,53 +1425,63 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                   Calculating…
                 </div>
               )}
-              {quote && !quoteLoading && (
-                <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '14px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Price Breakdown</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '12px', color: '#64748B' }}>Base ({quote.breakdown.rateUnits} {quote.breakdown.rateType})</span>
-                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.breakdown.baseCents)}</span>
+              {quote && !quoteLoading && (() => {
+                const rawCents = Math.round(quote.breakdown.baseCents * quote.breakdown.ruleMultiplier * quote.breakdown.surgeMultiplier);
+                const capApplied = quote.baseRentalCents < rawCents;
+                return (
+                  <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', padding: '14px', border: '1px solid #E2E8F0' }}>
+                    <div style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 700, marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Price Breakdown</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: '#64748B' }}>Rental ({quote.breakdown.rateUnits} {quote.breakdown.rateType})</span>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.breakdown.baseCents)}</span>
+                    </div>
+                    {quote.breakdown.appliedRuleType && quote.breakdown.ruleMultiplier !== 1 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
+                          {quote.breakdown.appliedRuleType} ({quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{Math.round((quote.breakdown.ruleMultiplier - 1) * 100)}%)
+                        </span>
+                        <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
+                          {quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.ruleMultiplier - 1)))}
+                        </span>
+                      </div>
+                    )}
+                    {quote.breakdown.calendarOverrideCents && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', color: '#7C3AED' }}>Calendar override</span>
+                        <span style={{ fontSize: '12px', color: '#7C3AED' }}>{fmtCents(quote.breakdown.calendarOverrideCents)}/day</span>
+                      </div>
+                    )}
+                    {quote.breakdown.surgeMultiplier > 1 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', color: '#DC2626' }}>🔥 Demand surge ({Math.round((quote.breakdown.surgeMultiplier - 1) * 100)}%)</span>
+                        <span style={{ fontSize: '12px', color: '#DC2626' }}>+{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.surgeMultiplier - 1)))}</span>
+                      </div>
+                    )}
+                    {capApplied && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', color: '#059669' }}>Price cap applied</span>
+                        <span style={{ fontSize: '12px', color: '#059669' }}>−{fmtCents(rawCents - quote.baseRentalCents)}</span>
+                      </div>
+                    )}
+                    {quote.damageWaiverCents > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '12px', color: '#0A2342' }}>🛡 Damage waiver</span>
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.damageWaiverCents)}</span>
+                      </div>
+                    )}
+                    <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342' }}>Total</span>
+                      <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</span>
+                    </div>
                   </div>
-                  {quote.breakdown.appliedRuleType && quote.breakdown.ruleMultiplier !== 1 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
-                        {quote.breakdown.appliedRuleType} ({quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{Math.round((quote.breakdown.ruleMultiplier - 1) * 100)}%)
-                      </span>
-                      <span style={{ fontSize: '12px', color: quote.breakdown.ruleMultiplier > 1 ? '#D97706' : '#059669' }}>
-                        {quote.breakdown.ruleMultiplier > 1 ? '+' : ''}{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.ruleMultiplier - 1)))}
-                      </span>
-                    </div>
-                  )}
-                  {quote.breakdown.calendarOverrideCents && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '12px', color: '#7C3AED' }}>Calendar override</span>
-                      <span style={{ fontSize: '12px', color: '#7C3AED' }}>{fmtCents(quote.breakdown.calendarOverrideCents)}/day</span>
-                    </div>
-                  )}
-                  {quote.breakdown.surgeMultiplier > 1 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '12px', color: '#DC2626' }}>🔥 Demand surge ({Math.round((quote.breakdown.surgeMultiplier - 1) * 100)}%)</span>
-                      <span style={{ fontSize: '12px', color: '#DC2626' }}>+{fmtCents(Math.round(quote.breakdown.baseCents * (quote.breakdown.surgeMultiplier - 1)))}</span>
-                    </div>
-                  )}
-                  {quote.damageWaiverCents > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '12px', color: '#0A2342' }}>🛡 Damage waiver</span>
-                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#0A2342' }}>{fmtCents(quote.damageWaiverCents)}</span>
-                    </div>
-                  )}
-                  <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342' }}>Total</span>
-                    <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</span>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
               {!quote && !quoteLoading && step === 3 && productId && (
-                <div style={{ textAlign: 'center', padding: '14px 0', color: '#94A3B8', fontSize: '12px' }}>Price will appear here</div>
+                <div style={{ textAlign: 'center', padding: '14px 0', color: '#94A3B8', fontSize: '12px' }}>Select a product to see its price</div>
               )}
-              {step < 3 && !quote && (
+              {step < 3 && (
                 <div style={{ textAlign: 'center', padding: '20px 8px', color: '#CBD5E1', fontSize: '12px', lineHeight: 1.6 }}>
-                  Complete all steps to see dynamic pricing
+                  Set a rental period to see dynamic pricing
                 </div>
               )}
             </div>
