@@ -30,6 +30,7 @@ import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import ESignPage from './pages/ESignPage';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 
 function AppRoutes() {
@@ -39,6 +40,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/signup" element={<Navigate to="/onboarding" replace />} />
       <Route path="/onboarding" element={<Onboarding />} />
+      <Route path="/esign/:requestId" element={<ESignPage />} />
       <Route element={<AppLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/leads" element={<Leads />} />

@@ -160,6 +160,177 @@ function calculateProration(
   };
 }
 
+// ─── Public esign routes (no auth — requestId is the token) ─────────────────
+
+const EsignSubmitSchema = z.object({
+  // vessel
+  hin: z.string().optional().nullable(),
+  registrationNumber: z.string().optional().nullable(),
+  registrationState: z.string().optional().nullable(),
+  registrationExpiry: z.coerce.date().optional().nullable(),
+  make: z.string().optional().nullable(),
+  model: z.string().optional().nullable(),
+  year: z.number().int().optional().nullable(),
+  // insurance
+  insurer: z.string().optional().nullable(),
+  policyNumber: z.string().optional().nullable(),
+  insStartDate: z.coerce.date().optional().nullable(),
+  insExpiryDate: z.coerce.date().optional().nullable(),
+  // emergency contact
+  ecName: z.string().optional().nullable(),
+  ecPhone: z.string().optional().nullable(),
+  ecRelationship: z.string().optional().nullable(),
+  // signature
+  signerName: z.string().min(1),
+  agreed: z.literal(true),
+});
+
+// GET /api/esign/:requestId — look up contract by requestId (public)
+router.get(
+  "/public/esign/:requestId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const contract = await prisma.slipContract.findFirst({
+        where: { esignEnvelopeId: req.params.requestId },
+        include: {
+          slip: { select: { id: true, slipNumber: true, dockId: true } },
+          customer: {
+            select: {
+              id: true, firstName: true, lastName: true, email: true,
+              emergencyContactJson: true,
+            },
+          },
+          boat: true,
+        },
+      });
+
+      if (!contract) {
+        res.status(404).json({ error: "Signing link not found or expired", code: "NOT_FOUND" });
+        return;
+      }
+      if (contract.signedAt) {
+        res.status(410).json({ error: "This contract has already been signed", code: "ALREADY_SIGNED" });
+        return;
+      }
+
+      // Fetch latest insurance for the boat
+      const latestInsurance = contract.boatId
+        ? await prisma.insuranceRecord.findFirst({
+            where: { boatId: contract.boatId },
+            orderBy: { expiryDate: "desc" },
+            select: { insurer: true, policyNumber: true, startDate: true, expiryDate: true },
+          })
+        : null;
+
+      res.json({
+        contractId: contract.id,
+        requestId: req.params.requestId,
+        status: contract.signedAt ? "signed" : "pending",
+        rateCents: contract.rateCents,
+        billingCycle: contract.billingCycle,
+        startDate: contract.startDate,
+        endDate: contract.endDate,
+        autoRenew: contract.autoRenew,
+        slip: contract.slip,
+        customer: contract.customer,
+        boat: contract.boat,
+        latestInsurance,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/esign/:requestId/submit — customer fills in info + confirms (public)
+router.post(
+  "/public/esign/:requestId/submit",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const data = EsignSubmitSchema.parse(req.body);
+
+      const contract = await prisma.slipContract.findFirst({
+        where: { esignEnvelopeId: req.params.requestId },
+        include: {
+          customer: { select: { id: true, tenantId: true } },
+          boat: { select: { id: true } },
+        },
+      });
+
+      if (!contract) {
+        res.status(404).json({ error: "Signing link not found or expired", code: "NOT_FOUND" });
+        return;
+      }
+      if (contract.signedAt) {
+        res.status(410).json({ error: "This contract has already been signed", code: "ALREADY_SIGNED" });
+        return;
+      }
+
+      const ops: Promise<unknown>[] = [];
+
+      // Update boat if present
+      if (contract.boatId) {
+        const boatUpdate: Record<string, unknown> = {};
+        if (data.hin !== undefined) boatUpdate.hin = data.hin;
+        if (data.registrationNumber !== undefined) boatUpdate.registrationNumber = data.registrationNumber;
+        if (data.registrationState !== undefined) boatUpdate.registrationState = data.registrationState;
+        if (data.registrationExpiry !== undefined) boatUpdate.registrationExpiry = data.registrationExpiry;
+        if (data.make !== undefined) boatUpdate.make = data.make;
+        if (data.model !== undefined) boatUpdate.model = data.model;
+        if (data.year !== undefined) boatUpdate.year = data.year;
+        if (Object.keys(boatUpdate).length) {
+          ops.push(prisma.boat.update({ where: { id: contract.boatId }, data: boatUpdate }));
+        }
+      }
+
+      // Create insurance record if provided
+      if ((data.insurer || data.policyNumber) && contract.customer.id) {
+        ops.push(prisma.insuranceRecord.create({
+          data: {
+            tenantId: contract.customer.tenantId,
+            customerId: contract.customer.id,
+            boatId: contract.boatId ?? null,
+            insurer: data.insurer ?? null,
+            policyNumber: data.policyNumber ?? null,
+            startDate: data.insStartDate ?? null,
+            expiryDate: data.insExpiryDate ?? null,
+            status: "APPROVED",
+          },
+        }));
+      }
+
+      // Update emergency contact on customer
+      if (data.ecName || data.ecPhone) {
+        ops.push(prisma.customer.update({
+          where: { id: contract.customer.id },
+          data: {
+            emergencyContactJson: {
+              name: data.ecName ?? null,
+              phone: data.ecPhone ?? null,
+              relationship: data.ecRelationship ?? null,
+            },
+          },
+        }));
+      }
+
+      // Mark contract as signed
+      ops.push(prisma.slipContract.update({
+        where: { id: contract.id },
+        data: {
+          signedAt: new Date(),
+          esignEnvelopeId: req.params.requestId,
+        } as Record<string, unknown>,
+      }));
+
+      await Promise.all(ops);
+
+      res.json({ success: true, message: "Contract signed and information saved" });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
@@ -797,16 +968,12 @@ router.post(
       // Generate a request ID (in production this comes from the esign provider)
       const requestId = `esign_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-      // Update contract with e-signature tracking fields
+      // Update contract — esignEnvelopeId holds the requestId token
       await prisma.slipContract.update({
         where: { id: req.params.id },
         data: {
-          esignRequestId: requestId,
-          esignStatus: "sent",
-          esignSentAt: new Date(),
-          esignSignerName: signerName,
-          esignSignerEmail: signerEmail,
-        } as Record<string, unknown>,
+          esignEnvelopeId: requestId,
+        },
       });
 
       // Audit log
@@ -906,13 +1073,7 @@ router.post(
 
         await prisma.slipContract.update({
           where: { id: contract.id },
-          data: {
-            esignRequestId: requestId,
-            esignStatus: "sent",
-            esignSentAt: new Date(),
-            esignSignerName: signerName,
-            esignSignerEmail: signerEmail,
-          } as Record<string, unknown>,
+          data: { esignEnvelopeId: requestId },
         });
 
         await prisma.auditLog.create({
@@ -1086,31 +1247,25 @@ router.get(
         where: { id: req.params.id, tenantId },
         select: {
           id: true,
-          esignRequestId: true,
-          esignStatus: true,
-          esignSentAt: true,
-          esignSignedAt: true,
-          esignSignerName: true,
-          esignSignerEmail: true,
-          esignSignedDocumentUrl: true,
-        } as Record<string, boolean>,
+          esignEnvelopeId: true,
+          signedAt: true,
+          signedDocumentUrl: true,
+        },
       });
 
       if (!contract) {
         throw appError("Contract not found", 404, "NOT_FOUND");
       }
 
-      const c = contract as Record<string, unknown>;
-
       res.json({
-        contractId: c.id,
-        requestId: c.esignRequestId || null,
-        status: c.esignStatus || null,
-        sentAt: c.esignSentAt || null,
-        signedAt: c.esignSignedAt || null,
-        signerName: c.esignSignerName || null,
-        signerEmail: c.esignSignerEmail || null,
-        signedDocumentUrl: c.esignSignedDocumentUrl || null,
+        contractId: contract.id,
+        requestId: contract.esignEnvelopeId || null,
+        status: contract.signedAt ? "signed" : contract.esignEnvelopeId ? "sent" : null,
+        sentAt: null,
+        signedAt: contract.signedAt || null,
+        signerName: null,
+        signerEmail: null,
+        signedDocumentUrl: contract.signedDocumentUrl || null,
       });
     } catch (err) {
       next(err);
