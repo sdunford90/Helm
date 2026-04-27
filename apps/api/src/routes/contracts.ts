@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "node:crypto";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { sendEmail } from "../lib/email.js";
 
 const router: Router = Router();
 
@@ -825,6 +826,26 @@ router.post(
         },
       });
 
+      // Send e-signature request email
+      if (signerEmail) {
+        const signingUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/esign/${requestId}`;
+        await sendEmail({
+          to: signerEmail,
+          subject: "Signature Request — Slip Contract",
+          html: `
+            <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+              <h2 style="color:#0A2342;">You have a document to sign</h2>
+              <p>Hi ${signerName},</p>
+              <p>Your marina has sent a slip contract that requires your signature.</p>
+              ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
+              <p style="text-align:center;margin:24px 0;">
+                <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
+              </p>
+              <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
+            </div>`,
+        }).catch((err) => console.error("[contracts] esign email failed:", (err as Error).message));
+      }
+
       res.json({
         requestId,
         status: "sent",
@@ -910,6 +931,26 @@ router.post(
             },
           },
         });
+
+        // Send e-signature request email
+        if (signerEmail) {
+          const signingUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/esign/${requestId}`;
+          await sendEmail({
+            to: signerEmail,
+            subject: "Signature Request — Slip Contract",
+            html: `
+              <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+                <h2 style="color:#0A2342;">You have a document to sign</h2>
+                <p>Hi ${signerName},</p>
+                <p>Your marina has sent a slip contract that requires your signature.</p>
+                ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
+                <p style="text-align:center;margin:24px 0;">
+                  <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
+                </p>
+                <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
+              </div>`,
+          }).catch((err) => console.error("[contracts] bulk esign email failed:", (err as Error).message));
+        }
 
         results.push({
           contractId: contract.id,

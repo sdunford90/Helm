@@ -9,11 +9,63 @@ import {
   FileText,
   DollarSign,
   BookOpen,
+  Download,
 } from 'lucide-react';
 import PaymentModal from '../components/PaymentModal';
 import { formatCents, formatDate } from '../lib/format';
 
-/* ─── Types ─── */
+/* ─── Raw API types ─── */
+interface ApiLineItem {
+  id: string;
+  description: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountCents: number;
+  taxRate: number;
+  taxCents: number;
+  extendedCents: number;
+}
+
+interface ApiPayment {
+  id: string;
+  amountCents: number;
+  method: string;
+  status: string;
+  postedDate: string | null;
+}
+
+interface ApiGlEntry {
+  id: string;
+  debitCents: number;
+  creditCents: number;
+  description: string | null;
+  postedAt: string;
+  account: { accountNumber: string; name: string };
+}
+
+interface ApiInvoice {
+  id: string;
+  invoiceNumber: string;
+  status: string;
+  issuedDate: string | null;
+  dueDate: string;
+  paymentTerms: string | null;
+  totalCents: number;
+  balanceCents: number;
+  pdfUrl: string | null;
+  customer: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string | null;
+    company: string | null;
+  };
+  lineItems: ApiLineItem[];
+  payments: ApiPayment[];
+  glEntries: ApiGlEntry[];
+}
+
+/* ─── Normalised display types ─── */
 type InvoiceStatus = 'Draft' | 'Issued' | 'Paid' | 'Past Due' | 'Void' | 'Collections';
 
 interface LineItem {
@@ -22,6 +74,7 @@ interface LineItem {
   unitPrice: number;
   discount: number;
   taxRate: number;
+  taxCents: number;
 }
 
 interface Payment {
@@ -43,15 +96,73 @@ interface GLEntry {
 interface InvoiceData {
   id: string;
   number: string;
+  customerId: string;
   customer: string;
+  customerEmail: string | null;
   status: InvoiceStatus;
-  issued: string;
+  issued: string | null;
   due: string;
-  terms: string;
+  terms: string | null;
+  totalCents: number;
+  balanceCents: number;
+  pdfUrl: string | null;
   lines: LineItem[];
-  taxJurisdictions: { name: string; amount: number }[];
   payments: Payment[];
   glEntries: GLEntry[];
+}
+
+/* ─── Map API → display ─── */
+function normaliseStatus(s: string): InvoiceStatus {
+  const map: Record<string, InvoiceStatus> = {
+    DRAFT: 'Draft', ISSUED: 'Issued', PAID: 'Paid',
+    PAST_DUE: 'Past Due', VOID: 'Void', COLLECTIONS: 'Collections',
+  };
+  return map[s] ?? 'Draft';
+}
+
+function normalisePaymentStatus(s: string): 'Completed' | 'Pending' | 'Failed' {
+  if (s === 'COMPLETED') return 'Completed';
+  if (s === 'FAILED') return 'Failed';
+  return 'Pending';
+}
+
+function mapApiInvoice(raw: ApiInvoice): InvoiceData {
+  return {
+    id: raw.id,
+    number: raw.invoiceNumber,
+    customerId: raw.customer.id,
+    customer: [raw.customer.firstName, raw.customer.lastName].filter(Boolean).join(' ') || raw.customer.company || 'Unknown',
+    customerEmail: raw.customer.email,
+    status: normaliseStatus(raw.status),
+    issued: raw.issuedDate,
+    due: raw.dueDate,
+    terms: raw.paymentTerms,
+    totalCents: raw.totalCents,
+    balanceCents: raw.balanceCents,
+    pdfUrl: raw.pdfUrl,
+    lines: raw.lineItems.map((li) => ({
+      description: li.description,
+      qty: li.quantity,
+      unitPrice: li.unitPriceCents,
+      discount: li.discountCents,
+      taxRate: li.taxRate,
+      taxCents: li.taxCents,
+    })),
+    payments: raw.payments.map((p) => ({
+      id: p.id,
+      date: p.postedDate ?? '',
+      method: p.method,
+      amount: p.amountCents,
+      status: normalisePaymentStatus(p.status),
+    })),
+    glEntries: (raw.glEntries ?? []).map((g) => ({
+      date: g.postedAt,
+      account: `${g.account.accountNumber} — ${g.account.name}`,
+      description: g.description ?? '',
+      debit: g.debitCents,
+      credit: g.creditCents,
+    })),
+  };
 }
 
 /* ─── Helpers ─── */
@@ -160,19 +271,96 @@ const st: Record<string, React.CSSProperties> = {
     display: 'inline-block', padding: '2px 10px', borderRadius: '9999px',
     fontSize: '11px', fontWeight: 600,
   },
+  toast: {
+    position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999,
+    padding: '12px 20px', borderRadius: '8px', fontSize: '14px', fontWeight: 600,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+  },
 };
 
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [showPayment, setShowPayment] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
-  const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/api/invoices/${id}`, { immediate: true });
-  const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/api/payments?invoiceId=${id}`, { immediate: true });
+  const { data: rawInvoice, loading: loadingInvoice, execute: refetchInvoice } = useApi<ApiInvoice>(
+    'get', `/api/invoices/${id}`, { immediate: true }
+  );
 
-  const loading = loadingInvoice || loadingPayments;
+  const loading = loadingInvoice;
 
-  if (!apiInvoice && !loading) {
+  function showToast(message: string, type: 'success' | 'error') {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  }
+
+  async function handleFinalize() {
+    setActionLoading('finalize');
+    try {
+      const res = await fetch(`/api/invoices/${id}/finalize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || 'Failed to finalize invoice');
+      }
+      showToast('Invoice finalized successfully', 'success');
+      await refetchInvoice();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to finalize invoice', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleSend() {
+    setActionLoading('send');
+    try {
+      const res = await fetch(`/api/invoices/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || 'Failed to send invoice');
+      }
+      showToast('Invoice queued for delivery', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to send invoice', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleVoid() {
+    if (!window.confirm('Are you sure you want to void this invoice? This cannot be undone.')) return;
+    setActionLoading('void');
+    try {
+      const res = await fetch(`/api/invoices/${id}/void`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || 'Failed to void invoice');
+      }
+      showToast('Invoice voided', 'success');
+      await refetchInvoice();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to void invoice', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  function handleDownloadPdf() {
+    window.open(`/api/invoices/${id}/pdf`, '_blank');
+  }
+
+  if (!rawInvoice && !loading) {
     return (
       <div style={st.page}>
         <button style={st.backBtn} onClick={() => navigate('/billing')}>
@@ -185,7 +373,7 @@ export default function InvoiceDetail() {
     );
   }
 
-  if (!apiInvoice) {
+  if (!rawInvoice) {
     return (
       <div style={st.page}>
         <button style={st.backBtn} onClick={() => navigate('/billing')}>
@@ -196,20 +384,31 @@ export default function InvoiceDetail() {
     );
   }
 
-  const invoice: InvoiceData = { ...apiInvoice, payments: apiPayments ?? apiInvoice.payments };
+  const invoice = mapApiInvoice(rawInvoice);
 
-  const lineTotal = (l: LineItem) => l.qty * l.unitPrice - l.discount;
-  const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
-  const subtotal = invoice.lines.reduce((s, l) => s + lineTotal(l), 0);
-  const totalTax = invoice.taxJurisdictions.reduce((s, j) => s + j.amount, 0);
+  const subtotal = invoice.lines.reduce((s, l) => s + (l.qty * l.unitPrice - l.discount), 0);
+  const totalTax = invoice.lines.reduce((s, l) => s + l.taxCents, 0);
   const total = subtotal + totalTax;
   const paymentsApplied = invoice.payments
     .filter((p) => p.status === 'Completed')
     .reduce((s, p) => s + p.amount, 0);
-  const balanceDue = total - paymentsApplied;
+  const balanceDue = invoice.balanceCents ?? (total - paymentsApplied);
+
+  const busy = (key: string) => actionLoading === key;
 
   return (
     <div style={st.page}>
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          ...st.toast,
+          backgroundColor: toast.type === 'success' ? '#1B5E20' : '#B71C1C',
+          color: '#FFFFFF',
+        }}>
+          {toast.message}
+        </div>
+      )}
+
       {/* Back */}
       <button style={st.backBtn} onClick={() => navigate('/billing')}>
         <ArrowLeft size={16} /> Back to Billing
@@ -226,18 +425,45 @@ export default function InvoiceDetail() {
         </div>
         <div style={st.actions}>
           {invoice.status === 'Draft' && (
-            <button style={st.btnPrimary}><CheckCircle size={14} /> Finalize</button>
+            <button
+              style={{ ...st.btnPrimary, opacity: busy('finalize') ? 0.7 : 1 }}
+              onClick={handleFinalize}
+              disabled={busy('finalize')}
+            >
+              <CheckCircle size={14} /> {busy('finalize') ? 'Finalizing…' : 'Finalize'}
+            </button>
           )}
           {(invoice.status === 'Issued' || invoice.status === 'Past Due') && (
             <>
-              <button style={st.btnSecondary}><Send size={14} /> Send</button>
+              <button
+                style={{ ...st.btnSecondary, opacity: busy('send') ? 0.7 : 1 }}
+                onClick={handleSend}
+                disabled={busy('send')}
+              >
+                <Send size={14} /> {busy('send') ? 'Sending…' : 'Send'}
+              </button>
               <button style={st.btnPrimary} onClick={() => setShowPayment(true)}>
                 <DollarSign size={14} /> Record Payment
               </button>
             </>
           )}
+          {invoice.status !== 'Void' && (
+            <button
+              style={{ ...st.btnSecondary, opacity: busy('pdf') ? 0.7 : 1 }}
+              onClick={handleDownloadPdf}
+              disabled={busy('pdf')}
+            >
+              <Download size={14} /> Download PDF
+            </button>
+          )}
           {invoice.status !== 'Void' && invoice.status !== 'Paid' && (
-            <button style={st.btnDestructive}><Ban size={14} /> Void</button>
+            <button
+              style={{ ...st.btnDestructive, opacity: busy('void') ? 0.7 : 1 }}
+              onClick={handleVoid}
+              disabled={busy('void')}
+            >
+              <Ban size={14} /> {busy('void') ? 'Voiding…' : 'Void'}
+            </button>
           )}
         </div>
       </div>
@@ -247,7 +473,7 @@ export default function InvoiceDetail() {
       <div style={st.metaRow}>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Issued</div>
-          <div style={st.metaValue}>{formatDate(invoice.issued)}</div>
+          <div style={st.metaValue}>{invoice.issued ? formatDate(invoice.issued) : '—'}</div>
         </div>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Due</div>
@@ -255,8 +481,14 @@ export default function InvoiceDetail() {
         </div>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Terms</div>
-          <div style={st.metaValue}>{invoice.terms}</div>
+          <div style={st.metaValue}>{invoice.terms ?? '—'}</div>
         </div>
+        {invoice.customerEmail && (
+          <div style={st.metaItem}>
+            <div style={st.metaLabel as React.CSSProperties}>Customer Email</div>
+            <div style={st.metaValue}>{invoice.customerEmail}</div>
+          </div>
+        )}
       </div>
 
       {/* Line Items */}
@@ -275,16 +507,19 @@ export default function InvoiceDetail() {
               </tr>
             </thead>
             <tbody>
-              {invoice.lines.map((line, idx) => (
-                <tr key={idx} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
-                  <td style={st.td}>{line.description}</td>
-                  <td style={st.tdRight}>{line.qty}</td>
-                  <td style={st.tdRight}>{formatCents(line.unitPrice)}</td>
-                  <td style={st.tdRight}>{line.discount > 0 ? `(${formatCents(line.discount)})` : '--'}</td>
-                  <td style={st.tdRight}>{formatCents(lineTax(line))}</td>
-                  <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(lineTotal(line) + lineTax(line))}</td>
-                </tr>
-              ))}
+              {invoice.lines.map((line, idx) => {
+                const ext = line.qty * line.unitPrice - line.discount;
+                return (
+                  <tr key={idx} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
+                    <td style={st.td}>{line.description}</td>
+                    <td style={st.tdRight}>{line.qty}</td>
+                    <td style={st.tdRight}>{formatCents(line.unitPrice)}</td>
+                    <td style={st.tdRight}>{line.discount > 0 ? `(${formatCents(line.discount)})` : '--'}</td>
+                    <td style={st.tdRight}>{formatCents(line.taxCents)}</td>
+                    <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(ext + line.taxCents)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -296,12 +531,12 @@ export default function InvoiceDetail() {
               <span>Subtotal</span>
               <span style={{ ...mono, fontWeight: 600, color: '#0A2342' }}>{formatCents(subtotal)}</span>
             </div>
-            {invoice.taxJurisdictions.map((tj) => (
-              <div key={tj.name} style={st.totalsRow}>
-                <span>{tj.name}</span>
-                <span style={{ ...mono, fontSize: '13px' }}>{formatCents(tj.amount)}</span>
+            {totalTax > 0 && (
+              <div style={st.totalsRow}>
+                <span>Tax</span>
+                <span style={{ ...mono, fontSize: '13px' }}>{formatCents(totalTax)}</span>
               </div>
-            ))}
+            )}
             <div style={{ ...st.totalsRow, fontWeight: 600, color: '#0A2342' }}>
               <span>Total</span>
               <span style={mono}>{formatCents(total)}</span>
@@ -343,7 +578,7 @@ export default function InvoiceDetail() {
               <tbody>
                 {invoice.payments.map((p, idx) => (
                   <tr key={p.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
-                    <td style={st.td}>{formatDate(p.date)}</td>
+                    <td style={st.td}>{p.date ? formatDate(p.date) : '—'}</td>
                     <td style={st.td}>{p.method}</td>
                     <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(p.amount)}</td>
                     <td style={st.td}>
@@ -364,33 +599,35 @@ export default function InvoiceDetail() {
       </div>
 
       {/* GL Entries */}
-      <div style={st.section}>
-        <div style={st.sectionTitle}><BookOpen size={18} /> Journal Entries</div>
-        <div style={st.tableWrap} className="helm-table-wrap">
-          <table style={st.table}>
-            <thead>
-              <tr>
-                <th style={st.th}>Date</th>
-                <th style={st.th}>Account</th>
-                <th style={st.th}>Description</th>
-                <th style={st.thRight}>Debit</th>
-                <th style={st.thRight}>Credit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoice.glEntries.map((gl, idx) => (
-                <tr key={idx} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
-                  <td style={st.td}>{formatDate(gl.date)}</td>
-                  <td style={{ ...st.td, ...mono, fontSize: '13px' }}>{gl.account}</td>
-                  <td style={st.td}>{gl.description}</td>
-                  <td style={st.tdRight}>{gl.debit > 0 ? formatCents(gl.debit) : '--'}</td>
-                  <td style={st.tdRight}>{gl.credit > 0 ? formatCents(gl.credit) : '--'}</td>
+      {invoice.glEntries.length > 0 && (
+        <div style={st.section}>
+          <div style={st.sectionTitle}><BookOpen size={18} /> Journal Entries</div>
+          <div style={st.tableWrap} className="helm-table-wrap">
+            <table style={st.table}>
+              <thead>
+                <tr>
+                  <th style={st.th}>Date</th>
+                  <th style={st.th}>Account</th>
+                  <th style={st.th}>Description</th>
+                  <th style={st.thRight}>Debit</th>
+                  <th style={st.thRight}>Credit</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {invoice.glEntries.map((gl, idx) => (
+                  <tr key={idx} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
+                    <td style={st.td}>{formatDate(gl.date)}</td>
+                    <td style={{ ...st.td, ...mono, fontSize: '13px' }}>{gl.account}</td>
+                    <td style={st.td}>{gl.description}</td>
+                    <td style={st.tdRight}>{gl.debit > 0 ? formatCents(gl.debit) : '--'}</td>
+                    <td style={st.tdRight}>{gl.credit > 0 ? formatCents(gl.credit) : '--'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Payment Modal */}
       {showPayment && id && (
@@ -402,8 +639,7 @@ export default function InvoiceDetail() {
           onClose={() => setShowPayment(false)}
           onPaid={() => {
             setShowPayment(false);
-            // Refresh invoice data after payment; existing useApi hooks
-            // rehydrate on next navigation.
+            refetchInvoice();
           }}
         />
       )}

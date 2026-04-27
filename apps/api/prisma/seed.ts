@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { seedTiers } from './seed/tiers.js';
 import { seedTenantAndUsers } from './seed/tenant.js';
 import { seedGlAccounts } from './seed/gl-accounts.js';
+import { seedLocations } from './seed/locations.js';
 import { seedSlips } from './seed/slips.js';
 import { seedCustomersAndBoats } from './seed/customers.js';
 import { seedContracts } from './seed/contracts.js';
@@ -26,6 +27,9 @@ async function main() {
 
   const glAccounts = await seedGlAccounts(prisma, tenant.id);
   console.log(`  ✓ ${glAccounts.length} GL accounts`);
+
+  const locations = await seedLocations(prisma, tenant.id);
+  console.log(`  ✓ ${locations.length} locations`);
 
   const slips = await seedSlips(prisma, tenant.id);
   console.log(`  ✓ ${slips.length} slips across 3 docks`);

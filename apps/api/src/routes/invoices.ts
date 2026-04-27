@@ -724,17 +724,24 @@ router.post(
         );
       }
 
-      // Queue email
+      // Queue email — format must match what the email worker expects
+      const customerName = `${invoice.customer.firstName} ${invoice.customer.lastName}`.trim();
+      const amountFormatted = `$${(invoice.totalCents / 100).toFixed(2)}`;
+      const dueDateFormatted = new Date(invoice.dueDate).toLocaleDateString("en-US", {
+        month: "long", day: "numeric", year: "numeric",
+      });
+      const portalUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/portal/invoices/${invoice.id}`;
       await queues.email.add("send-invoice", {
+        type: "invoice",
+        to: invoice.customer.email,
         tenantId,
-        invoiceId: invoice.id,
-        invoiceNumber: invoice.invoiceNumber,
-        customerId: invoice.customer.id,
-        customerEmail: invoice.customer.email,
-        customerName: `${invoice.customer.firstName} ${invoice.customer.lastName}`,
-        totalCents: invoice.totalCents,
-        dueDate: invoice.dueDate.toISOString(),
-        pdfUrl: invoice.pdfUrl,
+        data: {
+          customerName,
+          invoiceNumber: invoice.invoiceNumber,
+          amount: amountFormatted,
+          dueDate: dueDateFormatted,
+          portalUrl,
+        },
       });
 
       // Audit log
