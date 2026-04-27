@@ -4,7 +4,7 @@ export async function seedLocations(prisma: PrismaClient, tenantId: string) {
   const existing = await prisma.location.findMany({ where: { tenantId } });
   if (existing.length > 0) return existing;
 
-  const locations = await Promise.all([
+  return Promise.all([
     prisma.location.create({
       data: {
         tenantId,
@@ -45,15 +45,4 @@ export async function seedLocations(prisma: PrismaClient, tenantId: string) {
       },
     }),
   ]);
-
-  // Distribute existing slips across locations
-  const slips = await prisma.slip.findMany({ where: { tenantId }, select: { id: true, dockId: true } });
-  for (const slip of slips) {
-    let locationId = locations[0].id;
-    if (slip.dockId === 'B') locationId = locations[1].id;
-    else if (slip.dockId === 'C') locationId = locations[2].id;
-    await prisma.slip.update({ where: { id: slip.id }, data: { locationId } });
-  }
-
-  return locations;
 }

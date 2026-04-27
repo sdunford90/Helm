@@ -1,8 +1,20 @@
 import type { PrismaClient } from '@prisma/client';
 
 export async function seedTenantAndUsers(prisma: PrismaClient, tierId: string) {
-  await prisma.user.deleteMany();
-  await prisma.tenant.deleteMany();
+  // Wipe all user-data tables in one shot — dynamically so we never miss a table
+  // Exclude system/lookup tables: saas_tiers, _prisma_migrations, tax_jurisdictions, tax_rates
+  const EXCLUDE = new Set(['_prisma_migrations', 'saas_tiers', 'tax_jurisdictions', 'tax_rates']);
+  const tables = await prisma.$queryRaw<{ tablename: string }[]>`
+    SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename
+  `;
+  const toTruncate = tables
+    .map((t) => t.tablename)
+    .filter((t) => !EXCLUDE.has(t))
+    .map((t) => `"${t}"`)
+    .join(', ');
+  if (toTruncate) {
+    await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${toTruncate} RESTART IDENTITY CASCADE`);
+  }
 
   const tenant = await prisma.tenant.create({
     data: {

@@ -1,17 +1,21 @@
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient, Location } from '@prisma/client';
 
-export async function seedRentals(prisma: PrismaClient, tenantId: string, customers: any[]) {
+export async function seedRentals(prisma: PrismaClient, tenantId: string, customers: any[], locations: Location[]) {
   await prisma.reservation.deleteMany({ where: { tenantId } });
   await prisma.pricingRule.deleteMany({ where: { rentalProduct: { tenantId } } });
   await prisma.rentalProduct.deleteMany({ where: { tenantId } });
 
+  const mainId = locations[0]?.id;
+  const northId = locations[1]?.id ?? mainId;
+  const southId = locations[2]?.id ?? mainId;
+
   const products = await Promise.all([
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Bay Cruiser 24', description: '24ft pontoon boat, perfect for families', durationType: 'HOURLY', basePriceCents: 8500, floorPriceCents: 6000, ceilingPriceCents: 15000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Wave Runner Pro', description: 'High-performance jet ski', durationType: 'HOURLY', basePriceCents: 6500, floorPriceCents: 4500, ceilingPriceCents: 12000, damageWaiverCents: 1500, depositCents: 30000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Harbor Explorer', description: 'Tandem kayak for harbor touring', durationType: 'HOURLY', basePriceCents: 2500, floorPriceCents: 1500, ceilingPriceCents: 5000, damageWaiverCents: 0, depositCents: 0, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Sunset Sailor 28', description: '28ft sailboat with full rigging', durationType: 'HOURLY', basePriceCents: 9500, floorPriceCents: 7000, ceilingPriceCents: 18000, damageWaiverCents: 3500, depositCents: 75000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Fishing Charter 30', description: '30ft center console with fishing gear', durationType: 'HOURLY', basePriceCents: 12000, floorPriceCents: 9000, ceilingPriceCents: 20000, damageWaiverCents: 3000, depositCents: 60000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, name: 'Family Pontoon 28', description: 'Large pontoon for groups up to 12', durationType: 'HOURLY', basePriceCents: 11000, floorPriceCents: 8000, ceilingPriceCents: 18000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Bay Cruiser 24', description: '24ft pontoon boat, perfect for families', durationType: 'HOURLY', basePriceCents: 8500, floorPriceCents: 6000, ceilingPriceCents: 15000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Wave Runner Pro', description: 'High-performance jet ski', durationType: 'HOURLY', basePriceCents: 6500, floorPriceCents: 4500, ceilingPriceCents: 12000, damageWaiverCents: 1500, depositCents: 30000, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: southId, name: 'Harbor Explorer', description: 'Tandem kayak for harbor touring', durationType: 'HOURLY', basePriceCents: 2500, floorPriceCents: 1500, ceilingPriceCents: 5000, damageWaiverCents: 0, depositCents: 0, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: northId, name: 'Sunset Sailor 28', description: '28ft sailboat with full rigging', durationType: 'HOURLY', basePriceCents: 9500, floorPriceCents: 7000, ceilingPriceCents: 18000, damageWaiverCents: 3500, depositCents: 75000, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Fishing Charter 30', description: '30ft center console with fishing gear', durationType: 'HOURLY', basePriceCents: 12000, floorPriceCents: 9000, ceilingPriceCents: 20000, damageWaiverCents: 3000, depositCents: 60000, active: true } }),
+    prisma.rentalProduct.create({ data: { tenantId, locationId: southId, name: 'Family Pontoon 28', description: 'Large pontoon for groups up to 12', durationType: 'HOURLY', basePriceCents: 11000, floorPriceCents: 8000, ceilingPriceCents: 18000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
   ]);
 
   // Pricing rules

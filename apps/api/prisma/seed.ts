@@ -28,10 +28,12 @@ async function main() {
   const glAccounts = await seedGlAccounts(prisma, tenant.id);
   console.log(`  ✓ ${glAccounts.length} GL accounts`);
 
+  // Locations must come before slips, rentals, pos, leads, and operations
   const locations = await seedLocations(prisma, tenant.id);
   console.log(`  ✓ ${locations.length} locations`);
 
-  const slips = await seedSlips(prisma, tenant.id);
+  // Slips now receive locations so they can be assigned inline
+  const slips = await seedSlips(prisma, tenant.id, locations);
   console.log(`  ✓ ${slips.length} slips across 3 docks`);
 
   const { customers, boats } = await seedCustomersAndBoats(prisma, tenant.id);
@@ -45,19 +47,19 @@ async function main() {
   console.log(`  ✓ ${invoices.length} invoices`);
   console.log(`  ✓ ${payments.length} payments`);
 
-  const { leads, waitlist } = await seedLeadsAndWaitlist(prisma, tenant.id);
+  const { leads, waitlist } = await seedLeadsAndWaitlist(prisma, tenant.id, locations);
   console.log(`  ✓ ${leads.length} leads`);
   console.log(`  ✓ ${waitlist.length} waitlist entries`);
 
-  const { products: rentalProducts, reservations } = await seedRentals(prisma, tenant.id, customers);
+  const { products: rentalProducts, reservations } = await seedRentals(prisma, tenant.id, customers, locations);
   console.log(`  ✓ ${rentalProducts.length} rental products`);
   console.log(`  ✓ ${reservations.length} reservations`);
 
-  const { products: posProducts, transactions } = await seedPosAndInventory(prisma, tenant.id, users);
+  const { products: posProducts, transactions } = await seedPosAndInventory(prisma, tenant.id, users, locations);
   console.log(`  ✓ ${posProducts.length} POS products`);
   console.log(`  ✓ ${transactions.length} POS transactions`);
 
-  const { walks, announcements } = await seedOperations(prisma, tenant.id, users, slips, customers);
+  const { walks, announcements } = await seedOperations(prisma, tenant.id, users, slips, customers, locations);
   console.log(`  ✓ ${walks.length} dock walks`);
   console.log(`  ✓ ${announcements.length} announcements`);
 

@@ -1,6 +1,6 @@
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient, Location } from '@prisma/client';
 
-export async function seedOperations(prisma: PrismaClient, tenantId: string, users: any[], slips: any[], customers?: any[]) {
+export async function seedOperations(prisma: PrismaClient, tenantId: string, users: any[], slips: any[], customers?: any[], locations?: Location[]) {
   await prisma.dockWalkItem.deleteMany({ where: { dockWalk: { tenantId } } });
   await prisma.dockWalk.deleteMany({ where: { tenantId } });
   await prisma.pumpOut.deleteMany({ where: { tenantId } });
@@ -112,6 +112,7 @@ export async function seedOperations(prisma: PrismaClient, tenantId: string, use
   }));
 
   // ── Ramp tickets ──────────────────────────────────────────────────────────
+  const mainLocationId = locations?.[0]?.id;
   const rampDays = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10];
   const rampTypes = ['SINGLE_LAUNCH', 'SINGLE_LAUNCH', 'SINGLE_LAUNCH', 'DAILY_PASS', 'SINGLE_LAUNCH', 'DAILY_PASS', 'SINGLE_LAUNCH', 'SINGLE_LAUNCH', 'DAILY_PASS', 'SEASONAL_PASS', 'SINGLE_LAUNCH', 'SEASONAL_PASS', 'SINGLE_LAUNCH', 'DAILY_PASS', 'SINGLE_LAUNCH'];
   const rampAmounts: Record<string, number> = { SINGLE_LAUNCH: 2500, DAILY_PASS: 4500, SEASONAL_PASS: 24900 };
@@ -124,6 +125,7 @@ export async function seedOperations(prisma: PrismaClient, tenantId: string, use
     return prisma.rampTicket.create({
       data: {
         tenantId,
+        locationId: mainLocationId,
         ticketType,
         guestName: cust ? null : rampGuests[i],
         customerId: cust?.id ?? null,
