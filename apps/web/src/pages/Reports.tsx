@@ -229,6 +229,7 @@ export default function Reports() {
   const [scheduleFrequency, setScheduleFrequency] = useState<'Daily' | 'Weekly' | 'Monthly'>('Weekly');
   const [scheduleFormat, setScheduleFormat] = useState<ScheduleFormat>('CSV');
   const [scheduleRecipients, setScheduleRecipients] = useState('');
+  const [scheduleStatus, setScheduleStatus] = useState<'Active' | 'Paused'>('Active');
   const [scheduleSaving, setScheduleSaving] = useState(false);
 
   const { getToken } = useAuth();
@@ -259,12 +260,14 @@ export default function Reports() {
       setScheduleRecipients(
         Array.isArray(existing.recipients) ? existing.recipients.join(', ') : existing.recipients,
       );
+      setScheduleStatus(existing.status);
     } else {
       setEditingScheduleId(null);
       setScheduleReportId(reportCards[0].id);
       setScheduleFrequency('Weekly');
       setScheduleFormat('CSV');
       setScheduleRecipients('');
+      setScheduleStatus('Active');
     }
     setScheduleModalOpen(true);
   };
@@ -283,7 +286,7 @@ export default function Reports() {
       if (editingScheduleId) {
         await api.put(
           `/api/reports/schedules/${editingScheduleId}`,
-          { frequency: scheduleFrequency, format: scheduleFormat, recipients: emails },
+          { frequency: scheduleFrequency, format: scheduleFormat, recipients: emails, status: scheduleStatus },
           token,
         );
         toast.success('Schedule updated', `${card.title} updated — next run recalculated`);
@@ -851,6 +854,43 @@ export default function Reports() {
               />
               <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#94A3B8' }}>Separate multiple emails with commas</p>
             </div>
+
+            {editingScheduleId && (
+              <div style={{ ...styles.formGroup, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: '8px', border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>Schedule Status</p>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#94A3B8' }}>
+                    {scheduleStatus === 'Active' ? 'Reports are being delivered on schedule' : 'Report delivery is paused'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => setScheduleStatus('Active')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '5px',
+                      padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', cursor: 'pointer',
+                      border: scheduleStatus === 'Active' ? '2px solid #059669' : '1px solid #E2E8F0',
+                      backgroundColor: scheduleStatus === 'Active' ? 'rgba(16,185,129,0.1)' : '#FFFFFF',
+                      color: scheduleStatus === 'Active' ? '#059669' : '#64748B',
+                    }}
+                  >
+                    <Play size={11} /> Active
+                  </button>
+                  <button
+                    onClick={() => setScheduleStatus('Paused')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '5px',
+                      padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', cursor: 'pointer',
+                      border: scheduleStatus === 'Paused' ? '2px solid #D97706' : '1px solid #E2E8F0',
+                      backgroundColor: scheduleStatus === 'Paused' ? 'rgba(245,158,11,0.1)' : '#FFFFFF',
+                      color: scheduleStatus === 'Paused' ? '#D97706' : '#64748B',
+                    }}
+                  >
+                    <Pause size={11} /> Paused
+                  </button>
+                </div>
+              </div>
+            )}
 
             <button
               style={{ ...styles.btnGenerateModal, opacity: scheduleSaving ? 0.7 : 1 }}
