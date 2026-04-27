@@ -247,9 +247,9 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
 /* ── Card-Not-Present inner form (must be inside Elements) ── */
 
 function CnpForm({
-  total, amountCents, onBack, onComplete, apiCall,
+  total, onBack, onComplete, apiCall,
 }: {
-  total: number; amountCents: number; onBack: () => void; onComplete: (method: string) => void;
+  total: number; onBack: () => void; onComplete: (method: string) => void;
   apiCall: (method: string, path: string, body?: unknown) => Promise<any>;
 }) {
   const stripe = useStripe();
@@ -266,7 +266,8 @@ function CnpForm({
       if (!cardEl) throw new Error('Card element not found');
       const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
       if (pmErr) throw new Error(pmErr.message ?? 'Card error');
-      await apiCall('POST', '/api/pos/payments/cnp', { amountCents, paymentMethodId: paymentMethod!.id });
+      const chargeAmountCents = Math.round(total * 100);
+      await apiCall('POST', '/api/pos/payments/cnp', { amountCents: chargeAmountCents, paymentMethodId: paymentMethod!.id });
       onComplete('Card Not Present');
     } catch (err: any) {
       setCnpError((err as Error).message ?? 'Payment failed');
@@ -407,7 +408,8 @@ function CardPaymentModal({
 
   const handlePrintReceipt = useCallback(() => {
     printReceipt({ cartItems, total, paymentMethod: 'Card Not Present' });
-  }, [cartItems, total]);
+    onClose();
+  }, [cartItems, total, onClose]);
 
   useEffect(() => { void discoverReaders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -539,7 +541,6 @@ function CardPaymentModal({
             <Elements stripe={getStripe()}>
               <CnpForm
                 total={total}
-                amountCents={amountCents}
                 onBack={() => setStatus('readers')}
                 onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
                 apiCall={apiCall}
@@ -592,6 +593,7 @@ function PaymentModal({
 
   const handlePrintReceipt = () => {
     printReceipt({ cartItems, total, paymentMethod: method, change });
+    onClose();
   };
 
   return (
@@ -909,6 +911,7 @@ function printReceipt({
   ${footer}
   </body></html>`);
   win.document.close();
+  win.onafterprint = () => win.close();
   win.print();
 }
 
