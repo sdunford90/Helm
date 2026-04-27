@@ -314,71 +314,119 @@ const st: Record<string, React.CSSProperties> = {
   },
 };
 
-// Boats are fetched per-customer via the API inside the modal
-const CUSTOMER_BOATS: Record<string, { id: string; name: string }[]> = {};
+/* ── API types ─────────────────────────────────────────────── */
+
+interface ApiBoat { id: string; name: string; }
+interface ApiCustomer { id: string; firstName: string; lastName: string; email: string | null; boats: ApiBoat[]; }
+interface ApiSlip { id: string; slipNumber: string; dockId: string; status: string; }
+interface ApiContract {
+  id: string;
+  status: string;
+  rateCents: number;
+  billingCycle: string;
+  startDate: string;
+  endDate: string | null;
+  autoRenew: boolean;
+  securityDepositCents: number | null;
+  esignEnvelopeId: string | null;
+  signedAt: string | null;
+  slip: { id: string; slipNumber: string; dockId: string };
+  customer: { id: string; firstName: string; lastName: string; email?: string | null };
+  boat: { id: string; name: string } | null;
+}
+
+const API_STATUS_MAP: Record<string, ContractStatus> = {
+  DRAFT: 'Draft', ACTIVE: 'Active', EXPIRING: 'Expiring',
+  EXPIRED: 'Expired', TERMINATED: 'Terminated', RENEWED: 'Renewed',
+};
+const API_CYCLE_MAP: Record<string, string> = {
+  MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', SEMI_ANNUAL: 'Semi-Annual', ANNUAL: 'Annual',
+};
+const CYCLE_TO_API: Record<string, string> = {
+  Monthly: 'MONTHLY', Quarterly: 'QUARTERLY', 'Semi-Annual': 'SEMI_ANNUAL', Annual: 'ANNUAL',
+};
+
+function mapApiContract(c: ApiContract): Contract {
+  let signatureStatus: SignatureStatus | null = null;
+  if (c.signedAt) signatureStatus = 'signed';
+  else if (c.esignEnvelopeId) signatureStatus = 'pending';
+
+  return {
+    id: c.id,
+    number: c.id.slice(0, 8).toUpperCase(),
+    customer: [c.customer.firstName, c.customer.lastName].filter(Boolean).join(' '),
+    customerEmail: c.customer.email ?? '',
+    slip: c.slip.slipNumber,
+    rate: c.rateCents / 100,
+    billingCycle: API_CYCLE_MAP[c.billingCycle] ?? c.billingCycle,
+    start: c.startDate ? c.startDate.split('T')[0] : '',
+    end: c.endDate ? c.endDate.split('T')[0] : '',
+    status: API_STATUS_MAP[c.status] ?? 'Active',
+    boat: c.boat?.id ?? '',
+    boatName: c.boat?.name ?? '',
+    securityDeposit: (c.securityDepositCents ?? 0) / 100,
+    autoRenew: c.autoRenew,
+    signatureStatus,
+  };
+}
 
 /* ── Contract Form Modal ─────────────────────────────────── */
 
-function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
-  const [autoRenew, setAutoRenew] = useState(false);
-  const [customer, setCustomer] = useState('');
-  const [slip, setSlip] = useState('');
-  const [boat, setBoat] = useState('');
-  const [product, setProduct] = useState('');
+function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => Promise<unknown> }) {
+  const [customerId, setCustomerId] = useState('');
+  const [slipId, setSlipId] = useState('');
+  const [boatId, setBoatId] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [rate, setRate] = useState('');
   const [deposit, setDeposit] = useState('');
+  const [autoRenew, setAutoRenew] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const { data: productsData } = useApi<{ data: { id: string; name: string; priceCents: number }[]; total: number }>(
-    'get', '/api/inventory/products?take=100&sortBy=name&sortOrder=asc', { immediate: true },
+  const { data: customersResp, loading: loadingCustomers } = useApi<{ data: ApiCustomer[] }>(
+    'get', '/api/customers?take=200&sortBy=lastName&sortOrder=asc', { immediate: true },
   );
-  const catalogProducts = (productsData?.data ?? []).map((p) => ({
-    id: p.id,
-    name: p.name,
-    rate: p.priceCents / 100,
-    label: `${p.name} - $${(p.priceCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}/mo`,
-  }));
+  const { data: slipsResp, loading: loadingSlips } = useApi<{ data: ApiSlip[] }>(
+    'get', '/api/slips?take=200', { immediate: true },
+  );
 
-  const availableBoats = customer ? (CUSTOMER_BOATS[customer] || []) : [];
-
-  const handleProductChange = (productId: string) => {
-    setProduct(productId);
-    const prod = catalogProducts.find((p) => p.id === productId);
-    if (prod) {
-      setRate(String(prod.rate));
-    }
-  };
+  const customers = customersResp?.data ?? [];
+  const slips = slipsResp?.data ?? [];
+  const selectedCustomer = customers.find((c) => c.id === customerId);
+  const availableBoats = selectedCustomer?.boats ?? [];
 
   const handleCustomerChange = (val: string) => {
-    setCustomer(val);
-    setBoat('');
+    setCustomerId(val);
+    setBoatId('');
   };
 
   const handleSave = async () => {
-    if (!customer || !slip || !boat || !startDate || !endDate || !rate) {
-      setError('Please fill in all required fields.');
+    if (!customerId || !slipId || !startDate || !rate) {
+      setError('Please fill in Customer, Slip, Start Date, and Rate.');
       return;
     }
     setError('');
     setSaving(true);
-    await onSave?.({
-      customerId: customer,
-      slipNumber: slip,
-      boatId: boat,
-      productId: product || undefined,
-      billingCycle,
-      startDate,
-      endDate,
-      rateCents: Math.round(parseFloat(rate) * 100),
-      depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
-      autoRenew,
-    });
-    setSaving(false);
-    onClose();
+    try {
+      await onSave?.({
+        customerId,
+        slipId,
+        boatId: boatId || undefined,
+        billingCycle: CYCLE_TO_API[billingCycle] ?? 'MONTHLY',
+        startDate,
+        endDate: endDate || undefined,
+        rateCents: Math.round(parseFloat(rate) * 100),
+        securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
+        autoRenew,
+      });
+      onClose();
+    } catch {
+      setError('Failed to create contract. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -393,50 +441,33 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
           <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Customer *</label>
-              <select style={st.formSelect} value={customer} onChange={(e) => handleCustomerChange(e.target.value)}>
-                <option value="">Select customer...</option>
-                <option value="james-harborview">James Harborview</option>
-                <option value="maria-seabreeze">Maria Seabreeze</option>
-                <option value="robert-dockside">Robert Dockside</option>
-                <option value="susan-baywatch">Susan Baywatch</option>
-                <option value="david-tidewater">David Tidewater</option>
-                <option value="elena-windward">Elena Windward</option>
+              <select style={st.formSelect} value={customerId} onChange={(e) => handleCustomerChange(e.target.value)} disabled={loadingCustomers}>
+                <option value="">{loadingCustomers ? 'Loading...' : 'Select customer...'}</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>{c.firstName} {c.lastName}</option>
+                ))}
               </select>
             </div>
             <div style={st.field}>
               <label style={st.label}>Slip *</label>
-              <select style={st.formSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
-                <option value="">Select slip...</option>
-                <option value="A-01">A-01</option>
-                <option value="A-02">A-02</option>
-                <option value="A-03">A-03 (Vacant)</option>
-                <option value="A-04">A-04 (Reserved)</option>
-                <option value="B-01">B-01</option>
-                <option value="B-02">B-02 (Maintenance)</option>
-                <option value="B-03">B-03 (Vacant)</option>
-                <option value="C-01">C-01</option>
-                <option value="C-02">C-02 (Vacant)</option>
-                <option value="C-03">C-03 (Vacant)</option>
+              <select style={st.formSelect} value={slipId} onChange={(e) => setSlipId(e.target.value)} disabled={loadingSlips}>
+                <option value="">{loadingSlips ? 'Loading...' : 'Select slip...'}</option>
+                {slips.map((s) => (
+                  <option key={s.id} value={s.id}>{s.slipNumber} ({s.status})</option>
+                ))}
               </select>
             </div>
             <div style={st.field}>
-              <label style={st.label}>Boat *</label>
-              <select style={st.formSelect} value={boat} onChange={(e) => setBoat(e.target.value)} disabled={!customer}>
+              <label style={st.label}>Boat</label>
+              <select style={st.formSelect} value={boatId} onChange={(e) => setBoatId(e.target.value)} disabled={!customerId}>
                 <option value="">Select boat...</option>
                 {availableBoats.map((b) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
               </select>
-              {customer && availableBoats.length === 0 && <span style={{ fontSize: '12px', color: '#64748B' }}>No boats on file for this customer</span>}
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Product (Dockage Rate)</label>
-              <select style={st.formSelect} value={product} onChange={(e) => handleProductChange(e.target.value)}>
-                <option value="">Select product...</option>
-                {catalogProducts.map((p) => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </select>
+              {customerId && availableBoats.length === 0 && (
+                <span style={{ fontSize: '12px', color: '#64748B' }}>No boats on file for this customer</span>
+              )}
             </div>
             <div style={st.field}>
               <label style={st.label}>Billing Cycle *</label>
@@ -445,7 +476,6 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
                 <option value="Quarterly">Quarterly</option>
                 <option value="Semi-Annual">Semi-Annual</option>
                 <option value="Annual">Annual</option>
-                <option value="Seasonal">Seasonal</option>
               </select>
             </div>
             <div style={st.field}>
@@ -453,11 +483,11 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               <input style={st.input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>End Date *</label>
+              <label style={st.label}>End Date</label>
               <input style={st.input} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Rate ($/period) *{product ? ' (from product)' : ''}</label>
+              <label style={st.label}>Rate ($/period) *</label>
               <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={st.field}>
@@ -466,10 +496,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
             </div>
           </div>
           <div style={{ marginTop: '8px' }}>
-            <div
-              style={st.toggleRow}
-              onClick={() => setAutoRenew(!autoRenew)}
-            >
+            <div style={st.toggleRow} onClick={() => setAutoRenew(!autoRenew)}>
               {autoRenew ? (
                 <ToggleRight size={24} style={{ color: '#00D4FF' }} />
               ) : (
@@ -747,12 +774,15 @@ export default function Contracts() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchSending, setBatchSending] = useState(false);
 
-  const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/api/contracts', { immediate: true });
-  const createContract = useApi<Contract>('post', '/api/contracts');
-  const updateContractApi = useApi<Contract>('put', '/api/contracts/update');
-  const transferContractApi = useApi<Contract>('post', '/api/contracts/transfer');
+  const { data: apiResp, loading, error, execute: refetchContracts } = useApi<{ data: ApiContract[]; pagination: { skip: number; take: number; total: number } }>(
+    'get', '/api/contracts?take=100', { immediate: true },
+  );
+  const createContract = useApi<ApiContract>('post', '/api/contracts');
+  const updateContractApi = useApi<ApiContract>('put', '/api/contracts/update');
+  const transferContractApi = useApi<ApiContract>('post', '/api/contracts/transfer');
 
-  const contracts = localContracts.length > 0 ? localContracts : (apiContracts || []);
+  const apiContracts: Contract[] = (apiResp?.data ?? []).map(mapApiContract);
+  const contracts = localContracts.length > 0 ? localContracts : apiContracts;
 
   const handleUpdate = (id: string, changes: Partial<Contract>) => {
     const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);
@@ -1017,7 +1047,19 @@ export default function Contracts() {
         </div>
       )}
 
-      {showForm && <ContractFormModal onClose={() => setShowForm(false)} onSave={(data) => createContract.execute(data)} />}
+      {showForm && (
+        <ContractFormModal
+          onClose={() => setShowForm(false)}
+          onSave={async (data) => {
+            const result = await createContract.execute(data);
+            if (result) {
+              setLocalContracts([]);
+              await refetchContracts();
+            }
+            return result;
+          }}
+        />
+      )}
       {viewingContract && (
         <ContractDetailModal
           contract={viewingContract}
