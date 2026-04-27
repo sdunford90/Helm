@@ -63,11 +63,33 @@ const ACTIONS = ['All', 'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE'];
 
 /* ── Styles ─────────────────────────────────────────────── */
 
+const ACTION_COLOR_DEFAULT = { bg: '#F1F5F9', color: '#475569' };
+
 const actionColors: Record<string, { bg: string; color: string }> = {
-  CREATE: { bg: '#DEF7EC', color: '#03543F' },
-  UPDATE: { bg: '#E0F7FF', color: '#0A2342' },
-  DELETE: { bg: '#FDE8E8', color: '#9B1C1C' },
+  CREATE:        { bg: '#DEF7EC', color: '#03543F' },
+  CREATED:       { bg: '#DEF7EC', color: '#03543F' },
+  UPDATE:        { bg: '#E0F7FF', color: '#0A2342' },
+  UPDATED:       { bg: '#E0F7FF', color: '#0A2342' },
+  DELETE:        { bg: '#FDE8E8', color: '#9B1C1C' },
+  DELETED:       { bg: '#FDE8E8', color: '#9B1C1C' },
+  DEACTIVATED:   { bg: '#FDE8E8', color: '#9B1C1C' },
   STATUS_CHANGE: { bg: '#FFF3CD', color: '#856404' },
+  REFUNDED:      { bg: '#FDE8E8', color: '#9B1C1C' },
+  COMPLETED:     { bg: '#DEF7EC', color: '#03543F' },
+  OPENED:        { bg: '#DEF7EC', color: '#03543F' },
+  CLOSED:        { bg: '#FFF3CD', color: '#856404' },
+  ADJUSTED:      { bg: '#FFF3CD', color: '#856404' },
+  SENT:          { bg: '#E0F7FF', color: '#0A2342' },
+  VOIDED:        { bg: '#FDE8E8', color: '#9B1C1C' },
+  TERMINATED:    { bg: '#FDE8E8', color: '#9B1C1C' },
+  RENEWED:       { bg: '#DEF7EC', color: '#03543F' },
+  CONVERTED:     { bg: '#DEF7EC', color: '#03543F' },
+  FINALIZED:     { bg: '#DEF7EC', color: '#03543F' },
+  CHECKED_IN:    { bg: '#DEF7EC', color: '#03543F' },
+  CHECKED_OUT:   { bg: '#FFF3CD', color: '#856404' },
+  CANCELLED:     { bg: '#FDE8E8', color: '#9B1C1C' },
+  STAGE_CHANGED: { bg: '#FFF3CD', color: '#856404' },
+  MERGE:         { bg: '#E0F7FF', color: '#0A2342' },
 };
 
 const st: Record<string, React.CSSProperties> = {
@@ -211,7 +233,7 @@ export default function AuditLog() {
             )}
             {paged.map((e, idx) => {
               const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-              const ac = actionColors[e.action];
+              const ac = actionColors[e.action] ?? ACTION_COLOR_DEFAULT;
               return (
                 <tr key={e.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedEntry(e)}>
                   <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontSize: '12px', whiteSpace: 'nowrap' }}>{e.timestamp}</td>
@@ -248,7 +270,7 @@ export default function AuditLog() {
             <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B', padding: '4px' }} onClick={() => setSelectedEntry(null)}>✕</button>
           </div>
           <div style={st.detailSection}>
-            <span style={{ ...st.badge, backgroundColor: actionColors[selectedEntry.action].bg, color: actionColors[selectedEntry.action].color }}>{selectedEntry.action}</span>
+            <span style={{ ...st.badge, backgroundColor: (actionColors[selectedEntry.action] ?? ACTION_COLOR_DEFAULT).bg, color: (actionColors[selectedEntry.action] ?? ACTION_COLOR_DEFAULT).color }}>{selectedEntry.action}</span>
           </div>
           <div style={st.detailSection}>
             <div style={st.detailLabel}>Timestamp</div>

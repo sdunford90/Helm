@@ -1022,6 +1022,9 @@ export default function POS() {
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
+  const [recalledTxnData, setRecalledTxnData] = useState<Transaction | null>(null);
+  const [refundLoading, setRefundLoading] = useState(false);
+  const [refundDone, setRefundDone] = useState(false);
   const [achEnabled, setAchEnabled] = useState(true);
 
   useEffect(() => {
@@ -1136,30 +1139,37 @@ export default function POS() {
       await refreshTransactions();
       setCart([]);
       setRecalledTxn(null);
+      setRecalledTxnData(null);
     }
   };
 
   const recallTransaction = (txn: Transaction) => {
-    if (txn.cartItems && txn.cartItems.length > 0) {
-      setCart(txn.cartItems.map((ci) => ({ ...ci })));
-    } else {
-      const recalled: CartItem = {
-        product: {
-          id: `recalled-${txn.id}`,
-          sku: txn.number,
-          name: `Recalled: ${txn.number}`,
-          category: 'Recalled',
-          price: txn.total,
-          taxRate: 0,
-          inStock: 999,
-          reorderPoint: 0,
-        },
-        quantity: 1,
-      };
-      setCart([recalled]);
-    }
+    setRecalledTxnData(txn);
     setRecalledTxn(txn.number);
+    setRefundDone(false);
+    setCart([]);
     setTab('sale');
+  };
+
+  const clearRecall = () => {
+    setRecalledTxn(null);
+    setRecalledTxnData(null);
+    setRefundDone(false);
+    setCart([]);
+  };
+
+  const handleFullRefund = async () => {
+    if (!recalledTxnData) return;
+    setRefundLoading(true);
+    try {
+      await apiCall('POST', `/api/pos/transactions/${recalledTxnData.id}/refund`, {});
+      setRefundDone(true);
+      await refreshTransactions();
+    } catch (err: any) {
+      alert((err as Error).message ?? 'Refund failed');
+    } finally {
+      setRefundLoading(false);
+    }
   };
 
   const loading = loadingProducts || loadingTxns;
@@ -1245,104 +1255,212 @@ export default function POS() {
       {tab === 'sale' && (
         <div style={st.saleLayout}>
           <div>
-            {recalledTxn && <RecallBanner txnNumber={recalledTxn} onClear={() => { setRecalledTxn(null); setCart([]); }} />}
-            <div style={st.searchWrap}>
-              <Search size={16} style={st.searchIcon} />
-              <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-            <div style={st.prodGrid}>
-              {!loadingProducts && posProducts.length === 0 && (
-                <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 24px', color: '#64748B' }}>
-                  <Package size={36} style={{ color: '#CBD5E1', marginBottom: '12px' }} />
-                  <div style={{ fontWeight: 600 }}>No products found</div>
-                  <div style={{ fontSize: '13px', marginTop: '4px', marginBottom: '16px' }}>Add products in inventory to make them available here.</div>
-                  <button
-                    onClick={() => navigate('/inventory')}
-                    style={{ background: '#2E4A6B', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
-                  >
-                    Add Products in Inventory
-                  </button>
-                </div>
-              )}
-              {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
-                  <div key={p.id} style={st.prodCard}
-                    onClick={() => addToCart(p)}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}>
-                    <Package size={24} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
-                    <div style={st.prodName}>{p.name}</div>
-                    <div style={st.prodPrice}>${p.price.toFixed(2)}</div>
-                    <div style={st.prodCat}>{p.category}</div>
+            {recalledTxn && <RecallBanner txnNumber={recalledTxn} onClear={clearRecall} />}
+
+            {/* ── Recalled transaction: read-only detail view ── */}
+            {recalledTxnData ? (
+              <div style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', padding: '24px', minHeight: '300px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+                  <RotateCcw size={18} style={{ color: '#00D4FF' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '16px', color: '#0A2342' }}>Transaction {recalledTxnData.number}</div>
+                    <div style={{ fontSize: '12px', color: '#64748B' }}>{recalledTxnData.date} · {recalledTxnData.method} · Cashier: {recalledTxnData.cashier}</div>
                   </div>
-              ))}
-            </div>
+                </div>
+
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', marginBottom: '16px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #E2E8F0' }}>
+                      <th style={{ textAlign: 'left', padding: '8px 0', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Item</th>
+                      <th style={{ textAlign: 'center', padding: '8px 0', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Qty</th>
+                      <th style={{ textAlign: 'right', padding: '8px 0', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Price</th>
+                      <th style={{ textAlign: 'right', padding: '8px 0', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recalledTxnData.cartItems && recalledTxnData.cartItems.length > 0 ? (
+                      recalledTxnData.cartItems.map((ci) => (
+                        <tr key={ci.product.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                          <td style={{ padding: '10px 0', color: '#0A2342', fontWeight: 500 }}>{ci.product.name}</td>
+                          <td style={{ padding: '10px 0', textAlign: 'center', color: '#64748B' }}>{ci.quantity}</td>
+                          <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' }}>${ci.product.price.toFixed(2)}</td>
+                          <td style={{ padding: '10px 0', textAlign: 'right', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>${(ci.product.price * ci.quantity).toFixed(2)}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} style={{ padding: '20px 0', color: '#94A3B8', textAlign: 'center', fontSize: '13px' }}>No line item details available</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: '2px solid #0A2342' }}>
+                      <td colSpan={3} style={{ padding: '10px 0', fontWeight: 700, color: '#0A2342', textAlign: 'right', paddingRight: '12px' }}>Total</td>
+                      <td style={{ padding: '10px 0', textAlign: 'right', fontFamily: '"JetBrains Mono", monospace', fontWeight: 700, fontSize: '15px', color: '#0A2342' }}>${recalledTxnData.total.toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+
+                {refundDone && (
+                  <div style={{ padding: '12px 16px', background: '#DEF7EC', border: '1px solid #6EE7B7', borderRadius: '8px', color: '#065F46', fontWeight: 600, fontSize: '14px', marginBottom: '12px' }}>
+                    ✓ Refund processed successfully. Transaction marked as refunded.
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* ── Normal product grid ── */
+              <>
+                <div style={st.searchWrap}>
+                  <Search size={16} style={st.searchIcon} />
+                  <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
+                </div>
+                <div style={st.prodGrid}>
+                  {!loadingProducts && posProducts.length === 0 && (
+                    <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 24px', color: '#64748B' }}>
+                      <Package size={36} style={{ color: '#CBD5E1', marginBottom: '12px' }} />
+                      <div style={{ fontWeight: 600 }}>No products found</div>
+                      <div style={{ fontSize: '13px', marginTop: '4px', marginBottom: '16px' }}>Add products in inventory to make them available here.</div>
+                      <button
+                        onClick={() => navigate('/inventory')}
+                        style={{ background: '#2E4A6B', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                      >
+                        Add Products in Inventory
+                      </button>
+                    </div>
+                  )}
+                  {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
+                    <div key={p.id} style={st.prodCard}
+                      onClick={() => addToCart(p)}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}>
+                      <Package size={24} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
+                      <div style={st.prodName}>{p.name}</div>
+                      <div style={st.prodPrice}>${p.price.toFixed(2)}</div>
+                      <div style={st.prodCat}>{p.category}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           <div style={st.cart}>
-            <div style={st.cartHeader}><ShoppingCart size={18} /> Cart ({cartItemCountDisplay} items)</div>
-            {cart.length === 0 ? (
-              <div style={st.emptyCart}>
-                <ShoppingCart size={32} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
-                <div>Cart is empty</div>
-                <div style={{ fontSize: '13px', marginTop: '4px' }}>Click products to add them</div>
-              </div>
-            ) : (
-              <div style={st.cartItems}>
-                {cart.map((item) => (
-                  <div key={item.product.id} style={st.cartItem}>
-                    <div>
-                      <div style={st.cartItemName}>{item.product.name}</div>
-                      <div style={{ fontSize: '12px', color: '#64748B' }}>${item.product.price.toFixed(2)} ea</div>
-                    </div>
-                    <div style={st.qtyControls}>
-                      <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, -1)}><Minus size={14} /></button>
-                      {editingQtyId === item.product.id ? (
-                        <input
-                          style={{ ...st.mono, width: '56px', textAlign: 'center', padding: '2px 4px', fontSize: '14px', border: '1px solid #00D4FF', borderRadius: '4px', outline: 'none' }}
-                          type="number"
-                          step="any"
-                          autoFocus
-                          value={editingQtyValue}
-                          onChange={(e) => setEditingQtyValue(e.target.value)}
-                          onBlur={() => {
-                            const parsed = parseFloat(editingQtyValue);
-                            if (!isNaN(parsed) && parsed > 0) setQtyAbsolute(item.product.id, parsed);
-                            setEditingQtyId(null);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
-                            if (e.key === 'Escape') { setEditingQtyId(null); }
-                          }}
-                        />
-                      ) : (
-                        <span
-                          style={{ ...st.mono, minWidth: '28px', textAlign: 'center', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', background: '#F1F5F9' }}
-                          title="Click to edit quantity"
-                          onClick={() => { setEditingQtyId(item.product.id); setEditingQtyValue(item.quantity.toString()); }}
-                        >
-                          {formatQty(item.quantity)}
-                        </span>
-                      )}
-                      <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, 1)}><Plus size={14} /></button>
-                      <span style={{ ...st.mono, minWidth: '60px', textAlign: 'right' }}>${(item.product.price * item.quantity).toFixed(2)}</span>
-                    </div>
+            {recalledTxnData ? (
+              /* ── Recalled transaction action panel ── */
+              <>
+                <div style={st.cartHeader}><RotateCcw size={18} /> Transaction Actions</div>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px' }}>
+                  <div style={{ width: '100%', textAlign: 'center', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '28px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${recalledTxnData.total.toFixed(2)}</div>
+                    <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>Transaction {recalledTxnData.number}</div>
                   </div>
-                ))}
-              </div>
-            )}
-            <div style={st.cartFooter}>
-              <div style={st.cartRow}><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>
-              <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
-              <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
-              <div style={st.payBtns}>
-                <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card', cartSnapshot: cart })}><CreditCard size={16} /> Card</button>
-                <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
-                {achEnabled && (
-                  <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
+
+                  <button
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '13px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}
+                    onClick={() => {
+                      if (recalledTxnData.cartItems && recalledTxnData.cartItems.length > 0) {
+                        printReceipt({ cartItems: recalledTxnData.cartItems, total: recalledTxnData.total, paymentMethod: recalledTxnData.method });
+                      } else {
+                        alert('No line items available for this transaction to print a receipt.');
+                      }
+                    }}
+                  >
+                    <Printer size={16} /> Print Receipt
+                  </button>
+
+                  {!refundDone && (
+                    <button
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '13px', background: refundLoading ? '#9CA3AF' : '#DC2626', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: refundLoading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 600 }}
+                      onClick={handleFullRefund}
+                      disabled={refundLoading}
+                    >
+                      <RotateCcw size={16} /> {refundLoading ? 'Processing…' : 'Issue Full Refund'}
+                    </button>
+                  )}
+
+                  {refundDone && (
+                    <div style={{ width: '100%', padding: '12px', background: '#DEF7EC', borderRadius: '8px', color: '#065F46', fontWeight: 600, fontSize: '13px', textAlign: 'center' }}>
+                      ✓ Refund issued
+                    </div>
+                  )}
+
+                  <button
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '11px', background: 'none', color: '#64748B', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                    onClick={clearRecall}
+                  >
+                    <X size={14} /> Close & New Sale
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Normal cart ── */
+              <>
+                <div style={st.cartHeader}><ShoppingCart size={18} /> Cart ({cartItemCountDisplay} items)</div>
+                {cart.length === 0 ? (
+                  <div style={st.emptyCart}>
+                    <ShoppingCart size={32} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
+                    <div>Cart is empty</div>
+                    <div style={{ fontSize: '13px', marginTop: '4px' }}>Click products to add them</div>
+                  </div>
+                ) : (
+                  <div style={st.cartItems}>
+                    {cart.map((item) => (
+                      <div key={item.product.id} style={st.cartItem}>
+                        <div>
+                          <div style={st.cartItemName}>{item.product.name}</div>
+                          <div style={{ fontSize: '12px', color: '#64748B' }}>${item.product.price.toFixed(2)} ea</div>
+                        </div>
+                        <div style={st.qtyControls}>
+                          <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, -1)}><Minus size={14} /></button>
+                          {editingQtyId === item.product.id ? (
+                            <input
+                              style={{ ...st.mono, width: '56px', textAlign: 'center', padding: '2px 4px', fontSize: '14px', border: '1px solid #00D4FF', borderRadius: '4px', outline: 'none' }}
+                              type="number"
+                              step="any"
+                              autoFocus
+                              value={editingQtyValue}
+                              onChange={(e) => setEditingQtyValue(e.target.value)}
+                              onBlur={() => {
+                                const parsed = parseFloat(editingQtyValue);
+                                if (!isNaN(parsed) && parsed > 0) setQtyAbsolute(item.product.id, parsed);
+                                setEditingQtyId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
+                                if (e.key === 'Escape') { setEditingQtyId(null); }
+                              }}
+                            />
+                          ) : (
+                            <span
+                              style={{ ...st.mono, minWidth: '28px', textAlign: 'center', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', background: '#F1F5F9' }}
+                              title="Click to edit quantity"
+                              onClick={() => { setEditingQtyId(item.product.id); setEditingQtyValue(item.quantity.toString()); }}
+                            >
+                              {formatQty(item.quantity)}
+                            </span>
+                          )}
+                          <button style={st.qtyBtn} onClick={() => updateQty(item.product.id, 1)}><Plus size={14} /></button>
+                          <span style={{ ...st.mono, minWidth: '60px', textAlign: 'right' }}>${(item.product.price * item.quantity).toFixed(2)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
-                <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart })}><DollarSign size={16} /> Charge to Slip</button>
-              </div>
-            </div>
+                <div style={st.cartFooter}>
+                  <div style={st.cartRow}><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>
+                  <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
+                  <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
+                  <div style={st.payBtns}>
+                    <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card', cartSnapshot: cart })}><CreditCard size={16} /> Card</button>
+                    <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
+                    {achEnabled && (
+                      <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
+                    )}
+                    <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart })}><DollarSign size={16} /> Charge to Slip</button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
