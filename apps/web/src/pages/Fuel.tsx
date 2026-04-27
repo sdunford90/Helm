@@ -388,7 +388,7 @@ export default function Fuel() {
   const { data: typesResp, loading: loadingTypes, execute: refreshTypes } = useApi<{ fuelTypes: ApiFuelType[] }>('get', '/api/fuel/types', { immediate: true });
   const { data: salesResp, loading: loadingSales, execute: refreshSales } = useApi<{ sales: ApiFuelSale[]; total: number }>('get', '/api/fuel/sales', { immediate: true });
   const { data: deliveriesResp, loading: loadingDeliveries, execute: refreshDeliveries } = useApi<{ deliveries: ApiDelivery[]; total: number }>('get', '/api/fuel/deliveries', { immediate: true });
-  const { data: tanksResp } = useApi<{ tanks: ApiTank[] }>('get', '/api/fuel/tank-levels', { immediate: true });
+  const { data: tanksResp, execute: refreshTanks } = useApi<{ tanks: ApiTank[] }>('get', '/api/fuel/tank-levels', { immediate: true });
 
   const { getToken } = useAuth();
   const createSale = useApi<unknown>('post', '/api/fuel/sales');
@@ -426,14 +426,14 @@ export default function Fuel() {
   const handleSaveSale = async (payload: SalePayload): Promise<boolean> => {
     const result = await createSale.execute(payload);
     if (result === null) return false;
-    await Promise.all([refreshSales(), refreshTypes()]);
+    await Promise.all([refreshSales(), refreshTypes(), refreshTanks()]);
     return true;
   };
 
   const handleSaveDelivery = async (payload: DeliveryPayload): Promise<boolean> => {
     const result = await createDelivery.execute(payload);
     if (result === null) return false;
-    await Promise.all([refreshDeliveries(), refreshTypes()]);
+    await Promise.all([refreshDeliveries(), refreshTypes(), refreshTanks()]);
     return true;
   };
 
