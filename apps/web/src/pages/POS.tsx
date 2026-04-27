@@ -493,7 +493,7 @@ export default function POS() {
                     onClick={() => navigate('/inventory')}
                     style={{ background: '#2E4A6B', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
                   >
-                    Go to Inventory
+                    Add Products in Inventory
                   </button>
                 </div>
               )}
