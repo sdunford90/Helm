@@ -97,6 +97,11 @@ QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/onboarding/qbo/callback"
 QBO_ENVIRONMENT = "sandbox"
 VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5KahdUIHyxhrKi20olrMNAMJIz1BIkcWm0vsuqwHn4nnJ9KJPgUA00qCZaC8Mn"
 
+[userenv.development]
+ENABLE_AUTH_DEV_BYPASS = "true"
+NODE_ENV = "development"
+VITE_ENABLE_AUTH_DEV_BYPASS = "true"
+
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000

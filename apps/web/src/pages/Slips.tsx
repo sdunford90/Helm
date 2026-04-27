@@ -354,12 +354,41 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Add Slip Modal ─────────────────────────────────────── */
 
-function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
+function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => Promise<unknown> | void }) {
   const [saved, setSaved] = useState(false);
-  const handleSave = () => {
-    if (onSave) onSave({});
-    setSaved(true);
-    setTimeout(() => { setSaved(false); onClose(); }, 1500);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const [slipNumber, setSlipNumber] = useState('');
+  const [lengthFt, setLengthFt] = useState('');
+  const [beamFt, setBeamFt] = useState('');
+  const [depthFt, setDepthFt] = useState('');
+  const [slipType, setSlipType] = useState('Open');
+  const [shorePower, setShorePower] = useState('30A');
+  const [electricityMode, setElectricityMode] = useState('METERED');
+
+  const handleSave = async () => {
+    if (!slipNumber.trim() || !lengthFt) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const data: Record<string, unknown> = {
+        slipNumber: slipNumber.trim(),
+        lengthFt: Number(lengthFt),
+        ...(beamFt ? { beamFt: Number(beamFt) } : {}),
+        ...(depthFt ? { depthFt: Number(depthFt) } : {}),
+        slipType: slipType || undefined,
+        shorePower: shorePower || undefined,
+        electricityMode: electricityMode || undefined,
+      };
+      if (onSave) await onSave(data);
+      setSaved(true);
+      setTimeout(() => { setSaved(false); onClose(); }, 1500);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to save slip');
+    } finally {
+      setSaving(false);
+    }
   };
   return (
     <div style={st.overlay} onClick={onClose}>
@@ -369,47 +398,35 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
           <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
         </div>
         {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Slip saved successfully!</div>}
+        {saveError && <div style={{ padding: '12px 32px', backgroundColor: '#FDE8E8', color: '#9B1C1C', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>{saveError}</div>}
         <div style={st.modalBody}>
           <div style={st.twoCol} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Slip Number *</label>
-              <input style={st.input} placeholder="e.g. A-05" />
+              <input style={st.input} placeholder="e.g. A-05" value={slipNumber} onChange={(e) => setSlipNumber(e.target.value)} />
             </div>
             <div style={st.field}>
-              <label style={st.label}>Dock *</label>
-              <select style={st.select}>
-                <option value="">Select dock...</option>
-                <option value="A">Dock A</option>
-                <option value="B">Dock B</option>
-                <option value="C">Dock C</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Length (ft)</label>
-              <input style={st.input} type="number" placeholder="40" />
+              <label style={st.label}>Length (ft) *</label>
+              <input style={st.input} type="number" placeholder="40" value={lengthFt} onChange={(e) => setLengthFt(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Beam (ft)</label>
-              <input style={st.input} type="number" placeholder="14" />
+              <input style={st.input} type="number" placeholder="14" value={beamFt} onChange={(e) => setBeamFt(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Draft (ft)</label>
-              <input style={st.input} type="number" placeholder="8" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Height (ft)</label>
-              <input style={st.input} type="number" placeholder="20" />
+              <input style={st.input} type="number" placeholder="8" value={depthFt} onChange={(e) => setDepthFt(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Type</label>
-              <select style={st.select}>
+              <select style={st.select} value={slipType} onChange={(e) => setSlipType(e.target.value)}>
                 <option value="Open">Open</option>
                 <option value="Covered">Covered</option>
               </select>
             </div>
             <div style={st.field}>
-              <label style={st.label}>Power</label>
-              <select style={st.select}>
+              <label style={st.label}>Shore Power</label>
+              <select style={st.select} value={shorePower} onChange={(e) => setShorePower(e.target.value)}>
                 <option value="30A">30A</option>
                 <option value="50A">50A</option>
                 <option value="30A/50A">30A/50A</option>
@@ -418,17 +435,16 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
             </div>
             <div style={st.field}>
               <label style={st.label}>Electricity Mode</label>
-              <select style={st.select}>
-                <option value="Metered">Metered</option>
-                <option value="Flat Rate">Flat Rate</option>
-                <option value="Included">Included</option>
+              <select style={st.select} value={electricityMode} onChange={(e) => setElectricityMode(e.target.value)}>
+                <option value="METERED">Metered</option>
+                <option value="FLAT_FEE">Flat Fee</option>
               </select>
             </div>
           </div>
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={handleSave}>Save Slip</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving || !slipNumber.trim() || !lengthFt}>{saving ? 'Saving...' : 'Save Slip'}</button>
         </div>
       </div>
     </div>

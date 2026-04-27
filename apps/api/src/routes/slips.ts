@@ -497,7 +497,7 @@ router.post(
 
       // Generate a deterministic QR code URL using the slip ID
       // In production this would call a QR code generation service
-      const baseUrl = process.env.APP_BASE_URL ?? "https://app.helmhq.com";
+      const baseUrl = process.env.APP_URL ?? process.env.APP_BASE_URL ?? "https://app.helmhq.com";
       const qrCodeUrl = `${baseUrl}/qr/slip/${slip.id}`;
 
       const updated = await prisma.slip.update({

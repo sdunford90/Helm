@@ -230,7 +230,9 @@ export default function AppLayout() {
     );
   }
 
-  if (!isSignedIn) {
+  const devBypass = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
+
+  if (!isSignedIn && !devBypass) {
     return <RedirectToSignIn />;
   }
 
