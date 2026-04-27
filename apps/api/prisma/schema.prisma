@@ -342,6 +342,7 @@ model Location {
   tenant       Tenant        @relation(fields: [tenantId], references: [id])
   dockageRates DockageRate[]
   serviceFees  ServiceFee[]
+  invoices     Invoice[]
 
   @@index([tenantId])
   @@map("locations")
@@ -703,6 +704,7 @@ model Invoice {
   id            String        @id @default(uuid())
   tenantId      String
   customerId    String
+  locationId    String?
   invoiceNumber String
   issuedDate    DateTime
   dueDate       DateTime
@@ -717,10 +719,12 @@ model Invoice {
   updatedAt     DateTime      @updatedAt
 
   customer  Customer         @relation(fields: [customerId], references: [id])
+  location  Location?        @relation(fields: [locationId], references: [id])
   lineItems InvoiceLineItem[]
   payments  Payment[]
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("invoices")
 }
 

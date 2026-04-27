@@ -368,10 +368,24 @@ router.post(
       const totalCents = subtotalCents + totalTaxCents;
       const invoiceNumber = `INV-${Date.now().toString(36).toUpperCase()}`;
 
+      // Resolve locationId from the first CONTRACT line item → slip → location
+      let locationId: string | null = null;
+      const contractLineItem = data.lineItems.find(
+        (li) => li.sourceType === "CONTRACT" && li.sourceId,
+      );
+      if (contractLineItem?.sourceId) {
+        const contract = await prisma.slipContract.findUnique({
+          where: { id: contractLineItem.sourceId },
+          select: { slip: { select: { locationId: true } } },
+        });
+        locationId = contract?.slip?.locationId ?? null;
+      }
+
       const invoice = await prisma.invoice.create({
         data: {
           tenantId,
           customerId: data.customerId,
+          locationId,
           invoiceNumber,
           issuedDate: data.issuedDate,
           dueDate: data.dueDate,

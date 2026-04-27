@@ -1,9 +1,20 @@
 import type { PrismaClient } from '@prisma/client';
 
-export async function seedInvoicesAndPayments(prisma: PrismaClient, tenantId: string, customers: any[], contracts: any[]) {
+export async function seedInvoicesAndPayments(
+  prisma: PrismaClient,
+  tenantId: string,
+  customers: any[],
+  contracts: any[],
+  slips: any[],
+) {
   await prisma.payment.deleteMany({ where: { tenantId } });
   await prisma.invoiceLineItem.deleteMany({ where: { invoice: { tenantId } } });
   await prisma.invoice.deleteMany({ where: { tenantId } });
+
+  // Build a fast slipId → locationId lookup from the seeded slips
+  const locationBySlipId = new Map<string, string | null>(
+    slips.map((s: any) => [s.id, s.locationId ?? null]),
+  );
 
   const invoices: any[] = [];
   const payments: any[] = [];
@@ -11,6 +22,8 @@ export async function seedInvoicesAndPayments(prisma: PrismaClient, tenantId: st
 
   // Generate 3 months of invoices for each contract
   for (const contract of contracts) {
+    const locationId = locationBySlipId.get(contract.slipId) ?? null;
+
     for (let monthOffset = 2; monthOffset >= 0; monthOffset--) {
       const issued = new Date(2026, 2 - monthOffset, 1); // Jan, Feb, Mar 2026
       const due = new Date(issued); due.setDate(due.getDate() + 30);
@@ -22,6 +35,7 @@ export async function seedInvoicesAndPayments(prisma: PrismaClient, tenantId: st
         data: {
           tenantId,
           customerId: contract.customerId,
+          locationId,
           invoiceNumber: `INV-${invNum++}`,
           issuedDate: issued,
           dueDate: due,

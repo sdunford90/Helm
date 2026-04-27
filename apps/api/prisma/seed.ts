@@ -43,7 +43,7 @@ async function main() {
   const contracts = await seedContracts(prisma, tenant.id, customers, boats, slips);
   console.log(`  ✓ ${contracts.length} slip contracts`);
 
-  const { invoices, payments } = await seedInvoicesAndPayments(prisma, tenant.id, customers, contracts);
+  const { invoices, payments } = await seedInvoicesAndPayments(prisma, tenant.id, customers, contracts, slips);
   console.log(`  ✓ ${invoices.length} invoices`);
   console.log(`  ✓ ${payments.length} payments`);
 
