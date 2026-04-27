@@ -10,7 +10,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 import { loadStripeTerminal } from '@stripe/terminal-js';
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, CardNumberElement, CardExpiryElement, CardCvcElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { getStripe } from '../lib/stripe.js';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -262,9 +262,9 @@ function CnpForm({
     setCnpLoading(true);
     setCnpError('');
     try {
-      const cardEl = elements.getElement(CardElement);
-      if (!cardEl) throw new Error('Card element not found');
-      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
+      const cardNumberEl = elements.getElement(CardNumberElement);
+      if (!cardNumberEl) throw new Error('Card fields not found');
+      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardNumberEl });
       if (pmErr) throw new Error(pmErr.message ?? 'Card error');
       await apiCall('POST', '/api/pos/payments/cnp', { amountCents, paymentMethodId: paymentMethod!.id });
       onComplete('Card Not Present');
@@ -274,6 +274,14 @@ function CnpForm({
     }
   };
 
+  const fieldStyle = {
+    base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#CBD5E1' } },
+    invalid: { color: '#DC2626' },
+  };
+  const fieldBox: React.CSSProperties = {
+    padding: '12px 14px', border: '1px solid #CBD5E1', borderRadius: '8px', background: '#FFFFFF',
+  };
+
   return (
     <>
       <div style={{ textAlign: 'center', marginBottom: '20px' }}>
@@ -281,9 +289,24 @@ function CnpForm({
         <div style={{ fontSize: '38px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
         <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Card Not Present — keyed entry</div>
       </div>
-      <div style={{ padding: '14px 16px', border: '1px solid #CBD5E1', borderRadius: '8px', background: '#FFFFFF', marginBottom: '16px' }}>
-        <CardElement options={{ style: { base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#94A3B8' } } } }} />
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+        <div>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Card Number</div>
+          <div style={fieldBox}><CardNumberElement options={{ style: fieldStyle, showIcon: true }} /></div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Expiration</div>
+            <div style={fieldBox}><CardExpiryElement options={{ style: fieldStyle }} /></div>
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>CVC</div>
+            <div style={fieldBox}><CardCvcElement options={{ style: fieldStyle }} /></div>
+          </div>
+        </div>
       </div>
+
       {cnpError && (
         <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', color: '#DC2626', fontSize: '13px', marginBottom: '14px' }}>
           {cnpError}
@@ -527,7 +550,7 @@ function CardPaymentModal({
 
           {/* ── Card Not Present entry ── */}
           {status === 'cnp' && (
-            <Elements stripe={getStripe()} options={{ paymentMethodCreation: 'manual', wallets: { link: 'never' } } as any}>
+            <Elements stripe={getStripe()}>
               <CnpForm
                 total={total}
                 amountCents={amountCents}
