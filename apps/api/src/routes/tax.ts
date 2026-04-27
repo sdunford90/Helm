@@ -6,6 +6,33 @@ import { clerkAuth, requireRole } from "../middleware/auth.js";
 const router: Router = Router();
 
 router.use(...clerkAuth());
+
+// Read-only: any authenticated tenant user (POS cashiers, etc.) can fetch location tax rates
+router.get(
+  "/locations/:locationId/jurisdictions",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = (req as any).tenantId;
+      const { locationId } = req.params;
+
+      const rows = await prisma.locationTaxJurisdiction.findMany({
+        where: { locationId, tenantId },
+        orderBy: { sortOrder: "asc" },
+        include: {
+          jurisdiction: {
+            include: {
+              rates: { orderBy: { effectiveFrom: "desc" }, take: 5 },
+            },
+          },
+        },
+      });
+      res.json({ data: rows });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.use(requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER", "ACCOUNTING"));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -224,31 +251,6 @@ router.delete(
 );
 
 // ─── Location ↔ Jurisdiction assignments ─────────────────────────────────────
-
-router.get(
-  "/locations/:locationId/jurisdictions",
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const tenantId = (req as any).tenantId;
-      const { locationId } = req.params;
-
-      const rows = await prisma.locationTaxJurisdiction.findMany({
-        where: { locationId, tenantId },
-        orderBy: { sortOrder: "asc" },
-        include: {
-          jurisdiction: {
-            include: {
-              rates: { orderBy: { effectiveFrom: "desc" }, take: 5 },
-            },
-          },
-        },
-      });
-      res.json({ data: rows });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
 
 router.put(
   "/locations/assign",

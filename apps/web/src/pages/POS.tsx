@@ -23,6 +23,7 @@ interface Product {
   category: string;
   price: number;
   taxRate: number;
+  taxClass: string | null;
   inStock: number;
   reorderPoint: number;
   image?: string;
@@ -83,8 +84,6 @@ interface ApiShift {
 
 /* ── API mapping helpers ─────────────────────────────────── */
 
-const TAX_CLASS_RATE: Record<string, number> = { standard: 7, reduced: 3, zero: 0, none: 0 };
-
 function mapApiProduct(p: ApiProduct): Product {
   return {
     id: p.id,
@@ -92,7 +91,8 @@ function mapApiProduct(p: ApiProduct): Product {
     name: p.name,
     category: p.departmentId ?? 'General',
     price: p.priceCents / 100,
-    taxRate: p.taxClass ? (TAX_CLASS_RATE[p.taxClass] ?? 0) : 0,
+    taxRate: 0,
+    taxClass: p.taxClass ?? null,
     inStock: p.inventory?.[0]?.qtyOnHand ?? 0,
     reorderPoint: p.reorderQty ?? 0,
   };
@@ -1233,7 +1233,12 @@ export default function POS() {
   const cartItemCountDisplay = Number.isInteger(cartItemCount) ? cartItemCount.toString() : cartItemCount.toFixed(3).replace(/0+$/, '');
 
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
-  const tax = cart.reduce((s, i) => s + i.product.price * i.quantity * (i.product.taxRate / 100), 0);
+  const tax = cart.reduce((s, i) => {
+    const tc = i.product.taxClass;
+    if (!tc || tc === 'Tax Exempt') return s;
+    const rate = locationTaxRates[tc] ?? 0;
+    return s + i.product.price * i.quantity * (rate / 100);
+  }, 0);
   const total = subtotal + tax;
   const todayPrefix = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const runningTotal = transactions.filter((t) => t.date.startsWith(todayPrefix)).reduce((s, t) => s + t.total, 0) + total;
