@@ -43,11 +43,11 @@ All third-party service credentials are already set in Replit Secrets:
 
 | Service | Secrets configured | Notes |
 |---------|-------------------|-------|
-| **Clerk** | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_WEBHOOK_SECRET`, `VITE_CLERK_PUBLISHABLE_KEY` | Sandbox/dev keys |
+| **Clerk** | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_WEBHOOK_SECRET`, `VITE_CLERK_PUBLISHABLE_KEY` | Dev keys |
 | **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET_PLATFORM`, `STRIPE_WEBHOOK_SECRET_CONNECT`, `VITE_STRIPE_PUBLISHABLE_KEY` | Sandbox keys |
 | **Resend** | `RESEND_API_KEY` | Email delivery |
 | **R2 Storage** | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT`, `R2_PUBLIC_URL` | File uploads |
-| **QuickBooks** | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_WEBHOOK_VERIFIER_TOKEN`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` | Sandbox |
+| **QuickBooks** | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_WEBHOOK_VERIFIER_TOKEN` | Sandbox — see Section 6 for OAuth setup |
 | **Redis** | `REDIS_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Queue/cache |
 
 No credentials need to be added before testing.
@@ -65,21 +65,21 @@ NODE_ENV=development
 With these set:
 - The **API** skips Clerk token verification and automatically uses the first seeded user (Sarah Dunford, `MARINA_OWNER`)
 - The **frontend** skips the Clerk sign-in redirect — the app loads directly without logging in
-- Clerk is still fully configured if you want to test real sign-in (see Section 5)
+- Clerk is still fully configured if you want to test real sign-in (see Section 7)
 
 > **Important:** These flags must never be set in production. The API actively blocks the bypass when `NODE_ENV=production`.
 
 ### 1.5 In-app setup steps required before certain features work
 
-Even though credentials are all in place, some features require completing a one-time setup flow inside the app itself:
+Even though credentials are all in place, some features require completing a one-time setup flow inside the app:
 
 | Feature | Setup step required |
 |---------|-------------------|
-| **Card payments / invoicing** | Settings → Stripe → Connect Stripe Account (completes Stripe Connect OAuth for the Bayshore Marina tenant) |
+| **Card payments / invoicing** | Settings → Stripe → Connect Stripe Account (Stripe Connect OAuth for the Bayshore Marina tenant) |
 | **Card reader (POS)** | Settings → POS Settings → Readers → Register Reader (enter pairing code from a Stripe Terminal device or simulator) |
-| **QuickBooks sync** | Settings → Integrations → QuickBooks → Connect (completes QBO OAuth — redirects to QBO sandbox, then returns) |
-| **Email sending** | No setup needed — Resend key is live and emails send immediately |
-| **File uploads** | No setup needed — R2 is configured and ready |
+| **QuickBooks sync** | Full setup in Section 6 — requires the Intuit developer portal redirect URI step before the in-app connect |
+| **Email sending** | No setup needed — Resend is live |
+| **File uploads** | No setup needed — R2 is configured |
 
 ---
 
@@ -99,7 +99,7 @@ Even though credentials are all in place, some features require completing a one
 Switch between locations using the dropdown in the top-right of the nav bar.
 
 ### Staff Users
-These users exist in the database. The dev bypass automatically signs you in as Sarah (MARINA_OWNER). To test with a different role, a real Clerk sign-in is required (see Section 5).
+The dev bypass automatically signs you in as Sarah (MARINA_OWNER). To test role-based access, see Section 7.
 
 | Email | Role |
 |-------|------|
@@ -134,7 +134,6 @@ Work through each page in the left navigation. For each one: load the page, veri
 - [ ] Contract list loads with seeded agreements
 - [ ] Open a contract to view line items, dates, and status
 - [ ] Filter by status (Active, Pending, Expired)
-- [ ] Send a contract for e-signature — generates a signing link
 
 ### Dock Walks
 - [ ] Dock walk list loads with recent entries
@@ -161,7 +160,7 @@ Work through each page in the left navigation. For each one: load the page, veri
 - [ ] Open an invoice to see line items and payment status
 - [ ] Filter by status (Draft, Sent, Paid, Overdue)
 - [ ] **Send invoice email** — Resend is configured, email should deliver
-- [ ] **Collect payment** — requires Stripe Connect setup for the tenant (Settings → Stripe first)
+- [ ] **Collect payment** — requires Stripe Connect setup (Settings → Stripe first)
 
 ### Rentals
 - [ ] Rental list loads with seeded records
@@ -171,9 +170,9 @@ Work through each page in the left navigation. For each one: load the page, veri
 ### POS
 - [ ] POS grid loads with product tiles
 - [ ] Add items to cart
-- [ ] Complete a **cash sale** — no Stripe needed
-- [ ] Complete a **card payment** — requires Stripe Connect setup + a registered reader
-- [ ] Settings tab → Readers → register a reader via pairing code from a Stripe Terminal simulator
+- [ ] Complete a **cash sale** — works with no external setup
+- [ ] Complete a **card payment** — requires Stripe Connect + reader registration
+- [ ] Settings tab → Readers → register a reader via a Stripe Terminal pairing code
 
 ### Fuel
 - [ ] Fuel log loads
@@ -208,8 +207,8 @@ Work through each page in the left navigation. For each one: load the page, veri
 
 ### Settings
 - [ ] General settings page loads and saves
-- [ ] **Stripe Connect** — click Connect, complete the Stripe OAuth flow (sandbox), confirm account appears connected
-- [ ] **QuickBooks Online** — click Connect, complete QBO OAuth (sandbox), confirm sync status
+- [ ] **Stripe Connect** — complete in-app OAuth (see service status table)
+- [ ] **QuickBooks Online** — complete full setup in Section 6 first
 - [ ] Tax rates page loads and allows adding a rate
 
 ### Announcements
@@ -230,48 +229,118 @@ Work through each page in the left navigation. For each one: load the page, veri
 | Cash POS sale | ✅ Works — no setup needed |
 | Email sending (invoices, contracts) | ✅ Resend configured — sends immediately |
 | File uploads (insurance docs, attachments) | ✅ R2 configured — uploads work |
-| Card payment / invoicing | ⚙️ Stripe keys configured — needs Stripe Connect OAuth in Settings |
-| Stripe Terminal card reader | ⚙️ Stripe configured — needs reader registration in POS Settings |
-| QuickBooks sync | ⚙️ QBO keys configured — needs OAuth flow in Settings |
-| Clerk real sign-in | ⚙️ Clerk configured — needs a Clerk user created (see Section 5) |
+| Card payment / invoicing | ⚙️ Stripe keys set — complete Stripe Connect OAuth in Settings |
+| Stripe Terminal card reader | ⚙️ Stripe configured — register a reader in POS Settings |
+| QuickBooks sync | ⚙️ QBO keys set — complete full sandbox setup in Section 6 |
+| Clerk real sign-in | ⚙️ Clerk configured — follow Section 7 to create a Clerk user |
 
 ---
 
-## 5. Testing with Real Clerk Sign-In (Optional)
-
-The dev bypass handles authentication automatically for most testing. To test actual role-based access or Clerk-specific features:
-
-1. Go to [dashboard.clerk.com](https://dashboard.clerk.com) → Users → Create User
-2. Use the email `sarah@bayshoremarina.com` (or any seeded user email) and set a password
-3. In Replit Secrets, remove or set `VITE_ENABLE_AUTH_DEV_BYPASS=false` and `ENABLE_AUTH_DEV_BYPASS=false`
-4. Restart both workflows
-5. Sign in at the app with that Clerk user — the API will match the Clerk ID to the seeded database user
-
-To return to bypass mode, set both flags back to `true` and restart.
-
----
-
-## 6. Known Issues
+## 5. Known Issues
 
 1. **Some Dashboard tiles may show "Loading..." or zeros** — certain dashboard stat endpoints are still being finalized. Core pages (Billing, Slips, Customers, Leads, Waitlist) all load correctly from seed data.
 
-2. **Re-seed wipes everything** — running `pnpm --filter @helm/api run seed` again deletes all records created during a testing session. Do this intentionally only.
+2. **Re-seed wipes everything** — running `pnpm --filter @helm/api run seed` again deletes all records created during a testing session. Do this only intentionally.
 
-3. **Stripe Connect must be completed per tenant** — even with Stripe credentials configured, each marina tenant needs to connect their own Stripe account through the Settings UI before card payments or invoice collection will work.
+3. **Stripe Connect must be completed per tenant** — even with sandbox keys configured, each marina tenant needs to connect their own Stripe account through the Settings UI before card payments or invoice collection will work.
 
 ---
 
-## 7. Resetting to a Clean State
+## 6. QuickBooks Online Sandbox — Full Setup & OAuth Test
+
+### 6.1 One-time developer portal setup
+
+This only needs to be done once. If the app has already been registered and the redirect URI added, skip to 6.2.
+
+**Step 1 — Sign in to the Intuit developer portal**
+1. Go to [developer.intuit.com](https://developer.intuit.com)
+2. Sign in with the Intuit account that owns the `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET` in Replit Secrets
+
+**Step 2 — Find your app**
+1. Click **My Apps** in the top nav
+2. Select the app whose Client ID matches `QBO_CLIENT_ID` in Replit Secrets
+
+**Step 3 — Add the Replit dev callback URL as a redirect URI**
+1. In the app, go to **Keys & credentials** → **Redirect URIs** (or **OAuth 2.0** → **Redirect URIs** depending on the portal version)
+2. Click **Add URI**
+3. Enter exactly:
+   ```
+   https://92c279c8-1036-4e43-940c-5e8c174d6713-00-gp3i4v467s4h.spock.replit.dev/api/qbo/callback
+   ```
+4. Save
+
+> **Why this matters:** Intuit rejects any OAuth redirect that isn't explicitly registered. The callback URL must match what the app sends character-for-character.
+
+**Step 4 — Confirm a sandbox company exists**
+1. Go to [developer.intuit.com](https://developer.intuit.com) → **Sandbox** → **Companies**
+2. You should see a default sandbox company (e.g. "Sandbox Company_US_1"). If not, click **Add** to create one
+3. Note the company name — this is the QBO account the marina will connect to
+
+### 6.2 Running the OAuth flow in the app
+
+These steps test the end-to-end QBO connect from the UI.
+
+1. Open the Helm web app in the browser (port 5000 preview)
+2. Navigate to **Settings** in the left sidebar
+3. Find the **QuickBooks Online** section and click **Connect**
+4. The app calls the API, which builds a signed OAuth URL and returns it
+5. The browser redirects to Intuit's authorization page
+6. Sign in with the **same Intuit account** that owns the sandbox app (from Step 1 above)
+7. Select your **sandbox company** from the list
+8. Click **Connect** to authorize
+9. Intuit redirects back to the Replit dev callback URL:
+   ```
+   https://[replit-dev]/api/qbo/callback
+   ```
+10. The callback exchanges the authorization code for access tokens, stores them against the tenant, and kicks off an initial sync
+11. The browser returns a JSON response — `{ "success": true, "message": "QuickBooks Online connected successfully..." }`
+12. Go back to Settings → QuickBooks — the status should now show **Connected** with the realm ID and connection timestamp
+
+### 6.3 Verifying the sync
+
+After connecting:
+
+- [ ] Settings → QuickBooks shows **Connected** status
+- [ ] Click **Sync Now** — confirm the API returns a sync result with counts
+- [ ] Navigate to **Customers** — seeded customers should now have QBO IDs
+- [ ] Navigate to **Billing** → open an invoice → confirm the **Sync to QBO** button is available
+- [ ] Click **Sync to QBO** on an invoice — verify it appears in the QBO sandbox company under Sales → Invoices at [app.qbo.intuit.com/app/invoices](https://app.qbo.intuit.com/app/invoices)
+
+### 6.4 Disconnecting
+
+To test disconnect:
+1. Settings → QuickBooks → **Disconnect**
+2. Confirm the status reverts to **Not Connected**
+3. QBO tokens are cleared from the database
+4. Sync buttons on invoices and customers should disappear or be disabled
+
+---
+
+## 7. Testing with Real Clerk Sign-In (Optional)
+
+The dev bypass handles authentication automatically for most testing. To test role-based access or Clerk-specific features:
+
+1. Go to [dashboard.clerk.com](https://dashboard.clerk.com) → Users → Create User
+2. Use the email `sarah@bayshoremarina.com` and set a password
+3. In Replit Secrets, set `VITE_ENABLE_AUTH_DEV_BYPASS` and `ENABLE_AUTH_DEV_BYPASS` both to `false` (or delete them from the development env)
+4. Restart both the **API Server** and **Start application** workflows
+5. Sign in at the app with those Clerk credentials — the API matches the Clerk ID to Sarah's seeded database record
+
+To return to bypass mode: set both flags back to `true` and restart.
+
+---
+
+## 8. Resetting to a Clean State
 
 ```bash
 pnpm --filter @helm/api run seed
 ```
 
-Then hard-refresh the browser. All pages will show fresh seed data.
+Then hard-refresh the browser. All pages will show fresh seed data. Note this clears any QBO connection tokens — you'll need to re-run the OAuth flow in Section 6.2 after a re-seed.
 
 ---
 
-## 8. Port Reference
+## 9. Port Reference
 
 | Service | Port | How to access |
 |---------|------|--------------|

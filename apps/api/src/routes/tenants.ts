@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
+import { issueOAuthState } from "../lib/oauth-state.js";
 
 const router: Router = Router();
 
@@ -101,14 +102,18 @@ router.put("/:id", ...clerkAuth(), requireRole("admin"), async (req, res, next) 
 router.post("/:id/qbo/connect", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
   try {
     const clientId = process.env.QBO_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;
+    const redirectUri = process.env.QBO_REDIRECT_URI;
+    if (!redirectUri) {
+      res.status(500).json({ error: "QBO_REDIRECT_URI is not configured", code: "MISSING_CONFIG" });
+      return;
+    }
     const scope = "com.intuit.quickbooks.accounting";
-    const state = req.params.id; // Tenant id for callback correlation
+    const state = issueOAuthState(req.params.id);
 
     const authUrl =
       `https://appcenter.intuit.com/connect/oauth2?` +
       `client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}&response_type=code&state=${state}`;
+      `&scope=${scope}&response_type=code&state=${encodeURIComponent(state)}`;
 
     res.json({ url: authUrl });
   } catch (err) {

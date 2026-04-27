@@ -93,7 +93,6 @@ VITE_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xvc2Utb2FyZmlzaC01Mi5jbGVyay5hY2NvdW50cy
 APP_URL = "https://app.tracktheturn.com"
 APP_PORTAL_URL = "https://portal.tracktheturn.com"
 APP_ADMIN_URL = "https://admin.tracktheturn.com"
-QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/onboarding/qbo/callback"
 QBO_ENVIRONMENT = "sandbox"
 VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5KahdUIHyxhrKi20olrMNAMJIz1BIkcWm0vsuqwHn4nnJ9KJPgUA00qCZaC8Mn"
 
@@ -101,6 +100,10 @@ VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5Kah
 ENABLE_AUTH_DEV_BYPASS = "true"
 NODE_ENV = "development"
 VITE_ENABLE_AUTH_DEV_BYPASS = "true"
+QBO_REDIRECT_URI = "https://92c279c8-1036-4e43-940c-5e8c174d6713-00-gp3i4v467s4h.spock.replit.dev/api/qbo/callback"
+
+[userenv.production]
+QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/qbo/callback"
 
 [postMerge]
 path = "scripts/post-merge.sh"
