@@ -337,10 +337,32 @@ router.put("/billing", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAG
 });
 
 // --------------------------------------------------------------------------
-// GET /api/settings/stripe
+// GET /api/settings/stripe?locationId=xxx
 // --------------------------------------------------------------------------
 router.get("/stripe", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
+    const { locationId } = req.query as { locationId?: string };
+
+    if (locationId) {
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId: req.tenantId! },
+        select: { stripeAccountId: true, stripeOnboardingComplete: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+      const accountId = location.stripeAccountId;
+      const connected = !!accountId && !!location.stripeOnboardingComplete;
+      res.json({
+        connected,
+        onboardingComplete: !!location.stripeOnboardingComplete,
+        accountId: accountId ? `****${accountId.slice(-4)}` : null,
+        dashboardUrl: accountId ? `https://dashboard.stripe.com/${accountId}` : null,
+      });
+      return;
+    }
+
     const tenant = await prisma.tenant.findUnique({
       where: { id: req.tenantId! },
     });
@@ -366,10 +388,43 @@ router.get("/stripe", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGE
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/stripe/connect
+// POST /api/settings/stripe/connect  { locationId? }
 // --------------------------------------------------------------------------
 router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
+    const { locationId } = req.body as { locationId?: string };
+
+    if (locationId) {
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId: req.tenantId! },
+        select: { id: true, stripeAccountId: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+
+      let accountId = location.stripeAccountId;
+      if (!accountId) {
+        const account = await requireStripe().accounts.create({ type: "standard" });
+        accountId = account.id;
+        await prisma.location.update({
+          where: { id: locationId },
+          data: { stripeAccountId: accountId, stripeOnboardingComplete: false },
+        });
+      }
+
+      const accountLink = await requireStripe().accountLinks.create({
+        account: accountId,
+        refresh_url: `${process.env.APP_URL}/oauth-complete?provider=stripe&success=false&locationId=${locationId}`,
+        return_url: `${process.env.APP_URL}/oauth-complete?provider=stripe&success=true&locationId=${locationId}`,
+        type: "account_onboarding",
+      });
+
+      res.json({ url: accountLink.url });
+      return;
+    }
+
     const tenant = await prisma.tenant.findUnique({
       where: { id: req.tenantId! },
     });
@@ -404,20 +459,34 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/stripe/disconnect
+// POST /api/settings/stripe/disconnect  { locationId?, confirm }
 // --------------------------------------------------------------------------
 router.post("/stripe/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
-    const { confirm } = req.body;
+    const { confirm, locationId } = req.body;
     if (confirm !== true) {
       res.status(400).json({ error: "Confirmation required", code: "CONFIRMATION_REQUIRED" });
       return;
     }
 
-    await prisma.tenant.update({
-      where: { id: req.tenantId! },
-      data: { stripeAccountId: null },
-    });
+    if (locationId) {
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId: req.tenantId! },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+      await prisma.location.update({
+        where: { id: locationId },
+        data: { stripeAccountId: null, stripeOnboardingComplete: false },
+      });
+    } else {
+      await prisma.tenant.update({
+        where: { id: req.tenantId! },
+        data: { stripeAccountId: null },
+      });
+    }
 
     res.json({ disconnected: true });
   } catch (err) {
@@ -482,8 +551,8 @@ router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (
       return;
     }
     const scope = "com.intuit.quickbooks.accounting";
-    // Sign the state with just the tenantId so the callback can verify it.
-    const state = issueOAuthState(req.tenantId!);
+    // Embed locationId in the signed state so the callback knows which location to bind.
+    const state = issueOAuthState(req.tenantId!, { locationId: locationId ?? undefined });
 
     const authUrl =
       `https://appcenter.intuit.com/connect/oauth2?` +
@@ -575,6 +644,8 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         brandingJson: true,
         qboRealmId: true,
         qboConnectedAt: true,
+        stripeAccountId: true,
+        stripeOnboardingComplete: true,
       },
     });
 
@@ -587,6 +658,7 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       location: {
         ...location,
         qboConnected: !!location.qboRealmId,
+        stripeConnected: !!location.stripeAccountId && !!location.stripeOnboardingComplete,
       },
     });
   } catch (err) {

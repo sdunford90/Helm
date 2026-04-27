@@ -36,13 +36,26 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s, "base64url");
 }
 
-export function issueOAuthState(tenantId: string, ttlSeconds = DEFAULT_TTL_SECONDS): string {
-  const payload = {
+export interface IssueOAuthStateOptions {
+  locationId?: string;
+  ttlSeconds?: number;
+}
+
+export function issueOAuthState(tenantId: string, optionsOrTtl: IssueOAuthStateOptions | number = {}): string {
+  const opts: IssueOAuthStateOptions = typeof optionsOrTtl === "number"
+    ? { ttlSeconds: optionsOrTtl }
+    : optionsOrTtl;
+  const ttlSeconds = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+
+  const payload: Record<string, unknown> = {
     v: STATE_VERSION,
     t: tenantId,
     n: crypto.randomBytes(16).toString("hex"),
     e: Math.floor(Date.now() / 1000) + ttlSeconds,
   };
+  if (opts.locationId) {
+    payload.l = opts.locationId;
+  }
   const body = b64url(Buffer.from(JSON.stringify(payload)));
   const sig = b64url(
     crypto.createHmac("sha256", getSecret()).update(body).digest(),
@@ -52,6 +65,7 @@ export function issueOAuthState(tenantId: string, ttlSeconds = DEFAULT_TTL_SECON
 
 export interface VerifiedOAuthState {
   tenantId: string;
+  locationId?: string;
   nonce: string;
   expiresAt: Date;
 }
@@ -72,7 +86,7 @@ export function verifyOAuthState(token: string): VerifiedOAuthState {
     throw new Error("Invalid state signature");
   }
 
-  let payload: { v: string; t: string; n: string; e: number };
+  let payload: { v: string; t: string; n: string; e: number; l?: string };
   try {
     payload = JSON.parse(b64urlDecode(body).toString("utf8"));
   } catch {
@@ -91,6 +105,7 @@ export function verifyOAuthState(token: string): VerifiedOAuthState {
 
   return {
     tenantId: payload.t,
+    ...(payload.l ? { locationId: payload.l } : {}),
     nonce: payload.n,
     expiresAt: new Date(payload.e * 1000),
   };

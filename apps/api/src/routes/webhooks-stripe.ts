@@ -73,14 +73,28 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
   const connectedAccountId = (event as Stripe.Event & { account?: string }).account ?? null;
 
   // Resolve which Helm tenant this event belongs to.
-  const tenant = connectedAccountId
-    ? await prisma.tenant.findFirst({
-        where: { stripeAccountId: connectedAccountId },
-        select: { id: true },
-      })
-    : null;
+  // Check tenant-level accounts first, then location-level accounts.
+  let tenantId: string | null = null;
+  let locationId: string | null = null;
 
-  const tenantId = tenant?.id ?? null;
+  if (connectedAccountId) {
+    const tenant = await prisma.tenant.findFirst({
+      where: { stripeAccountId: connectedAccountId },
+      select: { id: true },
+    });
+    if (tenant) {
+      tenantId = tenant.id;
+    } else {
+      const location = await prisma.location.findFirst({
+        where: { stripeAccountId: connectedAccountId },
+        select: { id: true, tenantId: true },
+      });
+      if (location) {
+        tenantId = location.tenantId;
+        locationId = location.id;
+      }
+    }
+  }
 
   // Idempotency: skip if we've already processed this event.
   const isNew = await checkAndMarkProcessed(event.id, event.type, tenantId);
@@ -136,14 +150,14 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
       break;
 
     case "account.updated":
-      await handleAccountUpdated(event, tenantId);
+      await handleAccountUpdated(event, tenantId, locationId);
       break;
 
     default:
       // Accounts v2 event types (prefix v2.core.account.*) aren't in the v22
       // SDK's typed EventType union yet; match by string.
       if (event.type.startsWith("v2.core.account")) {
-        await handleAccountUpdated(event, tenantId);
+        await handleAccountUpdated(event, tenantId, locationId);
       } else {
         console.log(`[stripe-webhook] connect event unhandled: ${event.type}`);
       }
@@ -499,18 +513,39 @@ async function handleDispute(
 async function handleAccountUpdated(
   event: Stripe.Event,
   tenantId: string | null,
+  locationId: string | null = null,
 ): Promise<void> {
   if (!tenantId) return;
+
+  const account = event.data.object as Stripe.Account;
+  const chargesEnabled = account.charges_enabled ?? false;
+  const detailsSubmitted = account.details_submitted ?? false;
+
+  // Mark onboarding complete when the account can accept charges.
+  if (chargesEnabled) {
+    if (locationId) {
+      await prisma.location.update({
+        where: { id: locationId },
+        data: { stripeOnboardingComplete: true },
+      });
+    } else {
+      // Tenant-level account — no separate onboarding flag, just log.
+    }
+  }
+
   // Record the capability/account update so operators can see onboarding progress.
   await prisma.auditLog.create({
     data: {
       tenantId,
-      recordType: "Tenant",
-      recordId: tenantId,
+      recordType: locationId ? "Location" : "Tenant",
+      recordId: locationId ?? tenantId,
       action: "STRIPE_ACCOUNT_UPDATED",
       changedFieldsJson: {
         eventType: event.type,
         eventId: event.id,
+        chargesEnabled,
+        detailsSubmitted,
+        locationId,
       },
     },
   });

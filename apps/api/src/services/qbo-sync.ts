@@ -96,6 +96,29 @@ async function getTokens(tenantId: string): Promise<QboTokens> {
   };
 }
 
+async function getLocationTokens(locationId: string): Promise<QboTokens> {
+  const location = await prisma.location.findUnique({
+    where: { id: locationId },
+    select: {
+      qboAccessToken: true,
+      qboRefreshToken: true,
+      qboRealmId: true,
+      qboTokenExpiresAt: true,
+    },
+  });
+
+  if (!location?.qboAccessToken || !location?.qboRefreshToken || !location?.qboRealmId) {
+    throw new Error(`QuickBooks Online is not connected for location ${locationId}`);
+  }
+
+  return {
+    accessToken: location.qboAccessToken,
+    refreshToken: location.qboRefreshToken,
+    realmId: location.qboRealmId,
+    expiresAt: location.qboTokenExpiresAt ?? new Date(0),
+  };
+}
+
 async function storeTokens(
   tenantId: string,
   accessToken: string,
@@ -116,6 +139,28 @@ async function storeTokens(
   });
 }
 
+async function storeLocationTokens(
+  locationId: string,
+  accessToken: string,
+  refreshToken: string,
+  realmId: string,
+  expiresIn: number,
+  companyName?: string,
+): Promise<void> {
+  const expiresAt = new Date(Date.now() + expiresIn * 1000);
+  await prisma.location.update({
+    where: { id: locationId },
+    data: {
+      qboAccessToken: accessToken,
+      qboRefreshToken: refreshToken,
+      qboRealmId: realmId,
+      qboTokenExpiresAt: expiresAt,
+      qboConnectedAt: new Date(),
+      ...(companyName ? { qboCompanyName: companyName } : {}),
+    },
+  });
+}
+
 export async function getValidAccessToken(tenantId: string): Promise<{ accessToken: string; realmId: string }> {
   const tokens = await getTokens(tenantId);
 
@@ -128,19 +173,51 @@ export async function getValidAccessToken(tenantId: string): Promise<{ accessTok
   return { accessToken: tokens.accessToken, realmId: tokens.realmId };
 }
 
+export async function getValidAccessTokenForLocation(locationId: string): Promise<{ accessToken: string; realmId: string }> {
+  const tokens = await getLocationTokens(locationId);
+
+  if (tokens.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
+    const newAccessToken = await refreshLocationToken(locationId);
+    return { accessToken: newAccessToken, realmId: tokens.realmId };
+  }
+
+  return { accessToken: tokens.accessToken, realmId: tokens.realmId };
+}
+
 // --------------------------------------------------------------------------
 // QBO API request helper with automatic token refresh on 401
 // --------------------------------------------------------------------------
 
+// Credential context: either tenant-level or location-level
+interface QboCredentialContext {
+  tenantId: string;
+  locationId?: string;
+}
+
 async function qboRequest(
-  tenantId: string,
+  ctx: string | QboCredentialContext,
   method: "GET" | "POST",
   path: string,
   body?: unknown,
   retried = false,
 ): Promise<any> {
+  // Support legacy string tenantId for backward compatibility
+  const context: QboCredentialContext = typeof ctx === "string" ? { tenantId: ctx } : ctx;
   const config = getConfig();
-  const { accessToken, realmId } = await getValidAccessToken(tenantId);
+
+  let accessToken: string;
+  let realmId: string;
+
+  if (context.locationId) {
+    const result = await getValidAccessTokenForLocation(context.locationId);
+    accessToken = result.accessToken;
+    realmId = result.realmId;
+  } else {
+    const result = await getValidAccessToken(context.tenantId);
+    accessToken = result.accessToken;
+    realmId = result.realmId;
+  }
+
   const apiBase = getApiBase(config.environment);
   const url = `${apiBase}/${realmId}/${path}`;
 
@@ -158,8 +235,12 @@ async function qboRequest(
 
   if (response.status === 401 && !retried) {
     // Token expired, refresh and retry once
-    await refreshToken(tenantId);
-    return qboRequest(tenantId, method, path, body, true);
+    if (context.locationId) {
+      await refreshLocationToken(context.locationId);
+    } else {
+      await refreshToken(context.tenantId);
+    }
+    return qboRequest(ctx, method, path, body, true);
   }
 
   if (!response.ok) {
@@ -284,11 +365,149 @@ export async function refreshToken(tenantId: string): Promise<string> {
   return data.access_token as string;
 }
 
+export async function refreshLocationToken(locationId: string): Promise<string> {
+  const config = getConfig();
+  const tokens = await getLocationTokens(locationId);
+
+  const response = await fetch(QBO_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Authorization: basicAuthHeader(config),
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: tokens.refreshToken,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error("[qbo-sync] Location token refresh failed", { status: response.status, errorBody });
+
+    if (response.status === 400 || response.status === 401) {
+      await prisma.location.update({
+        where: { id: locationId },
+        data: {
+          qboAccessToken: null,
+          qboRefreshToken: null,
+          qboTokenExpiresAt: null,
+        },
+      });
+    }
+
+    throw new Error(`QBO location token refresh failed: ${response.status}`);
+  }
+
+  const data = await response.json() as Record<string, unknown>;
+
+  await storeLocationTokens(
+    locationId,
+    data.access_token as string,
+    data.refresh_token as string,
+    tokens.realmId,
+    data.expires_in as number,
+  );
+
+  return data.access_token as string;
+}
+
+export async function handleCallbackForLocation(
+  code: string,
+  realmId: string,
+  locationId: string,
+  tenantId: string,
+): Promise<void> {
+  const config = getConfig();
+
+  const response = await fetch(QBO_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Authorization: basicAuthHeader(config),
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: config.redirectUri,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error("[qbo-sync] Location token exchange failed", { status: response.status, errorBody });
+    throw new Error(`QBO token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json() as Record<string, unknown>;
+
+  // Attempt to fetch QBO company name for display
+  let companyName: string | undefined;
+  try {
+    const accessToken = data.access_token as string;
+    const companyInfoUrl = `${getApiBase(config.environment)}/${realmId}/companyinfo/${realmId}?minorversion=73`;
+    const infoRes = await fetch(companyInfoUrl, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    if (infoRes.ok) {
+      const info = await infoRes.json() as any;
+      companyName = info?.CompanyInfo?.CompanyName as string | undefined;
+    }
+  } catch {
+    // Non-fatal — company name display is best-effort
+  }
+
+  await storeLocationTokens(
+    locationId,
+    data.access_token as string,
+    data.refresh_token as string,
+    realmId,
+    data.expires_in as number,
+    companyName,
+  );
+
+  await auditLog(tenantId, "QBO_LOCATION_CONNECTED", { locationId, realmId, companyName });
+}
+
+export async function disconnectLocation(locationId: string, tenantId: string): Promise<void> {
+  await prisma.location.update({
+    where: { id: locationId },
+    data: {
+      qboAccessToken: null,
+      qboRefreshToken: null,
+      qboRealmId: null,
+      qboTokenExpiresAt: null,
+      qboConnectedAt: null,
+      qboCompanyName: null,
+    },
+  });
+  await auditLog(tenantId, "QBO_LOCATION_DISCONNECTED", { locationId, reason: "manual_disconnect" });
+}
+
 // --------------------------------------------------------------------------
 // Entity Sync: Customer
 // --------------------------------------------------------------------------
 
-export async function syncCustomer(customerId: string, tenantId: string): Promise<void> {
+// Resolve the credential context for a location — uses location credentials if available,
+// otherwise throws a clear error so callers can decide how to proceed.
+async function resolveQboContext(tenantId: string, locationId?: string | null): Promise<QboCredentialContext> {
+  if (!locationId) {
+    return { tenantId };
+  }
+  const location = await prisma.location.findUnique({
+    where: { id: locationId },
+    select: { qboRealmId: true, qboAccessToken: true },
+  });
+  if (location?.qboRealmId && location?.qboAccessToken) {
+    return { tenantId, locationId };
+  }
+  // Location has no QBO credentials — throw a descriptive error
+  throw new Error(`QuickBooks Online is not connected for location ${locationId}. Please connect QBO in Settings > Locations before syncing.`);
+}
+
+export async function syncCustomer(customerId: string, tenantId: string, locationId?: string | null): Promise<void> {
   const customer = await prisma.customer.findFirst({
     where: { id: customerId, tenantId },
   });
@@ -296,6 +515,8 @@ export async function syncCustomer(customerId: string, tenantId: string): Promis
   if (!customer) {
     throw new Error(`Customer ${customerId} not found`);
   }
+
+  const ctx = locationId ? await resolveQboContext(tenantId, locationId) : { tenantId };
 
   const qboCustomerData: Record<string, unknown> = {
     GivenName: customer.firstName || "",
@@ -322,7 +543,7 @@ export async function syncCustomer(customerId: string, tenantId: string): Promis
   if ((customer as any).qboCustomerId) {
     // Update existing QBO customer — need to fetch SyncToken first
     const existing = await qboRequest(
-      tenantId,
+      ctx,
       "GET",
       `customer/${(customer as any).qboCustomerId}?minorversion=73`,
     );
@@ -331,10 +552,10 @@ export async function syncCustomer(customerId: string, tenantId: string): Promis
     qboCustomerData.SyncToken = existing.Customer.SyncToken;
     qboCustomerData.sparse = true;
 
-    result = await qboRequest(tenantId, "POST", "customer?minorversion=73", qboCustomerData);
+    result = await qboRequest(ctx, "POST", "customer?minorversion=73", qboCustomerData);
   } else {
     // Create new QBO customer
-    result = await qboRequest(tenantId, "POST", "customer?minorversion=73", qboCustomerData);
+    result = await qboRequest(ctx, "POST", "customer?minorversion=73", qboCustomerData);
 
     // Store QBO customer ID on our record
     await prisma.customer.update({
@@ -346,6 +567,7 @@ export async function syncCustomer(customerId: string, tenantId: string): Promis
   await auditLog(tenantId, "QBO_CUSTOMER_SYNCED", {
     customerId,
     qboCustomerId: result.Customer.Id,
+    locationId: locationId ?? null,
   });
 }
 
@@ -366,9 +588,13 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     throw new Error(`Invoice ${invoiceId} not found`);
   }
 
-  // Ensure customer is synced to QBO first
+  // Resolve credentials: prefer location-level QBO connection if the invoice has a location
+  const locationId = (invoice as any).locationId as string | null | undefined;
+  const ctx = await resolveQboContext(tenantId, locationId);
+
+  // Ensure customer is synced to QBO first (using same credential context)
   if (!(invoice.customer as any).qboCustomerId) {
-    await syncCustomer(invoice.customer.id, tenantId);
+    await syncCustomer(invoice.customer.id, tenantId, ctx.locationId);
     // Re-fetch customer to get qboCustomerId
     const updatedCustomer = await prisma.customer.findUnique({
       where: { id: invoice.customer.id },
@@ -407,7 +633,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
   if ((invoice as any).qboInvoiceId) {
     // Update existing QBO invoice
     const existing = await qboRequest(
-      tenantId,
+      ctx,
       "GET",
       `invoice/${(invoice as any).qboInvoiceId}?minorversion=73`,
     );
@@ -416,10 +642,10 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     qboInvoiceData.SyncToken = existing.Invoice.SyncToken;
     qboInvoiceData.sparse = true;
 
-    result = await qboRequest(tenantId, "POST", "invoice?minorversion=73", qboInvoiceData);
+    result = await qboRequest(ctx, "POST", "invoice?minorversion=73", qboInvoiceData);
   } else {
     // Create new QBO invoice
-    result = await qboRequest(tenantId, "POST", "invoice?minorversion=73", qboInvoiceData);
+    result = await qboRequest(ctx, "POST", "invoice?minorversion=73", qboInvoiceData);
 
     await prisma.invoice.update({
       where: { id: invoiceId },
@@ -430,6 +656,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
   await auditLog(tenantId, "QBO_INVOICE_SYNCED", {
     invoiceId,
     qboInvoiceId: result.Invoice.Id,
+    locationId: ctx.locationId ?? null,
   });
 }
 
@@ -450,9 +677,13 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
     throw new Error(`Payment ${paymentId} not found`);
   }
 
-  // Ensure customer is synced
+  // Resolve credentials from the linked invoice's location (if any)
+  const locationId = (payment.invoice as any)?.locationId as string | null | undefined;
+  const ctx = await resolveQboContext(tenantId, locationId);
+
+  // Ensure customer is synced using same credential context
   if (!(payment.customer as any).qboCustomerId) {
-    await syncCustomer(payment.customer.id, tenantId);
+    await syncCustomer(payment.customer.id, tenantId, ctx.locationId);
     const updatedCustomer = await prisma.customer.findUnique({
       where: { id: payment.customer.id },
     });
@@ -490,7 +721,7 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
       };
     }
 
-    const result = await qboRequest(tenantId, "POST", "payment?minorversion=73", qboPaymentData);
+    const result = await qboRequest(ctx, "POST", "payment?minorversion=73", qboPaymentData);
 
     await prisma.payment.update({
       where: { id: paymentId },
@@ -501,6 +732,7 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
       paymentId,
       qboPaymentId: result.Payment.Id,
       type: "Payment",
+      locationId: ctx.locationId ?? null,
     });
   } else {
     // Create SalesReceipt for standalone payments
@@ -522,7 +754,7 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
     };
 
     const result = await qboRequest(
-      tenantId,
+      ctx,
       "POST",
       "salesreceipt?minorversion=73",
       qboReceiptData,

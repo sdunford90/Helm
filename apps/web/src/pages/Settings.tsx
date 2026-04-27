@@ -567,7 +567,9 @@ export default function Settings() {
   interface LocationDetail {
     id: string; name: string; address: string; city: string; state: string; zip: string; phone: string;
     timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-    autoExecuteRenewals: boolean; logoUrl: string; qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
+    autoExecuteRenewals: boolean; logoUrl: string;
+    qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
+    stripeConnected: boolean; stripeAccountId: string | null; stripeOnboardingComplete: boolean;
   }
   const [selectedLocationId, setSelectedLocationId] = useState<string>('');
   const [locationDetail, setLocationDetail] = useState<LocationDetail | null>(null);
@@ -575,6 +577,7 @@ export default function Settings() {
   const [locationSaving, setLocationSaving] = useState(false);
   const [locationQboLoading, setLocationQboLoading] = useState(false);
   const [locationQboActing, setLocationQboActing] = useState(false);
+  const [locationStripeActing, setLocationStripeActing] = useState(false);
 
   // ── Tax Jurisdictions ──────────────────────────────────────────────────────
   interface TaxJurisdiction {
@@ -788,6 +791,48 @@ export default function Settings() {
       }
     } finally {
       setLocationQboLoading(false);
+    }
+  };
+
+  const handleLocationStripeConnect = async () => {
+    if (!selectedLocationId) return;
+    setLocationStripeActing(true);
+    try {
+      const res = await fetch('/api/settings/stripe/connect', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId }),
+      });
+      const body = await res.json();
+      if (body.url) {
+        openOAuthPopup(body.url, () => {
+          setTimeout(() => fetchLocationDetail(selectedLocationId), 800);
+          setSavedMsg('Stripe connected for this location');
+          setTimeout(() => setSavedMsg(null), 3000);
+        });
+      }
+    } finally {
+      setLocationStripeActing(false);
+    }
+  };
+
+  const handleLocationStripeDisconnect = async () => {
+    if (!selectedLocationId) return;
+    if (!window.confirm('Disconnect Stripe for this location? Payments at this location will stop working until reconnected.')) return;
+    setLocationStripeActing(true);
+    try {
+      const res = await fetch('/api/settings/stripe/disconnect', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId, confirm: true }),
+      });
+      if (res.ok) {
+        setSavedMsg('Stripe disconnected for this location');
+        setTimeout(() => setSavedMsg(null), 3000);
+        fetchLocationDetail(selectedLocationId);
+      }
+    } finally {
+      setLocationStripeActing(false);
     }
   };
 
@@ -1484,6 +1529,53 @@ export default function Settings() {
                     ) : (
                       <button style={st.addBtn} onClick={handleLocationQboConnect} disabled={locationQboActing}>
                         {locationQboActing ? 'Connecting…' : 'Connect QuickBooks'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Stripe per-location */}
+                <div style={{ ...st.integrationCard, marginTop: '12px' }}>
+                  <div style={st.integrationInfo}>
+                    <div style={st.integrationIcon}><CreditCard size={24} style={{ color: '#635BFF' }} /></div>
+                    <div>
+                      <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>Stripe Payments</div>
+                      <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Each location collects payments into its own Stripe account</div>
+                      <div style={{ marginTop: '8px' }}>
+                        {locationDetail.stripeConnected ? (
+                          <>
+                            <span style={{ ...st.badge, backgroundColor: '#EDE9FE', color: '#5B21B6' }}>Connected</span>
+                            {locationDetail.stripeAccountId && (
+                              <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>
+                                ****{locationDetail.stripeAccountId.slice(-4)}
+                              </span>
+                            )}
+                          </>
+                        ) : locationDetail.stripeAccountId ? (
+                          <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E' }}>Onboarding incomplete</span>
+                        ) : (
+                          <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {locationDetail.stripeConnected ? (
+                      <>
+                        <a
+                          href={`https://dashboard.stripe.com/${locationDetail.stripeAccountId}`}
+                          target="_blank" rel="noopener noreferrer"
+                          style={{ ...st.outlineBtn, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                        >
+                          Dashboard
+                        </a>
+                        <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleLocationStripeDisconnect} disabled={locationStripeActing}>
+                          {locationStripeActing ? 'Disconnecting…' : 'Disconnect'}
+                        </button>
+                      </>
+                    ) : (
+                      <button style={st.addBtn} onClick={handleLocationStripeConnect} disabled={locationStripeActing}>
+                        {locationStripeActing ? 'Connecting…' : locationDetail.stripeAccountId ? 'Resume Onboarding' : 'Connect Stripe'}
                       </button>
                     )}
                   </div>

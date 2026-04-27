@@ -332,6 +332,11 @@ model Location {
   qboRefreshToken     String?
   qboTokenExpiresAt   DateTime?
   qboConnectedAt      DateTime?
+  qboCompanyName      String?
+
+  // Per-location Stripe Connect (each property routes payments to its own account)
+  stripeAccountId           String?
+  stripeOnboardingComplete  Boolean   @default(false)
 
   // Per-location renewal behavior
   autoExecuteRenewals Boolean   @default(false)

@@ -4,6 +4,7 @@ import { clerkAuth, requireRole } from "../middleware/auth.js";
 import {
   getAuthorizationUrl,
   handleCallback,
+  handleCallbackForLocation,
   syncAll,
   syncCustomer,
   syncInvoice,
@@ -59,9 +60,9 @@ router.get(
       // tokens. The tenantId comes FROM the verified state, not from the
       // query string — an attacker must not be able to choose which tenant
       // the callback binds to.
-      let tenantId: string;
+      let verified: { tenantId: string; locationId?: string };
       try {
-        tenantId = verifyOAuthState(state).tenantId;
+        verified = verifyOAuthState(state);
       } catch (err) {
         res.status(400).json({
           error: err instanceof Error ? err.message : "Invalid state",
@@ -69,10 +70,18 @@ router.get(
         return;
       }
 
-      await handleCallback(code, realmId, tenantId);
+      const { tenantId, locationId: verifiedLocationId } = verified;
+
+      // Dispatch to location-level handler when the state carries a locationId
+      if (verifiedLocationId) {
+        await handleCallbackForLocation(code, realmId, tenantId, verifiedLocationId);
+      } else {
+        await handleCallback(code, realmId, tenantId);
+      }
 
       const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
-      res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true`);
+      const locationParam = verifiedLocationId ? `&locationId=${verifiedLocationId}` : "";
+      res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true${locationParam}`);
     } catch (err) {
       next(err);
     }
