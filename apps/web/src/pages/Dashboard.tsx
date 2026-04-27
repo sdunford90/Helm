@@ -48,9 +48,10 @@ const Dashboard: React.FC = () => {
   const { data: trendData, loading: trendLoading } = useApi<any>('get', '/api/reports/revenue-trend', { immediate: true });
   const { data: invoicesData } = useApi<any>('get', '/api/invoices?take=5&sortBy=issuedDate&sortOrder=desc', { immediate: true });
   const { data: posData } = useApi<any>('get', '/api/pos/transactions?take=5', { immediate: true });
-  const { data: auditData } = useApi<any>('get', '/api/audit-log?take=10', { immediate: true });
+  const { data: auditData } = useApi<any>('get', '/api/audit-log?limit=10', { immediate: true });
   const { data: transientData } = useApi<any>('get', '/api/transient?status=CHECKED_IN&take=1', { immediate: true });
-  const { data: leadsData } = useApi<any>('get', '/api/leads?take=200', { immediate: true });
+  const { data: leadsData } = useApi<any>('get', '/api/leads?limit=100&page=1', { immediate: true });
+  const { data: dockWalksData } = useApi<any>('get', '/api/dock-walks?status=IN_PROGRESS&take=25', { immediate: true });
 
   const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading || trendLoading;
 
@@ -266,8 +267,8 @@ const Dashboard: React.FC = () => {
   const arSub = arData ? `${fmtDollars(arOverdueCents)} overdue (30+ days)` : 'Loading…';
   const arTrendText = arData ? `${fmtDollars(arOverdueCents)} overdue` : '';
 
-  const reservationCount = transientData?.pagination?.total ?? '—';
-  const checkedInCount = transientData?.data?.filter((b: any) => b.status === 'CHECKED_IN').length ?? 0;
+  const reservationCount = transientData?.total ?? '—';
+  const checkedInCount = typeof transientData?.total === 'number' ? transientData.total : 0;
 
   const now30DaysAgo = new Date();
   now30DaysAgo.setDate(now30DaysAgo.getDate() - 30);
@@ -405,10 +406,31 @@ const Dashboard: React.FC = () => {
     }
   }
 
+  if (dockWalksData) {
+    const inProgressWalks = (dockWalksData.dockWalks ?? dockWalksData.data ?? []) as any[];
+    if (inProgressWalks.length > 0) {
+      const overdueWalks = inProgressWalks.filter((w: any) => {
+        const startedMs = new Date(w.startedAt).getTime();
+        return Date.now() - startedMs > 4 * 60 * 60 * 1000;
+      });
+      const count = inProgressWalks.length;
+      tasks.push({
+        text: `${count} dock walk${count > 1 ? 's' : ''} in progress${overdueWalks.length > 0 ? ` (${overdueWalks.length} overdue)` : ''}`,
+        detail: inProgressWalks.slice(0, 3).map((w: any) => {
+          const hoursAgo = Math.round((Date.now() - new Date(w.startedAt).getTime()) / 3600000);
+          return `Dock ${w.dockId ?? '?'} — started ${hoursAgo}h ago`;
+        }).join(' · '),
+        icon: <Footprints size={16} color={overdueWalks.length > 0 ? colors.red : colors.cyan} />,
+        urgent: overdueWalks.length > 0,
+        route: '/dock-walks',
+      });
+    }
+  }
+
   if (tasks.length === 0) {
     tasks.push({
       text: 'All items up to date',
-      detail: 'No overdue invoices or compliance issues',
+      detail: 'No overdue invoices, compliance issues, or pending dock walks',
       icon: <CheckCircle2 size={16} color={colors.green} />,
       urgent: false,
       route: '/reports',
@@ -475,7 +497,7 @@ const Dashboard: React.FC = () => {
     return { time: fmtActivityTime(entry.createdAt), text, type };
   });
 
-  const activityFeed = auditEntries.length > 0 ? auditEntries : [];
+  const activityFeed = auditEntries.slice(0, 10);
 
   const activityDot = (type: string): string => {
     const map: Record<string, string> = {
