@@ -1,7 +1,7 @@
 import React, { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
-import { X, Download, Printer, Settings2, GripVertical, Plus, Minus, RotateCcw } from 'lucide-react';
+import { X, Download, Printer, Settings2, GripVertical, Plus, Minus, RotateCcw, SlidersHorizontal, Search, ChevronDown, XCircle } from 'lucide-react';
 
 /* ── Report context ──────────────────────────────────────── */
 interface ReportCtx { navigate: (to: string) => void; dateFrom: string; dateTo: string; }
@@ -51,6 +51,142 @@ interface ColDef<T = Record<string, unknown>> {
   align?: CellAlign;
   defaultVisible?: boolean;
   render: (row: T) => React.ReactNode;
+}
+
+/* ── Filter definition types ─────────────────────────────── */
+interface FilterDef<T = Record<string, unknown>> {
+  key: string;
+  label: string;
+  type: 'text' | 'select' | 'range';
+  getValue: (row: T) => string | number;
+  placeholder?: string;
+}
+
+type FilterValues = Record<string, { text?: string; select?: string; min?: string; max?: string }>;
+
+function applyFilters<T>(rows: T[], filters: FilterDef<T>[], values: FilterValues): T[] {
+  return rows.filter((row) =>
+    filters.every((f) => {
+      const v = values[f.key];
+      if (!v) return true;
+      const cell = f.getValue(row);
+      if (f.type === 'text') {
+        const q = v.text?.trim().toLowerCase();
+        return !q || String(cell).toLowerCase().includes(q);
+      }
+      if (f.type === 'select') {
+        return !v.select || v.select === '__all__' || String(cell) === v.select;
+      }
+      if (f.type === 'range') {
+        const n = Number(cell);
+        const min = v.min !== undefined && v.min !== '' ? Number(v.min) : undefined;
+        const max = v.max !== undefined && v.max !== '' ? Number(v.max) : undefined;
+        if (min !== undefined && n < min) return false;
+        if (max !== undefined && n > max) return false;
+        return true;
+      }
+      return true;
+    })
+  );
+}
+
+function countActiveFilters(values: FilterValues): number {
+  return Object.values(values).filter((v) => {
+    if (!v) return false;
+    return (v.text?.trim()) || (v.select && v.select !== '__all__') || v.min || v.max;
+  }).length;
+}
+
+/* ── Filter bar component ────────────────────────────────── */
+interface FilterBarProps<T> {
+  filters: FilterDef<T>[];
+  values: FilterValues;
+  rows: T[];
+  onChange: (key: string, patch: FilterValues[string]) => void;
+  onClear: () => void;
+}
+
+function FilterBar<T>({ filters, values, rows, onChange, onClear }: FilterBarProps<T>) {
+  const activeCount = countActiveFilters(values);
+  return (
+    <div style={{ padding: '12px 20px', borderBottom: '1px solid #E2E8F0', backgroundColor: '#FAFBFE', display: 'flex', flexWrap: 'wrap' as const, gap: '10px', alignItems: 'flex-end' }}>
+      {filters.map((f) => {
+        const v = values[f.key] ?? {};
+        if (f.type === 'text') {
+          return (
+            <div key={f.key} style={{ display: 'flex', flexDirection: 'column' as const, gap: '3px', minWidth: '160px' }}>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>{f.label}</label>
+              <div style={{ position: 'relative' as const }}>
+                <Search size={12} style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' as const }} />
+                <input
+                  type="text"
+                  value={v.text ?? ''}
+                  onChange={(e) => onChange(f.key, { ...v, text: e.target.value })}
+                  placeholder={f.placeholder ?? `Search ${f.label}…`}
+                  style={{ paddingLeft: '26px', paddingRight: '8px', paddingTop: '6px', paddingBottom: '6px', fontSize: '13px', border: '1px solid #E2E8F0', borderRadius: '6px', width: '100%', outline: 'none', backgroundColor: v.text?.trim() ? '#EFF6FF' : '#FFFFFF', borderColor: v.text?.trim() ? '#3B82F6' : '#E2E8F0' }}
+                />
+              </div>
+            </div>
+          );
+        }
+        if (f.type === 'select') {
+          const options = Array.from(new Set(rows.map((r) => String(f.getValue(r))))).sort();
+          return (
+            <div key={f.key} style={{ display: 'flex', flexDirection: 'column' as const, gap: '3px', minWidth: '140px' }}>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>{f.label}</label>
+              <div style={{ position: 'relative' as const }}>
+                <select
+                  value={v.select ?? '__all__'}
+                  onChange={(e) => onChange(f.key, { ...v, select: e.target.value })}
+                  style={{ appearance: 'none' as const, paddingLeft: '10px', paddingRight: '28px', paddingTop: '6px', paddingBottom: '6px', fontSize: '13px', border: '1px solid', borderColor: (v.select && v.select !== '__all__') ? '#3B82F6' : '#E2E8F0', borderRadius: '6px', width: '100%', outline: 'none', backgroundColor: (v.select && v.select !== '__all__') ? '#EFF6FF' : '#FFFFFF', cursor: 'pointer' }}
+                >
+                  <option value="__all__">All {f.label}s</option>
+                  {options.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <ChevronDown size={12} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', pointerEvents: 'none' as const }} />
+              </div>
+            </div>
+          );
+        }
+        if (f.type === 'range') {
+          const hasValue = v.min || v.max;
+          return (
+            <div key={f.key} style={{ display: 'flex', flexDirection: 'column' as const, gap: '3px' }}>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>{f.label}</label>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                <input
+                  type="number"
+                  value={v.min ?? ''}
+                  onChange={(e) => onChange(f.key, { ...v, min: e.target.value })}
+                  placeholder="Min"
+                  style={{ width: '70px', padding: '6px 8px', fontSize: '13px', border: '1px solid', borderColor: hasValue ? '#3B82F6' : '#E2E8F0', borderRadius: '6px', outline: 'none', backgroundColor: hasValue ? '#EFF6FF' : '#FFFFFF' }}
+                />
+                <span style={{ fontSize: '11px', color: '#94A3B8' }}>–</span>
+                <input
+                  type="number"
+                  value={v.max ?? ''}
+                  onChange={(e) => onChange(f.key, { ...v, max: e.target.value })}
+                  placeholder="Max"
+                  style={{ width: '70px', padding: '6px 8px', fontSize: '13px', border: '1px solid', borderColor: hasValue ? '#3B82F6' : '#E2E8F0', borderRadius: '6px', outline: 'none', backgroundColor: hasValue ? '#EFF6FF' : '#FFFFFF' }}
+                />
+              </div>
+            </div>
+          );
+        }
+        return null;
+      })}
+      {activeCount > 0 && (
+        <div style={{ marginLeft: 'auto', alignSelf: 'flex-end' }}>
+          <button
+            onClick={onClear}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid #FCA5A5', backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+          >
+            <XCircle size={13} /> Clear filters
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── Column config hook (localStorage) ───────────────────── */
@@ -223,21 +359,38 @@ interface ConfigurableTableProps<T> {
   subtitle?: string;
   allCols: ColDef<T>[];
   defaultColKeys: string[];
+  filterDefs?: FilterDef<T>[];
   rows: T[];
   loading: boolean;
   emptyMsg?: string;
   footerCells?: Record<string, React.ReactNode>;
 }
 
+type PanelOpen = 'none' | 'filters' | 'columns';
+
 function ConfigurableTable<T extends object>({
-  storageKey, title, subtitle, allCols, defaultColKeys, rows, loading, emptyMsg = 'No data for this period.', footerCells,
+  storageKey, title, subtitle, allCols, defaultColKeys, filterDefs = [], rows, loading, emptyMsg = 'No data for this period.', footerCells,
 }: ConfigurableTableProps<T>) {
-  const [configOpen, setConfigOpen] = useState(false);
+  const [panel, setPanel] = useState<PanelOpen>('none');
+  const [filterValues, setFilterValues] = useState<FilterValues>({});
+
   const { activeCols, inactiveCols, activeKeys, setActiveKeys, reset } = useColumnConfig(
-    storageKey,
-    allCols as ColDef[],
-    defaultColKeys,
+    storageKey, allCols as ColDef[], defaultColKeys,
   );
+
+  const filteredRows = filterDefs.length > 0
+    ? applyFilters(rows, filterDefs as FilterDef<T>[], filterValues)
+    : rows;
+
+  const activeFilterCount = countActiveFilters(filterValues);
+
+  const handleFilterChange = useCallback((key: string, patch: FilterValues[string]) => {
+    setFilterValues((prev) => ({ ...prev, [key]: patch }));
+  }, []);
+
+  const clearFilters = useCallback(() => setFilterValues({}), []);
+
+  const togglePanel = (p: PanelOpen) => setPanel((cur) => cur === p ? 'none' : p);
 
   const tdStyle = (col: ColDef) =>
     col.align === 'right' ? s.tdRight : col.align === 'muted' ? s.tdMuted : s.td;
@@ -251,31 +404,75 @@ function ConfigurableTable<T extends object>({
           <h3 style={s.sectionTitle}>{title}</h3>
           {subtitle && <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>{subtitle}</div>}
         </div>
-        <button
-          onClick={() => setConfigOpen((o) => !o)}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: '5px',
-            padding: '5px 12px', fontSize: '12px', fontWeight: 600,
-            borderRadius: '6px', border: '1px solid #E2E8F0',
-            backgroundColor: configOpen ? '#0A2342' : '#FFFFFF',
-            color: configOpen ? '#FFFFFF' : '#64748B',
-            cursor: 'pointer', transition: 'all 0.15s',
-          }}
-        >
-          <Settings2 size={13} />
-          Customize
-        </button>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          {filterDefs.length > 0 && (
+            <button
+              onClick={() => togglePanel('filters')}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                padding: '5px 12px', fontSize: '12px', fontWeight: 600,
+                borderRadius: '6px', border: '1px solid',
+                borderColor: panel === 'filters' ? '#0A2342' : activeFilterCount > 0 ? '#3B82F6' : '#E2E8F0',
+                backgroundColor: panel === 'filters' ? '#0A2342' : activeFilterCount > 0 ? '#EFF6FF' : '#FFFFFF',
+                color: panel === 'filters' ? '#FFFFFF' : activeFilterCount > 0 ? '#2563EB' : '#64748B',
+                cursor: 'pointer', transition: 'all 0.15s',
+              }}
+            >
+              <SlidersHorizontal size={13} />
+              Filters
+              {activeFilterCount > 0 && (
+                <span style={{ backgroundColor: panel === 'filters' ? 'rgba(255,255,255,0.25)' : '#2563EB', color: panel === 'filters' ? '#FFFFFF' : '#FFFFFF', borderRadius: '9999px', fontSize: '10px', fontWeight: 700, padding: '1px 6px', lineHeight: 1.4 }}>
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => togglePanel('columns')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '5px',
+              padding: '5px 12px', fontSize: '12px', fontWeight: 600,
+              borderRadius: '6px', border: '1px solid #E2E8F0',
+              backgroundColor: panel === 'columns' ? '#0A2342' : '#FFFFFF',
+              color: panel === 'columns' ? '#FFFFFF' : '#64748B',
+              cursor: 'pointer', transition: 'all 0.15s',
+            }}
+          >
+            <Settings2 size={13} />
+            Columns
+          </button>
+        </div>
       </div>
 
-      {configOpen && (
+      {panel === 'filters' && filterDefs.length > 0 && (
+        <FilterBar
+          filters={filterDefs as FilterDef<T>[]}
+          values={filterValues}
+          rows={rows}
+          onChange={handleFilterChange}
+          onClear={clearFilters}
+        />
+      )}
+
+      {panel === 'columns' && (
         <ColConfigPanel
           activeCols={activeCols as ColDef[]}
           inactiveCols={inactiveCols as ColDef[]}
           activeKeys={activeKeys}
           onUpdate={setActiveKeys}
           onReset={reset}
-          onClose={() => setConfigOpen(false)}
+          onClose={() => setPanel('none')}
         />
+      )}
+
+      {/* Result count when filtering */}
+      {activeFilterCount > 0 && !loading && (
+        <div style={{ padding: '6px 20px', backgroundColor: '#EFF6FF', borderBottom: '1px solid #DBEAFE', fontSize: '12px', color: '#2563EB', fontWeight: 500 }}>
+          Showing {filteredRows.length} of {rows.length} rows
+          <button onClick={clearFilters} style={{ marginLeft: '8px', background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB', textDecoration: 'underline', fontSize: '12px', padding: 0 }}>
+            clear
+          </button>
+        </div>
       )}
 
       <table style={s.table}>
@@ -289,10 +486,12 @@ function ConfigurableTable<T extends object>({
         <tbody>
           {loading ? (
             <tr><td colSpan={activeCols.length} style={s.loading}>Loading…</td></tr>
-          ) : rows.length === 0 ? (
-            <tr><td colSpan={activeCols.length} style={s.empty}>{emptyMsg}</td></tr>
+          ) : filteredRows.length === 0 ? (
+            <tr><td colSpan={activeCols.length} style={s.empty}>
+              {activeFilterCount > 0 ? 'No rows match the current filters.' : emptyMsg}
+            </td></tr>
           ) : (
-            rows.map((row, i) => (
+            filteredRows.map((row, i) => (
               <tr key={i}>
                 {activeCols.map((col) => (
                   <td key={col.key} style={tdStyle(col as ColDef)}>
@@ -302,7 +501,7 @@ function ConfigurableTable<T extends object>({
               </tr>
             ))
           )}
-          {!loading && rows.length > 0 && footerCells && (
+          {!loading && filteredRows.length > 0 && footerCells && (
             <tr style={s.totalRow}>
               {activeCols.map((col, i) => {
                 const cell = footerCells[col.key];
@@ -387,6 +586,11 @@ const revCols: ColDef<RevRow>[] = [
   { key: 'avgCents', label: 'Avg Transaction', align: 'right', render: (r) => r.count > 0 ? fmtC(r.totalCents / r.count) : '—' },
 ];
 
+const revFilters: FilterDef<RevRow>[] = [
+  { key: 'method', label: 'Payment Method', type: 'select', getValue: (r) => r.method },
+  { key: 'totalCents', label: 'Total ($)', type: 'range', getValue: (r) => r.totalCents / 100 },
+];
+
 function RevenueSummary() {
   const { data, loading } = useReportData<RevenueData>('revenue');
   const rows = data?.byPaymentMethod ?? [];
@@ -404,6 +608,7 @@ function RevenueSummary() {
         title="Revenue by Payment Method"
         allCols={revCols}
         defaultColKeys={['method', 'count', 'totalCents']}
+        filterDefs={revFilters}
         rows={rows}
         loading={loading}
         emptyMsg="No payments in this period."
@@ -418,6 +623,12 @@ interface AgingDetail { invoiceId: string; invoiceNumber: string; customer: { id
 interface AgingData { buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number }; totalOutstanding: number; invoiceCount: number; details: AgingDetail[]; }
 
 type AgingRow = { id: string; customer: string; invoice: string; current: number; d30: number; d60: number; d90: number; d120: number; total: number; daysOverdue: number; dueDate: string; };
+
+const agingFilters: FilterDef<AgingRow>[] = [
+  { key: 'customer', label: 'Customer', type: 'text', getValue: (r) => r.customer },
+  { key: 'daysOverdue', label: 'Days Overdue', type: 'range', getValue: (r) => r.daysOverdue },
+  { key: 'total', label: 'Balance ($)', type: 'range', getValue: (r) => r.total / 100 },
+];
 
 const agingCols: ColDef<AgingRow>[] = [
   { key: 'customer', label: 'Customer', render: (r) => <CustomerLink name={r.customer} id={r.id} /> },
@@ -461,6 +672,7 @@ function ARAgingReport() {
         title="Accounts Receivable Aging"
         allCols={agingCols}
         defaultColKeys={['customer', 'invoice', 'current', 'd30', 'd60', 'd90', 'd120', 'total']}
+        filterDefs={agingFilters}
         rows={rows}
         loading={loading}
         emptyMsg="No outstanding invoices."
@@ -473,6 +685,11 @@ function ARAgingReport() {
 /* ── Occupancy ───────────────────────────────────────────── */
 interface OccupancyData { summary: { total: number; occupied: number; vacant: number; maintenance: number; reserved: number; occupancyRate: string }; byDock: { dock: string; total: number; occupied: number; rate: string }[]; }
 type DockRow = { dock: string; total: number; occupied: number; vacant: number; rate: number; };
+
+const occupancyFilters: FilterDef<DockRow>[] = [
+  { key: 'dock', label: 'Dock', type: 'text', getValue: (r) => r.dock },
+  { key: 'rate', label: 'Occupancy %', type: 'range', getValue: (r) => r.rate },
+];
 
 const occupancyCols: ColDef<DockRow>[] = [
   { key: 'dock', label: 'Dock', render: (r) => r.dock || '(unassigned)' },
@@ -500,6 +717,7 @@ function OccupancyReport() {
         title="Dock Occupancy Summary"
         allCols={occupancyCols}
         defaultColKeys={['dock', 'total', 'occupied', 'vacant', 'rate']}
+        filterDefs={occupancyFilters}
         rows={rows}
         loading={loading}
         footerCells={{ total: sum.total, occupied: sum.occupied, vacant: sum.vacant, rate: <span style={s.badge('green')}>{pct(parseFloat(sum.occupancyRate))}</span> }}
@@ -551,6 +769,12 @@ function POSSalesReport() {
 interface RentalUtilData { totalBookings: number; totalRevenueCents: number; byProduct: { productId: string; name: string; bookings: number; revenueCents: number }[]; }
 type RentalRow = { productId: string; name: string; bookings: number; revenueCents: number; avgCents: number; };
 
+const rentalFilters: FilterDef<RentalRow>[] = [
+  { key: 'name', label: 'Product', type: 'text', getValue: (r) => r.name },
+  { key: 'bookings', label: 'Bookings', type: 'range', getValue: (r) => r.bookings },
+  { key: 'revenueCents', label: 'Revenue ($)', type: 'range', getValue: (r) => r.revenueCents / 100 },
+];
+
 const rentalCols: ColDef<RentalRow>[] = [
   { key: 'name', label: 'Product', render: (r) => r.name },
   { key: 'bookings', label: 'Bookings', align: 'right', render: (r) => r.bookings },
@@ -574,6 +798,7 @@ function RentalUtilReport() {
         title="Rental Asset Utilization"
         allCols={rentalCols}
         defaultColKeys={['name', 'bookings', 'revenueCents', 'avgCents']}
+        filterDefs={rentalFilters}
         rows={rows}
         loading={loading}
         footerCells={{ bookings: data?.totalBookings, revenueCents: fmtC(data?.totalRevenueCents ?? 0), avgCents: '' }}
@@ -585,6 +810,12 @@ function RentalUtilReport() {
 /* ── Inventory ───────────────────────────────────────────── */
 interface InvItem { productId: string; name: string; sku: string | null; costCents: number; priceCents: number; qtyOnHand: number; qtyOnOrder: number; reorderQty: number; valueCents: number; needsReorder: boolean; }
 interface InventoryData { productCount: number; totalValueCents: number; reorderAlerts: number; items: InvItem[]; }
+
+const invFilters: FilterDef<InvItem>[] = [
+  { key: 'name', label: 'Product / SKU', type: 'text', getValue: (r) => `${r.name} ${r.sku ?? ''}` },
+  { key: 'needsReorder', label: 'Status', type: 'select', getValue: (r) => r.needsReorder ? 'Reorder' : 'OK' },
+  { key: 'qtyOnHand', label: 'In Stock', type: 'range', getValue: (r) => r.qtyOnHand },
+];
 
 const invCols: ColDef<InvItem>[] = [
   { key: 'sku', label: 'SKU', align: 'muted', render: (r) => r.sku || '—' },
@@ -615,6 +846,7 @@ function InventoryReport() {
         title="Inventory Valuation"
         allCols={invCols}
         defaultColKeys={['sku', 'name', 'qtyOnHand', 'reorderQty', 'costCents', 'priceCents', 'valueCents', 'needsReorder']}
+        filterDefs={invFilters}
         rows={rows}
         loading={loading}
         footerCells={{ valueCents: fmtC(data?.totalValueCents ?? 0) }}
@@ -626,6 +858,11 @@ function InventoryReport() {
 /* ── Dock Walk ───────────────────────────────────────────── */
 interface DockWalkData { totalWalks: number; completed: number; completionRate: string; violationsByType: { type: string | null; count: number }[]; totalViolations: number; pumpOuts: number; }
 type ViolRow = { type: string; count: number; };
+
+const violFilters: FilterDef<ViolRow>[] = [
+  { key: 'type', label: 'Type', type: 'text', getValue: (r) => r.type },
+  { key: 'count', label: 'Count', type: 'range', getValue: (r) => r.count },
+];
 
 const dockWalkCols: ColDef<ViolRow>[] = [
   { key: 'type', label: 'Violation Type', render: (r) => r.type },
@@ -649,6 +886,7 @@ function DockWalkReport() {
         title="Violations by Type"
         allCols={dockWalkCols}
         defaultColKeys={['type', 'count']}
+        filterDefs={violFilters}
         rows={rows}
         loading={loading}
         emptyMsg="No violations in this period."
@@ -674,6 +912,7 @@ function MaintenanceReport() {
         title="Maintenance Issues by Type"
         allCols={dockWalkCols}
         defaultColKeys={['type', 'count']}
+        filterDefs={violFilters}
         rows={rows}
         loading={loading}
         emptyMsg="No maintenance issues in this period."
@@ -686,6 +925,10 @@ function MaintenanceReport() {
 /* ── Customer Activity ───────────────────────────────────── */
 interface CustomerActivityData { total: number; active: number; newInPeriod: number; byStatus: { status: string; count: number }[]; }
 type StatusRow = { status: string; count: number; sharePct: number; };
+
+const customerActivityFilters: FilterDef<StatusRow>[] = [
+  { key: 'status', label: 'Status', type: 'select', getValue: (r) => r.status },
+];
 
 const customerActivityCols: ColDef<StatusRow>[] = [
   { key: 'status', label: 'Status', render: (r) => r.status },
@@ -709,6 +952,7 @@ function CustomerActivityReport() {
         title="Customer Activity by Status"
         allCols={customerActivityCols}
         defaultColKeys={['status', 'count', 'sharePct']}
+        filterDefs={customerActivityFilters}
         rows={rows}
         loading={loading}
         footerCells={{ count: total, sharePct: '' }}
@@ -721,6 +965,13 @@ function CustomerActivityReport() {
 interface LeadConversionData { totalLeads: number; won: number; lost: number; conversionRate: string; byStage: { stage: string; count: number }[]; bySource: { source: string; count: number }[]; }
 type SourceRow = { source: string; count: number; };
 type StageRow = { stage: string; count: number; };
+
+const sourceFilters: FilterDef<SourceRow>[] = [
+  { key: 'source', label: 'Source', type: 'text', getValue: (r) => r.source || 'Direct' },
+];
+const stageFilters: FilterDef<StageRow>[] = [
+  { key: 'stage', label: 'Stage', type: 'select', getValue: (r) => r.stage },
+];
 
 const sourceCols: ColDef<SourceRow>[] = [
   { key: 'source', label: 'Source', render: (r) => r.source || 'Direct' },
@@ -746,6 +997,7 @@ function LeadConversionReport() {
         title="Leads by Source"
         allCols={sourceCols}
         defaultColKeys={['source', 'count']}
+        filterDefs={sourceFilters}
         rows={data?.bySource ?? []}
         loading={loading}
         footerCells={{ count: data?.totalLeads }}
@@ -755,6 +1007,7 @@ function LeadConversionReport() {
         title="Pipeline by Stage"
         allCols={stageCols}
         defaultColKeys={['stage', 'count']}
+        filterDefs={stageFilters}
         rows={data?.byStage ?? []}
         loading={loading}
       />
@@ -781,6 +1034,7 @@ function SlipUtilizationReport() {
         title="Slip Utilization by Dock"
         allCols={occupancyCols}
         defaultColKeys={['dock', 'total', 'occupied', 'vacant', 'rate']}
+        filterDefs={occupancyFilters}
         rows={rows}
         loading={loading}
       />
@@ -791,6 +1045,12 @@ function SlipUtilizationReport() {
 /* ── Collections ─────────────────────────────────────────── */
 interface CollAccount { id: string; status: string; balanceAtHandoffCents: number; recoveredCents: number; customer: { firstName: string; lastName: string } | null; }
 interface CollectionsData { accountCount: number; totalHandoffCents: number; totalRecoveredCents: number; recoveryRate: string; accounts: CollAccount[]; }
+
+const collFilters: FilterDef<CollAccount>[] = [
+  { key: 'customer', label: 'Customer', type: 'text', getValue: (r) => r.customer ? `${r.customer.firstName} ${r.customer.lastName}` : '' },
+  { key: 'status', label: 'Status', type: 'select', getValue: (r) => r.status },
+  { key: 'balanceAtHandoffCents', label: 'Balance ($)', type: 'range', getValue: (r) => r.balanceAtHandoffCents / 100 },
+];
 
 const collCols: ColDef<CollAccount>[] = [
   { key: 'customer', label: 'Customer', render: (r) => r.customer ? `${r.customer.firstName} ${r.customer.lastName}` : '—' },
@@ -815,6 +1075,7 @@ function CollectionsReport() {
         title="Collections Accounts"
         allCols={collCols}
         defaultColKeys={['customer', 'status', 'balanceAtHandoffCents', 'recoveredCents', 'remaining']}
+        filterDefs={collFilters}
         rows={data?.accounts ?? []}
         loading={loading}
         emptyMsg="No collections accounts."
@@ -827,6 +1088,11 @@ function CollectionsReport() {
 /* ── Deferred Revenue ────────────────────────────────────── */
 interface DeferredSchedule { id: string; startDate: string; endDate: string; totalCents: number; recognizedCents: number; }
 interface DeferredData { scheduleCount: number; totalDeferredCents: number; totalRecognizedCents: number; remainingCents: number; schedules: DeferredSchedule[]; }
+
+const deferredFilters: FilterDef<DeferredSchedule>[] = [
+  { key: 'totalCents', label: 'Total ($)', type: 'range', getValue: (r) => r.totalCents / 100 },
+  { key: 'recognizedCents', label: 'Recognized ($)', type: 'range', getValue: (r) => r.recognizedCents / 100 },
+];
 
 const deferredCols: ColDef<DeferredSchedule>[] = [
   { key: 'period', label: 'Period', render: (r) => `${r.startDate?.slice(0, 10)} → ${r.endDate?.slice(0, 10)}` },
@@ -851,6 +1117,7 @@ function DeferredRevenueReport() {
         title="Deferred Revenue Schedules"
         allCols={deferredCols}
         defaultColKeys={['period', 'totalCents', 'recognizedCents', 'deferred']}
+        filterDefs={deferredFilters}
         rows={data?.schedules ?? []}
         loading={loading}
         emptyMsg="No deferred revenue schedules."
@@ -863,6 +1130,12 @@ function DeferredRevenueReport() {
 /* ── GL Summary ──────────────────────────────────────────── */
 interface GlAccount { accountNumber: string; name: string; type: string; debitsCents: number; creditsCents: number; netCents: number; }
 interface GlData { accounts: GlAccount[]; }
+
+const glFilters: FilterDef<GlAccount>[] = [
+  { key: 'name', label: 'Account', type: 'text', getValue: (r) => `${r.accountNumber} ${r.name}` },
+  { key: 'type', label: 'Type', type: 'select', getValue: (r) => r.type },
+  { key: 'netCents', label: 'Net ($)', type: 'range', getValue: (r) => r.netCents / 100 },
+];
 
 const glCols: ColDef<GlAccount>[] = [
   { key: 'accountNumber', label: 'Account #', align: 'muted', render: (r) => r.accountNumber },
@@ -893,6 +1166,7 @@ function GLSummaryReport() {
         title="General Ledger Summary"
         allCols={glCols}
         defaultColKeys={['accountNumber', 'name', 'type', 'debitsCents', 'creditsCents', 'netCents']}
+        filterDefs={glFilters}
         rows={accounts}
         loading={loading}
         emptyMsg="No GL entries for this period."
@@ -905,6 +1179,13 @@ function GLSummaryReport() {
 /* ── Waitlist ────────────────────────────────────────────── */
 interface WaitlistData { totalEntries: number; bySlipType: { slipType: string | null; count: number }[]; byStatus: { status: string; count: number }[]; }
 type SlipTypeRow = { slipType: string; count: number; };
+
+const slipTypeFilters: FilterDef<SlipTypeRow>[] = [
+  { key: 'slipType', label: 'Slip Type', type: 'text', getValue: (r) => r.slipType },
+];
+const waitStatusFilters: FilterDef<StatusRow>[] = [
+  { key: 'status', label: 'Status', type: 'select', getValue: (r) => r.status },
+];
 
 const slipTypeCols: ColDef<SlipTypeRow>[] = [
   { key: 'slipType', label: 'Slip Type', render: (r) => r.slipType },
@@ -934,6 +1215,7 @@ function WaitlistReport() {
         title="Waitlist by Slip Type"
         allCols={slipTypeCols}
         defaultColKeys={['slipType', 'count']}
+        filterDefs={slipTypeFilters}
         rows={slipRows}
         loading={loading}
         emptyMsg="Waitlist is empty."
@@ -944,6 +1226,7 @@ function WaitlistReport() {
         title="Waitlist by Status"
         allCols={waitStatusCols}
         defaultColKeys={['status', 'count', 'sharePct']}
+        filterDefs={waitStatusFilters}
         rows={statusRows}
         loading={loading}
         emptyMsg="Waitlist is empty."
