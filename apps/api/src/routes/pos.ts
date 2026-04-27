@@ -1187,6 +1187,53 @@ const CaptureSchema = z.object({
   tipAmountCents: z.number().int().min(0).optional(),
 });
 
+// ─── POST /payments/cnp — Card-not-present (keyed-in) payment ────────────────
+
+const CnpPaymentSchema = z.object({
+  amountCents: z.number().int().min(50),
+  paymentMethodId: z.string().min(1),
+  description: z.string().optional(),
+});
+
+router.post(
+  "/payments/cnp",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res.status(400).json({ error: "No Stripe account connected for this marina." });
+        return;
+      }
+
+      const { amountCents, paymentMethodId, description } = CnpPaymentSchema.parse(req.body);
+      const { stripe: stripeClient } = await import("../lib/stripe.js");
+      if (!stripeClient) {
+        res.status(500).json({ error: "Stripe is not configured." });
+        return;
+      }
+
+      const intent = await stripeClient.paymentIntents.create(
+        {
+          amount: amountCents,
+          currency: "usd",
+          payment_method: paymentMethodId,
+          payment_method_types: ["card"],
+          confirm: true,
+          description: description ?? "POS card-not-present payment",
+        },
+        { stripeAccount: tenant.stripeAccountId },
+      );
+
+      res.json({ id: intent.id, status: intent.status, amount: intent.amount });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.post(
   "/terminal/payment-intents/:id/capture",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {

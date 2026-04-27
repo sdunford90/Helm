@@ -10,6 +10,8 @@ import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 import { loadStripeTerminal } from '@stripe/terminal-js';
+import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { getStripe } from '../lib/stripe.js';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -242,10 +244,69 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
   );
 }
 
-/* ── Card Payment Modal (Terminal + Manual) ────────────── */
+/* ── Card-Not-Present inner form (must be inside Elements) ── */
+
+function CnpForm({
+  total, amountCents, onBack, onComplete, apiCall,
+}: {
+  total: number; amountCents: number; onBack: () => void; onComplete: (method: string) => void;
+  apiCall: (method: string, path: string, body?: unknown) => Promise<any>;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [cnpLoading, setCnpLoading] = useState(false);
+  const [cnpError, setCnpError] = useState('');
+
+  const handleCharge = async () => {
+    if (!stripe || !elements) return;
+    setCnpLoading(true);
+    setCnpError('');
+    try {
+      const cardEl = elements.getElement(CardElement);
+      if (!cardEl) throw new Error('Card element not found');
+      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
+      if (pmErr) throw new Error(pmErr.message ?? 'Card error');
+      await apiCall('POST', '/api/pos/payments/cnp', { amountCents, paymentMethodId: paymentMethod!.id });
+      onComplete('Card Not Present');
+    } catch (err: any) {
+      setCnpError((err as Error).message ?? 'Payment failed');
+      setCnpLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Due</div>
+        <div style={{ fontSize: '38px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
+        <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Card Not Present — keyed entry</div>
+      </div>
+      <div style={{ padding: '14px 16px', border: '1px solid #CBD5E1', borderRadius: '8px', background: '#FFFFFF', marginBottom: '16px' }}>
+        <CardElement options={{ style: { base: { fontSize: '15px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace', '::placeholder': { color: '#94A3B8' } } } }} />
+      </div>
+      {cnpError && (
+        <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', color: '#DC2626', fontSize: '13px', marginBottom: '14px' }}>
+          {cnpError}
+        </div>
+      )}
+      <button
+        style={{ width: '100%', padding: '13px', background: cnpLoading ? '#94A3B8' : '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: cnpLoading ? 'not-allowed' : 'pointer', fontSize: '15px', fontWeight: 700 }}
+        onClick={() => void handleCharge()}
+        disabled={cnpLoading || !stripe}
+      >
+        {cnpLoading ? 'Processing…' : `Charge $${total.toFixed(2)}`}
+      </button>
+      <button style={{ width: '100%', marginTop: '10px', padding: '10px', background: 'none', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#64748B' }} onClick={onBack}>
+        ← Back to readers
+      </button>
+    </>
+  );
+}
+
+/* ── Card Payment Modal (Terminal + Card-Not-Present) ──── */
 
 interface StripeReader { id: string; label: string; status: string; device_type: string }
-type CardStatus = 'loading' | 'readers' | 'connecting' | 'collecting' | 'processing' | 'terminal_done' | 'terminal_error' | 'manual' | 'manual_done';
+type CardStatus = 'loading' | 'readers' | 'connecting' | 'collecting' | 'processing' | 'terminal_done' | 'terminal_error' | 'cnp' | 'cnp_done';
 
 function CardPaymentModal({
   total, amountCents, cartItems, onClose, onComplete, getToken,
@@ -257,6 +318,8 @@ function CardPaymentModal({
   const [errorMsg, setErrorMsg] = useState('');
   const [selectedReader, setSelectedReader] = useState<StripeReader | null>(null);
   const terminalRef = useRef<any>(null);
+  // Stores the raw SDK reader objects (needed by connectReader — the reshaped StripeReader objects are only for display)
+  const rawReadersRef = useRef<Map<string, any>>(new Map());
 
   const apiCall = useCallback(async (httpMethod: string, path: string, body?: unknown) => {
     const token = await getToken();
@@ -270,6 +333,7 @@ function CardPaymentModal({
   const discoverReaders = useCallback(async () => {
     setStatus('loading');
     setErrorMsg('');
+    rawReadersRef.current.clear();
     try {
       const { secret } = await apiCall('POST', '/api/pos/terminal/connection-token');
       const StripeTerminal = await loadStripeTerminal();
@@ -279,20 +343,17 @@ function CardPaymentModal({
         onUnexpectedReaderDisconnect: () => { setStatus('terminal_error'); setErrorMsg('Reader disconnected unexpectedly.'); },
       });
       terminalRef.current = terminal;
-      const result = await (terminal as any).discoverReaders({ simulated: true });
-      const discovered: StripeReader[] = ((result.discoveredReaders ?? []) as any[]).map((r: any) => ({
-        id: r.id, label: r.label || 'Simulated Reader', status: r.status ?? 'online', device_type: r.device_type ?? 'simulated_wispos',
+      const result = await (terminal as any).discoverReaders({ simulated: false });
+      const sdkReaders: any[] = result.discoveredReaders ?? [];
+      // Store raw SDK objects keyed by id so connectReader gets the original shape
+      sdkReaders.forEach((r: any) => rawReadersRef.current.set(r.id, r));
+      const discovered: StripeReader[] = sdkReaders.map((r: any) => ({
+        id: r.id, label: r.label || r.serial_number || 'Reader', status: r.status ?? 'online', device_type: r.device_type ?? '',
       }));
-      const { data: backendReaders } = await apiCall('GET', '/api/pos/terminal/readers').catch(() => ({ data: [] }));
-      const real: StripeReader[] = ((backendReaders ?? []) as any[]).map((r: any) => ({
-        id: r.id, label: r.label || r.id, status: r.status, device_type: r.device_type,
-      }));
-      const seen = new Set<string>();
-      const all = [...discovered, ...real].filter((r) => { if (seen.has(r.id)) return false; seen.add(r.id); return true; });
-      setReaders(all);
+      setReaders(discovered);
       setStatus('readers');
     } catch {
-      setStatus('readers'); // fall through to manual even if terminal unavailable
+      setStatus('readers');
       setReaders([]);
     }
   }, [apiCall]);
@@ -302,7 +363,10 @@ function CardPaymentModal({
     setSelectedReader(reader);
     setStatus('connecting');
     try {
-      const { error: ce } = await (terminalRef.current as any).connectReader(reader);
+      // Use the original SDK reader object, not the reshaped display object
+      const rawReader = rawReadersRef.current.get(reader.id);
+      if (!rawReader) { setErrorMsg('Reader not found — try refreshing.'); setStatus('terminal_error'); return; }
+      const { error: ce } = await (terminalRef.current as any).connectReader(rawReader);
       if (ce) { setErrorMsg((ce as any).message ?? 'Connect failed'); setStatus('terminal_error'); return; }
       setStatus('collecting');
       const { clientSecret } = await apiCall('POST', '/api/pos/terminal/payment-intents', { amountCents, tipEnabled: false });
@@ -326,14 +390,14 @@ function CardPaymentModal({
     if (!receiptWindow) return;
     const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
     const rows = cartItems.map((ci) => `<tr><td>${ci.product.name}</td><td style="text-align:right">x${ci.quantity}</td><td style="text-align:right">$${(ci.product.price * ci.quantity).toFixed(2)}</td></tr>`).join('');
-    receiptWindow.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:monospace;padding:20px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px}hr{border:none;border-top:1px dashed #999;margin:10px 0}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0}.footer{text-align:center;font-size:12px;color:#666;margin-top:16px}</style></head><body><h2>Point of Sale Receipt</h2><div style="text-align:center;font-size:12px;color:#666">${now}</div><hr/><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><hr/><div style="text-align:right;font-weight:bold;font-size:16px">Total: $${total.toFixed(2)}</div><div style="text-align:right;font-size:12px;color:#666">Payment: Card</div><hr/><div class="footer">Thank you for your business!</div></body></html>`);
+    receiptWindow.document.write(`<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:monospace;padding:20px;max-width:320px;margin:0 auto}h2{text-align:center;font-size:18px}hr{border:none;border-top:1px dashed #999;margin:10px 0}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0}.footer{text-align:center;font-size:12px;color:#666;margin-top:16px}</style></head><body><h2>Point of Sale Receipt</h2><div style="text-align:center;font-size:12px;color:#666">${now}</div><hr/><table><thead><tr><th style="text-align:left">Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><hr/><div style="text-align:right;font-weight:bold;font-size:16px">Total: $${total.toFixed(2)}</div><div style="text-align:right;font-size:12px;color:#666">Payment: Card Not Present</div><hr/><div class="footer">Thank you for your business!</div></body></html>`);
     receiptWindow.document.close();
     receiptWindow.print();
   }, [cartItems, total]);
 
   useEffect(() => { void discoverReaders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canClose = ['readers', 'terminal_error', 'manual', 'manual_done'].includes(status);
+  const canClose = ['readers', 'terminal_error', 'cnp', 'cnp_done'].includes(status);
 
   const tSt = {
     overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center' },
@@ -345,19 +409,18 @@ function CardPaymentModal({
     dividerLine: { flex: 1, borderTop: '1px solid #E2E8F0' } as React.CSSProperties,
     dividerText: { fontSize: '12px', color: '#94A3B8', fontWeight: 500, whiteSpace: 'nowrap' as const },
     statusBox: { textAlign: 'center' as const, padding: '24px 0' },
-    manualBtn: { width: '100%', padding: '13px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '15px', fontWeight: 700 } as React.CSSProperties,
     outlineBtn: { width: '100%', padding: '10px', background: 'none', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#64748B' } as React.CSSProperties,
   };
 
-  const ManualSection = () => (
+  const CnpSection = () => (
     <>
       <div style={tSt.divider}>
         <div style={tSt.dividerLine} />
-        <span style={tSt.dividerText}>or enter manually</span>
+        <span style={tSt.dividerText}>or card not present</span>
         <div style={tSt.dividerLine} />
       </div>
-      <button style={{ ...tSt.outlineBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => setStatus('manual')}>
-        <CreditCard size={15} /> Manual Card Entry
+      <button style={{ ...tSt.outlineBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => setStatus('cnp')}>
+        <CreditCard size={15} /> Card Not Present (Keyed)
       </button>
     </>
   );
@@ -404,10 +467,10 @@ function CardPaymentModal({
                 <div style={{ textAlign: 'center', padding: '16px 0 8px' }}>
                   <WifiOff size={28} style={{ color: '#94A3B8', marginBottom: '8px' }} />
                   <div style={{ fontWeight: 600, fontSize: '14px', color: '#0A2342', marginBottom: '4px' }}>No readers found</div>
-                  <div style={{ fontSize: '13px', color: '#64748B' }}>Register a reader in your Stripe Dashboard, or use manual entry below.</div>
+                  <div style={{ fontSize: '13px', color: '#64748B' }}>Register a reader in your Stripe Dashboard, or use card-not-present below.</div>
                 </div>
               )}
-              <ManualSection />
+              <CnpSection />
             </>
           )}
 
@@ -453,34 +516,29 @@ function CardPaymentModal({
               <div style={{ fontSize: '15px', fontWeight: 600, color: '#DC2626', marginBottom: '6px' }}>Reader Error</div>
               <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>{errorMsg}</div>
               <button style={{ padding: '10px 24px', background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, marginBottom: '12px' }} onClick={() => void discoverReaders()}>Try Again</button>
-              <ManualSection />
+              <CnpSection />
             </div>
           )}
 
-          {/* ── Manual entry ── */}
-          {status === 'manual' && (
-            <>
-              <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-                <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '4px' }}>Total Due</div>
-                <div style={{ fontSize: '40px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
-              </div>
-              <div style={{ padding: '20px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', textAlign: 'center', marginBottom: '20px' }}>
-                <CreditCard size={28} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
-                <div style={{ fontSize: '14px', color: '#64748B' }}>Process card on your external terminal, then confirm below.</div>
-              </div>
-              <button style={tSt.manualBtn} onClick={() => { setStatus('manual_done'); onComplete('Card'); }}>
-                Complete Payment
-              </button>
-              <button style={{ ...tSt.outlineBtn, marginTop: '10px' }} onClick={() => setStatus('readers')}>← Back to readers</button>
-            </>
+          {/* ── Card Not Present entry ── */}
+          {status === 'cnp' && (
+            <Elements stripe={getStripe()}>
+              <CnpForm
+                total={total}
+                amountCents={amountCents}
+                onBack={() => setStatus('readers')}
+                onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
+                apiCall={apiCall}
+              />
+            </Elements>
           )}
 
-          {/* ── Manual success ── */}
-          {status === 'manual_done' && (
+          {/* ── CNP success ── */}
+          {status === 'cnp_done' && (
             <div style={tSt.statusBox}>
               <CheckCircle2 size={48} style={{ color: '#22C55E', marginBottom: '16px' }} />
               <div style={{ fontSize: '20px', fontWeight: 700, color: '#03543F' }}>Payment Complete</div>
-              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${total.toFixed(2)} via card</div>
+              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${total.toFixed(2)} — card not present</div>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '20px' }}>
                 <button style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '9px 18px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: '1px solid #0A2342', background: '#FFFFFF', color: '#0A2342', cursor: 'pointer' }} onClick={handlePrintReceipt}>
                   <Printer size={15} /> Print Receipt
