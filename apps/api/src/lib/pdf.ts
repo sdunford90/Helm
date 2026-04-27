@@ -1,8 +1,46 @@
 import puppeteer from "puppeteer";
+import { execSync } from "node:child_process";
 
 // --------------------------------------------------------------------------
 // PDF generation
 // --------------------------------------------------------------------------
+
+import { existsSync, readdirSync } from "node:fs";
+
+/** Resolve the best available Chromium/Chrome executable. */
+function resolveChromiumPath(): string | undefined {
+  // 1. Honour an explicit env var override (e.g. set in Replit secrets).
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  // 2. Try PATH-based look-up.
+  for (const bin of ["chromium", "chromium-browser", "google-chrome"]) {
+    try {
+      const p = execSync(`which ${bin} 2>/dev/null`, { encoding: "utf8", env: process.env }).trim();
+      if (p && existsSync(p)) return p;
+    } catch { /* continue */ }
+  }
+
+  // 3. Scan the Nix store for a chromium package (Replit NixOS fallback).
+  try {
+    const nixStore = "/nix/store";
+    if (existsSync(nixStore)) {
+      const entries = readdirSync(nixStore);
+      const entry = entries.find((e) => e.includes("-chromium-") && !e.includes("-lib"));
+      if (entry) {
+        const candidate = `${nixStore}/${entry}/bin/chromium`;
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+  } catch { /* continue */ }
+
+  return undefined; // fall back to Puppeteer's bundled Chrome
+}
+
+const CHROMIUM_PATH = resolveChromiumPath();
+console.log(`[pdf] chromium path: ${CHROMIUM_PATH ?? "(puppeteer default)"}`);
+
 
 /**
  * Render an HTML string to a PDF buffer using a headless Chromium instance.
@@ -13,7 +51,8 @@ export async function generatePdf(
 ): Promise<Buffer> {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: CHROMIUM_PATH,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
   });
 
   try {

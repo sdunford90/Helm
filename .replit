@@ -95,6 +95,7 @@ APP_PORTAL_URL = "https://portal.tracktheturn.com"
 APP_ADMIN_URL = "https://admin.tracktheturn.com"
 QBO_ENVIRONMENT = "sandbox"
 VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5KahdUIHyxhrKi20olrMNAMJIz1BIkcWm0vsuqwHn4nnJ9KJPgUA00qCZaC8Mn"
+PUPPETEER_EXECUTABLE_PATH = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
 
 [userenv.development]
 ENABLE_AUTH_DEV_BYPASS = "true"
