@@ -323,7 +323,9 @@ model Location {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  dockageRates DockageRate[]
+  serviceFees  ServiceFee[]
 
   @@index([tenantId])
   @@map("locations")
@@ -1550,6 +1552,63 @@ model InvoiceLineItemTax {
   @@index([jurisdictionId])
   @@index([lineItemId])
   @@map("invoice_line_item_tax")
+}
+
+// ==========================================================================
+//  CATALOG — DOCKAGE RATES
+// ==========================================================================
+
+model DockageRate {
+  id                   String          @id @default(uuid())
+  tenantId             String
+  locationId           String
+  slipType             String
+  monthlyRateCents     Int
+  quarterlyRateCents   Int?
+  annualRateCents      Int?
+  electricityMode      ElectricityMode @default(METERED)
+  electricityRateCents Int?
+  glAccountId          String?
+  active               Boolean         @default(true)
+  effectiveFrom        DateTime?
+  effectiveTo          DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("dockage_rates")
+}
+
+// ==========================================================================
+//  CATALOG — SERVICE FEES
+// ==========================================================================
+
+enum FeeType {
+  FLAT
+  PERCENT
+}
+
+model ServiceFee {
+  id          String   @id @default(uuid())
+  tenantId    String
+  locationId  String
+  name        String
+  feeType     FeeType  @default(FLAT)
+  amountCents Int?
+  pct         Float?
+  glAccountId String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("service_fees")
 }
 
 // ==========================================================================

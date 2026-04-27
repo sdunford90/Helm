@@ -109,14 +109,17 @@ const MODULE_GROUPS = [...new Set(PERMISSION_MODULES.map((m) => m.group))];
 
 interface DockageRate {
   id: string;
+  locationId: string;
   slipType: string;
   monthlyRate: number;
   quarterlyRate: number;
   annualRate: number;
-  electricityMode: 'Flat' | 'Metered';
+  electricityMode: 'FLAT_FEE' | 'METERED';
   electricityRate: number;
   glAccount: string;
   active: boolean;
+  effectiveFrom: string;
+  effectiveTo: string;
 }
 
 interface RentalProduct {
@@ -148,7 +151,9 @@ interface POSItem {
 
 interface ServiceFee {
   id: string;
+  locationId: string;
   name: string;
+  feeType: 'FLAT' | 'PERCENT';
   amount: number;
   glAccount: string;
   active: boolean;
@@ -164,11 +169,7 @@ interface ApiKeyEntry {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
-const MARINA_LOCATIONS = [
-  { id: 'main', name: 'Main Dock' },
-  { id: 'fuel', name: 'Fuel Dock' },
-  { id: 'rental', name: 'Rental Center' },
-];
+interface MarinaLocation { id: string; name: string; active?: boolean; }
 
 const TEAM: TeamMember[] = [
   { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', roleEnum: 'MARINA_OWNER', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
@@ -179,16 +180,7 @@ const TEAM: TeamMember[] = [
   { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'] },
 ];
 
-const DOCKAGE_RATES_DATA: DockageRate[] = [
-  { id: 'd1', slipType: '25ft Open', monthlyRate: 450, quarterlyRate: 1250, annualRate: 4800, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
-  { id: 'd2', slipType: '30ft Open', monthlyRate: 575, quarterlyRate: 1600, annualRate: 6200, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
-  { id: 'd3', slipType: '30ft Covered', monthlyRate: 725, quarterlyRate: 2050, annualRate: 7900, electricityMode: 'Flat', electricityRate: 75, glAccount: '4100', active: true },
-  { id: 'd4', slipType: '40ft Open', monthlyRate: 850, quarterlyRate: 2400, annualRate: 9200, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
-  { id: 'd5', slipType: '40ft Covered', monthlyRate: 1050, quarterlyRate: 2950, annualRate: 11400, electricityMode: 'Flat', electricityRate: 125, glAccount: '4100', active: true },
-  { id: 'd6', slipType: '50ft Open', monthlyRate: 1200, quarterlyRate: 3400, annualRate: 13000, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true },
-  { id: 'd7', slipType: '50ft Covered', monthlyRate: 1450, quarterlyRate: 4100, annualRate: 15800, electricityMode: 'Flat', electricityRate: 175, glAccount: '4100', active: true },
-  { id: 'd8', slipType: '60ft End-Tie', monthlyRate: 1800, quarterlyRate: 5100, annualRate: 19500, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: false },
-];
+const DOCKAGE_RATES_DATA: DockageRate[] = [];
 
 const RENTAL_PRODUCTS_DATA: RentalProduct[] = [
   { id: 'r1', name: '20ft Pontoon - Sun Tracker', type: 'Pontoon', hourlyRate: 75, halfDayRate: 225, dailyRate: 395, damageWaiver: 35, deposit: 500, glAccount: '4300', active: true },
@@ -212,16 +204,7 @@ const POS_ITEMS_DATA: POSItem[] = [
   { id: 'p10', sku: 'APP-TEE01', name: 'Bayshore Marina T-Shirt', category: 'Apparel', cost: 7.00, price: 29.99, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true },
 ];
 
-const SERVICE_FEES_DATA: ServiceFee[] = [
-  { id: 'sf1', name: 'Pump-Out Fee', amount: 25, glAccount: '4800', active: true },
-  { id: 'sf2', name: 'Launch Ramp - Single Use', amount: 20, glAccount: '4700', active: true },
-  { id: 'sf3', name: 'Launch Ramp - Annual Pass', amount: 350, glAccount: '4700', active: true },
-  { id: 'sf4', name: 'Transient Nightly (per ft)', amount: 3.50, glAccount: '4600', active: true },
-  { id: 'sf5', name: 'Live-Aboard Surcharge', amount: 200, glAccount: '4100', active: true },
-  { id: 'sf6', name: 'Winter Storage (per ft/mo)', amount: 8, glAccount: '4100', active: true },
-  { id: 'sf7', name: 'Jet Ski Lift Fee', amount: 15, glAccount: '4800', active: true },
-  { id: 'sf8', name: 'Package Receiving', amount: 5, glAccount: '4800', active: false },
-];
+const SERVICE_FEES_DATA: ServiceFee[] = [];
 
 const GL_ACCOUNTS_FULL = [
   { code: '1010', name: 'Cash on Hand' },
@@ -444,28 +427,120 @@ export default function Settings() {
   };
 
   // Catalog state
-  const [catalogLocation, setCatalogLocation] = useState('main');
   const [catalogSection, setCatalogSection] = useState<'dockage' | 'rentals' | 'pos' | 'fees'>('dockage');
   const [catalogSearch, setCatalogSearch] = useState('');
 
-  // Catalog: Dockage Rates (stored in tenant settings JSON)
-  const { execute: saveDockageRatesApi } = useApi<{ data: DockageRate[] }>('put', '/api/settings/catalog/dockage-rates');
-  const { data: apiDockageRatesGet } = useApi<{ data: DockageRate[] }>('get', '/api/settings/catalog/dockage-rates', { immediate: true });
+  // Locations from API
+  const { data: apiLocations } = useApi<{ data: MarinaLocation[] }>('get', '/api/settings/locations', { immediate: true });
+  const [marinaLocations, setMarinaLocations] = useState<MarinaLocation[]>([]);
+  const [catalogLocation, setCatalogLocation] = useState('');
+
+  React.useEffect(() => {
+    if (apiLocations?.data && apiLocations.data.length > 0) {
+      setMarinaLocations(apiLocations.data);
+      setCatalogLocation((prev) => prev || apiLocations.data[0].id);
+    }
+  }, [apiLocations]);
+
+  // Catalog: Dockage Rates — individual CRUD per row
   const [dockageRates, setDockageRates] = useState<DockageRate[]>(DOCKAGE_RATES_DATA);
   const [editingDockageId, setEditingDockageId] = useState<string | null>(null);
   const [editingDockage, setEditingDockage] = useState<DockageRate | null>(null);
   const [addingDockage, setAddingDockage] = useState(false);
-  const [newDockage, setNewDockage] = useState<DockageRate>({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true });
+  const blankDockage = (): DockageRate => ({
+    id: '', locationId: catalogLocation, slipType: '', monthlyRate: 0,
+    quarterlyRate: 0, annualRate: 0, electricityMode: 'METERED',
+    electricityRate: 0, glAccount: '4100', active: true, effectiveFrom: '', effectiveTo: '',
+  });
+  const [newDockage, setNewDockage] = useState<DockageRate>(blankDockage());
 
+  // Fetch dockage rates whenever selected location changes
   React.useEffect(() => {
-    if (apiDockageRatesGet?.data && apiDockageRatesGet.data.length > 0) {
-      setDockageRates(apiDockageRatesGet.data);
-    }
-  }, [apiDockageRatesGet]);
+    if (!catalogLocation) return;
+    fetch(`/api/settings/catalog/dockage-rates?locationId=${catalogLocation}`, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((body) => {
+        if (body.data) {
+          setDockageRates(body.data.map((r: any) => ({
+            id: r.id,
+            locationId: r.locationId,
+            slipType: r.slipType,
+            monthlyRate: r.monthlyRateCents / 100,
+            quarterlyRate: r.quarterlyRateCents != null ? r.quarterlyRateCents / 100 : 0,
+            annualRate: r.annualRateCents != null ? r.annualRateCents / 100 : 0,
+            electricityMode: r.electricityMode,
+            electricityRate: r.electricityRateCents != null ? r.electricityRateCents / 100 : 0,
+            glAccount: r.glAccountId ?? '4100',
+            active: r.active,
+            effectiveFrom: r.effectiveFrom ? r.effectiveFrom.slice(0, 10) : '',
+            effectiveTo: r.effectiveTo ? r.effectiveTo.slice(0, 10) : '',
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [catalogLocation]);
 
-  const persistDockageRates = async (rates: DockageRate[]) => {
-    setDockageRates(rates);
-    await saveDockageRatesApi({ rates });
+  const handleAddDockageRate = async (rate: DockageRate) => {
+    try {
+      const res = await fetch('/api/settings/catalog/dockage-rates', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationId: catalogLocation,
+          slipType: rate.slipType,
+          monthlyRateCents: Math.round(rate.monthlyRate * 100),
+          quarterlyRateCents: rate.quarterlyRate ? Math.round(rate.quarterlyRate * 100) : null,
+          annualRateCents: rate.annualRate ? Math.round(rate.annualRate * 100) : null,
+          electricityMode: rate.electricityMode,
+          electricityRateCents: rate.electricityRate ? Math.round(rate.electricityRate * 100) : null,
+          glAccountId: rate.glAccount || null,
+          active: rate.active,
+          effectiveFrom: rate.effectiveFrom || null,
+          effectiveTo: rate.effectiveTo || null,
+        }),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        const saved = body.data;
+        setDockageRates((prev) => [...prev, {
+          ...rate, id: saved.id, locationId: saved.locationId,
+          effectiveFrom: saved.effectiveFrom ? saved.effectiveFrom.slice(0, 10) : '',
+          effectiveTo: saved.effectiveTo ? saved.effectiveTo.slice(0, 10) : '',
+        }]);
+      }
+    } catch { /* ignore */ }
+    setAddingDockage(false);
+    setNewDockage(blankDockage());
+  };
+
+  const handleEditDockageRate = async (rate: DockageRate) => {
+    try {
+      await fetch(`/api/settings/catalog/dockage-rates/${rate.id}`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slipType: rate.slipType,
+          monthlyRateCents: Math.round(rate.monthlyRate * 100),
+          quarterlyRateCents: rate.quarterlyRate ? Math.round(rate.quarterlyRate * 100) : null,
+          annualRateCents: rate.annualRate ? Math.round(rate.annualRate * 100) : null,
+          electricityMode: rate.electricityMode,
+          electricityRateCents: rate.electricityRate ? Math.round(rate.electricityRate * 100) : null,
+          glAccountId: rate.glAccount || null,
+          active: rate.active,
+          effectiveFrom: rate.effectiveFrom || null,
+          effectiveTo: rate.effectiveTo || null,
+        }),
+      });
+    } catch { /* ignore */ }
+    setDockageRates((prev) => prev.map((r) => r.id === rate.id ? rate : r));
+    setEditingDockageId(null);
+  };
+
+  const handleDeleteDockageRate = async (id: string) => {
+    try {
+      await fetch(`/api/settings/catalog/dockage-rates/${id}`, { method: 'DELETE', credentials: 'include' });
+    } catch { /* ignore */ }
+    setDockageRates((prev) => prev.filter((r) => r.id !== id));
   };
 
   // Catalog: Rental Products (from rentals API)
@@ -634,24 +709,81 @@ export default function Settings() {
     setPosItems((prev) => prev.filter((p) => p.id !== id));
   };
 
-  // Catalog: Service Fees (stored in tenant settings JSON)
-  const { data: apiServiceFeesGet } = useApi<{ data: ServiceFee[] }>('get', '/api/settings/catalog/service-fees', { immediate: true });
-  const { execute: saveServiceFeesApi } = useApi<{ data: ServiceFee[] }>('put', '/api/settings/catalog/service-fees');
+  // Catalog: Service Fees — individual CRUD per row
   const [serviceFees, setServiceFees] = useState<ServiceFee[]>(SERVICE_FEES_DATA);
   const [editingFeeId, setEditingFeeId] = useState<string | null>(null);
   const [editingFee, setEditingFee] = useState<ServiceFee | null>(null);
   const [addingFee, setAddingFee] = useState(false);
-  const [newFee, setNewFee] = useState<ServiceFee>({ id: '', name: '', amount: 0, glAccount: '4800', active: true });
+  const blankFee = (): ServiceFee => ({ id: '', locationId: catalogLocation, name: '', feeType: 'FLAT', amount: 0, glAccount: '4800', active: true });
+  const [newFee, setNewFee] = useState<ServiceFee>(blankFee());
 
+  // Fetch service fees whenever selected location changes
   React.useEffect(() => {
-    if (apiServiceFeesGet?.data && apiServiceFeesGet.data.length > 0) {
-      setServiceFees(apiServiceFeesGet.data);
-    }
-  }, [apiServiceFeesGet]);
+    if (!catalogLocation) return;
+    fetch(`/api/settings/catalog/service-fees?locationId=${catalogLocation}`, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((body) => {
+        if (body.data) {
+          setServiceFees(body.data.map((f: any) => ({
+            id: f.id,
+            locationId: f.locationId,
+            name: f.name,
+            feeType: f.feeType,
+            amount: f.feeType === 'PERCENT' ? (f.pct ?? 0) : (f.amountCents != null ? f.amountCents / 100 : 0),
+            glAccount: f.glAccountId ?? '4800',
+            active: f.active,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [catalogLocation]);
 
-  const persistServiceFees = async (fees: ServiceFee[]) => {
-    setServiceFees(fees);
-    await saveServiceFeesApi({ fees });
+  const handleAddFee = async (fee: ServiceFee) => {
+    try {
+      const res = await fetch('/api/settings/catalog/service-fees', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationId: catalogLocation,
+          name: fee.name,
+          feeType: fee.feeType,
+          amountCents: fee.feeType === 'FLAT' ? Math.round(fee.amount * 100) : null,
+          pct: fee.feeType === 'PERCENT' ? fee.amount : null,
+          glAccountId: fee.glAccount || null,
+          active: fee.active,
+        }),
+      });
+      const body = await res.json();
+      if (res.ok) setServiceFees((prev) => [...prev, { ...fee, id: body.data.id, locationId: body.data.locationId }]);
+    } catch { /* ignore */ }
+    setAddingFee(false);
+    setNewFee(blankFee());
+  };
+
+  const handleEditFee = async (fee: ServiceFee) => {
+    try {
+      await fetch(`/api/settings/catalog/service-fees/${fee.id}`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: fee.name,
+          feeType: fee.feeType,
+          amountCents: fee.feeType === 'FLAT' ? Math.round(fee.amount * 100) : null,
+          pct: fee.feeType === 'PERCENT' ? fee.amount : null,
+          glAccountId: fee.glAccount || null,
+          active: fee.active,
+        }),
+      });
+    } catch { /* ignore */ }
+    setServiceFees((prev) => prev.map((f) => f.id === fee.id ? fee : f));
+    setEditingFeeId(null);
+  };
+
+  const handleDeleteFee = async (id: string) => {
+    try {
+      await fetch(`/api/settings/catalog/service-fees/${id}`, { method: 'DELETE', credentials: 'include' });
+    } catch { /* ignore */ }
+    setServiceFees((prev) => prev.filter((f) => f.id !== id));
   };
 
   // Team invite modal state
@@ -1068,9 +1200,10 @@ export default function Settings() {
               <MapPin size={16} style={{ color: '#00D4FF' }} />
               <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Location:</span>
               <select style={{ ...st.select, width: '240px' }} value={catalogLocation} onChange={(e) => setCatalogLocation(e.target.value)}>
-                {MARINA_LOCATIONS.map((loc) => (
+                {marinaLocations.map((loc) => (
                   <option key={loc.id} value={loc.id}>{loc.name}</option>
                 ))}
+                {marinaLocations.length === 0 && <option value="">No locations</option>}
               </select>
             </div>
           </div>
@@ -1098,10 +1231,10 @@ export default function Settings() {
             <button
               style={st.addBtn}
               onClick={() => {
-                if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, glAccount: '4100', active: true }); }
+                if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage(blankDockage()); }
                 if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true }); }
                 if (catalogSection === 'pos') { setAddingPos(true); setNewPos({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true }); }
-                if (catalogSection === 'fees') { setAddingFee(true); setNewFee({ id: '', name: '', amount: 0, glAccount: '4800', active: true }); }
+                if (catalogSection === 'fees') { setAddingFee(true); setNewFee(blankFee()); }
               }}
             >
               <Plus size={16} /> Add {catalogSection === 'dockage' ? 'Rate' : catalogSection === 'rentals' ? 'Product' : catalogSection === 'pos' ? 'Item' : 'Fee'}
@@ -1133,8 +1266,8 @@ export default function Settings() {
                       <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" value={newDockage.quarterlyRate || ''} onChange={(e) => setNewDockage({ ...newDockage, quarterlyRate: +e.target.value })} /></td>
                       <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" value={newDockage.annualRate || ''} onChange={(e) => setNewDockage({ ...newDockage, annualRate: +e.target.value })} /></td>
                       <td style={st.td}>
-                        <select style={{ ...st.select, width: '100px' }} value={newDockage.electricityMode} onChange={(e) => setNewDockage({ ...newDockage, electricityMode: e.target.value as 'Flat' | 'Metered' })}>
-                          <option>Metered</option><option>Flat</option>
+                        <select style={{ ...st.select, width: '100px' }} value={newDockage.electricityMode} onChange={(e) => setNewDockage({ ...newDockage, electricityMode: e.target.value as 'FLAT_FEE' | 'METERED' })}>
+                          <option value="METERED">Metered</option><option value="FLAT_FEE">Flat Fee</option>
                         </select>
                       </td>
                       <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newDockage.electricityRate || ''} onChange={(e) => setNewDockage({ ...newDockage, electricityRate: +e.target.value })} /></td>
@@ -1145,7 +1278,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newDockage.active} onChange={(e) => setNewDockage({ ...newDockage, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistDockageRates([...dockageRates, { ...newDockage, id: 'd' + Date.now() }]); setAddingDockage(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleAddDockageRate(newDockage)}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingDockage(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -1160,20 +1293,20 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.monthlyRate} onChange={(e) => setEditingDockage({ ...ed, monthlyRate: +e.target.value })} /> : `$${d.monthlyRate.toLocaleString()}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.quarterlyRate} onChange={(e) => setEditingDockage({ ...ed, quarterlyRate: +e.target.value })} /> : `$${d.quarterlyRate.toLocaleString()}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" value={ed.annualRate} onChange={(e) => setEditingDockage({ ...ed, annualRate: +e.target.value })} /> : `$${d.annualRate.toLocaleString()}`}</td>
-                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.electricityMode} onChange={(e) => setEditingDockage({ ...ed, electricityMode: e.target.value as 'Flat' | 'Metered' })}><option>Metered</option><option>Flat</option></select> : d.electricityMode}</td>
-                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.electricityRate} onChange={(e) => setEditingDockage({ ...ed, electricityRate: +e.target.value })} /> : (d.electricityMode === 'Flat' ? `$${d.electricityRate}/mo` : `$${d.electricityRate}/kWh`)}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.electricityMode} onChange={(e) => setEditingDockage({ ...ed, electricityMode: e.target.value as 'FLAT_FEE' | 'METERED' })}><option value="METERED">Metered</option><option value="FLAT_FEE">Flat Fee</option></select> : (d.electricityMode === 'FLAT_FEE' ? 'Flat Fee' : 'Metered')}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.electricityRate} onChange={(e) => setEditingDockage({ ...ed, electricityRate: +e.target.value })} /> : (d.electricityMode === 'FLAT_FEE' ? `$${d.electricityRate}/mo` : `$${d.electricityRate}/kWh`)}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '160px' }} value={ed.glAccount} onChange={(e) => setEditingDockage({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${d.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === d.glAccount)?.name || ''}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingDockage({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: d.active ? '#DEF7EC' : '#F3F4F6', color: d.active ? '#03543F' : '#64748B' }}>{d.active ? 'Yes' : 'No'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistDockageRates(dockageRates.map((r) => r.id === d.id ? editingDockage! : r)); setEditingDockageId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleEditDockageRate(editingDockage!)}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingDockageId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingDockageId(d.id); setEditingDockage({ ...d }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => persistDockageRates(dockageRates.filter((r) => r.id !== d.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeleteDockageRate(d.id)}>Delete</button>
                             </>
                           )}
                         </td>
@@ -1363,6 +1496,7 @@ export default function Settings() {
                 <thead>
                   <tr>
                     <th style={st.th}>Fee Name</th>
+                    <th style={st.th}>Type</th>
                     <th style={st.th}>Amount</th>
                     <th style={st.th}>GL Account</th>
                     <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
@@ -1372,16 +1506,21 @@ export default function Settings() {
                 <tbody>
                   {addingFee && (
                     <tr>
-                      <td style={st.td}><input style={{ ...st.input, width: '200px' }} value={newFee.name} onChange={(e) => setNewFee({ ...newFee, name: e.target.value })} placeholder="Fee name" /></td>
-                      <td style={st.td}><input style={{ ...st.input, width: '90px' }} type="number" step="0.01" value={newFee.amount || ''} onChange={(e) => setNewFee({ ...newFee, amount: +e.target.value })} /></td>
+                      <td style={st.td}><input style={{ ...st.input, width: '180px' }} value={newFee.name} onChange={(e) => setNewFee({ ...newFee, name: e.target.value })} placeholder="Fee name" /></td>
                       <td style={st.td}>
-                        <select style={{ ...st.select, width: '200px' }} value={newFee.glAccount} onChange={(e) => setNewFee({ ...newFee, glAccount: e.target.value })}>
+                        <select style={{ ...st.select, width: '100px' }} value={newFee.feeType} onChange={(e) => setNewFee({ ...newFee, feeType: e.target.value as 'FLAT' | 'PERCENT' })}>
+                          <option value="FLAT">Flat $</option><option value="PERCENT">Percent %</option>
+                        </select>
+                      </td>
+                      <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" step="0.01" value={newFee.amount || ''} onChange={(e) => setNewFee({ ...newFee, amount: +e.target.value })} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '180px' }} value={newFee.glAccount} onChange={(e) => setNewFee({ ...newFee, glAccount: e.target.value })}>
                           {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
                         </select>
                       </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newFee.active} onChange={(e) => setNewFee({ ...newFee, active: e.target.checked })} /></td>
                       <td style={st.td}>
-                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistServiceFees([...serviceFees, { ...newFee, id: 'sf' + Date.now() }]); setAddingFee(false); }}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleAddFee(newFee)}>Save</button>
                         <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setAddingFee(false)}>Cancel</button>
                       </td>
                     </tr>
@@ -1392,20 +1531,21 @@ export default function Settings() {
                     const ed = isEditing ? editingFee! : f;
                     return (
                       <tr key={f.id}>
-                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '200px' }} value={ed.name} onChange={(e) => setEditingFee({ ...ed, name: e.target.value })} /> : f.name}</td>
-                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '90px' }} type="number" step="0.01" value={ed.amount} onChange={(e) => setEditingFee({ ...ed, amount: +e.target.value })} /> : `$${f.amount.toFixed(2)}`}</td>
-                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '200px' }} value={ed.glAccount} onChange={(e) => setEditingFee({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${f.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === f.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '180px' }} value={ed.name} onChange={(e) => setEditingFee({ ...ed, name: e.target.value })} /> : f.name}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.feeType} onChange={(e) => setEditingFee({ ...ed, feeType: e.target.value as 'FLAT' | 'PERCENT' })}><option value="FLAT">Flat $</option><option value="PERCENT">Percent %</option></select> : (f.feeType === 'PERCENT' ? 'Percent %' : 'Flat $')}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" step="0.01" value={ed.amount} onChange={(e) => setEditingFee({ ...ed, amount: +e.target.value })} /> : (f.feeType === 'PERCENT' ? `${f.amount}%` : `$${f.amount.toFixed(2)}`)}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '180px' }} value={ed.glAccount} onChange={(e) => setEditingFee({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${f.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === f.glAccount)?.name || ''}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingFee({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: f.active ? '#DEF7EC' : '#F3F4F6', color: f.active ? '#03543F' : '#64748B' }}>{f.active ? 'Yes' : 'No'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
                             <>
-                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { persistServiceFees(serviceFees.map((s) => s.id === f.id ? editingFee! : s)); setEditingFeeId(null); }}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleEditFee(editingFee!)}>Save</button>
                               <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingFeeId(null)}>Cancel</button>
                             </>
                           ) : (
                             <>
                               <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingFeeId(f.id); setEditingFee({ ...f }); }}>Edit</button>
-                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => persistServiceFees(serviceFees.filter((s) => s.id !== f.id))}>Delete</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeleteFee(f.id)}>Delete</button>
                             </>
                           )}
                         </td>
@@ -1549,7 +1689,7 @@ export default function Settings() {
                 <div style={st.field}>
                   <label style={st.label}>Location(s)</label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
-                    {MARINA_LOCATIONS.map((loc) => (
+                    {marinaLocations.map((loc) => (
                       <label key={loc.id} style={{ ...st.checkbox, fontSize: '14px' }}>
                         <input
                           type="checkbox"

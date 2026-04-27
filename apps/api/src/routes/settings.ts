@@ -743,61 +743,175 @@ router.put("/notifications", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
   }
 });
 
-// --------------------------------------------------------------------------
-// GET /api/settings/catalog/dockage-rates
-// --------------------------------------------------------------------------
+// ==========================================================================
+// CATALOG — DOCKAGE RATES  (location-scoped)
+// ==========================================================================
+
+// GET /api/settings/catalog/dockage-rates?locationId=xxx
 router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
-    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
-    const t = tenant as unknown as Record<string, unknown>;
-    const s = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
-    res.json({ data: (s.catalogDockageRates as unknown[]) ?? [] });
+    const { locationId } = req.query as { locationId?: string };
+    const where: any = { tenantId: req.tenantId! };
+    if (locationId) where.locationId = locationId;
+    const data = await prisma.dockageRate.findMany({
+      where,
+      orderBy: [{ slipType: "asc" }, { createdAt: "asc" }],
+    });
+    res.json({ data });
   } catch (err) { next(err); }
 });
 
-// --------------------------------------------------------------------------
-// PUT /api/settings/catalog/dockage-rates
-// --------------------------------------------------------------------------
-router.put("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+// POST /api/settings/catalog/dockage-rates
+router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const { rates } = req.body;
-    if (!Array.isArray(rates)) { res.status(400).json({ error: "rates must be an array" }); return; }
-    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
-    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
-    const t = tenant as unknown as Record<string, unknown>;
-    const existing = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
-    await prisma.tenant.update({ where: { id: req.tenantId! }, data: { invoiceTemplateJson: { ...existing, catalogDockageRates: rates } } });
-    res.json({ data: rates });
+    const {
+      locationId, slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      electricityMode, electricityRateCents, glAccountId, active, effectiveFrom, effectiveTo,
+    } = req.body;
+    if (!locationId || !slipType || monthlyRateCents == null) {
+      res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
+    }
+    const rate = await prisma.dockageRate.create({
+      data: {
+        tenantId: req.tenantId!,
+        locationId,
+        slipType,
+        monthlyRateCents: Number(monthlyRateCents),
+        quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null,
+        annualRateCents: annualRateCents != null ? Number(annualRateCents) : null,
+        electricityMode: electricityMode ?? "METERED",
+        electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null,
+        glAccountId: glAccountId ?? null,
+        active: active ?? true,
+        effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : null,
+        effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
+      },
+    });
+    res.status(201).json({ data: rate });
   } catch (err) { next(err); }
 });
 
-// --------------------------------------------------------------------------
-// GET /api/settings/catalog/service-fees
-// --------------------------------------------------------------------------
+// PUT /api/settings/catalog/dockage-rates/:id
+router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+    if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
+    const {
+      slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      electricityMode, electricityRateCents, glAccountId, active, effectiveFrom, effectiveTo,
+    } = req.body;
+    const updated = await prisma.dockageRate.update({
+      where: { id: req.params.id },
+      data: {
+        ...(slipType != null && { slipType }),
+        ...(monthlyRateCents != null && { monthlyRateCents: Number(monthlyRateCents) }),
+        ...(quarterlyRateCents !== undefined && { quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null }),
+        ...(annualRateCents !== undefined && { annualRateCents: annualRateCents != null ? Number(annualRateCents) : null }),
+        ...(electricityMode != null && { electricityMode }),
+        ...(electricityRateCents !== undefined && { electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null }),
+        ...(glAccountId !== undefined && { glAccountId }),
+        ...(active !== undefined && { active }),
+        ...(effectiveFrom !== undefined && { effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : null }),
+        ...(effectiveTo !== undefined && { effectiveTo: effectiveTo ? new Date(effectiveTo) : null }),
+      },
+    });
+    res.json({ data: updated });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/settings/catalog/dockage-rates/:id
+router.delete("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+    if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
+    await prisma.dockageRate.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ==========================================================================
+// CATALOG — SERVICE FEES  (location-scoped)
+// ==========================================================================
+
+// GET /api/settings/catalog/service-fees?locationId=xxx
 router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
-    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
-    const t = tenant as unknown as Record<string, unknown>;
-    const s = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
-    res.json({ data: (s.catalogServiceFees as unknown[]) ?? [] });
+    const { locationId } = req.query as { locationId?: string };
+    const where: any = { tenantId: req.tenantId! };
+    if (locationId) where.locationId = locationId;
+    const data = await prisma.serviceFee.findMany({
+      where,
+      orderBy: { name: "asc" },
+    });
+    res.json({ data });
   } catch (err) { next(err); }
 });
 
-// --------------------------------------------------------------------------
-// PUT /api/settings/catalog/service-fees
-// --------------------------------------------------------------------------
-router.put("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+// POST /api/settings/catalog/service-fees
+router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const { fees } = req.body;
-    if (!Array.isArray(fees)) { res.status(400).json({ error: "fees must be an array" }); return; }
-    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
-    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
-    const t = tenant as unknown as Record<string, unknown>;
-    const existing = (t.invoiceTemplateJson && typeof t.invoiceTemplateJson === "object") ? t.invoiceTemplateJson as Record<string, unknown> : {};
-    await prisma.tenant.update({ where: { id: req.tenantId! }, data: { invoiceTemplateJson: { ...existing, catalogServiceFees: fees } } });
-    res.json({ data: fees });
+    const { locationId, name, feeType, amountCents, pct, glAccountId, active } = req.body;
+    if (!locationId || !name) {
+      res.status(400).json({ error: "locationId and name are required" }); return;
+    }
+    const fee = await prisma.serviceFee.create({
+      data: {
+        tenantId: req.tenantId!,
+        locationId,
+        name,
+        feeType: feeType ?? "FLAT",
+        amountCents: amountCents != null ? Number(amountCents) : null,
+        pct: pct != null ? Number(pct) : null,
+        glAccountId: glAccountId ?? null,
+        active: active ?? true,
+      },
+    });
+    res.status(201).json({ data: fee });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/settings/catalog/service-fees/:id
+router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+    if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
+    const { name, feeType, amountCents, pct, glAccountId, active } = req.body;
+    const updated = await prisma.serviceFee.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name != null && { name }),
+        ...(feeType != null && { feeType }),
+        ...(amountCents !== undefined && { amountCents: amountCents != null ? Number(amountCents) : null }),
+        ...(pct !== undefined && { pct: pct != null ? Number(pct) : null }),
+        ...(glAccountId !== undefined && { glAccountId }),
+        ...(active !== undefined && { active }),
+      },
+    });
+    res.json({ data: updated });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/settings/catalog/service-fees/:id
+router.delete("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+    if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
+    await prisma.serviceFee.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /settings/locations ─────────────────────────────────────────────────
+// Returns the tenant's locations for use in catalog dropdowns.
+
+router.get("/locations", ...clerkAuth(), async (req, res, next) => {
+  try {
+    const locations = await prisma.location.findMany({
+      where: { tenantId: req.tenantId! },
+      select: { id: true, name: true, active: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ data: locations });
   } catch (err) { next(err); }
 });
 
