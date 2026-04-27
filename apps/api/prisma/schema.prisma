@@ -1687,3 +1687,41 @@ model SupportTicket {
   @@index([tenantId])
   @@map("support_tickets")
 }
+
+// ==========================================================================
+//  FUEL
+// ==========================================================================
+
+model FuelSale {
+  id             String   @id @default(uuid())
+  tenantId       String
+  customerId     String?
+  guestName      String?
+  fuelType       String
+  gallons        Float
+  priceCentsPerGallon Int
+  totalCents     Int
+  pumpNumber     Int?
+  staffId        String?
+  paymentMethod  String?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("fuel_sales")
+}
+
+model FuelDelivery {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  supplier            String
+  fuelType            String
+  gallons             Float
+  costCentsPerGallon  Int
+  totalCostCents      Int
+  tankLevelAfterGallons Float?
+  notes               String?
+  deliveredAt         DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("fuel_deliveries")
+}

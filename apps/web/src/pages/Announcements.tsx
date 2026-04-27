@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import {
   Megaphone,
@@ -95,50 +95,55 @@ interface AutoSendLog {
   status: 'Delivered' | 'Opened' | 'Bounced' | 'Failed'; openedAt: string | null;
 }
 
-const AUTO_RULES: AutomationRule[] = [
-  { id: '1', name: 'Invoice Notification', trigger: 'invoice_created', triggerLabel: 'Invoice Created', category: 'Billing', templateName: 'Invoice Generated', channels: ['email'], delayLabel: 'Immediate', enabled: true },
-  { id: '2', name: 'Payment Receipt', trigger: 'payment_received', triggerLabel: 'Payment Received', category: 'Billing', templateName: 'Payment Receipt', channels: ['email'], delayLabel: 'Immediate', enabled: true },
-  { id: '3', name: 'ACH Return Alert', trigger: 'ach_return', triggerLabel: 'ACH Return', category: 'Billing', templateName: 'ACH Return Notice', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
-  { id: '4', name: '7-Day Past Due Reminder', trigger: 'invoice_past_due_7', triggerLabel: '7 Days Past Due', category: 'Billing', templateName: 'Past Due Reminder', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
-  { id: '5', name: '14-Day Final Notice', trigger: 'invoice_past_due_14', triggerLabel: '14 Days Past Due', category: 'Billing', templateName: 'Final Notice', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
-  { id: '6', name: '30-Day Collections Warning', trigger: 'invoice_past_due_30', triggerLabel: '30 Days Past Due', category: 'Billing', templateName: 'Collections Warning', channels: ['email'], delayLabel: 'Immediate', enabled: true },
-  { id: '7', name: 'Contract Renewal Notice', trigger: 'contract_expiring_30', triggerLabel: 'Contract Expiring (30d)', category: 'Compliance', templateName: 'Contract Renewal', channels: ['email'], delayLabel: 'Immediate', enabled: true },
-  { id: '8', name: 'Insurance Expiry Alert', trigger: 'insurance_expiring_30', triggerLabel: 'Insurance Expiring (30d)', category: 'Compliance', templateName: 'Document Expiry', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
-  { id: '9', name: 'Booking Confirmation', trigger: 'rental_booking_confirmed', triggerLabel: 'Rental Booked', category: 'Rentals', templateName: 'Booking Confirmation', channels: ['email', 'sms'], delayLabel: 'Immediate', enabled: true },
-  { id: '10', name: 'Pre-Arrival Reminder', trigger: 'rental_pre_arrival', triggerLabel: 'Pre-Arrival (48hr)', category: 'Rentals', templateName: 'Rental Reminder', channels: ['email', 'sms'], delayLabel: '48 hours', enabled: true },
-  { id: '11', name: 'Rental Agreement Signature', trigger: 'rental_booking_confirmed', triggerLabel: 'Rental Booked', category: 'Rentals', templateName: 'Rental Agreement', channels: ['email'], delayLabel: '1 hour', enabled: true },
-  { id: '12', name: 'Post-Rental Thank You', trigger: 'rental_post_return', triggerLabel: 'Rental Returned', category: 'Rentals', templateName: 'Post-Rental Thank You', channels: ['email'], delayLabel: '24 hours', enabled: true },
-];
+/* ── API response types ─── */
+interface ApiAnnouncement {
+  id: string; subject: string; channels: string; audienceFilter: unknown;
+  isEmergency: boolean; scheduledAt: string | null; sentAt: string | null;
+  createdAt: string; delivered: number; opened: number; status: string;
+}
+interface ApiAutoRule {
+  id: string; name: string; trigger: string; enabled: boolean;
+  delayMinutes: number; channels: string[];
+  template?: { id: string; name: string; subject: string; category: string };
+}
+interface ApiAutoTemplate {
+  id: string; name: string; subject: string; category: string;
+  isDefault: boolean; variables: unknown;
+}
+interface ApiAutoLog {
+  id: string; trigger: string; recipientEmail: string | null; recipientPhone: string | null;
+  channels: unknown; subject: string | null; status: string;
+  sentAt: string | null; createdAt: string;
+}
 
-const AUTO_TEMPLATES: AutoEmailTemplate[] = [
-  { id: '1', name: 'Invoice Generated', subject: 'Invoice {{invoiceNumber}} — {{amount}} Due', category: 'Billing', isDefault: true, variables: ['customerName', 'invoiceNumber', 'amount', 'dueDate', 'portalUrl'] },
-  { id: '2', name: 'Payment Receipt', subject: 'Payment Received — {{amount}}', category: 'Billing', isDefault: true, variables: ['customerName', 'amount', 'method', 'invoiceNumber'] },
-  { id: '3', name: 'ACH Return Notice', subject: 'ACH Payment Returned — Action Required', category: 'Billing', isDefault: true, variables: ['customerName', 'amount', 'reason'] },
-  { id: '4', name: 'Past Due Reminder', subject: 'Payment Overdue — Invoice {{invoiceNumber}}', category: 'Billing', isDefault: true, variables: ['customerName', 'invoiceNumber', 'amount', 'daysOverdue', 'portalUrl'] },
-  { id: '5', name: 'Document Expiry', subject: 'Your {{documentType}} Expires {{expiryDate}}', category: 'Compliance', isDefault: true, variables: ['customerName', 'documentType', 'expiryDate', 'portalUrl'] },
-  { id: '6', name: 'Booking Confirmation', subject: 'Booking Confirmed — {{productName}} on {{date}}', category: 'Rentals', isDefault: true, variables: ['customerName', 'productName', 'date', 'timeSlot', 'duration', 'totalAmount'] },
-  { id: '7', name: 'Contract Renewal', subject: 'Contract Renewal Notice — {{slipNumber}}', category: 'Compliance', isDefault: true, variables: ['customerName', 'slipNumber', 'currentEndDate', 'newRate', 'renewalDeadline'] },
-  { id: '8', name: 'Rental Reminder', subject: 'Your Rental is Tomorrow — {{productName}}', category: 'Rentals', isDefault: true, variables: ['customerName', 'productName', 'date', 'timeSlot', 'checkInTime'] },
-  { id: '9', name: 'Rental Agreement', subject: 'Rental Agreement — Signature Required', category: 'Rentals', isDefault: true, variables: ['customerName', 'productName', 'date', 'duration', 'signingUrl'] },
-  { id: '10', name: 'Post-Rental Thank You', subject: 'Thanks for Renting with Us!', category: 'Rentals', isDefault: true, variables: ['customerName', 'productName', 'date', 'npsUrl'] },
-  { id: '11', name: 'Announcement', subject: '{{subject}}', category: 'Marketing', isDefault: true, variables: ['subject', 'body', 'marinaName'] },
-  { id: '12', name: 'Welcome', subject: 'Welcome to {{marinaName}}!', category: 'Marketing', isDefault: true, variables: ['customerName', 'marinaName', 'portalUrl'] },
-  { id: '13', name: 'Violation Notice', subject: 'Dock Inspection — Action Required', category: 'Operations', isDefault: true, variables: ['customerName', 'slipNumber', 'violationType', 'description', 'severity'] },
-  { id: '14', name: 'Custom Marketing', subject: '', category: 'Marketing', isDefault: false, variables: ['customerName', 'marinaName', 'portalUrl'] },
-];
+const TRIGGER_LABEL_MAP: Record<string, string> = Object.fromEntries(
+  TRIGGER_OPTIONS.map(t => [t.value, t.label])
+);
 
-const AUTO_SEND_LOG: AutoSendLog[] = [
-  { id: '1', date: '2026-03-25 11:42', recipient: 'James Harborview', email: 'james@email.com', template: 'Payment Receipt', trigger: 'Payment Received', channel: 'email', status: 'Opened', openedAt: '2026-03-25 12:10' },
-  { id: '2', date: '2026-03-25 11:42', recipient: 'James Harborview', email: '(555) 234-5678', template: 'Payment Receipt', trigger: 'Payment Received', channel: 'sms', status: 'Delivered', openedAt: null },
-  { id: '3', date: '2026-03-25 09:00', recipient: 'Maria Seabreeze', email: 'maria@email.com', template: 'Invoice Generated', trigger: 'Invoice Created', channel: 'email', status: 'Opened', openedAt: '2026-03-25 09:45' },
-  { id: '4', date: '2026-03-24 16:30', recipient: 'Elena Windward', email: 'elena@email.com', template: 'Rental Reminder', trigger: 'Pre-Arrival', channel: 'email', status: 'Opened', openedAt: '2026-03-24 17:15' },
-  { id: '5', date: '2026-03-24 14:00', recipient: 'David Tidewater', email: 'david@email.com', template: 'Document Expiry', trigger: 'Insurance Expiring', channel: 'email', status: 'Delivered', openedAt: null },
-  { id: '6', date: '2026-03-24 10:15', recipient: 'Robert Chen', email: 'robert@email.com', template: 'Booking Confirmation', trigger: 'Rental Booked', channel: 'email', status: 'Opened', openedAt: '2026-03-24 10:22' },
-  { id: '7', date: '2026-03-23 09:00', recipient: 'Coastal Charters LLC', email: 'billing@coastal.com', template: 'Invoice Generated', trigger: 'Invoice Created', channel: 'email', status: 'Bounced', openedAt: null },
-  { id: '8', date: '2026-03-23 08:00', recipient: 'Tom Seaside', email: 'tom@email.com', template: 'Past Due Reminder', trigger: '7 Days Past Due', channel: 'email', status: 'Opened', openedAt: '2026-03-23 10:30' },
-  { id: '9', date: '2026-03-22 15:00', recipient: 'Amy Portview', email: 'amy@email.com', template: 'Contract Renewal', trigger: 'Contract Expiring', channel: 'email', status: 'Opened', openedAt: '2026-03-22 16:45' },
-  { id: '10', date: '2026-03-21 14:00', recipient: 'Carlos Rivera', email: 'carlos@email.com', template: 'ACH Return Notice', trigger: 'ACH Return', channel: 'email', status: 'Failed', openedAt: null },
-];
+const CAT_TITLE: Record<string, string> = {
+  billing: 'Billing', operations: 'Operations', rental: 'Rentals',
+  compliance: 'Compliance', marketing: 'Marketing', custom: 'Custom',
+};
+
+function delayLabel(minutes: number): string {
+  if (minutes === 0) return 'Immediate';
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 1440) return `${minutes / 60} hour(s)`;
+  return `${Math.round(minutes / 1440)} day(s)`;
+}
+
+const LOG_STATUS_MAP: Record<string, AutoSendLog['status']> = {
+  QUEUED: 'Delivered', SENT: 'Delivered', DELIVERED: 'Delivered',
+  OPENED: 'Opened', BOUNCED: 'Bounced', FAILED: 'Failed',
+};
+
+const ANNOUNCE_STATUS_MAP: Record<string, AnnouncementStatus> = {
+  DRAFT: 'Draft', SCHEDULED: 'Scheduled', SENT: 'Sent', FAILED: 'Failed',
+};
+
+const ANNOUNCE_CHANNEL_MAP: Record<string, Channel> = {
+  EMAIL: 'Email', SMS: 'SMS', PUSH: 'Push', IN_APP: 'In-App',
+};
 
 const AUTO_CAT_COLORS: Record<string, { bg: string; color: string }> = {
   Billing: { bg: '#DEF7EC', color: '#03543F' },
@@ -283,32 +288,80 @@ export default function Announcements() {
   const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<string>('All');
 
   // API calls
-  const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/api/announcements', { immediate: true });
+  const { data: rawApiAnnouncements, loading: announcementsLoading } = useApi<{ data: ApiAnnouncement[]; pagination: unknown }>('get', '/api/announcements', { immediate: true });
   const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
   const { data: rawDeliveries } = useApi<DeliveryApiResponse>('get', '/api/announcements/deliveries?take=200', { immediate: true });
-  // TODO(api): announcement templates endpoint
-  const apiTemplates: Template[] | null = null as Template[] | null;
+  const { data: rawAutoRules } = useApi<{ data: ApiAutoRule[] }>('get', '/api/email-automation/rules', { immediate: true });
+  const { data: rawAutoTemplates } = useApi<{ data: ApiAutoTemplate[] }>('get', '/api/email-automation/templates', { immediate: true });
+  const { data: rawAutoLogs } = useApi<{ data: ApiAutoLog[] }>('get', '/api/email-automation/logs?take=100', { immediate: true });
 
-  const channelMap: Record<string, Channel> = { EMAIL: 'Email', SMS: 'SMS', PUSH: 'Push', IN_APP: 'In-App' };
   const deliveryStatusMap: Record<string, DeliveryStatus> = { DELIVERED: 'Delivered', OPENED: 'Opened', BOUNCED: 'Bounced', FAILED: 'Failed' };
 
-  const announcements: Announcement[] = apiAnnouncements ?? [];
+  const announcements: Announcement[] = useMemo(() =>
+    (rawApiAnnouncements?.data ?? []).map((a): Announcement => ({
+      id: a.id,
+      subject: a.subject,
+      channels: [ANNOUNCE_CHANNEL_MAP[a.channels] ?? 'Email'],
+      audience: 'All Customers',
+      sentDate: a.sentAt ?? a.scheduledAt ?? a.createdAt ?? '',
+      delivered: a.delivered ?? 0,
+      opened: a.opened ?? 0,
+      status: ANNOUNCE_STATUS_MAP[a.status] ?? 'Draft',
+    })), [rawApiAnnouncements]);
+
   const deliveryLog: DeliveryRecord[] = (rawDeliveries?.data ?? []).map((r): DeliveryRecord => ({
     id: r.id,
     announcement: r.announcement?.subject ?? '—',
     customer: r.customer ? `${r.customer.firstName} ${r.customer.lastName}`.trim() : '—',
-    channel: channelMap[r.channel] ?? (r.channel as Channel),
+    channel: ANNOUNCE_CHANNEL_MAP[r.channel] ?? (r.channel as Channel),
     sentAt: r.sentAt ? new Date(r.sentAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—',
     status: deliveryStatusMap[r.status] ?? (r.status as DeliveryStatus),
     openedAt: r.openedAt ? new Date(r.openedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
   }));
-  const templates: Template[] = apiTemplates ?? [];
+  const templates: Template[] = [];
+
+  const apiAutoRulesMapped: AutomationRule[] = useMemo(() =>
+    (rawAutoRules?.data ?? []).map((r): AutomationRule => ({
+      id: r.id,
+      name: r.name,
+      trigger: r.trigger,
+      triggerLabel: TRIGGER_LABEL_MAP[r.trigger] ?? r.trigger,
+      category: CAT_TITLE[r.template?.category ?? ''] ?? 'General',
+      templateName: r.template?.name ?? '—',
+      channels: (r.channels ?? []).filter(c => c === 'email' || c === 'sms') as ('email' | 'sms')[],
+      delayLabel: delayLabel(r.delayMinutes),
+      enabled: r.enabled,
+    })), [rawAutoRules]);
+
+  const apiAutoTemplatesMapped: AutoEmailTemplate[] = useMemo(() =>
+    (rawAutoTemplates?.data ?? []).map((t): AutoEmailTemplate => ({
+      id: t.id,
+      name: t.name,
+      subject: t.subject,
+      category: CAT_TITLE[t.category] ?? t.category,
+      isDefault: t.isDefault,
+      variables: Array.isArray(t.variables) ? t.variables as string[] : [],
+    })), [rawAutoTemplates]);
+
+  const apiAutoLogsMapped: AutoSendLog[] = useMemo(() =>
+    (rawAutoLogs?.data ?? []).map((l): AutoSendLog => ({
+      id: l.id,
+      date: new Date(l.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      recipient: l.recipientEmail ?? l.recipientPhone ?? '—',
+      email: l.recipientEmail ?? l.recipientPhone ?? '—',
+      template: l.subject ?? '—',
+      trigger: TRIGGER_LABEL_MAP[l.trigger] ?? l.trigger,
+      channel: Array.isArray(l.channels) && (l.channels as string[]).includes('sms') ? 'sms' : 'email',
+      status: LOG_STATUS_MAP[l.status] ?? 'Delivered',
+      openedAt: null,
+    })), [rawAutoLogs]);
 
   const totalSent = announcements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.delivered, 0);
   const totalOpened = announcements.filter(a => a.status === 'Sent').reduce((s, a) => s + a.opened, 0);
   const deliveryRate = totalSent > 0 ? Math.round((totalSent / (totalSent + 12)) * 100) : 0;
   const openRate = totalSent > 0 ? Math.round((totalOpened / totalSent) * 100) : 0;
-  const thisMonth = announcements.filter(a => a.sentDate.startsWith('2026-03')).length;
+  const thisMonthPrefix = new Date().toISOString().slice(0, 7);
+  const thisMonth = announcements.filter(a => a.sentDate.startsWith(thisMonthPrefix)).length;
 
   // Compose form state
   const [composeSubject, setComposeSubject] = useState('');
@@ -360,7 +413,7 @@ export default function Announcements() {
   });
 
   // Automation state
-  const [autoRules, setAutoRules] = useState<AutomationRule[]>(AUTO_RULES);
+  const [autoRules, setAutoRules] = useState<AutomationRule[]>([]);
   const [autoTab, setAutoTab] = useState<'rules' | 'templates' | 'log'>('rules');
   const [editingAutoTemplate, setEditingAutoTemplate] = useState<AutoEmailTemplate | null>(null);
   const [logStatusFilter, setLogStatusFilter] = useState('All');
@@ -368,10 +421,22 @@ export default function Announcements() {
   const [newRuleName, setNewRuleName] = useState('');
   const [newRuleTrigger, setNewRuleTrigger] = useState(TRIGGER_OPTIONS[0].value);
   const [newRuleCategory, setNewRuleCategory] = useState('Billing');
-  const [newRuleTemplate, setNewRuleTemplate] = useState(AUTO_TEMPLATES[0].name);
+  const [newRuleTemplate, setNewRuleTemplate] = useState('');
   const [newRuleEmail, setNewRuleEmail] = useState(true);
   const [newRuleSms, setNewRuleSms] = useState(false);
   const [newRuleDelay, setNewRuleDelay] = useState('Immediate');
+
+  // Sync automation rules from API
+  React.useEffect(() => {
+    if (apiAutoRulesMapped.length > 0) setAutoRules(apiAutoRulesMapped);
+  }, [apiAutoRulesMapped]);
+
+  // Sync newRuleTemplate default once templates load
+  React.useEffect(() => {
+    if (newRuleTemplate === '' && apiAutoTemplatesMapped.length > 0) {
+      setNewRuleTemplate(apiAutoTemplatesMapped[0].name);
+    }
+  }, [apiAutoTemplatesMapped, newRuleTemplate]);
 
   const toggleAutoRule = (id: string) => {
     setAutoRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
@@ -824,7 +889,10 @@ export default function Announcements() {
                 </button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-                {AUTO_TEMPLATES.map(t => {
+                {apiAutoTemplatesMapped.length === 0 && (
+                  <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px', color: '#64748B' }}>No email templates found.</div>
+                )}
+                {apiAutoTemplatesMapped.map(t => {
                   const cc = AUTO_CAT_COLORS[t.category] || AUTO_CAT_COLORS.Billing;
                   return (
                     <div key={t.id} style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '10px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
@@ -876,7 +944,10 @@ export default function Announcements() {
                     </tr>
                   </thead>
                   <tbody>
-                    {AUTO_SEND_LOG.filter(l => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => {
+                    {!rawAutoLogs && (
+                      <tr><td colSpan={8} style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>No send log entries yet.</td></tr>
+                    )}
+                    {apiAutoLogsMapped.filter(l => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => {
                       const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                       const sc = AUTO_STATUS_COLORS[l.status];
                       return (
@@ -935,7 +1006,7 @@ export default function Announcements() {
                   <div>
                     <label style={styles.formLabel}>Email Template</label>
                     <select style={{ ...styles.formInput, cursor: 'pointer' }} value={newRuleTemplate} onChange={e => setNewRuleTemplate(e.target.value)}>
-                      {AUTO_TEMPLATES.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+                      {apiAutoTemplatesMapped.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                     </select>
                   </div>
                   <div>

@@ -38,35 +38,50 @@ interface Transaction {
   cartItems?: CartItem[];
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API Response Types ─────────────────────────────────── */
 
-const PRODUCTS: Product[] = [
-  { id: '1', sku: 'FUEL-REG', name: 'Regular Gas (gal)', category: 'Fuel', price: 4.29, taxRate: 0, inStock: 2400, reorderPoint: 500 },
-  { id: '2', sku: 'FUEL-DSL', name: 'Diesel (gal)', category: 'Fuel', price: 4.89, taxRate: 0, inStock: 1800, reorderPoint: 400 },
-  { id: '3', sku: 'ICE-BAG', name: 'Bag of Ice (10lb)', category: 'Provisions', price: 3.99, taxRate: 7, inStock: 85, reorderPoint: 20 },
-  { id: '4', sku: 'BAIT-SHP', name: 'Live Shrimp (dz)', category: 'Bait & Tackle', price: 8.99, taxRate: 7, inStock: 24, reorderPoint: 10 },
-  { id: '5', sku: 'BAIT-MIN', name: 'Minnows (dz)', category: 'Bait & Tackle', price: 5.99, taxRate: 7, inStock: 18, reorderPoint: 8 },
-  { id: '6', sku: 'SNK-WTER', name: 'Bottled Water', category: 'Provisions', price: 2.49, taxRate: 7, inStock: 144, reorderPoint: 48 },
-  { id: '7', sku: 'SNK-SODA', name: 'Soft Drink (can)', category: 'Provisions', price: 1.99, taxRate: 7, inStock: 200, reorderPoint: 60 },
-  { id: '8', sku: 'SUN-SPF', name: 'Sunscreen SPF 50', category: 'Marine Supplies', price: 12.99, taxRate: 7, inStock: 32, reorderPoint: 10 },
-  { id: '9', sku: 'MRN-LINE', name: 'Dock Line 3/8" 15\'', category: 'Marine Supplies', price: 18.99, taxRate: 7, inStock: 15, reorderPoint: 5 },
-  { id: '10', sku: 'MRN-FEND', name: 'Boat Fender', category: 'Marine Supplies', price: 24.99, taxRate: 7, inStock: 12, reorderPoint: 4 },
-  { id: '11', sku: 'APR-HAT', name: 'Marina Cap', category: 'Apparel', price: 22.00, taxRate: 7, inStock: 48, reorderPoint: 12 },
-  { id: '12', sku: 'APR-TEE', name: 'Marina T-Shirt', category: 'Apparel', price: 28.00, taxRate: 7, inStock: 36, reorderPoint: 10 },
-];
+interface ApiProduct {
+  id: string;
+  sku: string | null;
+  name: string;
+  departmentId: string | null;
+  priceCents: number;
+  taxClass: string | null;
+  reorderQty: number | null;
+  inventory: { qtyOnHand: number }[];
+}
 
-const TRANSACTIONS: Transaction[] = [
-  { id: '1', number: 'TXN-3042', date: '2026-03-25 11:32 AM', items: 3, subtotal: 12.47, tax: 0.87, total: 13.34, method: 'Card', cashier: 'Jake M.' },
-  { id: '2', number: 'TXN-3041', date: '2026-03-25 10:45 AM', items: 1, subtotal: 85.80, tax: 0.00, total: 85.80, method: 'Card', cashier: 'Jake M.' },
-  { id: '3', number: 'TXN-3040', date: '2026-03-25 9:18 AM', items: 5, subtotal: 48.94, tax: 3.43, total: 52.37, method: 'Cash', cashier: 'Jake M.' },
-  { id: '4', number: 'TXN-3039', date: '2026-03-24 4:52 PM', items: 2, subtotal: 27.98, tax: 1.96, total: 29.94, method: 'Charge to Slip', cashier: 'Maria S.' },
-  { id: '5', number: 'TXN-3038', date: '2026-03-24 3:30 PM', items: 1, subtotal: 22.00, tax: 1.54, total: 23.54, method: 'Card', cashier: 'Maria S.' },
-  { id: '6', number: 'TXN-3037', date: '2026-03-24 1:15 PM', items: 4, subtotal: 35.96, tax: 2.52, total: 38.48, method: 'Cash', cashier: 'Maria S.' },
-  { id: '7', number: 'TXN-3036', date: '2026-03-24 11:00 AM', items: 2, subtotal: 42.58, tax: 0.00, total: 42.58, method: 'Card', cashier: 'Jake M.' },
-  { id: '8', number: 'TXN-3035', date: '2026-03-24 9:05 AM', items: 6, subtotal: 62.44, tax: 4.37, total: 66.81, method: 'Card', cashier: 'Jake M.' },
-  { id: '9', number: 'TXN-3034', date: '2026-03-23 5:10 PM', items: 1, subtotal: 97.80, tax: 0.00, total: 97.80, method: 'Cash', cashier: 'Maria S.' },
-  { id: '10', number: 'TXN-3033', date: '2026-03-23 2:42 PM', items: 3, subtotal: 54.97, tax: 3.85, total: 58.82, method: 'Card', cashier: 'Maria S.' },
-];
+interface ApiTransaction {
+  id: string;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  createdAt: string;
+  lineItems: { quantity: number; productId: string; unitPriceCents: number; product?: { name: string } }[];
+}
+
+/* ── API mapping helpers ─────────────────────────────────── */
+
+const TAX_CLASS_RATE: Record<string, number> = { standard: 7, reduced: 3, zero: 0, none: 0 };
+
+function mapApiProduct(p: ApiProduct): Product {
+  return {
+    id: p.id,
+    sku: p.sku ?? '',
+    name: p.name,
+    category: p.departmentId ?? 'General',
+    price: p.priceCents / 100,
+    taxRate: p.taxClass ? (TAX_CLASS_RATE[p.taxClass] ?? 0) : 0,
+    inStock: p.inventory?.[0]?.qtyOnHand ?? 0,
+    reorderPoint: p.reorderQty ?? 0,
+  };
+}
+
+const PAYMENT_METHOD_API: Record<string, string> = {
+  Card: 'CARD', Cash: 'CASH', ACH: 'ACH', 'Charge to Slip': 'CHARGE_TO_ACCOUNT',
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -300,37 +315,73 @@ export default function POS() {
     } catch { /* ignore */ }
   }, []);
 
-  const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });
-  const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/api/pos/transactions', { immediate: true });
-  const createTransaction = useApi<Transaction>('post', '/api/pos/transactions');
+  const { data: apiProductsResp, loading: loadingProducts } = useApi<{ data: ApiProduct[]; pagination: unknown }>('get', '/api/pos/products', { immediate: true });
+  const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', '/api/pos/transactions', { immediate: true });
+  const createTransaction = useApi<unknown>('post', '/api/pos/transactions');
 
   const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
-  const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
+
+  const posProducts = useMemo(() => {
+    const raw = apiProductsResp?.data ?? [];
+    return raw.map(mapApiProduct);
+  }, [apiProductsResp]);
+
+  const apiTransactionsMapped = useMemo<Transaction[]>(() => {
+    const raw = apiTxnsResp?.data ?? [];
+    return raw.map((t) => ({
+      id: t.id,
+      number: `TXN-${t.id.slice(0, 8).toUpperCase()}`,
+      date: new Date(t.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      items: t.lineItems?.reduce((s, li) => s + li.quantity, 0) ?? 0,
+      subtotal: t.subtotalCents / 100,
+      tax: t.taxCents / 100,
+      total: t.totalCents / 100,
+      method: 'N/A',
+      cashier: 'Staff',
+    }));
+  }, [apiTxnsResp]);
+
   const transactions = useMemo(
-    () => localTransactions.length > 0 ? localTransactions : (apiTransactions ?? TRANSACTIONS),
-    [localTransactions, apiTransactions]
+    () => localTransactions.length > 0 ? localTransactions : apiTransactionsMapped,
+    [localTransactions, apiTransactionsMapped]
   );
 
-  const handlePaymentComplete = (method: string) => {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${timeStr}`;
-    const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
-    const tax = cart.reduce((s, i) => s + (i.product.price * i.product.taxRate / 100) * i.quantity, 0);
-    const nextNum = `TXN-${3042 + (localTransactions.length + 1)}`;
-    const txn: Transaction = {
-      id: `txn-${Date.now()}`,
-      number: nextNum,
-      date: dateStr,
-      items: cart.reduce((s, i) => s + i.quantity, 0),
-      subtotal: Math.round(subtotal * 100) / 100,
-      tax: Math.round(tax * 100) / 100,
-      total: Math.round((subtotal + tax) * 100) / 100,
-      method,
-      cashier: shiftCashier,
-      cartItems: [...cart],
-    };
-    setLocalTransactions((prev) => [txn, ...(prev.length > 0 ? prev : (apiTransactions ?? TRANSACTIONS))]);
+  const handlePaymentComplete = async (method: string) => {
+    const subtotalCalc = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
+    const taxCalc = cart.reduce((s, i) => s + (i.product.price * i.product.taxRate / 100) * i.quantity, 0);
+    const totalCalc = subtotalCalc + taxCalc;
+
+    const validLineItems = cart
+      .filter((i) => UUID_RE.test(i.product.id))
+      .map((i) => ({
+        productId: i.product.id,
+        quantity: Math.round(i.quantity),
+        unitPriceCents: Math.round(i.product.price * 100),
+      }));
+
+    if (validLineItems.length > 0) {
+      await createTransaction.execute({
+        lineItems: validLineItems,
+        paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
+      });
+      await refreshTransactions();
+      setLocalTransactions([]);
+    } else {
+      const now = new Date();
+      const txn: Transaction = {
+        id: `txn-${Date.now()}`,
+        number: `TXN-${Date.now().toString().slice(-6)}`,
+        date: now.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+        items: cart.reduce((s, i) => s + Math.round(i.quantity), 0),
+        subtotal: Math.round(subtotalCalc * 100) / 100,
+        tax: Math.round(taxCalc * 100) / 100,
+        total: Math.round(totalCalc * 100) / 100,
+        method,
+        cashier: shiftCashier,
+        cartItems: [...cart],
+      };
+      setLocalTransactions((prev) => [txn, ...prev]);
+    }
     setCart([]);
     setRecalledTxn(null);
   };
@@ -393,7 +444,8 @@ export default function POS() {
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
   const tax = cart.reduce((s, i) => s + i.product.price * i.quantity * (i.product.taxRate / 100), 0);
   const total = subtotal + tax;
-  const runningTotal = transactions.filter((t) => t.date.includes('2026-03-25')).reduce((s, t) => s + t.total, 0) + total;
+  const todayPrefix = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const runningTotal = transactions.filter((t) => t.date.startsWith(todayPrefix)).reduce((s, t) => s + t.total, 0) + total;
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sale', label: 'New Sale' },
@@ -445,6 +497,13 @@ export default function POS() {
               <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <div style={st.prodGrid}>
+              {!loadingProducts && posProducts.length === 0 && (
+                <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: '40px 24px', color: '#64748B' }}>
+                  <Package size={36} style={{ color: '#CBD5E1', marginBottom: '12px' }} />
+                  <div style={{ fontWeight: 600 }}>No products found</div>
+                  <div style={{ fontSize: '13px', marginTop: '4px' }}>Add products via the inventory module to see them here.</div>
+                </div>
+              )}
               {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
                   <div key={p.id} style={st.prodCard}
                     onClick={() => addToCart(p)}
@@ -557,6 +616,13 @@ export default function POS() {
                 </tr>
               </thead>
               <tbody>
+                {!loadingTxns && transactions.length === 0 && (
+                  <tr>
+                    <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: '#64748B' }}>
+                      No transactions found.
+                    </td>
+                  </tr>
+                )}
                 {transactions.map((t, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (

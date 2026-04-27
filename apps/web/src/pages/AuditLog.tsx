@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import {
   ScrollText, Search, Download, Filter, Eye, User,
@@ -20,9 +20,46 @@ interface AuditEntry {
   ipAddress: string;
 }
 
+interface ApiAuditEntry {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  recordType: string;
+  recordId: string;
+  action: string;
+  changedFieldsJson: unknown;
+  ipAddress: string | null;
+  createdAt: string;
+}
+
+interface AuditApiResponse {
+  data: ApiAuditEntry[];
+  pagination: { offset: number; limit: number; total: number };
+}
+
+const ACTION_VERBS: Record<string, string> = {
+  CREATE: 'Created', UPDATE: 'Updated', DELETE: 'Deleted', STATUS_CHANGE: 'Status changed on',
+};
+
+function mapApiEntry(e: ApiAuditEntry): AuditEntry {
+  const verb = ACTION_VERBS[e.action] ?? e.action;
+  const shortId = e.recordId.length > 8 ? e.recordId.slice(0, 8) : e.recordId;
+  return {
+    id: e.id,
+    timestamp: new Date(e.createdAt).toISOString().replace('T', ' ').slice(0, 19),
+    userId: e.userId ?? '',
+    userName: e.userName ?? 'System',
+    recordType: e.recordType,
+    recordId: e.recordId,
+    action: e.action as AuditEntry['action'],
+    description: `${verb} ${e.recordType} ${shortId}`,
+    changedFields: e.changedFieldsJson ? JSON.stringify(e.changedFieldsJson, null, 2) : undefined,
+    ipAddress: e.ipAddress ?? '',
+  };
+}
+
 const RECORD_TYPES = ['All', 'Customer', 'Invoice', 'Payment', 'Contract', 'Lead', 'Slip', 'DockWalk', 'DockWalkItem', 'PosTransaction', 'Reservation', 'Announcement', 'GlEntry', 'InsuranceRecord'];
 const ACTIONS = ['All', 'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE'];
-const USERS = ['All', 'Sarah Dunford', 'Jake Martinez', 'Maria Santos', 'Lisa Chen', 'Tom Anderson'];
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -74,8 +111,13 @@ export default function AuditLog() {
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const { data: apiEntries, loading: entriesLoading } = useApi<AuditEntry[]>('get', '/api/audit-log', { immediate: true });
-  const entries = apiEntries ?? [];
+  const { data: apiResp, loading: entriesLoading } = useApi<AuditApiResponse>('get', '/api/audit-log?limit=200', { immediate: true });
+  const entries = useMemo(() => (apiResp?.data ?? []).map(mapApiEntry), [apiResp]);
+
+  const dynamicUsers = useMemo(() => {
+    const names = Array.from(new Set(entries.map((e) => e.userName).filter(Boolean)));
+    return ['All', ...names.sort()];
+  }, [entries]);
 
   const filtered = entries.filter((e) => {
     if (typeFilter !== 'All' && e.recordType !== typeFilter) return false;
@@ -89,7 +131,8 @@ export default function AuditLog() {
   const totalPages = Math.ceil(filtered.length / perPage);
   const paged = filtered.slice((page - 1) * perPage, page * perPage);
 
-  const todayCount = entries.filter((e) => e.timestamp.startsWith('2026-03-25')).length;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayCount = entries.filter((e) => e.timestamp.startsWith(todayIso)).length;
   const uniqueUsers = new Set(entries.map((e) => e.userName)).size;
 
   return (
@@ -137,7 +180,7 @@ export default function AuditLog() {
           {ACTIONS.map((a) => <option key={a} value={a}>{a === 'All' ? 'All Actions' : a}</option>)}
         </select>
         <select style={st.select} value={userFilter} onChange={(e) => setUserFilter(e.target.value)}>
-          {USERS.map((u) => <option key={u} value={u}>{u === 'All' ? 'All Users' : u}</option>)}
+          {dynamicUsers.map((u) => <option key={u} value={u}>{u === 'All' ? 'All Users' : u}</option>)}
         </select>
         <button style={st.exportBtn}><Download size={14} /> Export CSV</button>
       </div>

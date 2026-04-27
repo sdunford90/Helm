@@ -35,9 +35,14 @@ const LogDeliverySchema = z.object({
   notes: z.string().optional(),
 });
 
-// ─── In-memory fuel config (would be DB-backed in production) ─────────────────
+const ListQuerySchema = z.object({
+  take: z.coerce.number().int().positive().max(200).default(50),
+  skip: z.coerce.number().int().min(0).default(0),
+});
 
-interface FuelType {
+// ─── In-memory fuel config (prices/tank levels remain in-memory per task scope) ─
+
+interface FuelTypeConfig {
   id: string;
   type: string;
   priceCentsPerGallon: number;
@@ -46,40 +51,11 @@ interface FuelType {
   currentLevelGallons: number;
 }
 
-const FUEL_TYPES: FuelType[] = [
+const FUEL_TYPES: FuelTypeConfig[] = [
   { id: "fuel-reg", type: "REGULAR", priceCentsPerGallon: 429, costCentsPerGallon: 365, tankCapacityGallons: 5000, currentLevelGallons: 2400 },
   { id: "fuel-prem", type: "PREMIUM", priceCentsPerGallon: 479, costCentsPerGallon: 408, tankCapacityGallons: 3000, currentLevelGallons: 1800 },
   { id: "fuel-dsl", type: "DIESEL", priceCentsPerGallon: 489, costCentsPerGallon: 410, tankCapacityGallons: 4000, currentLevelGallons: 2200 },
 ];
-
-interface FuelSale {
-  id: string;
-  tenantId: string;
-  date: string;
-  customerName: string;
-  fuelType: string;
-  gallons: number;
-  pricePerGallon: number;
-  totalCents: number;
-  pumpNumber: number;
-  staffName: string;
-  paymentMethod: string;
-}
-
-interface FuelDelivery {
-  id: string;
-  tenantId: string;
-  date: string;
-  supplier: string;
-  fuelType: string;
-  gallons: number;
-  costPerGallon: number;
-  totalCostCents: number;
-  tankLevelAfter: number;
-}
-
-const SALES: FuelSale[] = [];
-const DELIVERIES: FuelDelivery[] = [];
 
 // ─── GET /fuel/types ──────────────────────────────────────────────────────────
 
@@ -117,6 +93,7 @@ router.put("/types/:id/price", requireRole("admin", "manager"), async (req: Requ
 
 router.post("/sales", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = req.tenantId!;
     const body = RecordSaleSchema.parse(req.body);
     const ft = FUEL_TYPES.find((f) => f.type === body.fuelType);
     if (!ft) return res.status(400).json({ error: "Invalid fuel type" });
@@ -124,66 +101,143 @@ router.post("/sales", async (req: Request, res: Response, next: NextFunction) =>
     const totalCents = Math.round(body.gallons * ft.priceCentsPerGallon);
     ft.currentLevelGallons = Math.max(0, ft.currentLevelGallons - body.gallons);
 
-    const sale: FuelSale = {
-      id: `fs-${Date.now()}`,
-      tenantId: (req as any).tenantId,
-      date: new Date().toISOString(),
-      customerName: body.guestName || "Walk-up",
-      fuelType: body.fuelType,
-      gallons: body.gallons,
-      pricePerGallon: ft.priceCentsPerGallon,
-      totalCents,
-      pumpNumber: body.pumpNumber || 1,
-      staffName: "Current User",
-      paymentMethod: body.paymentMethod || "CARD",
-    };
-    SALES.push(sale);
+    const sale = await prisma.fuelSale.create({
+      data: {
+        tenantId,
+        customerId: body.customerId ?? null,
+        guestName: body.guestName ?? null,
+        fuelType: body.fuelType,
+        gallons: body.gallons,
+        priceCentsPerGallon: ft.priceCentsPerGallon,
+        totalCents,
+        pumpNumber: body.pumpNumber ?? null,
+        staffId: body.staffId ?? null,
+        paymentMethod: body.paymentMethod ?? null,
+      },
+    });
 
-    res.status(201).json(sale);
+    res.status(201).json({
+      id: sale.id,
+      tenantId: sale.tenantId,
+      date: sale.createdAt.toISOString(),
+      customerName: sale.guestName || "Walk-up",
+      fuelType: sale.fuelType,
+      gallons: sale.gallons,
+      pricePerGallon: sale.priceCentsPerGallon,
+      totalCents: sale.totalCents,
+      pumpNumber: sale.pumpNumber || 1,
+      staffName: "Current User",
+      paymentMethod: sale.paymentMethod || "CARD",
+    });
   } catch (err) { next(err); }
 });
 
 // ─── GET /fuel/sales ──────────────────────────────────────────────────────────
 
-router.get("/sales", async (req: Request, res: Response) => {
-  const tenantId = (req as any).tenantId;
-  const sales = SALES.filter((s) => s.tenantId === tenantId);
-  res.json({ sales, count: sales.length });
+router.get("/sales", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const query = ListQuerySchema.parse(req.query);
+
+    const [sales, total] = await Promise.all([
+      prisma.fuelSale.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: "desc" },
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.fuelSale.count({ where: { tenantId } }),
+    ]);
+
+    res.json({
+      sales: sales.map((s) => ({
+        id: s.id,
+        date: s.createdAt.toISOString(),
+        customerName: s.guestName || "Walk-up",
+        fuelType: s.fuelType,
+        gallons: s.gallons,
+        pricePerGallon: s.priceCentsPerGallon,
+        totalCents: s.totalCents,
+        pumpNumber: s.pumpNumber || 1,
+        staffName: "Staff",
+        paymentMethod: s.paymentMethod || "CARD",
+      })),
+      total,
+    });
+  } catch (err) { next(err); }
 });
 
 // ─── POST /fuel/deliveries ────────────────────────────────────────────────────
 
 router.post("/deliveries", requireRole("admin", "manager"), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = req.tenantId!;
     const body = LogDeliverySchema.parse(req.body);
     const ft = FUEL_TYPES.find((f) => f.type === body.fuelType);
     if (!ft) return res.status(400).json({ error: "Invalid fuel type" });
 
-    ft.currentLevelGallons = body.tankLevelAfterGallons || (ft.currentLevelGallons + body.gallons);
+    const tankLevelAfter = body.tankLevelAfterGallons ?? Math.min(ft.tankCapacityGallons, ft.currentLevelGallons + body.gallons);
+    ft.currentLevelGallons = tankLevelAfter;
     const totalCostCents = Math.round(body.gallons * body.costCentsPerGallon);
 
-    const delivery: FuelDelivery = {
-      id: `fd-${Date.now()}`,
-      tenantId: (req as any).tenantId,
-      date: new Date().toISOString(),
-      supplier: body.supplier,
-      fuelType: body.fuelType,
-      gallons: body.gallons,
-      costPerGallon: body.costCentsPerGallon,
-      totalCostCents,
-      tankLevelAfter: ft.currentLevelGallons,
-    };
-    DELIVERIES.push(delivery);
+    const delivery = await prisma.fuelDelivery.create({
+      data: {
+        tenantId,
+        supplier: body.supplier,
+        fuelType: body.fuelType,
+        gallons: body.gallons,
+        costCentsPerGallon: body.costCentsPerGallon,
+        totalCostCents,
+        tankLevelAfterGallons: tankLevelAfter,
+        notes: body.notes ?? null,
+      },
+    });
 
-    res.status(201).json(delivery);
+    res.status(201).json({
+      id: delivery.id,
+      date: delivery.deliveredAt.toISOString(),
+      supplier: delivery.supplier,
+      fuelType: delivery.fuelType,
+      gallons: delivery.gallons,
+      costPerGallon: delivery.costCentsPerGallon,
+      totalCostCents: delivery.totalCostCents,
+      tankLevelAfter: delivery.tankLevelAfterGallons,
+    });
   } catch (err) { next(err); }
 });
 
 // ─── GET /fuel/deliveries ─────────────────────────────────────────────────────
 
-router.get("/deliveries", async (req: Request, res: Response) => {
-  const tenantId = (req as any).tenantId;
-  res.json({ deliveries: DELIVERIES.filter((d) => d.tenantId === tenantId) });
+router.get("/deliveries", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const query = ListQuerySchema.parse(req.query);
+
+    const [deliveries, total] = await Promise.all([
+      prisma.fuelDelivery.findMany({
+        where: { tenantId },
+        orderBy: { deliveredAt: "desc" },
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.fuelDelivery.count({ where: { tenantId } }),
+    ]);
+
+    res.json({
+      deliveries: deliveries.map((d) => ({
+        id: d.id,
+        date: d.deliveredAt.toISOString(),
+        supplier: d.supplier,
+        fuelType: d.fuelType,
+        gallons: d.gallons,
+        costPerGallon: d.costCentsPerGallon,
+        totalCostCents: d.totalCostCents,
+        tankLevelAfter: d.tankLevelAfterGallons,
+        notes: d.notes,
+      })),
+      total,
+    });
+  } catch (err) { next(err); }
 });
 
 // ─── GET /fuel/tank-levels ────────────────────────────────────────────────────
@@ -195,29 +249,31 @@ router.get("/tank-levels", async (_req: Request, res: Response) => {
       capacityGallons: ft.tankCapacityGallons,
       currentGallons: ft.currentLevelGallons,
       levelPercent: Math.round((ft.currentLevelGallons / ft.tankCapacityGallons) * 100),
-      estimatedDaysRemaining: Math.round(ft.currentLevelGallons / 50), // Rough estimate
+      estimatedDaysRemaining: Math.round(ft.currentLevelGallons / 50),
     })),
   });
 });
 
 // ─── GET /fuel/reports ────────────────────────────────────────────────────────
 
-router.get("/reports", requireRole("admin", "manager", "accounting"), async (req: Request, res: Response) => {
-  const tenantId = (req as any).tenantId;
-  const sales = SALES.filter((s) => s.tenantId === tenantId);
+router.get("/reports", requireRole("admin", "manager", "accounting"), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const sales = await prisma.fuelSale.findMany({ where: { tenantId } });
 
-  const totalGallons = sales.reduce((s, sale) => s + sale.gallons, 0);
-  const totalRevenue = sales.reduce((s, sale) => s + sale.totalCents, 0);
+    const totalGallons = sales.reduce((s, sale) => s + sale.gallons, 0);
+    const totalRevenue = sales.reduce((s, sale) => s + sale.totalCents, 0);
 
-  const byType = FUEL_TYPES.map((ft) => {
-    const typeSales = sales.filter((s) => s.fuelType === ft.type);
-    const gallons = typeSales.reduce((s, sale) => s + sale.gallons, 0);
-    const revenue = typeSales.reduce((s, sale) => s + sale.totalCents, 0);
-    const cost = Math.round(gallons * ft.costCentsPerGallon);
-    return { type: ft.type, gallons, revenueCents: revenue, costCents: cost, marginCents: revenue - cost };
-  });
+    const byType = FUEL_TYPES.map((ft) => {
+      const typeSales = sales.filter((s) => s.fuelType === ft.type);
+      const gallons = typeSales.reduce((s, sale) => s + sale.gallons, 0);
+      const revenue = typeSales.reduce((s, sale) => s + sale.totalCents, 0);
+      const cost = Math.round(gallons * ft.costCentsPerGallon);
+      return { type: ft.type, gallons, revenueCents: revenue, costCents: cost, marginCents: revenue - cost };
+    });
 
-  res.json({ totalGallons, totalRevenueCents: totalRevenue, byType, saleCount: sales.length });
+    res.json({ totalGallons, totalRevenueCents: totalRevenue, byType, saleCount: sales.length });
+  } catch (err) { next(err); }
 });
 
 export default router;
