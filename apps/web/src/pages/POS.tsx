@@ -9,6 +9,7 @@ import {
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 import { loadStripeTerminal } from '@stripe/terminal-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { getStripe } from '../lib/stripe.js';
@@ -1010,6 +1011,30 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
 export default function POS() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
+  const { currentLocationId } = useModules();
+
+  // Jurisdiction rates for the current location: { category -> combined rate % }
+  const [locationTaxRates, setLocationTaxRates] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!currentLocationId) return;
+    fetch(`/api/tax/locations/${currentLocationId}/jurisdictions`, { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((body: { data: Array<{ jurisdiction: { rates: Array<{ category: string; ratePctBps: number; effectiveFrom: string; effectiveTo: string | null }> } }> } | null) => {
+        if (!body?.data) return;
+        const now = new Date();
+        const combined: Record<string, number> = {};
+        for (const link of body.data) {
+          for (const rate of link.jurisdiction.rates) {
+            if (new Date(rate.effectiveFrom) <= now && (!rate.effectiveTo || new Date(rate.effectiveTo) >= now)) {
+              combined[rate.category] = (combined[rate.category] ?? 0) + rate.ratePctBps / 100;
+            }
+          }
+        }
+        setLocationTaxRates(combined);
+      })
+      .catch(() => {});
+  }, [currentLocationId]);
+
   const [tab, setTab] = useState<'sale' | 'transactions' | 'settings'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);

@@ -9,7 +9,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users,
+  Lock, Shield, Users, Landmark, Percent,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 
@@ -367,7 +367,7 @@ export default function Settings() {
   const { getToken } = useAuth();
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations'>('profile');
+  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax'>('profile');
 
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
@@ -575,6 +575,117 @@ export default function Settings() {
   const [locationSaving, setLocationSaving] = useState(false);
   const [locationQboLoading, setLocationQboLoading] = useState(false);
   const [locationQboActing, setLocationQboActing] = useState(false);
+
+  // ── Tax Jurisdictions ──────────────────────────────────────────────────────
+  interface TaxJurisdiction {
+    id: string; code: string; name: string; kind: string;
+    rates: Array<{ id: string; category: string; ratePctBps: number; effectiveFrom: string; effectiveTo: string | null; }>;
+  }
+  const [jurisdictions, setJurisdictions] = useState<TaxJurisdiction[]>([]);
+  const [jurisLoading, setJurisLoading] = useState(false);
+  const [selectedJurisId, setSelectedJurisId] = useState<string | null>(null);
+  const [jurisForm, setJurisForm] = useState<{ code: string; name: string; kind: string }>({ code: '', name: '', kind: 'STATE' });
+  const [addingJuris, setAddingJuris] = useState(false);
+  const [jurisSaving, setJurisSaving] = useState(false);
+  const [rateForm, setRateForm] = useState<{ category: string; ratePct: string; effectiveFrom: string; effectiveTo: string }>({ category: 'Standard', ratePct: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '' });
+  const [addingRate, setAddingRate] = useState(false);
+  const [rateSaving, setRateSaving] = useState(false);
+  const [locationJurisIds, setLocationJurisIds] = useState<string[]>([]);
+  const [locationJurisSaving, setLocationJurisSaving] = useState(false);
+
+  const kindColor = (kind: string): { backgroundColor: string; color: string } => {
+    const map: Record<string, { backgroundColor: string; color: string }> = {
+      STATE:   { backgroundColor: '#DBEAFE', color: '#1D4ED8' },
+      COUNTY:  { backgroundColor: '#D1FAE5', color: '#065F46' },
+      CITY:    { backgroundColor: '#FEF3C7', color: '#92400E' },
+      SPECIAL: { backgroundColor: '#EDE9FE', color: '#5B21B6' },
+    };
+    return map[kind] ?? { backgroundColor: '#F1F5F9', color: '#64748B' };
+  };
+
+  const fetchJurisdictions = React.useCallback(async () => {
+    setJurisLoading(true);
+    try {
+      const r = await fetch('/api/tax/jurisdictions', { credentials: 'include' });
+      if (r.ok) { const body = await r.json(); setJurisdictions(body.data ?? []); }
+    } finally { setJurisLoading(false); }
+  }, []);
+
+  React.useEffect(() => {
+    if (tab === 'tax' || tab === 'locations') void fetchJurisdictions();
+  }, [tab, fetchJurisdictions]);
+
+  const fetchLocationJuris = React.useCallback(async (locationId: string) => {
+    const r = await fetch(`/api/tax/locations/${locationId}/jurisdictions`, { credentials: 'include' });
+    if (r.ok) { const body = await r.json(); setLocationJurisIds((body.data ?? []).map((d: any) => d.jurisdictionId)); }
+  }, []);
+
+  React.useEffect(() => {
+    if (selectedLocationId) void fetchLocationJuris(selectedLocationId);
+  }, [selectedLocationId, fetchLocationJuris]);
+
+  const handleLocationJurisSave = async () => {
+    setLocationJurisSaving(true);
+    try {
+      await fetch('/api/tax/locations/assign', {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: selectedLocationId, jurisdictionIds: locationJurisIds }),
+      });
+      setSavedMsg('Tax assignments saved'); setTimeout(() => setSavedMsg(null), 2000);
+    } finally { setLocationJurisSaving(false); }
+  };
+
+  const handleCreateJuris = async () => {
+    setJurisSaving(true);
+    try {
+      const r = await fetch('/api/tax/jurisdictions', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jurisForm) });
+      if (r.ok) { const body = await r.json(); setJurisdictions((prev) => [...prev, { ...body.data, rates: [] }]); setSelectedJurisId(body.data.id); setJurisForm({ code: body.data.code, name: body.data.name, kind: body.data.kind }); setAddingJuris(false); }
+    } finally { setJurisSaving(false); }
+  };
+
+  const handleUpdateJuris = async () => {
+    if (!selectedJurisId) return;
+    setJurisSaving(true);
+    try {
+      const r = await fetch(`/api/tax/jurisdictions/${selectedJurisId}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jurisForm) });
+      if (r.ok) { const body = await r.json(); setJurisdictions((prev) => prev.map((j) => j.id === selectedJurisId ? { ...j, ...body.data } : j)); setSavedMsg('Jurisdiction updated'); setTimeout(() => setSavedMsg(null), 2000); }
+    } finally { setJurisSaving(false); }
+  };
+
+  const handleDeleteJuris = async (id: string) => {
+    if (!confirm('Delete this jurisdiction and all its rates?')) return;
+    await fetch(`/api/tax/jurisdictions/${id}`, { method: 'DELETE', credentials: 'include' });
+    setJurisdictions((prev) => prev.filter((j) => j.id !== id));
+    if (selectedJurisId === id) setSelectedJurisId(null);
+  };
+
+  const handleAddRate = async () => {
+    if (!selectedJurisId || !rateForm.ratePct) return;
+    setRateSaving(true);
+    try {
+      const payload = {
+        jurisdictionId: selectedJurisId,
+        category: rateForm.category,
+        ratePctBps: Math.round(parseFloat(rateForm.ratePct) * 100),
+        effectiveFrom: new Date(rateForm.effectiveFrom).toISOString(),
+        effectiveTo: rateForm.effectiveTo ? new Date(rateForm.effectiveTo).toISOString() : null,
+      };
+      const r = await fetch('/api/tax/rates', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (r.ok) {
+        const res = await r.json();
+        setJurisdictions((prev) => prev.map((j) => j.id === selectedJurisId ? { ...j, rates: [res.data, ...j.rates] } : j));
+        setAddingRate(false);
+        setRateForm({ category: 'Standard', ratePct: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '' });
+      }
+    } finally { setRateSaving(false); }
+  };
+
+  const handleDeleteRate = async (rateId: string, jurisId: string) => {
+    await fetch(`/api/tax/rates/${rateId}`, { method: 'DELETE', credentials: 'include' });
+    setJurisdictions((prev) => prev.map((j) => j.id === jurisId ? { ...j, rates: j.rates.filter((r) => r.id !== rateId) } : j));
+  };
+  // ── End Tax Jurisdictions ──────────────────────────────────────────────────
 
   const fetchLocationDetail = React.useCallback(async (id: string) => {
     const r = await fetch(`/api/settings/locations/${id}`, { credentials: 'include' });
@@ -1140,6 +1251,7 @@ export default function Settings() {
     { key: 'integrations', label: 'Integrations', icon: Link },
     { key: 'team', label: 'Team', icon: Users },
     { key: 'roles', label: 'Roles', icon: Shield },
+    { key: 'tax', label: 'Tax', icon: Landmark },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
@@ -1375,6 +1487,47 @@ export default function Settings() {
                       </button>
                     )}
                   </div>
+                </div>
+
+                {/* Tax Jurisdiction Assignments */}
+                <div style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '20px 24px', marginTop: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                    <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: '#F5F3FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Landmark size={20} style={{ color: '#7C3AED' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>Tax Jurisdictions</div>
+                      <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Select which tax jurisdictions apply at this location. Rates are configured in the Tax tab.</div>
+                    </div>
+                  </div>
+                  {jurisdictions.length === 0 ? (
+                    <div style={{ fontSize: '13px', color: '#94A3B8' }}>
+                      No jurisdictions configured yet.{' '}
+                      <button style={{ background: 'none', border: 'none', color: '#3B82F6', cursor: 'pointer', fontSize: '13px', padding: 0, textDecoration: 'underline' }} onClick={() => setTab('tax')}>
+                        Configure tax jurisdictions →
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {jurisdictions.map((j) => {
+                        const checked = locationJurisIds.includes(j.id);
+                        const now = new Date();
+                        const active = j.rates.filter((r) => new Date(r.effectiveFrom) <= now && (!r.effectiveTo || new Date(r.effectiveTo) >= now));
+                        const totalBps = active.reduce((s, r) => s + r.ratePctBps, 0);
+                        return (
+                          <label key={j.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 0', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}>
+                            <input type="checkbox" checked={checked} onChange={(e) => setLocationJurisIds((prev) => e.target.checked ? [...prev, j.id] : prev.filter((id) => id !== j.id))} style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#0A2342' }} />
+                            <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', flexShrink: 0, ...kindColor(j.kind) }}>{j.kind}</span>
+                            <span style={{ flex: 1, fontSize: '14px', color: '#0A2342', fontWeight: checked ? 600 : 400 }}>{j.name}</span>
+                            {totalBps > 0 && <span style={{ fontSize: '12px', color: '#64748B', fontFamily: 'monospace' }}>{(totalBps / 100).toFixed(2)}%</span>}
+                          </label>
+                        );
+                      })}
+                      <button style={{ ...st.saveBtn, marginTop: '16px' }} onClick={() => void handleLocationJurisSave()} disabled={locationJurisSaving}>
+                        {locationJurisSaving ? 'Saving…' : 'Save Tax Assignments'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -2553,6 +2706,209 @@ export default function Settings() {
             <h3 style={{ ...st.sectionTitle, color: '#DC2626' }}><AlertTriangle size={20} /> Danger Zone</h3>
             <p style={{ fontSize: '14px', color: '#64748B', marginBottom: '16px' }}>Permanently delete this marina and all associated data. This action cannot be undone.</p>
             <button style={st.dangerBtn}><Trash2 size={14} /> Delete Marina</button>
+          </div>
+        </>
+      )}
+
+      {/* ── Tax Jurisdictions ────────────────────────────────────────────────── */}
+      {tab === 'tax' && (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+            <div>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342', marginBottom: '4px' }}>Tax Jurisdictions</div>
+              <div style={{ fontSize: '13px', color: '#64748B' }}>Define state, county, city, and special district tax rates by product category. Assign jurisdictions to locations in the Locations tab.</div>
+            </div>
+            <button style={st.addBtn} onClick={() => { setAddingJuris(true); setSelectedJurisId(null); setJurisForm({ code: '', name: '', kind: 'STATE' }); }}>
+              <Plus size={14} /> Add Jurisdiction
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: '24px', alignItems: 'flex-start' }}>
+            {/* Left: list */}
+            <div style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+              <div style={{ padding: '14px 16px', borderBottom: '1px solid #E2E8F0', fontWeight: 700, fontSize: '14px', color: '#0A2342' }}>All Jurisdictions</div>
+              {jurisLoading ? (
+                <div style={{ padding: '32px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>Loading…</div>
+              ) : jurisdictions.length === 0 ? (
+                <div style={{ padding: '32px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No jurisdictions yet.<br />Click "Add Jurisdiction" to get started.</div>
+              ) : (
+                <div style={{ padding: '8px' }}>
+                  {jurisdictions.map((j) => (
+                    <button
+                      key={j.id}
+                      onClick={() => { setSelectedJurisId(j.id); setJurisForm({ code: j.code, name: j.name, kind: j.kind }); setAddingJuris(false); setAddingRate(false); }}
+                      style={{ width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: selectedJurisId === j.id ? '#EFF6FF' : 'transparent', marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: selectedJurisId === j.id ? '#1D4ED8' : '#374151' }}
+                    >
+                      <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', flexShrink: 0, ...kindColor(j.kind) }}>{j.kind}</span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: selectedJurisId === j.id ? 600 : 400 }}>{j.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Right: detail */}
+            <div>
+              {addingJuris ? (
+                <div style={st.card}>
+                  <h3 style={st.sectionTitle}><Plus size={18} /> New Jurisdiction</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 160px', gap: '16px', marginBottom: '20px' }}>
+                    <div style={st.field}>
+                      <label style={st.label}>Name</label>
+                      <input style={st.input} value={jurisForm.name} onChange={(e) => setJurisForm((p) => ({ ...p, name: e.target.value }))} placeholder="e.g. Florida State" />
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>Code</label>
+                      <input style={st.input} value={jurisForm.code} onChange={(e) => setJurisForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))} placeholder="e.g. FL-STATE" />
+                    </div>
+                    <div style={st.field}>
+                      <label style={st.label}>Kind</label>
+                      <select style={st.select} value={jurisForm.kind} onChange={(e) => setJurisForm((p) => ({ ...p, kind: e.target.value }))}>
+                        <option value="STATE">State</option>
+                        <option value="COUNTY">County</option>
+                        <option value="CITY">City</option>
+                        <option value="SPECIAL">Special District</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <button style={st.saveBtn} onClick={() => void handleCreateJuris()} disabled={jurisSaving || !jurisForm.name || !jurisForm.code}>{jurisSaving ? 'Saving…' : 'Create Jurisdiction'}</button>
+                    <button style={st.outlineBtn} onClick={() => setAddingJuris(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : selectedJurisId ? (() => {
+                const juris = jurisdictions.find((j) => j.id === selectedJurisId);
+                if (!juris) return null;
+                const now = new Date();
+                const activeRates = juris.rates.filter((r) => new Date(r.effectiveFrom) <= now && (!r.effectiveTo || new Date(r.effectiveTo) >= now));
+                return (
+                  <>
+                    <div style={st.card}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                        <h3 style={{ ...st.sectionTitle, marginBottom: 0 }}><Landmark size={18} /> Edit Jurisdiction</h3>
+                        <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5', padding: '5px 12px', fontSize: '12px' }} onClick={() => void handleDeleteJuris(juris.id)}><Trash2 size={12} /> Delete</button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 160px', gap: '16px', marginBottom: '16px' }}>
+                        <div style={st.field}>
+                          <label style={st.label}>Name</label>
+                          <input style={st.input} value={jurisForm.name} onChange={(e) => setJurisForm((p) => ({ ...p, name: e.target.value }))} />
+                        </div>
+                        <div style={st.field}>
+                          <label style={st.label}>Code</label>
+                          <input style={st.input} value={jurisForm.code} onChange={(e) => setJurisForm((p) => ({ ...p, code: e.target.value.toUpperCase() }))} />
+                        </div>
+                        <div style={st.field}>
+                          <label style={st.label}>Kind</label>
+                          <select style={st.select} value={jurisForm.kind} onChange={(e) => setJurisForm((p) => ({ ...p, kind: e.target.value }))}>
+                            <option value="STATE">State</option>
+                            <option value="COUNTY">County</option>
+                            <option value="CITY">City</option>
+                            <option value="SPECIAL">Special District</option>
+                          </select>
+                        </div>
+                      </div>
+                      <button style={st.saveBtn} onClick={() => void handleUpdateJuris()} disabled={jurisSaving}>{jurisSaving ? 'Saving…' : 'Save Changes'}</button>
+                    </div>
+
+                    <div style={st.card}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                        <h3 style={{ ...st.sectionTitle, marginBottom: 0 }}><Percent size={18} /> Tax Rates</h3>
+                        {!addingRate && (
+                          <button style={{ ...st.addBtn, padding: '6px 14px', fontSize: '13px' }} onClick={() => setAddingRate(true)}><Plus size={13} /> Add Rate</button>
+                        )}
+                      </div>
+
+                      {addingRate && (
+                        <div style={{ padding: '16px', background: '#F8FAFC', borderRadius: '8px', marginBottom: '16px', border: '1px solid #E2E8F0' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 160px 160px', gap: '12px', marginBottom: '12px' }}>
+                            <div style={st.field}>
+                              <label style={st.label}>Category</label>
+                              <select style={st.select} value={rateForm.category} onChange={(e) => setRateForm((p) => ({ ...p, category: e.target.value }))}>
+                                <option>Standard</option>
+                                <option>Fuel Tax</option>
+                                <option>Dockage</option>
+                                <option>Electric</option>
+                                <option>Exempt</option>
+                              </select>
+                            </div>
+                            <div style={st.field}>
+                              <label style={st.label}>Rate %</label>
+                              <input style={st.input} type="number" step="0.01" min="0" max="100" value={rateForm.ratePct} onChange={(e) => setRateForm((p) => ({ ...p, ratePct: e.target.value }))} placeholder="6.00" />
+                            </div>
+                            <div style={st.field}>
+                              <label style={st.label}>Effective From</label>
+                              <input style={st.input} type="date" value={rateForm.effectiveFrom} onChange={(e) => setRateForm((p) => ({ ...p, effectiveFrom: e.target.value }))} />
+                            </div>
+                            <div style={st.field}>
+                              <label style={st.label}>Effective To (opt.)</label>
+                              <input style={st.input} type="date" value={rateForm.effectiveTo} onChange={(e) => setRateForm((p) => ({ ...p, effectiveTo: e.target.value }))} />
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button style={st.saveBtn} onClick={() => void handleAddRate()} disabled={rateSaving || !rateForm.ratePct}>{rateSaving ? 'Adding…' : 'Add Rate'}</button>
+                            <button style={st.outlineBtn} onClick={() => setAddingRate(false)}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {juris.rates.length === 0 ? (
+                        <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No rates yet. Add a rate to start calculating tax for this jurisdiction.</div>
+                      ) : (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                          <thead>
+                            <tr style={{ background: '#F8FAFC' }}>
+                              <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>Category</th>
+                              <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>Rate</th>
+                              <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>Effective From</th>
+                              <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>Effective To</th>
+                              <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>Status</th>
+                              <th style={{ padding: '8px 12px', borderBottom: '1px solid #E2E8F0' }} />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {juris.rates.map((rate) => {
+                              const isActive = activeRates.some((r) => r.id === rate.id);
+                              return (
+                                <tr key={rate.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                  <td style={{ padding: '10px 12px', color: '#0A2342', fontWeight: 500 }}>{rate.category}</td>
+                                  <td style={{ padding: '10px 12px', color: '#0A2342', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>{(rate.ratePctBps / 100).toFixed(2)}%</td>
+                                  <td style={{ padding: '10px 12px', color: '#64748B' }}>{new Date(rate.effectiveFrom).toLocaleDateString()}</td>
+                                  <td style={{ padding: '10px 12px', color: '#64748B' }}>{rate.effectiveTo ? new Date(rate.effectiveTo).toLocaleDateString() : '—'}</td>
+                                  <td style={{ padding: '10px 12px' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '9999px', background: isActive ? '#DEF7EC' : '#F3F4F6', color: isActive ? '#03543F' : '#6B7280' }}>{isActive ? 'Active' : 'Inactive'}</span>
+                                  </td>
+                                  <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626', padding: '2px' }} onClick={() => void handleDeleteRate(rate.id, juris.id)}><Trash2 size={14} /></button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+
+                      {activeRates.length > 0 && (
+                        <div style={{ marginTop: '16px', padding: '12px 16px', background: '#F0FDF4', borderRadius: '6px', border: '1px solid #BBF7D0', display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#065F46' }}>Active rates:</span>
+                          {Object.entries(activeRates.reduce((acc, r) => ({ ...acc, [r.category]: (acc[r.category] ?? 0) + r.ratePctBps }), {} as Record<string, number>)).map(([cat, bps]) => (
+                            <div key={cat} style={{ fontSize: '13px', color: '#065F46' }}>
+                              <span style={{ fontWeight: 500 }}>{cat}: </span>
+                              <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>{(bps / 100).toFixed(2)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })() : (
+                <div style={{ ...st.card, color: '#94A3B8', textAlign: 'center', padding: '48px' }}>
+                  <Landmark size={36} style={{ margin: '0 auto 12px', display: 'block', opacity: 0.4 }} />
+                  <div style={{ fontWeight: 600, marginBottom: '6px' }}>No jurisdiction selected</div>
+                  <div style={{ fontSize: '13px' }}>Select a jurisdiction from the list, or add a new one to get started.</div>
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
