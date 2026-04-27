@@ -1,15 +1,14 @@
-import React, { useState, createContext, useContext, useEffect, useCallback } from 'react';
+import React, { useState, createContext, useContext, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
-import { X, Download, Printer } from 'lucide-react';
+import { X, Download, Printer, Settings2, GripVertical, Plus, Minus, RotateCcw } from 'lucide-react';
 
-/* ── Report context (navigate + date range) ─────────────── */
+/* ── Report context ──────────────────────────────────────── */
 interface ReportCtx { navigate: (to: string) => void; dateFrom: string; dateTo: string; }
 const ReportContext = createContext<ReportCtx>({ navigate: () => {}, dateFrom: '2026-03-01', dateTo: '2026-03-25' });
 const useReport = () => useContext(ReportContext);
 
 /* ── Styles ─────────────────────────────────────────────── */
-
 const s = {
   overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10,35,66,0.55)', zIndex: 1200, display: 'flex', justifyContent: 'flex-end' as const },
   panel: { width: '88vw', maxWidth: '1100px', height: '100vh', backgroundColor: '#F8FAFC', display: 'flex', flexDirection: 'column' as const, boxShadow: '-8px 0 40px rgba(0,0,0,0.2)', overflowY: 'auto' as const },
@@ -24,7 +23,6 @@ const s = {
   kpiCard: { background: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   kpiLabel: { fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '6px' },
   kpiValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
-  kpiSub: { fontSize: '12px', color: '#94A3B8', marginTop: '2px' },
   section: { background: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', marginBottom: '24px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   sectionHeader: { padding: '14px 20px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   sectionTitle: { fontSize: '15px', fontWeight: 700, color: '#0A2342', margin: 0 },
@@ -36,7 +34,6 @@ const s = {
   tdMuted: { padding: '10px 16px', color: '#64748B', borderBottom: '1px solid #F1F5F9', fontSize: '12px', verticalAlign: 'middle' as const },
   totalRow: { backgroundColor: '#F0F9FF' },
   badge: (color: string) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 700, backgroundColor: color === 'green' ? 'rgba(16,185,129,0.1)' : color === 'red' ? 'rgba(239,68,68,0.1)' : color === 'yellow' ? 'rgba(245,158,11,0.1)' : 'rgba(148,163,184,0.15)', color: color === 'green' ? '#059669' : color === 'red' ? '#DC2626' : color === 'yellow' ? '#D97706' : '#475569' }),
-  dateRange: { fontSize: '12px', color: '#94A3B8', marginTop: '2px' },
   empty: { padding: '48px 24px', textAlign: 'center' as const, color: '#94A3B8', fontSize: '14px' },
   loading: { padding: '48px 24px', textAlign: 'center' as const, color: '#94A3B8', fontSize: '14px' },
 };
@@ -45,40 +42,294 @@ const fmt = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits
 const fmtC = (cents: number) => fmt(cents / 100);
 const pct = (n: number) => `${n.toFixed(1)}%`;
 
-/* ── Sort helpers ────────────────────────────────────────── */
-function useSortState<T extends object>(initial: T[], defaultKey: keyof T) {
-  const [sortKey, setSortKey] = useState<keyof T>(defaultKey);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  const toggle = (key: string) => {
-    if ((key as keyof T) === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else { setSortKey(key as keyof T); setSortDir('asc'); }
-  };
-  const sorted = [...initial].sort((a, b) => {
-    const av = a[sortKey]; const bv = b[sortKey];
-    if (typeof av === 'number' && typeof bv === 'number') return sortDir === 'asc' ? av - bv : bv - av;
-    return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
-  });
-  return { sorted, sortKey, sortDir, toggle };
+/* ── Column definition types ─────────────────────────────── */
+type CellAlign = 'left' | 'right' | 'muted';
+
+interface ColDef<T = Record<string, unknown>> {
+  key: string;
+  label: string;
+  align?: CellAlign;
+  defaultVisible?: boolean;
+  render: (row: T) => React.ReactNode;
 }
 
-function SortTh({ label, colKey, sortKey, sortDir, toggle, right }: { label: string; colKey: string; sortKey: string; sortDir: 'asc' | 'desc'; toggle: (k: string) => void; right?: boolean }) {
-  const active = colKey === sortKey;
+/* ── Column config hook (localStorage) ───────────────────── */
+function useColumnConfig(storageKey: string, allCols: ColDef[], defaults: string[]) {
+  const stored = localStorage.getItem(`helm:cols:${storageKey}`);
+  const initial: string[] = stored ? JSON.parse(stored) : defaults;
+  const [activeKeys, setActiveKeys] = useState<string[]>(initial);
+
+  const setAndPersist = useCallback((keys: string[]) => {
+    setActiveKeys(keys);
+    localStorage.setItem(`helm:cols:${storageKey}`, JSON.stringify(keys));
+  }, [storageKey]);
+
+  const reset = useCallback(() => setAndPersist(defaults), [defaults, setAndPersist]);
+
+  const activeCols = activeKeys
+    .map((k) => allCols.find((c) => c.key === k))
+    .filter(Boolean) as ColDef[];
+
+  const inactiveCols = allCols.filter((c) => !activeKeys.includes(c.key));
+
+  return { activeCols, inactiveCols, activeKeys, setActiveKeys: setAndPersist, reset };
+}
+
+/* ── Drag-and-drop column config panel ───────────────────── */
+interface ColConfigPanelProps {
+  activeCols: ColDef[];
+  inactiveCols: ColDef[];
+  activeKeys: string[];
+  onUpdate: (keys: string[]) => void;
+  onReset: () => void;
+  onClose: () => void;
+}
+
+function ColConfigPanel({ activeCols, inactiveCols, activeKeys, onUpdate, onReset, onClose }: ColConfigPanelProps) {
+  const dragIdx = useRef<number | null>(null);
+  const [localKeys, setLocalKeys] = useState<string[]>(activeKeys);
+  const [over, setOver] = useState<number | null>(null);
+
+  const localActive = localKeys.map((k) => activeCols.concat(inactiveCols as ColDef[]).find((c) => c.key === k)).filter(Boolean) as ColDef[];
+  const localInactive = activeCols.concat(inactiveCols as ColDef[]).filter((c) => !localKeys.includes(c.key));
+
+  const handleDragStart = (idx: number) => { dragIdx.current = idx; };
+  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); setOver(idx); };
+  const handleDrop = (e: React.DragEvent, toIdx: number) => {
+    e.preventDefault();
+    if (dragIdx.current === null) return;
+    const from = dragIdx.current;
+    const updated = [...localKeys];
+    const [moved] = updated.splice(from, 1);
+    updated.splice(toIdx, 0, moved);
+    setLocalKeys(updated);
+    setOver(null);
+    dragIdx.current = null;
+  };
+  const handleDragEnd = () => { setOver(null); dragIdx.current = null; };
+
+  const removeKey = (key: string) => setLocalKeys((k) => k.filter((x) => x !== key));
+  const addKey = (key: string) => setLocalKeys((k) => [...k, key]);
+
+  const apply = () => { onUpdate(localKeys); onClose(); };
+
   return (
-    <th style={{ ...(right ? s.thRight : s.th), cursor: 'pointer', userSelect: 'none', backgroundColor: '#0A2342', color: active ? '#00D4FF' : '#64748B' } as React.CSSProperties}
-      onClick={() => toggle(colKey)}>
-      {label} {active ? (sortDir === 'asc' ? '↑' : '↓') : ''}
-    </th>
+    <div style={{ padding: '0 20px 20px', borderTop: '2px solid #E2E8F0', backgroundColor: '#F8FAFC', animation: 'slideDown 0.15s ease' }}>
+      <style>{`@keyframes slideDown { from { opacity:0; transform:translateY(-8px) } to { opacity:1; transform:translateY(0) } }`}</style>
+      <div style={{ display: 'flex', gap: '16px', paddingTop: '16px' }}>
+
+        {/* Active columns (draggable) */}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+            Active Columns — drag to reorder
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minHeight: '80px' }}>
+            {localActive.length === 0 && (
+              <div style={{ padding: '16px', border: '2px dashed #E2E8F0', borderRadius: '6px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>
+                Add at least one column
+              </div>
+            )}
+            {localActive.map((col, idx) => (
+              <div
+                key={col.key}
+                draggable
+                onDragStart={() => handleDragStart(idx)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDrop={(e) => handleDrop(e, idx)}
+                onDragEnd={handleDragEnd}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  padding: '8px 12px', borderRadius: '6px', cursor: 'grab',
+                  backgroundColor: over === idx ? '#EFF6FF' : '#FFFFFF',
+                  border: over === idx ? '2px solid #3B82F6' : '1px solid #E2E8F0',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                  transition: 'border-color 0.1s, background-color 0.1s',
+                }}
+              >
+                <GripVertical size={14} color="#94A3B8" style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: '13px', fontWeight: 500, color: '#0A2342' }}>{col.label}</span>
+                <button
+                  onClick={() => removeKey(col.key)}
+                  title="Remove column"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#94A3B8', display: 'flex', alignItems: 'center' }}
+                >
+                  <Minus size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div style={{ width: '1px', backgroundColor: '#E2E8F0', flexShrink: 0 }} />
+
+        {/* Available (inactive) columns */}
+        <div style={{ width: '220px', flexShrink: 0 }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+            Available to Add
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {localInactive.length === 0 && (
+              <div style={{ fontSize: '13px', color: '#94A3B8', padding: '8px 0' }}>All columns active</div>
+            )}
+            {localInactive.map((col) => (
+              <div
+                key={col.key}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: '6px', backgroundColor: '#F1F5F9', border: '1px solid #E2E8F0' }}
+              >
+                <span style={{ flex: 1, fontSize: '13px', color: '#64748B' }}>{col.label}</span>
+                <button
+                  onClick={() => addKey(col.key)}
+                  title="Add column"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#3B82F6', display: 'flex', alignItems: 'center' }}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: '8px', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #E2E8F0' }}>
+        <button
+          onClick={apply}
+          style={{ padding: '7px 18px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: 'none', backgroundColor: '#0A2342', color: '#FFFFFF', cursor: 'pointer' }}
+        >
+          Apply
+        </button>
+        <button
+          onClick={onClose}
+          style={{ padding: '7px 18px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', color: '#64748B', cursor: 'pointer' }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => { onReset(); onClose(); }}
+          style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '7px 14px', fontSize: '13px', fontWeight: 500, borderRadius: '6px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', color: '#94A3B8', cursor: 'pointer' }}
+        >
+          <RotateCcw size={13} /> Reset to default
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Configurable table ──────────────────────────────────── */
+interface ConfigurableTableProps<T> {
+  storageKey: string;
+  title: string;
+  subtitle?: string;
+  allCols: ColDef<T>[];
+  defaultColKeys: string[];
+  rows: T[];
+  loading: boolean;
+  emptyMsg?: string;
+  footerCells?: Record<string, React.ReactNode>;
+}
+
+function ConfigurableTable<T extends object>({
+  storageKey, title, subtitle, allCols, defaultColKeys, rows, loading, emptyMsg = 'No data for this period.', footerCells,
+}: ConfigurableTableProps<T>) {
+  const [configOpen, setConfigOpen] = useState(false);
+  const { activeCols, inactiveCols, activeKeys, setActiveKeys, reset } = useColumnConfig(
+    storageKey,
+    allCols as ColDef[],
+    defaultColKeys,
+  );
+
+  const tdStyle = (col: ColDef) =>
+    col.align === 'right' ? s.tdRight : col.align === 'muted' ? s.tdMuted : s.td;
+  const thStyle = (col: ColDef) =>
+    col.align === 'right' ? s.thRight : s.th;
+
+  return (
+    <div style={s.section}>
+      <div style={s.sectionHeader}>
+        <div>
+          <h3 style={s.sectionTitle}>{title}</h3>
+          {subtitle && <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>{subtitle}</div>}
+        </div>
+        <button
+          onClick={() => setConfigOpen((o) => !o)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '5px',
+            padding: '5px 12px', fontSize: '12px', fontWeight: 600,
+            borderRadius: '6px', border: '1px solid #E2E8F0',
+            backgroundColor: configOpen ? '#0A2342' : '#FFFFFF',
+            color: configOpen ? '#FFFFFF' : '#64748B',
+            cursor: 'pointer', transition: 'all 0.15s',
+          }}
+        >
+          <Settings2 size={13} />
+          Customize
+        </button>
+      </div>
+
+      {configOpen && (
+        <ColConfigPanel
+          activeCols={activeCols as ColDef[]}
+          inactiveCols={inactiveCols as ColDef[]}
+          activeKeys={activeKeys}
+          onUpdate={setActiveKeys}
+          onReset={reset}
+          onClose={() => setConfigOpen(false)}
+        />
+      )}
+
+      <table style={s.table}>
+        <thead>
+          <tr>
+            {activeCols.map((col) => (
+              <th key={col.key} style={thStyle(col as ColDef)}>{col.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={activeCols.length} style={s.loading}>Loading…</td></tr>
+          ) : rows.length === 0 ? (
+            <tr><td colSpan={activeCols.length} style={s.empty}>{emptyMsg}</td></tr>
+          ) : (
+            rows.map((row, i) => (
+              <tr key={i}>
+                {activeCols.map((col) => (
+                  <td key={col.key} style={tdStyle(col as ColDef)}>
+                    {(col as ColDef<T>).render(row)}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
+          {!loading && rows.length > 0 && footerCells && (
+            <tr style={s.totalRow}>
+              {activeCols.map((col, i) => {
+                const cell = footerCells[col.key];
+                return (
+                  <td key={col.key} style={{ ...(tdStyle(col as ColDef)), fontWeight: 700 }}>
+                    {i === 0 ? 'Total' : cell ?? null}
+                  </td>
+                );
+              })}
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 /* ── Clickable customer cell ─────────────────────────────── */
-function CustomerCell({ name, id }: { name: string; id?: string }) {
+function CustomerLink({ name, id }: { name: string; id?: string }) {
   const { navigate } = useReport();
   return (
-    <td style={{ ...s.td, fontWeight: 600, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }}
-      onClick={() => navigate(id ? `/customers/${id}` : '/customers')}>
+    <span
+      style={{ fontWeight: 600, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }}
+      onClick={() => navigate(id ? `/customers/${id}` : '/customers')}
+    >
       {name}
-    </td>
+    </span>
   );
 }
 
@@ -88,112 +339,107 @@ function useReportData<T>(endpoint: string) {
   const { getToken } = useAuth();
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  const fetch_ = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const token = await getToken();
       const params = new URLSearchParams({ startDate: dateFrom, endDate: dateTo });
       const res = await fetch(`/api/reports/${endpoint}?${params}`, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const json = await res.json();
-      setData(json);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load');
-    } finally {
+      if (res.ok) setData(await res.json());
+    } catch { /* handled via empty state */ } finally {
       setLoading(false);
     }
   }, [endpoint, dateFrom, dateTo, getToken]);
 
-  useEffect(() => { fetch_(); }, [fetch_]);
-
-  return { data, loading, error };
+  useEffect(() => { load(); }, [load]);
+  return { data, loading };
 }
 
-function LoadingRow({ cols }: { cols: number }) {
-  return <tr><td colSpan={cols} style={s.loading}>Loading…</td></tr>;
-}
-function EmptyRow({ cols, msg = 'No data for this period.' }: { cols: number; msg?: string }) {
-  return <tr><td colSpan={cols} style={s.empty}>{msg}</td></tr>;
+/* ── KPI helper ──────────────────────────────────────────── */
+function KPIs({ items }: { items: { l: string; v: string }[] }) {
+  return (
+    <div style={s.kpiRow}>
+      {items.map((k) => (
+        <div key={k.l} style={s.kpiCard}>
+          <div style={s.kpiLabel}>{k.l}</div>
+          <div style={s.kpiValue}>{k.v}</div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-/* ── Report-specific renderers ──────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   Report components
+   ═══════════════════════════════════════════════════════════ */
 
-interface RevenueApiData {
-  revenue: { totalCents: number; paymentCount: number };
-  invoiced: { totalCents: number; invoiceCount: number };
-  byPaymentMethod: { method: string; totalCents: number; count: number }[];
-}
+/* ── Revenue ─────────────────────────────────────────────── */
+interface RevRow { method: string; count: number; totalCents: number; }
+interface RevenueData { revenue: { totalCents: number; paymentCount: number }; invoiced: { totalCents: number; invoiceCount: number }; byPaymentMethod: RevRow[]; }
+
+const revCols: ColDef<RevRow>[] = [
+  { key: 'method', label: 'Payment Method', render: (r) => r.method },
+  { key: 'count', label: 'Transactions', align: 'right', render: (r) => r.count },
+  { key: 'totalCents', label: 'Total Collected', align: 'right', render: (r) => fmtC(r.totalCents) },
+  { key: 'avgCents', label: 'Avg Transaction', align: 'right', render: (r) => r.count > 0 ? fmtC(r.totalCents / r.count) : '—' },
+];
 
 function RevenueSummary() {
-  const { data, loading } = useReportData<RevenueApiData>('revenue');
+  const { data, loading } = useReportData<RevenueData>('revenue');
   const rows = data?.byPaymentMethod ?? [];
-  const totalCollected = data?.revenue.totalCents ?? 0;
-  const totalInvoiced = data?.invoiced.totalCents ?? 0;
-  const txnCount = data?.revenue.paymentCount ?? 0;
+  const total = data?.revenue.totalCents ?? 0;
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Collected', v: fmtC(totalCollected) },
-          { l: 'Invoiced', v: fmtC(totalInvoiced) },
-          { l: 'Transactions', v: String(txnCount) },
-          { l: 'Invoice Count', v: String(data?.invoiced.invoiceCount ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Revenue by Payment Method</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Method</th><th style={s.thRight}>Transactions</th><th style={s.thRight}>Total</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={3} /> : rows.length === 0 ? <EmptyRow cols={3} /> : rows.map((r) => (
-              <tr key={r.method}><td style={s.td}>{r.method}</td><td style={s.tdRight}>{r.count}</td><td style={s.tdRight}>{fmtC(r.totalCents)}</td></tr>
-            ))}
-            {!loading && rows.length > 0 && (
-              <tr style={s.totalRow}>
-                <td style={{ ...s.td, fontWeight: 700 }}>Total Collected</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{txnCount}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(totalCollected)}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Collected', v: fmtC(total) },
+        { l: 'Invoiced', v: fmtC(data?.invoiced.totalCents ?? 0) },
+        { l: 'Transactions', v: String(data?.revenue.paymentCount ?? 0) },
+        { l: 'Invoices', v: String(data?.invoiced.invoiceCount ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="revenue"
+        title="Revenue by Payment Method"
+        allCols={revCols}
+        defaultColKeys={['method', 'count', 'totalCents']}
+        rows={rows}
+        loading={loading}
+        emptyMsg="No payments in this period."
+        footerCells={{ count: rows.reduce((s, r) => s + r.count, 0), totalCents: fmtC(total), avgCents: '' }}
+      />
     </>
   );
 }
 
-interface ArAgingDetail {
-  invoiceId: string;
-  invoiceNumber: string;
-  customer: { id: string; firstName: string; lastName: string; email: string };
-  dueDate: string;
-  balanceCents: number;
-  daysOverdue: number;
-  bucket: 'current' | 'days30' | 'days60' | 'days90' | 'days120plus';
-}
-interface ArAgingApiData {
-  buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number };
-  totalOutstanding: number;
-  invoiceCount: number;
-  details: ArAgingDetail[];
-}
+/* ── AR Aging ────────────────────────────────────────────── */
+interface AgingDetail { invoiceId: string; invoiceNumber: string; customer: { id: string; firstName: string; lastName: string }; dueDate: string; balanceCents: number; daysOverdue: number; bucket: string; }
+interface AgingData { buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number }; totalOutstanding: number; invoiceCount: number; details: AgingDetail[]; }
+
+type AgingRow = { id: string; customer: string; invoice: string; current: number; d30: number; d60: number; d90: number; d120: number; total: number; daysOverdue: number; dueDate: string; };
+
+const agingCols: ColDef<AgingRow>[] = [
+  { key: 'customer', label: 'Customer', render: (r) => <CustomerLink name={r.customer} id={r.id} /> },
+  { key: 'invoice', label: 'Invoice #', align: 'muted', render: (r) => r.invoice },
+  { key: 'dueDate', label: 'Due Date', align: 'muted', render: (r) => r.dueDate.slice(0, 10) },
+  { key: 'daysOverdue', label: 'Days Overdue', align: 'right', render: (r) => r.daysOverdue > 0 ? <span style={s.badge('red')}>{r.daysOverdue}d</span> : <span style={s.badge('green')}>Current</span> },
+  { key: 'current', label: 'Current', align: 'right', render: (r) => r.current > 0 ? fmtC(r.current) : '—' },
+  { key: 'd30', label: '1–30 Days', align: 'right', render: (r) => r.d30 > 0 ? fmtC(r.d30) : '—' },
+  { key: 'd60', label: '31–60 Days', align: 'right', render: (r) => r.d60 > 0 ? fmtC(r.d60) : '—' },
+  { key: 'd90', label: '61–90 Days', align: 'right', render: (r) => r.d90 > 0 ? fmtC(r.d90) : '—' },
+  { key: 'd120', label: '90+ Days', align: 'right', render: (r) => r.d120 > 0 ? fmtC(r.d120) : '—' },
+  { key: 'total', label: 'Total Balance', align: 'right', render: (r) => <strong>{fmtC(r.total)}</strong> },
+];
 
 function ARAgingReport() {
-  const { data, loading } = useReportData<ArAgingApiData>('ar-aging');
-  const details = data?.details ?? [];
+  const { data, loading } = useReportData<AgingData>('ar-aging');
   const b = data?.buckets ?? { current: 0, days30: 0, days60: 0, days90: 0, days120plus: 0 };
-
-  const rows = details.map((d) => ({
+  const rows: AgingRow[] = (data?.details ?? []).map((d) => ({
     id: d.customer.id,
     customer: `${d.customer.firstName} ${d.customer.lastName}`,
     invoice: d.invoiceNumber,
+    dueDate: d.dueDate,
     current: d.bucket === 'current' ? d.balanceCents : 0,
     d30: d.bucket === 'days30' ? d.balanceCents : 0,
     d60: d.bucket === 'days60' ? d.balanceCents : 0,
@@ -202,529 +448,433 @@ function ARAgingReport() {
     total: d.balanceCents,
     daysOverdue: d.daysOverdue,
   }));
-  const { sorted, sortKey, sortDir, toggle } = useSortState(rows, 'total');
-  const sk = sortKey as string; const sd = sortDir;
-
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Outstanding', v: fmtC(data?.totalOutstanding ?? 0) },
-          { l: '30+ Days', v: fmtC((b.days30 + b.days60 + b.days90 + b.days120plus)) },
-          { l: '90+ Days', v: fmtC(b.days90 + b.days120plus) },
-          { l: 'Open Invoices', v: String(data?.invoiceCount ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Accounts Receivable Aging</h3></div>
-        <table style={s.table}>
-          <thead><tr>
-            <SortTh label="Customer" colKey="customer" sortKey={sk} sortDir={sd} toggle={toggle} />
-            <th style={s.th}>Invoice</th>
-            <SortTh label="Current" colKey="current" sortKey={sk} sortDir={sd} toggle={toggle} right />
-            <SortTh label="1–30 Days" colKey="d30" sortKey={sk} sortDir={sd} toggle={toggle} right />
-            <SortTh label="31–60 Days" colKey="d60" sortKey={sk} sortDir={sd} toggle={toggle} right />
-            <SortTh label="61–90 Days" colKey="d90" sortKey={sk} sortDir={sd} toggle={toggle} right />
-            <SortTh label="90+ Days" colKey="d120" sortKey={sk} sortDir={sd} toggle={toggle} right />
-            <SortTh label="Total" colKey="total" sortKey={sk} sortDir={sd} toggle={toggle} right />
-          </tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={8} /> : sorted.length === 0 ? <EmptyRow cols={8} msg="No outstanding invoices." /> : sorted.map((r) => (
-              <tr key={r.invoice}>
-                <CustomerCell name={r.customer} id={r.id} />
-                <td style={s.tdMuted}>{r.invoice}</td>
-                <td style={s.tdRight}>{r.current > 0 ? fmtC(r.current) : '—'}</td>
-                <td style={s.tdRight}>{r.d30 > 0 ? fmtC(r.d30) : '—'}</td>
-                <td style={s.tdRight}>{r.d60 > 0 ? fmtC(r.d60) : '—'}</td>
-                <td style={s.tdRight}>{r.d90 > 0 ? fmtC(r.d90) : '—'}</td>
-                <td style={s.tdRight}>{r.d120 > 0 ? fmtC(r.d120) : '—'}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(r.total)}</td>
-              </tr>
-            ))}
-            {!loading && rows.length > 0 && (
-              <tr style={s.totalRow}>
-                <td colSpan={2} style={{ ...s.td, fontWeight: 700 }}>Total</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(b.current)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(b.days30)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(b.days60)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(b.days90)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(b.days120plus)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data?.totalOutstanding ?? 0)}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Outstanding', v: fmtC(data?.totalOutstanding ?? 0) },
+        { l: '30+ Days', v: fmtC(b.days30 + b.days60 + b.days90 + b.days120plus) },
+        { l: '90+ Days', v: fmtC(b.days90 + b.days120plus) },
+        { l: 'Open Invoices', v: String(data?.invoiceCount ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="ar-aging"
+        title="Accounts Receivable Aging"
+        allCols={agingCols}
+        defaultColKeys={['customer', 'invoice', 'current', 'd30', 'd60', 'd90', 'd120', 'total']}
+        rows={rows}
+        loading={loading}
+        emptyMsg="No outstanding invoices."
+        footerCells={{ current: fmtC(b.current), d30: fmtC(b.days30), d60: fmtC(b.days60), d90: fmtC(b.days90), d120: fmtC(b.days120plus), total: fmtC(data?.totalOutstanding ?? 0) }}
+      />
     </>
   );
 }
 
-interface OccupancyApiData {
-  summary: { total: number; occupied: number; vacant: number; maintenance: number; reserved: number; occupancyRate: string };
-  byDock: { dock: string; total: number; occupied: number; rate: string }[];
-}
+/* ── Occupancy ───────────────────────────────────────────── */
+interface OccupancyData { summary: { total: number; occupied: number; vacant: number; maintenance: number; reserved: number; occupancyRate: string }; byDock: { dock: string; total: number; occupied: number; rate: string }[]; }
+type DockRow = { dock: string; total: number; occupied: number; vacant: number; rate: number; };
+
+const occupancyCols: ColDef<DockRow>[] = [
+  { key: 'dock', label: 'Dock', render: (r) => r.dock || '(unassigned)' },
+  { key: 'total', label: 'Total Slips', align: 'right', render: (r) => r.total },
+  { key: 'occupied', label: 'Occupied', align: 'right', render: (r) => r.occupied },
+  { key: 'vacant', label: 'Vacant', align: 'right', render: (r) => r.vacant },
+  { key: 'rate', label: 'Occupancy Rate', align: 'right', render: (r) => <span style={s.badge(r.rate >= 90 ? 'green' : r.rate >= 70 ? 'yellow' : 'red')}>{pct(r.rate)}</span> },
+];
 
 function OccupancyReport() {
-  const { data, loading } = useReportData<OccupancyApiData>('occupancy');
-  const docks = data?.byDock ?? [];
+  const { data, loading } = useReportData<OccupancyData>('occupancy');
   const sum = data?.summary ?? { total: 0, occupied: 0, vacant: 0, maintenance: 0, reserved: 0, occupancyRate: '0.0' };
+  const rows: DockRow[] = (data?.byDock ?? []).map((d) => ({ dock: d.dock, total: d.total, occupied: d.occupied, vacant: d.total - d.occupied, rate: parseFloat(d.rate) }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Slips', v: String(sum.total) },
-          { l: 'Occupied', v: String(sum.occupied) },
-          { l: 'Vacant', v: String(sum.vacant) },
-          { l: 'Maintenance', v: String(sum.maintenance) },
-          { l: 'Occupancy Rate', v: pct(parseFloat(sum.occupancyRate)) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Dock Occupancy Summary</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Dock</th><th style={s.thRight}>Total Slips</th><th style={s.thRight}>Occupied</th><th style={s.thRight}>Rate</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={4} /> : docks.length === 0 ? <EmptyRow cols={4} /> : docks.map((d) => (
-              <tr key={d.dock}>
-                <td style={s.td}>{d.dock || '(no dock)'}</td>
-                <td style={s.tdRight}>{d.total}</td>
-                <td style={s.tdRight}>{d.occupied}</td>
-                <td style={s.tdRight}><span style={s.badge(parseFloat(d.rate) >= 90 ? 'green' : parseFloat(d.rate) >= 70 ? 'yellow' : 'red')}>{pct(parseFloat(d.rate))}</span></td>
-              </tr>
-            ))}
-            {!loading && docks.length > 0 && (
-              <tr style={s.totalRow}>
-                <td style={{ ...s.td, fontWeight: 700 }}>Total</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{sum.total}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{sum.occupied}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}><span style={s.badge('green')}>{pct(parseFloat(sum.occupancyRate))}</span></td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Slips', v: String(sum.total) },
+        { l: 'Occupied', v: String(sum.occupied) },
+        { l: 'Vacant', v: String(sum.vacant) },
+        { l: 'Maintenance', v: String(sum.maintenance) },
+        { l: 'Occupancy Rate', v: pct(parseFloat(sum.occupancyRate)) },
+      ]} />
+      <ConfigurableTable
+        storageKey="occupancy"
+        title="Dock Occupancy Summary"
+        allCols={occupancyCols}
+        defaultColKeys={['dock', 'total', 'occupied', 'vacant', 'rate']}
+        rows={rows}
+        loading={loading}
+        footerCells={{ total: sum.total, occupied: sum.occupied, vacant: sum.vacant, rate: <span style={s.badge('green')}>{pct(parseFloat(sum.occupancyRate))}</span> }}
+      />
     </>
   );
 }
 
-interface POSSalesApiData {
-  transactionCount: number;
-  subtotalCents: number;
-  taxCents: number;
-  tipCents: number;
-  totalCents: number;
-  shiftCount: number;
-}
+/* ── POS Sales ───────────────────────────────────────────── */
+interface POSData { transactionCount: number; subtotalCents: number; taxCents: number; tipCents: number; totalCents: number; shiftCount: number; }
+type POSRow = { line: string; amountCents: number; };
+
+const posCols: ColDef<POSRow>[] = [
+  { key: 'line', label: 'Line Item', render: (r) => r.line },
+  { key: 'amountCents', label: 'Amount', align: 'right', render: (r) => fmtC(r.amountCents) },
+];
 
 function POSSalesReport() {
-  const { data, loading } = useReportData<POSSalesApiData>('pos-sales');
-  const avgSale = (data?.transactionCount ?? 0) > 0 ? (data!.totalCents / data!.transactionCount) : 0;
+  const { data, loading } = useReportData<POSData>('pos-sales');
+  const avg = (data?.transactionCount ?? 0) > 0 ? (data!.totalCents / data!.transactionCount) : 0;
+  const rows: POSRow[] = data ? [
+    { line: 'Subtotal', amountCents: data.subtotalCents },
+    { line: 'Tax', amountCents: data.taxCents },
+    { line: 'Tips', amountCents: data.tipCents },
+  ] : [];
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Transactions', v: loading ? '…' : String(data?.transactionCount ?? 0) },
-          { l: 'Total Revenue', v: loading ? '…' : fmtC(data?.totalCents ?? 0) },
-          { l: 'Avg Transaction', v: loading ? '…' : fmtC(avgSale) },
-          { l: 'Shifts', v: loading ? '…' : String(data?.shiftCount ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>POS Revenue Breakdown</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Line</th><th style={s.thRight}>Amount</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : !data ? <EmptyRow cols={2} /> : (
-              <>
-                <tr><td style={s.td}>Subtotal</td><td style={s.tdRight}>{fmtC(data.subtotalCents)}</td></tr>
-                <tr><td style={s.td}>Tax</td><td style={s.tdRight}>{fmtC(data.taxCents)}</td></tr>
-                <tr><td style={s.td}>Tips</td><td style={s.tdRight}>{fmtC(data.tipCents)}</td></tr>
-                <tr style={s.totalRow}><td style={{ ...s.td, fontWeight: 700 }}>Total Collected</td><td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data.totalCents)}</td></tr>
-              </>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Transactions', v: loading ? '…' : String(data?.transactionCount ?? 0) },
+        { l: 'Total Revenue', v: loading ? '…' : fmtC(data?.totalCents ?? 0) },
+        { l: 'Avg Transaction', v: loading ? '…' : fmtC(avg) },
+        { l: 'Shifts', v: loading ? '…' : String(data?.shiftCount ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="pos-sales"
+        title="POS Revenue Breakdown"
+        allCols={posCols}
+        defaultColKeys={['line', 'amountCents']}
+        rows={rows}
+        loading={loading}
+        emptyMsg="No POS transactions in this period."
+        footerCells={{ amountCents: fmtC(data?.totalCents ?? 0) }}
+      />
     </>
   );
 }
 
-interface RentalUtilApiData {
-  totalBookings: number;
-  totalRevenueCents: number;
-  byProduct: { productId: string; name: string; bookings: number; revenueCents: number }[];
-}
+/* ── Rental Utilization ──────────────────────────────────── */
+interface RentalUtilData { totalBookings: number; totalRevenueCents: number; byProduct: { productId: string; name: string; bookings: number; revenueCents: number }[]; }
+type RentalRow = { productId: string; name: string; bookings: number; revenueCents: number; avgCents: number; };
+
+const rentalCols: ColDef<RentalRow>[] = [
+  { key: 'name', label: 'Product', render: (r) => r.name },
+  { key: 'bookings', label: 'Bookings', align: 'right', render: (r) => r.bookings },
+  { key: 'revenueCents', label: 'Revenue', align: 'right', render: (r) => fmtC(r.revenueCents) },
+  { key: 'avgCents', label: 'Avg / Booking', align: 'right', render: (r) => r.bookings > 0 ? fmtC(r.avgCents) : '—' },
+];
 
 function RentalUtilReport() {
-  const { data, loading } = useReportData<RentalUtilApiData>('rental-utilization');
-  const rows = data?.byProduct ?? [];
-  const totals = { bookings: data?.totalBookings ?? 0, revenue: data?.totalRevenueCents ?? 0 };
+  const { data, loading } = useReportData<RentalUtilData>('rental-utilization');
+  const rows: RentalRow[] = (data?.byProduct ?? []).map((p) => ({ ...p, avgCents: p.bookings > 0 ? p.revenueCents / p.bookings : 0 }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Bookings', v: loading ? '…' : String(totals.bookings) },
-          { l: 'Total Revenue', v: loading ? '…' : fmtC(totals.revenue) },
-          { l: 'Active Products', v: loading ? '…' : String(rows.length) },
-          { l: 'Avg Rev/Product', v: loading || rows.length === 0 ? '—' : fmtC(totals.revenue / rows.length) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Rental Asset Utilization</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Product</th><th style={s.thRight}>Bookings</th><th style={s.thRight}>Revenue</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={3} /> : rows.length === 0 ? <EmptyRow cols={3} /> : rows.map((r) => (
-              <tr key={r.productId}><td style={s.td}>{r.name}</td><td style={s.tdRight}>{r.bookings}</td><td style={s.tdRight}>{fmtC(r.revenueCents)}</td></tr>
-            ))}
-            {!loading && rows.length > 0 && (
-              <tr style={s.totalRow}><td style={{ ...s.td, fontWeight: 700 }}>Total</td><td style={{ ...s.tdRight, fontWeight: 700 }}>{totals.bookings}</td><td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(totals.revenue)}</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Bookings', v: loading ? '…' : String(data?.totalBookings ?? 0) },
+        { l: 'Total Revenue', v: loading ? '…' : fmtC(data?.totalRevenueCents ?? 0) },
+        { l: 'Products', v: loading ? '…' : String(rows.length) },
+        { l: 'Avg Rev / Product', v: loading || rows.length === 0 ? '—' : fmtC((data?.totalRevenueCents ?? 0) / rows.length) },
+      ]} />
+      <ConfigurableTable
+        storageKey="rental-util"
+        title="Rental Asset Utilization"
+        allCols={rentalCols}
+        defaultColKeys={['name', 'bookings', 'revenueCents', 'avgCents']}
+        rows={rows}
+        loading={loading}
+        footerCells={{ bookings: data?.totalBookings, revenueCents: fmtC(data?.totalRevenueCents ?? 0), avgCents: '' }}
+      />
     </>
   );
 }
 
-interface InventoryItem { productId: string; name: string; sku: string | null; costCents: number; priceCents: number; qtyOnHand: number; reorderQty: number; valueCents: number; needsReorder: boolean; }
-interface InventoryApiData { productCount: number; totalValueCents: number; reorderAlerts: number; items: InventoryItem[]; }
+/* ── Inventory ───────────────────────────────────────────── */
+interface InvItem { productId: string; name: string; sku: string | null; costCents: number; priceCents: number; qtyOnHand: number; qtyOnOrder: number; reorderQty: number; valueCents: number; needsReorder: boolean; }
+interface InventoryData { productCount: number; totalValueCents: number; reorderAlerts: number; items: InvItem[]; }
+
+const invCols: ColDef<InvItem>[] = [
+  { key: 'sku', label: 'SKU', align: 'muted', render: (r) => r.sku || '—' },
+  { key: 'name', label: 'Product', render: (r) => r.name },
+  { key: 'qtyOnHand', label: 'In Stock', align: 'right', render: (r) => r.qtyOnHand },
+  { key: 'qtyOnOrder', label: 'On Order', align: 'right', render: (r) => r.qtyOnOrder },
+  { key: 'reorderQty', label: 'Reorder Pt', align: 'right', render: (r) => r.reorderQty },
+  { key: 'costCents', label: 'Unit Cost', align: 'right', render: (r) => fmtC(r.costCents) },
+  { key: 'priceCents', label: 'Retail Price', align: 'right', render: (r) => fmtC(r.priceCents) },
+  { key: 'valueCents', label: 'Cost Value', align: 'right', render: (r) => <strong>{fmtC(r.valueCents)}</strong> },
+  { key: 'needsReorder', label: 'Status', render: (r) => <span style={s.badge(r.needsReorder ? 'red' : 'green')}>{r.needsReorder ? 'Reorder' : 'OK'}</span> },
+];
 
 function InventoryReport() {
-  const { data, loading } = useReportData<InventoryApiData>('inventory');
+  const { data, loading } = useReportData<InventoryData>('inventory');
   const rows = data?.items ?? [];
+  const retailTotal = rows.reduce((s, r) => s + r.qtyOnHand * r.priceCents, 0);
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total SKUs', v: loading ? '…' : String(data?.productCount ?? 0) },
-          { l: 'Total Cost Value', v: loading ? '…' : fmtC(data?.totalValueCents ?? 0) },
-          { l: 'Retail Value', v: loading ? '…' : fmtC(rows.reduce((s, r) => s + r.qtyOnHand * r.priceCents, 0)) },
-          { l: 'Reorder Alerts', v: loading ? '…' : String(data?.reorderAlerts ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Inventory Valuation</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>SKU</th><th style={s.th}>Product</th><th style={s.thRight}>In Stock</th><th style={s.thRight}>Reorder Pt</th><th style={s.thRight}>Unit Cost</th><th style={s.thRight}>Retail</th><th style={s.thRight}>Cost Value</th><th style={s.th}>Status</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={8} /> : rows.length === 0 ? <EmptyRow cols={8} /> : rows.map((r) => (
-              <tr key={r.productId}>
-                <td style={s.tdMuted}>{r.sku || '—'}</td>
-                <td style={s.td}>{r.name}</td>
-                <td style={s.tdRight}>{r.qtyOnHand}</td>
-                <td style={s.tdRight}>{r.reorderQty}</td>
-                <td style={s.tdRight}>{fmtC(r.costCents)}</td>
-                <td style={s.tdRight}>{fmtC(r.priceCents)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 600 }}>{fmtC(r.valueCents)}</td>
-                <td style={s.td}><span style={s.badge(r.needsReorder ? 'red' : 'green')}>{r.needsReorder ? 'Reorder' : 'OK'}</span></td>
-              </tr>
-            ))}
-            {!loading && rows.length > 0 && (
-              <tr style={s.totalRow}><td colSpan={6} style={{ ...s.td, fontWeight: 700 }}>Total Cost Value</td><td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data!.totalValueCents)}</td><td style={s.td} /></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total SKUs', v: loading ? '…' : String(data?.productCount ?? 0) },
+        { l: 'Total Cost Value', v: loading ? '…' : fmtC(data?.totalValueCents ?? 0) },
+        { l: 'Retail Value', v: loading ? '…' : fmtC(retailTotal) },
+        { l: 'Reorder Alerts', v: loading ? '…' : String(data?.reorderAlerts ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="inventory"
+        title="Inventory Valuation"
+        allCols={invCols}
+        defaultColKeys={['sku', 'name', 'qtyOnHand', 'reorderQty', 'costCents', 'priceCents', 'valueCents', 'needsReorder']}
+        rows={rows}
+        loading={loading}
+        footerCells={{ valueCents: fmtC(data?.totalValueCents ?? 0) }}
+      />
     </>
   );
 }
 
-interface DockWalkApiData {
-  totalWalks: number;
-  completed: number;
-  completionRate: string;
-  violationsByType: { type: string | null; count: number }[];
-  totalViolations: number;
-  pumpOuts: number;
-}
+/* ── Dock Walk ───────────────────────────────────────────── */
+interface DockWalkData { totalWalks: number; completed: number; completionRate: string; violationsByType: { type: string | null; count: number }[]; totalViolations: number; pumpOuts: number; }
+type ViolRow = { type: string; count: number; };
+
+const dockWalkCols: ColDef<ViolRow>[] = [
+  { key: 'type', label: 'Violation Type', render: (r) => r.type },
+  { key: 'count', label: 'Count', align: 'right', render: (r) => r.count },
+];
 
 function DockWalkReport() {
-  const { data, loading } = useReportData<DockWalkApiData>('dock-walk-summary');
-  const violations = data?.violationsByType ?? [];
+  const { data, loading } = useReportData<DockWalkData>('dock-walk-summary');
+  const rows: ViolRow[] = (data?.violationsByType ?? []).map((v) => ({ type: v.type || 'Unspecified', count: v.count }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Walks', v: loading ? '…' : String(data?.totalWalks ?? 0) },
-          { l: 'Completed', v: loading ? '…' : String(data?.completed ?? 0) },
-          { l: 'Completion Rate', v: loading ? '…' : pct(parseFloat(data?.completionRate ?? '0')) },
-          { l: 'Total Violations', v: loading ? '…' : String(data?.totalViolations ?? 0) },
-          { l: 'Pump-Outs', v: loading ? '…' : String(data?.pumpOuts ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Violations by Type</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Violation Type</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : violations.length === 0 ? <EmptyRow cols={2} msg="No violations in this period." /> : violations.map((v, i) => (
-              <tr key={i}><td style={s.td}>{v.type || 'Unspecified'}</td><td style={s.tdRight}>{v.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Walks', v: loading ? '…' : String(data?.totalWalks ?? 0) },
+        { l: 'Completed', v: loading ? '…' : String(data?.completed ?? 0) },
+        { l: 'Completion Rate', v: loading ? '…' : pct(parseFloat(data?.completionRate ?? '0')) },
+        { l: 'Total Violations', v: loading ? '…' : String(data?.totalViolations ?? 0) },
+        { l: 'Pump-Outs', v: loading ? '…' : String(data?.pumpOuts ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="dockwalk"
+        title="Violations by Type"
+        allCols={dockWalkCols}
+        defaultColKeys={['type', 'count']}
+        rows={rows}
+        loading={loading}
+        emptyMsg="No violations in this period."
+        footerCells={{ count: data?.totalViolations }}
+      />
     </>
   );
 }
 
 function MaintenanceReport() {
-  const { data, loading } = useReportData<DockWalkApiData>('dock-walk-summary');
-  const violations = data?.violationsByType ?? [];
+  const { data, loading } = useReportData<DockWalkData>('dock-walk-summary');
+  const rows: ViolRow[] = (data?.violationsByType ?? []).map((v) => ({ type: v.type || 'General', count: v.count }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Dock Walks', v: loading ? '…' : String(data?.totalWalks ?? 0) },
-          { l: 'Open Violations', v: loading ? '…' : String(data?.totalViolations ?? 0) },
-          { l: 'Pump-Outs', v: loading ? '…' : String(data?.pumpOuts ?? 0) },
-          { l: 'Completion Rate', v: loading ? '…' : pct(parseFloat(data?.completionRate ?? '0')) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Maintenance Issues by Type</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Issue Type</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : violations.length === 0 ? <EmptyRow cols={2} msg="No maintenance issues in this period." /> : violations.map((v, i) => (
-              <tr key={i}><td style={s.td}>{v.type || 'General'}</td><td style={s.tdRight}>{v.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Dock Walks', v: loading ? '…' : String(data?.totalWalks ?? 0) },
+        { l: 'Open Violations', v: loading ? '…' : String(data?.totalViolations ?? 0) },
+        { l: 'Pump-Outs', v: loading ? '…' : String(data?.pumpOuts ?? 0) },
+        { l: 'Completion Rate', v: loading ? '…' : pct(parseFloat(data?.completionRate ?? '0')) },
+      ]} />
+      <ConfigurableTable
+        storageKey="maintenance"
+        title="Maintenance Issues by Type"
+        allCols={dockWalkCols}
+        defaultColKeys={['type', 'count']}
+        rows={rows}
+        loading={loading}
+        emptyMsg="No maintenance issues in this period."
+        footerCells={{ count: data?.totalViolations }}
+      />
     </>
   );
 }
 
-interface CustomerActivityApiData {
-  total: number;
-  active: number;
-  newInPeriod: number;
-  byStatus: { status: string; count: number }[];
-}
+/* ── Customer Activity ───────────────────────────────────── */
+interface CustomerActivityData { total: number; active: number; newInPeriod: number; byStatus: { status: string; count: number }[]; }
+type StatusRow = { status: string; count: number; sharePct: number; };
+
+const customerActivityCols: ColDef<StatusRow>[] = [
+  { key: 'status', label: 'Status', render: (r) => r.status },
+  { key: 'count', label: 'Count', align: 'right', render: (r) => r.count },
+  { key: 'sharePct', label: 'Share', align: 'right', render: (r) => pct(r.sharePct) },
+];
 
 function CustomerActivityReport() {
-  const { data, loading } = useReportData<CustomerActivityApiData>('customer-activity');
-  const byStatus = data?.byStatus ?? [];
+  const { data, loading } = useReportData<CustomerActivityData>('customer-activity');
+  const total = data?.total ?? 0;
+  const rows: StatusRow[] = (data?.byStatus ?? []).map((s_) => ({ status: s_.status, count: s_.count, sharePct: total > 0 ? s_.count / total * 100 : 0 }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Customers', v: loading ? '…' : String(data?.total ?? 0) },
-          { l: 'Active', v: loading ? '…' : String(data?.active ?? 0) },
-          { l: 'New This Period', v: loading ? '…' : String(data?.newInPeriod ?? 0) },
-          { l: 'Statuses', v: loading ? '…' : String(byStatus.length) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Customer Activity by Status</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Status</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : byStatus.length === 0 ? <EmptyRow cols={2} /> : byStatus.map((s_) => (
-              <tr key={s_.status}><td style={s.td}>{s_.status}</td><td style={s.tdRight}>{s_.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Customers', v: loading ? '…' : String(data?.total ?? 0) },
+        { l: 'Active', v: loading ? '…' : String(data?.active ?? 0) },
+        { l: 'New This Period', v: loading ? '…' : String(data?.newInPeriod ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="customer-activity"
+        title="Customer Activity by Status"
+        allCols={customerActivityCols}
+        defaultColKeys={['status', 'count', 'sharePct']}
+        rows={rows}
+        loading={loading}
+        footerCells={{ count: total, sharePct: '' }}
+      />
     </>
   );
 }
 
-interface LeadConversionApiData {
-  totalLeads: number;
-  won: number;
-  lost: number;
-  conversionRate: string;
-  byStage: { stage: string; count: number }[];
-  bySource: { source: string; count: number }[];
-}
+/* ── Lead Conversion ─────────────────────────────────────── */
+interface LeadConversionData { totalLeads: number; won: number; lost: number; conversionRate: string; byStage: { stage: string; count: number }[]; bySource: { source: string; count: number }[]; }
+type SourceRow = { source: string; count: number; };
+type StageRow = { stage: string; count: number; };
+
+const sourceCols: ColDef<SourceRow>[] = [
+  { key: 'source', label: 'Source', render: (r) => r.source || 'Direct' },
+  { key: 'count', label: 'Leads', align: 'right', render: (r) => r.count },
+];
+const stageCols: ColDef<StageRow>[] = [
+  { key: 'stage', label: 'Stage', render: (r) => r.stage },
+  { key: 'count', label: 'Count', align: 'right', render: (r) => r.count },
+];
 
 function LeadConversionReport() {
-  const { data, loading } = useReportData<LeadConversionApiData>('lead-conversion');
-  const bySource = data?.bySource ?? [];
-  const byStage = data?.byStage ?? [];
+  const { data, loading } = useReportData<LeadConversionData>('lead-conversion');
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Leads', v: loading ? '…' : String(data?.totalLeads ?? 0) },
-          { l: 'Won', v: loading ? '…' : String(data?.won ?? 0) },
-          { l: 'Lost', v: loading ? '…' : String(data?.lost ?? 0) },
-          { l: 'Conversion Rate', v: loading ? '…' : pct(parseFloat(data?.conversionRate ?? '0')) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Leads by Source</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Source</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : bySource.length === 0 ? <EmptyRow cols={2} /> : bySource.map((r) => (
-              <tr key={r.source}><td style={s.td}>{r.source || 'Direct'}</td><td style={s.tdRight}>{r.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Pipeline by Stage</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Stage</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : byStage.length === 0 ? <EmptyRow cols={2} /> : byStage.map((r) => (
-              <tr key={r.stage}><td style={s.td}>{r.stage}</td><td style={s.tdRight}>{r.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Leads', v: loading ? '…' : String(data?.totalLeads ?? 0) },
+        { l: 'Won', v: loading ? '…' : String(data?.won ?? 0) },
+        { l: 'Lost', v: loading ? '…' : String(data?.lost ?? 0) },
+        { l: 'Conversion Rate', v: loading ? '…' : pct(parseFloat(data?.conversionRate ?? '0')) },
+      ]} />
+      <ConfigurableTable
+        storageKey="leads-source"
+        title="Leads by Source"
+        allCols={sourceCols}
+        defaultColKeys={['source', 'count']}
+        rows={data?.bySource ?? []}
+        loading={loading}
+        footerCells={{ count: data?.totalLeads }}
+      />
+      <ConfigurableTable
+        storageKey="leads-stage"
+        title="Pipeline by Stage"
+        allCols={stageCols}
+        defaultColKeys={['stage', 'count']}
+        rows={data?.byStage ?? []}
+        loading={loading}
+      />
     </>
   );
 }
 
+/* ── Slip Utilization ────────────────────────────────────── */
 function SlipUtilizationReport() {
-  const { data, loading } = useReportData<OccupancyApiData>('occupancy');
-  const docks = data?.byDock ?? [];
+  const { data, loading } = useReportData<OccupancyData>('occupancy');
   const sum = data?.summary ?? { total: 0, occupied: 0, vacant: 0, maintenance: 0, reserved: 0, occupancyRate: '0.0' };
-  const avgRate = docks.length > 0 ? docks.reduce((s, d) => s + parseFloat(d.rate), 0) / docks.length : 0;
+  const rows: DockRow[] = (data?.byDock ?? []).map((d) => ({ dock: d.dock, total: d.total, occupied: d.occupied, vacant: d.total - d.occupied, rate: parseFloat(d.rate) }));
+  const avgRate = rows.length > 0 ? rows.reduce((s, r) => s + r.rate, 0) / rows.length : 0;
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Avg Utilization', v: loading ? '…' : pct(avgRate) },
-          { l: 'Occupied Slips', v: loading ? '…' : String(sum.occupied) },
-          { l: 'Vacant Slips', v: loading ? '…' : String(sum.vacant) },
-          { l: 'Total Slips', v: loading ? '…' : String(sum.total) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Slip Utilization by Dock</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Dock</th><th style={s.thRight}>Total</th><th style={s.thRight}>Occupied</th><th style={s.thRight}>Utilization</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={4} /> : docks.length === 0 ? <EmptyRow cols={4} /> : docks.map((d) => (
-              <tr key={d.dock}>
-                <td style={{ ...s.td, fontWeight: 600 }}>{d.dock || '(no dock)'}</td>
-                <td style={s.tdRight}>{d.total}</td>
-                <td style={s.tdRight}>{d.occupied}</td>
-                <td style={s.tdRight}><span style={s.badge(parseFloat(d.rate) >= 80 ? 'green' : parseFloat(d.rate) >= 50 ? 'yellow' : 'red')}>{pct(parseFloat(d.rate))}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Avg Utilization', v: loading ? '…' : pct(avgRate) },
+        { l: 'Occupied Slips', v: loading ? '…' : String(sum.occupied) },
+        { l: 'Vacant Slips', v: loading ? '…' : String(sum.vacant) },
+        { l: 'Total Slips', v: loading ? '…' : String(sum.total) },
+      ]} />
+      <ConfigurableTable
+        storageKey="slip-util"
+        title="Slip Utilization by Dock"
+        allCols={occupancyCols}
+        defaultColKeys={['dock', 'total', 'occupied', 'vacant', 'rate']}
+        rows={rows}
+        loading={loading}
+      />
     </>
   );
 }
 
-interface CollectionsAccount { id: string; status: string; balanceAtHandoffCents: number; recoveredCents: number; customer: { firstName: string; lastName: string } | null; }
-interface CollectionsApiData { accountCount: number; totalHandoffCents: number; totalRecoveredCents: number; recoveryRate: string; byStatus: Record<string, number>; accounts: CollectionsAccount[]; }
+/* ── Collections ─────────────────────────────────────────── */
+interface CollAccount { id: string; status: string; balanceAtHandoffCents: number; recoveredCents: number; customer: { firstName: string; lastName: string } | null; }
+interface CollectionsData { accountCount: number; totalHandoffCents: number; totalRecoveredCents: number; recoveryRate: string; accounts: CollAccount[]; }
+
+const collCols: ColDef<CollAccount>[] = [
+  { key: 'customer', label: 'Customer', render: (r) => r.customer ? `${r.customer.firstName} ${r.customer.lastName}` : '—' },
+  { key: 'status', label: 'Status', render: (r) => <span style={s.badge(r.status === 'RECOVERED' ? 'green' : r.status === 'ACTIVE' ? 'red' : 'yellow')}>{r.status}</span> },
+  { key: 'balanceAtHandoffCents', label: 'Balance Handed Off', align: 'right', render: (r) => fmtC(r.balanceAtHandoffCents) },
+  { key: 'recoveredCents', label: 'Recovered', align: 'right', render: (r) => fmtC(r.recoveredCents) },
+  { key: 'remaining', label: 'Remaining', align: 'right', render: (r) => fmtC(r.balanceAtHandoffCents - r.recoveredCents) },
+];
 
 function CollectionsReport() {
-  const { data, loading } = useReportData<CollectionsApiData>('collections');
-  const accounts = data?.accounts ?? [];
+  const { data, loading } = useReportData<CollectionsData>('collections');
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Accounts', v: loading ? '…' : String(data?.accountCount ?? 0) },
-          { l: 'Total Handed Off', v: loading ? '…' : fmtC(data?.totalHandoffCents ?? 0) },
-          { l: 'Recovered', v: loading ? '…' : fmtC(data?.totalRecoveredCents ?? 0) },
-          { l: 'Recovery Rate', v: loading ? '…' : pct(parseFloat(data?.recoveryRate ?? '0')) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Collections Accounts</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Customer</th><th style={s.th}>Status</th><th style={s.thRight}>Balance Handed Off</th><th style={s.thRight}>Recovered</th><th style={s.thRight}>Remaining</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={5} /> : accounts.length === 0 ? <EmptyRow cols={5} msg="No collections accounts." /> : accounts.map((a) => (
-              <tr key={a.id}>
-                <td style={{ ...s.td, fontWeight: 600 }}>{a.customer ? `${a.customer.firstName} ${a.customer.lastName}` : '—'}</td>
-                <td style={s.td}><span style={s.badge(a.status === 'RECOVERED' ? 'green' : a.status === 'ACTIVE' ? 'red' : 'yellow')}>{a.status}</span></td>
-                <td style={s.tdRight}>{fmtC(a.balanceAtHandoffCents)}</td>
-                <td style={s.tdRight}>{fmtC(a.recoveredCents)}</td>
-                <td style={s.tdRight}>{fmtC(a.balanceAtHandoffCents - a.recoveredCents)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Accounts', v: loading ? '…' : String(data?.accountCount ?? 0) },
+        { l: 'Total Handed Off', v: loading ? '…' : fmtC(data?.totalHandoffCents ?? 0) },
+        { l: 'Recovered', v: loading ? '…' : fmtC(data?.totalRecoveredCents ?? 0) },
+        { l: 'Recovery Rate', v: loading ? '…' : pct(parseFloat(data?.recoveryRate ?? '0')) },
+      ]} />
+      <ConfigurableTable
+        storageKey="collections"
+        title="Collections Accounts"
+        allCols={collCols}
+        defaultColKeys={['customer', 'status', 'balanceAtHandoffCents', 'recoveredCents', 'remaining']}
+        rows={data?.accounts ?? []}
+        loading={loading}
+        emptyMsg="No collections accounts."
+        footerCells={{ balanceAtHandoffCents: fmtC(data?.totalHandoffCents ?? 0), recoveredCents: fmtC(data?.totalRecoveredCents ?? 0), remaining: fmtC((data?.totalHandoffCents ?? 0) - (data?.totalRecoveredCents ?? 0)) }}
+      />
     </>
   );
 }
 
-interface DeferredSchedule { id: string; customerId: string | null; startDate: string; endDate: string; totalCents: number; recognizedCents: number; }
-interface DeferredApiData { scheduleCount: number; totalDeferredCents: number; totalRecognizedCents: number; remainingCents: number; schedules: DeferredSchedule[]; }
+/* ── Deferred Revenue ────────────────────────────────────── */
+interface DeferredSchedule { id: string; startDate: string; endDate: string; totalCents: number; recognizedCents: number; }
+interface DeferredData { scheduleCount: number; totalDeferredCents: number; totalRecognizedCents: number; remainingCents: number; schedules: DeferredSchedule[]; }
+
+const deferredCols: ColDef<DeferredSchedule>[] = [
+  { key: 'period', label: 'Period', render: (r) => `${r.startDate?.slice(0, 10)} → ${r.endDate?.slice(0, 10)}` },
+  { key: 'totalCents', label: 'Total', align: 'right', render: (r) => fmtC(r.totalCents) },
+  { key: 'recognizedCents', label: 'Recognized', align: 'right', render: (r) => fmtC(r.recognizedCents) },
+  { key: 'deferred', label: 'Deferred', align: 'right', render: (r) => fmtC(r.totalCents - r.recognizedCents) },
+  { key: 'pctRecognized', label: '% Recognized', align: 'right', render: (r) => r.totalCents > 0 ? pct(r.recognizedCents / r.totalCents * 100) : '—' },
+];
 
 function DeferredRevenueReport() {
-  const { data, loading } = useReportData<DeferredApiData>('deferred-revenue');
-  const schedules = data?.schedules ?? [];
+  const { data, loading } = useReportData<DeferredData>('deferred-revenue');
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Contracts', v: loading ? '…' : String(data?.scheduleCount ?? 0) },
-          { l: 'Total Deferred', v: loading ? '…' : fmtC(data?.totalDeferredCents ?? 0) },
-          { l: 'Recognized', v: loading ? '…' : fmtC(data?.totalRecognizedCents ?? 0) },
-          { l: 'Remaining', v: loading ? '…' : fmtC(data?.remainingCents ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Deferred Revenue Schedules</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Period</th><th style={s.thRight}>Total</th><th style={s.thRight}>Recognized</th><th style={s.thRight}>Deferred</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={4} /> : schedules.length === 0 ? <EmptyRow cols={4} msg="No deferred revenue schedules." /> : schedules.map((sc) => (
-              <tr key={sc.id}>
-                <td style={s.td}>{sc.startDate?.slice(0, 10)} → {sc.endDate?.slice(0, 10)}</td>
-                <td style={s.tdRight}>{fmtC(sc.totalCents)}</td>
-                <td style={s.tdRight}>{fmtC(sc.recognizedCents)}</td>
-                <td style={s.tdRight}>{fmtC(sc.totalCents - sc.recognizedCents)}</td>
-              </tr>
-            ))}
-            {!loading && schedules.length > 0 && (
-              <tr style={s.totalRow}>
-                <td style={{ ...s.td, fontWeight: 700 }}>Total</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data!.totalDeferredCents)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data!.totalRecognizedCents)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(data!.remainingCents)}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Contracts', v: loading ? '…' : String(data?.scheduleCount ?? 0) },
+        { l: 'Total Deferred', v: loading ? '…' : fmtC(data?.totalDeferredCents ?? 0) },
+        { l: 'Recognized', v: loading ? '…' : fmtC(data?.totalRecognizedCents ?? 0) },
+        { l: 'Remaining', v: loading ? '…' : fmtC(data?.remainingCents ?? 0) },
+      ]} />
+      <ConfigurableTable
+        storageKey="deferred"
+        title="Deferred Revenue Schedules"
+        allCols={deferredCols}
+        defaultColKeys={['period', 'totalCents', 'recognizedCents', 'deferred']}
+        rows={data?.schedules ?? []}
+        loading={loading}
+        emptyMsg="No deferred revenue schedules."
+        footerCells={{ totalCents: fmtC(data?.totalDeferredCents ?? 0), recognizedCents: fmtC(data?.totalRecognizedCents ?? 0), deferred: fmtC(data?.remainingCents ?? 0), pctRecognized: '' }}
+      />
     </>
   );
 }
 
+/* ── GL Summary ──────────────────────────────────────────── */
 interface GlAccount { accountNumber: string; name: string; type: string; debitsCents: number; creditsCents: number; netCents: number; }
-interface GlApiData { period: { startDate: string; endDate: string }; accounts: GlAccount[]; }
+interface GlData { accounts: GlAccount[]; }
+
+const glCols: ColDef<GlAccount>[] = [
+  { key: 'accountNumber', label: 'Account #', align: 'muted', render: (r) => r.accountNumber },
+  { key: 'name', label: 'Account Name', render: (r) => r.name },
+  { key: 'type', label: 'Type', align: 'muted', render: (r) => r.type },
+  { key: 'debitsCents', label: 'Debit', align: 'right', render: (r) => r.debitsCents > 0 ? fmtC(r.debitsCents) : '—' },
+  { key: 'creditsCents', label: 'Credit', align: 'right', render: (r) => r.creditsCents > 0 ? fmtC(r.creditsCents) : '—' },
+  { key: 'netCents', label: 'Net', align: 'right', render: (r) => <strong style={{ color: r.netCents >= 0 ? '#059669' : '#DC2626' }}>{fmtC(Math.abs(r.netCents))}</strong> },
+];
 
 function GLSummaryReport() {
-  const { data, loading } = useReportData<GlApiData>('gl-summary');
+  const { data, loading } = useReportData<GlData>('gl-summary');
   const accounts = data?.accounts ?? [];
   const totalDebits = accounts.reduce((s, a) => s + a.debitsCents, 0);
   const totalCredits = accounts.reduce((s, a) => s + a.creditsCents, 0);
@@ -732,91 +882,78 @@ function GLSummaryReport() {
   const totalExpenses = accounts.filter((a) => a.type === 'EXPENSE').reduce((s, a) => s + a.debitsCents, 0);
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'Total Debits', v: loading ? '…' : fmtC(totalDebits) },
-          { l: 'Total Credits', v: loading ? '…' : fmtC(totalCredits) },
-          { l: 'Net Revenue', v: loading ? '…' : fmtC(netRevenue) },
-          { l: 'Total Expenses', v: loading ? '…' : fmtC(totalExpenses) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>General Ledger Summary</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Account</th><th style={s.th}>Type</th><th style={s.thRight}>Debit</th><th style={s.thRight}>Credit</th><th style={s.thRight}>Net</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={5} /> : accounts.length === 0 ? <EmptyRow cols={5} msg="No GL entries for this period." /> : accounts.map((a) => (
-              <tr key={a.accountNumber}>
-                <td style={s.td}>{a.accountNumber} · {a.name}</td>
-                <td style={s.tdMuted}>{a.type}</td>
-                <td style={s.tdRight}>{a.debitsCents > 0 ? fmtC(a.debitsCents) : '—'}</td>
-                <td style={s.tdRight}>{a.creditsCents > 0 ? fmtC(a.creditsCents) : '—'}</td>
-                <td style={{ ...s.tdRight, fontWeight: 600, color: a.netCents >= 0 ? '#059669' : '#DC2626' }}>{fmtC(Math.abs(a.netCents))}</td>
-              </tr>
-            ))}
-            {!loading && accounts.length > 0 && (
-              <tr style={s.totalRow}>
-                <td colSpan={2} style={{ ...s.td, fontWeight: 700 }}>Total</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(totalDebits)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(totalCredits)}</td>
-                <td style={{ ...s.tdRight, fontWeight: 700 }}>{fmtC(Math.abs(totalCredits - totalDebits))}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'Total Debits', v: loading ? '…' : fmtC(totalDebits) },
+        { l: 'Total Credits', v: loading ? '…' : fmtC(totalCredits) },
+        { l: 'Net Revenue', v: loading ? '…' : fmtC(netRevenue) },
+        { l: 'Total Expenses', v: loading ? '…' : fmtC(totalExpenses) },
+      ]} />
+      <ConfigurableTable
+        storageKey="gl-summary"
+        title="General Ledger Summary"
+        allCols={glCols}
+        defaultColKeys={['accountNumber', 'name', 'type', 'debitsCents', 'creditsCents', 'netCents']}
+        rows={accounts}
+        loading={loading}
+        emptyMsg="No GL entries for this period."
+        footerCells={{ debitsCents: fmtC(totalDebits), creditsCents: fmtC(totalCredits), netCents: fmtC(Math.abs(totalCredits - totalDebits)) }}
+      />
     </>
   );
 }
 
-interface WaitlistApiData { totalEntries: number; bySlipType: { slipType: string | null; count: number }[]; byStatus: { status: string; count: number }[]; }
+/* ── Waitlist ────────────────────────────────────────────── */
+interface WaitlistData { totalEntries: number; bySlipType: { slipType: string | null; count: number }[]; byStatus: { status: string; count: number }[]; }
+type SlipTypeRow = { slipType: string; count: number; };
+
+const slipTypeCols: ColDef<SlipTypeRow>[] = [
+  { key: 'slipType', label: 'Slip Type', render: (r) => r.slipType },
+  { key: 'count', label: 'Count', align: 'right', render: (r) => r.count },
+];
+const waitStatusCols: ColDef<StatusRow>[] = [
+  { key: 'status', label: 'Status', render: (r) => r.status },
+  { key: 'count', label: 'Count', align: 'right', render: (r) => r.count },
+  { key: 'sharePct', label: 'Share', align: 'right', render: (r) => pct(r.sharePct) },
+];
 
 function WaitlistReport() {
-  const { data, loading } = useReportData<WaitlistApiData>('waitlist');
-  const bySlipType = data?.bySlipType ?? [];
-  const byStatus = data?.byStatus ?? [];
+  const { data, loading } = useReportData<WaitlistData>('waitlist');
+  const total = data?.totalEntries ?? 0;
+  const slipRows: SlipTypeRow[] = (data?.bySlipType ?? []).map((r) => ({ slipType: r.slipType || 'Any', count: r.count }));
+  const statusRows: StatusRow[] = (data?.byStatus ?? []).map((r) => ({ status: r.status, count: r.count, sharePct: total > 0 ? r.count / total * 100 : 0 }));
   return (
     <>
-      <div style={s.kpiRow}>
-        {[
-          { l: 'On Waitlist', v: loading ? '…' : String(data?.totalEntries ?? 0) },
-          { l: 'Slip Types', v: loading ? '…' : String(bySlipType.length) },
-          { l: 'Active', v: loading ? '…' : String(byStatus.find((s_) => s_.status === 'ACTIVE')?.count ?? 0) },
-          { l: 'Offered', v: loading ? '…' : String(byStatus.find((s_) => s_.status === 'OFFERED')?.count ?? 0) },
-        ].map((k) => (
-          <div key={k.l} style={s.kpiCard}><div style={s.kpiLabel}>{k.l}</div><div style={s.kpiValue}>{k.v}</div></div>
-        ))}
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Waitlist by Slip Type</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Slip Type</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : bySlipType.length === 0 ? <EmptyRow cols={2} msg="Waitlist is empty." /> : bySlipType.map((r) => (
-              <tr key={r.slipType ?? 'none'}><td style={s.td}>{r.slipType || 'Any'}</td><td style={s.tdRight}>{r.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div style={s.section}>
-        <div style={s.sectionHeader}><h3 style={s.sectionTitle}>Waitlist by Status</h3></div>
-        <table style={s.table}>
-          <thead><tr><th style={s.th}>Status</th><th style={s.thRight}>Count</th></tr></thead>
-          <tbody>
-            {loading ? <LoadingRow cols={2} /> : byStatus.length === 0 ? <EmptyRow cols={2} msg="Waitlist is empty." /> : byStatus.map((r) => (
-              <tr key={r.status}><td style={s.td}>{r.status}</td><td style={s.tdRight}>{r.count}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <KPIs items={[
+        { l: 'On Waitlist', v: loading ? '…' : String(total) },
+        { l: 'Active', v: loading ? '…' : String(data?.byStatus?.find((s_) => s_.status === 'ACTIVE')?.count ?? 0) },
+        { l: 'Offered', v: loading ? '…' : String(data?.byStatus?.find((s_) => s_.status === 'OFFERED')?.count ?? 0) },
+        { l: 'Slip Types', v: loading ? '…' : String(slipRows.length) },
+      ]} />
+      <ConfigurableTable
+        storageKey="waitlist-slip"
+        title="Waitlist by Slip Type"
+        allCols={slipTypeCols}
+        defaultColKeys={['slipType', 'count']}
+        rows={slipRows}
+        loading={loading}
+        emptyMsg="Waitlist is empty."
+        footerCells={{ count: total }}
+      />
+      <ConfigurableTable
+        storageKey="waitlist-status"
+        title="Waitlist by Status"
+        allCols={waitStatusCols}
+        defaultColKeys={['status', 'count', 'sharePct']}
+        rows={statusRows}
+        loading={loading}
+        emptyMsg="Waitlist is empty."
+        footerCells={{ count: total, sharePct: '' }}
+      />
     </>
   );
 }
 
 /* ── Report metadata ────────────────────────────────────── */
-
 const reportMeta: Record<string, { title: string; subtitle: string; component: () => JSX.Element }> = {
   revenue: { title: 'Revenue Summary', subtitle: 'Payment collections & invoicing', component: RevenueSummary },
   aging: { title: 'Accounts Receivable Aging', subtitle: 'Open invoices by age', component: ARAgingReport },
@@ -836,11 +973,7 @@ const reportMeta: Record<string, { title: string; subtitle: string; component: (
 };
 
 /* ── Main viewer ────────────────────────────────────────── */
-
-interface ReportViewerProps {
-  reportId: string;
-  onClose: () => void;
-}
+interface ReportViewerProps { reportId: string; onClose: () => void; }
 
 export default function ReportViewer({ reportId, onClose }: ReportViewerProps) {
   const navigate = useNavigate();
@@ -856,20 +989,20 @@ export default function ReportViewer({ reportId, onClose }: ReportViewerProps) {
           <div style={s.header}>
             <div>
               <h2 style={s.headerTitle}>{meta.title}</h2>
-              <div style={s.headerSub}>{meta.subtitle} · Generated {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+              <div style={s.headerSub}>
+                {meta.subtitle} · Generated {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+              </div>
             </div>
             <div style={s.headerActions}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#FFFFFF' }}>
                 <input
-                  type="date"
-                  value={dateFrom}
+                  type="date" value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
                   style={{ padding: '5px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }}
                 />
                 <span style={{ opacity: 0.6 }}>→</span>
                 <input
-                  type="date"
-                  value={dateTo}
+                  type="date" value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                   style={{ padding: '5px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }}
                 />
