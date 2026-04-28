@@ -325,6 +325,8 @@ model Location {
   active           Boolean @default(true)
   transientEnabled Boolean @default(true)
   rentalsEnabled   Boolean @default(true)
+  rampEnabled      Boolean @default(true)
+  conciergeEnabled Boolean @default(true)
 
   // Per-location branding
   logoUrl      String?

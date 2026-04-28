@@ -3004,6 +3004,16 @@ export default function Settings() {
               label: 'Rentals',
               description: 'Boat, kayak, jet ski and equipment rentals — includes availability calendar, reservation management, pricing rules, promo codes, and the Rentals dashboard. Also controls the public rental booking widget.',
             },
+            {
+              key: 'ramp' as const,
+              label: 'Launch Ramp',
+              description: 'Launch ramp pass sales, daily/seasonal permit tracking, and the Launch Ramp section in the sidebar. Disable for marinas without a public boat ramp.',
+            },
+            {
+              key: 'concierge' as const,
+              label: 'Concierge',
+              description: 'White-glove concierge service requests, task assignment, and the Concierge section in the sidebar. Disable at locations that do not offer concierge service to their slip holders.',
+            },
           ] as { key: keyof typeof modules; label: string; description: string }[]).map((mod) => (
             <div
               key={mod.key}

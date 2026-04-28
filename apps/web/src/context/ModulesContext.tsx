@@ -5,14 +5,25 @@ export interface ApiLocation {
   name: string;
   transientEnabled: boolean;
   rentalsEnabled: boolean;
+  rampEnabled: boolean;
+  conciergeEnabled: boolean;
 }
 
 export interface ModulesConfig {
   transient: boolean;
   rentals: boolean;
+  ramp: boolean;
+  concierge: boolean;
 }
 
-const FALLBACK: ModulesConfig = { transient: true, rentals: true };
+const FALLBACK: ModulesConfig = { transient: true, rentals: true, ramp: true, concierge: true };
+
+const MODULE_TO_API: Record<keyof ModulesConfig, keyof ApiLocation> = {
+  transient: 'transientEnabled',
+  rentals: 'rentalsEnabled',
+  ramp: 'rampEnabled',
+  concierge: 'conciergeEnabled',
+};
 
 interface ModulesContextValue {
   locations: ApiLocation[];
@@ -35,7 +46,12 @@ const ModulesContext = createContext<ModulesContextValue>({
 const LOCATION_STORAGE_KEY = 'helm_current_location';
 
 function featuresToModules(loc: ApiLocation): ModulesConfig {
-  return { transient: loc.transientEnabled, rentals: loc.rentalsEnabled };
+  return {
+    transient: loc.transientEnabled,
+    rentals: loc.rentalsEnabled,
+    ramp: loc.rampEnabled,
+    concierge: loc.conciergeEnabled,
+  };
 }
 
 export function ModulesProvider({ children }: { children: ReactNode }) {
@@ -77,8 +93,7 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
     async (key: keyof ModulesConfig, enabled: boolean) => {
       if (!currentLocationId) return;
 
-      const apiKey: keyof ApiLocation =
-        key === 'transient' ? 'transientEnabled' : 'rentalsEnabled';
+      const apiKey = MODULE_TO_API[key];
 
       setModules((prev) => ({ ...prev, [key]: enabled }));
       setLocations((prev) =>

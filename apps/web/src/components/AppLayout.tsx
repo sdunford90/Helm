@@ -390,6 +390,8 @@ export default function AppLayout() {
           const visibleItems = section.items.filter((item) => {
             if (item.path === '/rentals' && !modules.rentals) return false;
             if (item.path === '/transient' && !modules.transient) return false;
+            if (item.path === '/ramp' && !modules.ramp) return false;
+            if (item.path === '/concierge' && !modules.concierge) return false;
             return true;
           });
           if (visibleItems.length === 0) return null;

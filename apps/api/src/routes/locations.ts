@@ -26,6 +26,8 @@ router.get("/", async (req: Request, res: Response) => {
       timezone: true,
       transientEnabled: true,
       rentalsEnabled: true,
+      rampEnabled: true,
+      conciergeEnabled: true,
     },
   });
 
@@ -41,9 +43,11 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
     return res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
   }
 
-  const { transientEnabled, rentalsEnabled } = req.body as {
+  const { transientEnabled, rentalsEnabled, rampEnabled, conciergeEnabled } = req.body as {
     transientEnabled?: boolean;
     rentalsEnabled?: boolean;
+    rampEnabled?: boolean;
+    conciergeEnabled?: boolean;
   };
 
   const existing = await prisma.location.findFirst({
@@ -56,12 +60,16 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
     data: {
       ...(transientEnabled !== undefined && { transientEnabled }),
       ...(rentalsEnabled !== undefined && { rentalsEnabled }),
+      ...(rampEnabled !== undefined && { rampEnabled }),
+      ...(conciergeEnabled !== undefined && { conciergeEnabled }),
     },
     select: {
       id: true,
       name: true,
       transientEnabled: true,
       rentalsEnabled: true,
+      rampEnabled: true,
+      conciergeEnabled: true,
     },
   });
 
