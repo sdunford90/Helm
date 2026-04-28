@@ -38,10 +38,101 @@ interface Lead {
 
 interface ActivityEvent {
   id: string;
-  type: 'stage_change' | 'note' | 'email' | 'call';
+  type: 'stage_change' | 'note' | 'email' | 'call' | 'other';
   description: string;
   timestamp: string;
   user: string;
+}
+
+interface AuditLogEntry {
+  id: string;
+  userId: string | null;
+  userName: string | null;
+  recordType: string;
+  recordId: string;
+  action: string;
+  changedFieldsJson: Record<string, unknown> | null;
+  createdAt: string;
+  user: { id: string; email: string; role: string } | null;
+}
+
+interface AuditLogResponse {
+  data: AuditLogEntry[];
+  pagination: { offset: number; limit: number; total: number };
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  NEW: 'New',
+  CONTACTED: 'Contacted',
+  QUALIFIED: 'Qualified',
+  PROPOSAL_SENT: 'Proposal Sent',
+  WON: 'Won',
+  LOST: 'Lost',
+};
+
+function humanizeStage(value: unknown): string {
+  if (typeof value !== 'string') return String(value ?? '');
+  return STAGE_LABELS[value] ?? value;
+}
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toISOString().replace('T', ' ').slice(0, 16);
+}
+
+function mapAuditEntryToActivity(entry: AuditLogEntry): ActivityEvent {
+  const changed = (entry.changedFieldsJson ?? {}) as Record<string, unknown>;
+  let type: ActivityEvent['type'] = 'other';
+  let description = '';
+
+  switch (entry.action) {
+    case 'STAGE_CHANGED': {
+      type = 'stage_change';
+      const from = humanizeStage(changed.from);
+      const to = humanizeStage(changed.to);
+      description = from && to
+        ? `Stage changed from ${from} to ${to}`
+        : 'Stage changed';
+      if (typeof changed.lostReason === 'string' && changed.lostReason) {
+        description += ` (${changed.lostReason})`;
+      }
+      break;
+    }
+    case 'CREATED':
+      description = 'Lead created';
+      break;
+    case 'UPDATED': {
+      const fields = Object.keys(changed);
+      description = fields.length > 0
+        ? `Updated ${fields.join(', ')}`
+        : 'Lead updated';
+      break;
+    }
+    case 'NOTE_ADDED':
+      type = 'note';
+      description = 'Note added';
+      break;
+    case 'SOFT_DELETED': {
+      const reason = typeof changed.lostReason === 'string' ? changed.lostReason : null;
+      description = reason ? `Lead deleted (${reason})` : 'Lead deleted';
+      break;
+    }
+    case 'CONVERTED':
+      description = 'Lead converted to customer';
+      break;
+    default:
+      description = entry.action.replace(/_/g, ' ').toLowerCase();
+      description = description.charAt(0).toUpperCase() + description.slice(1);
+  }
+
+  return {
+    id: entry.id,
+    type,
+    description,
+    timestamp: formatTimestamp(entry.createdAt),
+    user: entry.user?.email ?? entry.userName ?? 'System',
+  };
 }
 
 interface LeadDetailPanelProps {
@@ -330,13 +421,16 @@ function getActivityIcon(type: string) {
 export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
-  const { data: apiActivity } = useApi<ActivityEvent[]>(
+  const { data: apiActivity } = useApi<AuditLogResponse>(
     'get',
-    `/api/audit-log?recordType=Lead&recordId=${lead.id}`,
+    lead.id
+      ? `/api/audit-log?recordType=Lead&recordId=${lead.id}`
+      : '/api/audit-log',
     { immediate: !!lead.id }
   );
   useEffect(() => {
-    if (apiActivity) setActivities(apiActivity);
+    const entries = Array.isArray(apiActivity?.data) ? apiActivity!.data : [];
+    setActivities(entries.map(mapAuditEntryToActivity));
   }, [apiActivity]);
   const [showConversion, setShowConversion] = useState(false);
   const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
