@@ -27,6 +27,7 @@ describe('GET /api/customers', () => {
     const customers = [buildCustomer(), buildCustomer({ id: 'cust-2', firstName: 'Bob' })];
     mockPrisma.customer.findMany.mockResolvedValue(customers);
     mockPrisma.customer.count.mockResolvedValue(2);
+    mockPrisma.invoice.groupBy.mockResolvedValue([]);
 
     const res = await request(app).get('/api/customers');
 

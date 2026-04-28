@@ -33,12 +33,16 @@ describe('GET /api/reports/occupancy', () => {
 
     mockPrisma.slip.groupBy
       .mockResolvedValueOnce([
-        { dock: 'A', _count: { id: 50 } },
-        { dock: 'B', _count: { id: 50 } },
+        { dockId: 'A', _count: { id: 50 } },
+        { dockId: 'B', _count: { id: 50 } },
       ])
       .mockResolvedValueOnce([
-        { dock: 'A', _count: { id: 40 } },
-        { dock: 'B', _count: { id: 35 } },
+        { dockId: 'A', _count: { id: 40 } },
+        { dockId: 'B', _count: { id: 35 } },
+      ])
+      .mockResolvedValueOnce([
+        { dockId: 'A', _count: { id: 1 } },
+        { dockId: 'B', _count: { id: 2 } },
       ]);
 
     const res = await request(app).get('/api/reports/occupancy');
