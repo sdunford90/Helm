@@ -121,6 +121,12 @@ const CreateInvoiceSchema = z.object({
   customerId: z.string().uuid(),
   issuedDate: z.coerce.date(),
   dueDate: z.coerce.date(),
+  // Optional explicit location for the invoice. When supplied, it
+  // overrides the implicit derivation from CONTRACT line items, which
+  // means non-contract invoices (ad-hoc service charges, retail, etc.)
+  // can finally collect the right jurisdictional tax instead of falling
+  // through to a null locationId / zero tax.
+  locationId: z.string().uuid().optional().nullable(),
   lineItems: z.array(LineItemSchema).min(1),
 });
 
@@ -401,20 +407,24 @@ router.post(
       const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
 
       // Resolve the invoice's location BEFORE calling the tax engine so
-      // calculateTax can pull the right jurisdiction stack. We look at the
-      // first CONTRACT line item → slip → location; non-contract invoices
-      // (e.g. ad-hoc service charges) fall back to null and the engine
-      // returns zero tax — same as before category routing.
-      let locationId: string | null = null;
-      const contractLineItem = data.lineItems.find(
-        (li) => li.sourceType === "CONTRACT" && li.sourceId,
-      );
-      if (contractLineItem?.sourceId) {
-        const contract = await prisma.slipContract.findUnique({
-          where: { id: contractLineItem.sourceId },
-          select: { slip: { select: { locationId: true } } },
-        });
-        locationId = contract?.slip?.locationId ?? null;
+      // calculateTax can pull the right jurisdiction stack. Precedence:
+      //   1. Caller-supplied data.locationId (explicit override — used by
+      //      ad-hoc / non-contract invoices that still need real tax).
+      //   2. First CONTRACT line item → slip → location (legacy behavior
+      //      so existing slip-billing flows keep working without changes).
+      //   3. null → engine returns zero tax (same fallback as before).
+      let locationId: string | null = data.locationId ?? null;
+      if (!locationId) {
+        const contractLineItem = data.lineItems.find(
+          (li) => li.sourceType === "CONTRACT" && li.sourceId,
+        );
+        if (contractLineItem?.sourceId) {
+          const contract = await prisma.slipContract.findUnique({
+            where: { id: contractLineItem.sourceId },
+            select: { slip: { select: { locationId: true } } },
+          });
+          locationId = contract?.slip?.locationId ?? null;
+        }
       }
 
       const taxResult = await calculateTax({
