@@ -665,22 +665,38 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
                   )}
                 </div>
                 {/* Source Detail — free-form context (e.g. "took the call",
-                    referrer name, social handle).  Optional. */}
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Source Detail</span>
-                  {isEditing ? (
-                    <input
-                      style={s.fieldInput}
-                      value={editData.sourceDetail ?? ''}
-                      onChange={(e) =>
-                        handleEdit('sourceDetail', e.target.value || null)
-                      }
-                      placeholder="e.g. taken by Sarah, referred by Ava"
-                    />
-                  ) : (
-                    <span style={s.fieldValue}>{lead.sourceDetail || '—'}</span>
-                  )}
-                </div>
+                    referrer name, social handle).  Only shown for sources
+                    where a human-entered detail is meaningful (walk-in,
+                    phone, referral, other); web/social leads carry
+                    structured utm/url fields instead. */}
+                {(() => {
+                  const effectiveSource = isNew && lockSource
+                    ? lockSource
+                    : (isEditing ? editData.source : lead.source);
+                  const showDetail =
+                    effectiveSource === 'WALK_IN' ||
+                    effectiveSource === 'PHONE' ||
+                    effectiveSource === 'REFERRAL' ||
+                    effectiveSource === 'OTHER';
+                  if (!showDetail) return null;
+                  return (
+                    <div style={s.field}>
+                      <span style={s.fieldLabel}>Source Detail</span>
+                      {isEditing ? (
+                        <input
+                          style={s.fieldInput}
+                          value={editData.sourceDetail ?? ''}
+                          onChange={(e) =>
+                            handleEdit('sourceDetail', e.target.value || null)
+                          }
+                          placeholder="e.g. taken by Sarah, referred by Ava"
+                        />
+                      ) : (
+                        <span style={s.fieldValue}>{lead.sourceDetail || '—'}</span>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* Stage */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Stage</span>

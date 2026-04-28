@@ -382,7 +382,10 @@ export default function Leads() {
     void refetchLeads();
   }, [refetchLeads]);
   const { data: stats, execute: refetchStats } = useApi<LeadStatsResponse>('get', '/api/leads/stats', { immediate: true });
-  const createLeadApi = useApi<Lead>('post', '/api/leads');
+  // Note: lead creation is done via direct `api.post` in the onSave handler
+  // below so we can sanitize the payload (UI title-case stage -> API enum,
+  // strip empty UUIDs and invalid boatLength) and surface failures via alert
+  // instead of useApi swallowing errors silently.
 
   // PUT path needs the lead id baked in (route is `/api/leads/:id`), so we
   // call api.put directly rather than going through useApi which captures a
@@ -801,29 +804,64 @@ export default function Leads() {
             setSelectedLead(null);
             setLockedNewSource(null);
           }}
-          onSave={(updated) => {
+          onSave={async (updated) => {
             if (updated.id) {
               setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated as Lead : l));
               persistUpdate(updated as Lead).then(() => {
                 refetchLeads();
                 refetchStats();
               });
-            } else {
-              // For walk-ins / phone calls, the API generates the id; we
-              // optimistically add a placeholder, then refetch to pick up the
-              // real one from the server. If the panel was launched with a
-              // locked source, force it onto the payload so a stray edit
-              // before the server round-trip can't sneak through.
-              const sourceForCreate = lockedNewSource ?? (updated.source as SourceEnum);
-              const newLead = { ...updated, source: sourceForCreate, id: String(Date.now()) } as Lead;
-              setLocalLeads((prev) => [newLead, ...prev]);
-              createLeadApi.execute(newLead).then(() => {
-                refetchLeads();
-                refetchStats();
-              });
+              setSelectedLead(null);
+              setLockedNewSource(null);
+              return;
             }
+
+            // New lead path. The API's CreateLeadSchema is strict (Zod):
+            // - stage is the API enum (NEW/CONTACTED/...), not UI title-case
+            // - assignedTo / locationId must be UUIDs if present
+            // - boatLength must be > 0 if present
+            // We build a sanitized payload here and post it directly so we
+            // can surface any validation/network failure to the user instead
+            // of the optimistic-only insert silently swallowing it.
+            const sourceForCreate = lockedNewSource ?? (updated.source as SourceEnum);
+            const isUuid = (v: unknown) =>
+              typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+            const payload: Record<string, unknown> = {
+              firstName: updated.firstName,
+              lastName: updated.lastName,
+              source: sourceForCreate,
+              stage: STAGE_TO_API[updated.stage as Stage] ?? 'NEW',
+            };
+            if (updated.email) payload.email = updated.email;
+            if (updated.phone) payload.phone = updated.phone;
+            if (updated.slipType) payload.slipType = updated.slipType;
+            if (updated.notes) payload.notes = updated.notes;
+            if (updated.sourceDetail) payload.sourceDetail = updated.sourceDetail;
+            if (typeof updated.boatLength === 'number' && updated.boatLength > 0) {
+              payload.boatLength = updated.boatLength;
+            }
+            if (isUuid(updated.assignedTo)) payload.assignedTo = updated.assignedTo;
+
+            // Optimistic insert with a temporary id so the kanban updates
+            // immediately; refetch will replace it with the server row.
+            const tempId = `tmp-${Date.now()}`;
+            const optimistic = { ...updated, source: sourceForCreate, id: tempId } as Lead;
+            setLocalLeads((prev) => [optimistic, ...prev]);
             setSelectedLead(null);
             setLockedNewSource(null);
+
+            try {
+              const token = await getToken();
+              await api.post<Lead>('/api/leads', payload, token);
+              await refetchLeads();
+              refetchStats();
+            } catch (err) {
+              // Roll back the optimistic row and show the real failure so
+              // users don't think a walk-in was saved when it wasn't.
+              setLocalLeads((prev) => prev.filter((l) => l.id !== tempId));
+              const msg = err instanceof Error ? err.message : 'Unknown error';
+              window.alert(`Could not save lead: ${msg}`);
+            }
           }}
           onStageChange={async (newStage) => {
             const stage = newStage as Stage;
