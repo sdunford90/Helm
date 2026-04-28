@@ -54,10 +54,10 @@ const ListBoatsQuerySchema = z.object({
     .optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
-  sortBy: z
-    .enum(["createdAt", "name", "lengthFt", "make"])
-    .default("createdAt"),
-  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  // Boat has no createdAt/updatedAt columns, so sorting must stay on
+  // existing fields. `name` is the natural list-view default.
+  sortBy: z.enum(["name", "lengthFt", "make"]).default("name"),
+  sortOrder: z.enum(["asc", "desc"]).default("asc"),
 });
 
 const SafetyInspectionSchema = z.object({

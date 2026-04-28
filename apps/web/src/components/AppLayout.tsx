@@ -163,6 +163,7 @@ const NAV_SECTIONS = [
     label: 'Marina Operations',
     items: [
       { path: '/slips', label: 'Slips', icon: Anchor },
+      { path: '/boats', label: 'Boats', icon: Ship },
       { path: '/contracts', label: 'Contracts', icon: FileText },
       { path: '/dock-walks', label: 'Dock Walks', icon: ClipboardCheck },
       { path: '/transient', label: 'Transient', icon: Bed },

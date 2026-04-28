@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
@@ -723,7 +723,10 @@ type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
 export default function CustomerDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>('overview');
+  const [searchParams] = useSearchParams();
+  const initialTab = (searchParams.get('tab') as Tab) || 'overview';
+  const validTabs: Tab[] = ['overview', 'boats', 'billing', 'documents', 'activity'];
+  const [tab, setTab] = useState<Tab>(validTabs.includes(initialTab) ? initialTab : 'overview');
   const [showEdit, setShowEdit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [editingBoat, setEditingBoat] = useState<Boat | null>(null);

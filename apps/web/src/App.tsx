@@ -5,6 +5,7 @@ import Leads from './pages/Leads';
 import Waitlist from './pages/Waitlist';
 import Customers from './pages/Customers';
 import CustomerDetail from './pages/CustomerDetail';
+import Boats from './pages/Boats';
 import Slips from './pages/Slips';
 import Contracts from './pages/Contracts';
 import Billing from './pages/Billing';
@@ -51,6 +52,7 @@ function AppRoutes() {
         <Route path="/waitlist" element={<Waitlist />} />
         <Route path="/customers" element={<Customers />} />
         <Route path="/customers/:id" element={<CustomerDetail />} />
+        <Route path="/boats" element={<Boats />} />
         <Route path="/slips" element={<Slips />} />
         <Route path="/contracts" element={<Contracts />} />
         <Route path="/billing" element={<Billing />} />
