@@ -60,6 +60,9 @@ const primaryBtn: CSSProperties = {
 export default function ThankYou() {
   const [params] = useSearchParams();
   const sessionId = params.get('session_id');
+  // invoiceId is included in the return URL by InvoiceDetail so we can retrieve
+  // the checkout session from the correct location-specific Stripe account.
+  const invoiceId = params.get('invoiceId');
   const navigate = useNavigate();
   const { getToken } = useAuth();
 
@@ -77,8 +80,10 @@ export default function ThankYou() {
     (async () => {
       try {
         const token = await getToken();
+        const query = new URLSearchParams({ session_id: sessionId });
+        if (invoiceId) query.set('invoiceId', invoiceId);
         const res = await fetch(
-          `/api/checkout/session-status?session_id=${encodeURIComponent(sessionId)}`,
+          `/api/checkout/session-status?${query.toString()}`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} },
         );
         if (!res.ok) throw new Error(`Status ${res.status}`);
@@ -97,7 +102,7 @@ export default function ThankYou() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, getToken]);
+  }, [sessionId, invoiceId, getToken]);
 
   if (loading) {
     return (

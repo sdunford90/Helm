@@ -40,28 +40,26 @@ router.post(
       const tenantId = req.tenantId!;
       const { invoiceId, returnPath, uiMode } = InvoiceSessionSchema.parse(req.body);
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: {
-          stripeAccountId: true,
-          applicationFeePctBps: true,
-          applicationFeeFixedCents: true,
-        },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.status(400).json({
-          error: "Stripe is not connected for this marina",
-          code: "STRIPE_NOT_CONFIGURED",
-        });
-        return;
-      }
+      // Fetch the tenant (for fee settings and fallback Stripe account) and the
+      // invoice (for location-specific Stripe account routing) in parallel.
+      const [tenant, invoice] = await Promise.all([
+        prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: {
+            stripeAccountId: true,
+            applicationFeePctBps: true,
+            applicationFeeFixedCents: true,
+          },
+        }),
+        prisma.invoice.findFirst({
+          where: { id: invoiceId, tenantId },
+          include: {
+            customer: { select: { email: true, stripeCustomerId: true } },
+            location: { select: { stripeAccountId: true, stripeOnboardingComplete: true } },
+          },
+        }),
+      ]);
 
-      const invoice = await prisma.invoice.findFirst({
-        where: { id: invoiceId, tenantId },
-        include: {
-          customer: { select: { email: true, stripeCustomerId: true } },
-        },
-      });
       if (!invoice) {
         res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
         return;
@@ -74,11 +72,45 @@ router.post(
         return;
       }
 
+      // Resolve the Stripe account: prefer the invoice's location account, fall
+      // back to the tenant-level account, and error clearly when neither is set.
+      let stripeAccountId: string | null = null;
+      if (invoice.location?.stripeAccountId) {
+        // Location has a Stripe account — use it. If onboarding is incomplete
+        // the account won't accept payments; return a clear error.
+        if (!invoice.location.stripeOnboardingComplete) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = invoice.location.stripeAccountId;
+      } else if (invoice.locationId) {
+        // Invoice has a location but it has no Stripe account connected at all.
+        res.status(400).json({
+          error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+          code: "LOCATION_STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      } else {
+        // No location on the invoice — fall back to tenant-level account.
+        stripeAccountId = tenant?.stripeAccountId ?? null;
+      }
+
+      if (!stripeAccountId) {
+        res.status(400).json({
+          error: "Stripe is not connected for this marina",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
       const appUrl = process.env.APP_URL ?? "http://localhost:5000";
       const applicationFee = calculateApplicationFee(
         invoice.balanceCents,
-        tenant.applicationFeePctBps,
-        tenant.applicationFeeFixedCents,
+        tenant?.applicationFeePctBps ?? 0,
+        tenant?.applicationFeeFixedCents ?? 0,
       );
 
       // setup_future_usage saves the payment method for later off-session use
@@ -126,23 +158,29 @@ router.post(
         },
       };
 
+      // Build the return/success URL with proper query-string handling.
+      // returnPath may already contain query params (e.g. /thank-you?invoiceId=…)
+      // so we must use '&' rather than '?' in that case to avoid a malformed URL.
+      const qs = returnPath.includes("?") ? "&" : "?";
+      const returnUrlWithSession = `${appUrl}${returnPath}${qs}session_id={CHECKOUT_SESSION_ID}`;
+
       const session =
         uiMode === "hosted"
           ? await requireStripe().checkout.sessions.create(
               {
                 ...commonParams,
-                success_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
+                success_url: returnUrlWithSession,
                 cancel_url: `${appUrl}/invoices/${invoice.id}?canceled=true`,
               },
-              { stripeAccount: tenant.stripeAccountId },
+              { stripeAccount: stripeAccountId },
             )
           : await requireStripe().checkout.sessions.create(
               {
                 ...commonParams,
                 ui_mode: "elements",
-                return_url: `${appUrl}${returnPath}?session_id={CHECKOUT_SESSION_ID}`,
+                return_url: returnUrlWithSession,
               },
-              { stripeAccount: tenant.stripeAccountId },
+              { stripeAccount: stripeAccountId },
             );
 
       res.json({
@@ -178,28 +216,25 @@ router.post(
       const tenantId = req.tenantId!;
       const { invoiceId, paymentMethodId } = CardOnFileSchema.parse(req.body);
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: {
-          stripeAccountId: true,
-          applicationFeePctBps: true,
-          applicationFeeFixedCents: true,
-        },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.status(400).json({
-          error: "Stripe is not connected for this marina",
-          code: "STRIPE_NOT_CONFIGURED",
-        });
-        return;
-      }
+      // Fetch tenant (for fee settings and fallback account) and invoice in parallel.
+      const [tenant, invoice] = await Promise.all([
+        prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: {
+            stripeAccountId: true,
+            applicationFeePctBps: true,
+            applicationFeeFixedCents: true,
+          },
+        }),
+        prisma.invoice.findFirst({
+          where: { id: invoiceId, tenantId },
+          include: {
+            customer: { select: { id: true, stripeCustomerId: true } },
+            location: { select: { stripeAccountId: true, stripeOnboardingComplete: true } },
+          },
+        }),
+      ]);
 
-      const invoice = await prisma.invoice.findFirst({
-        where: { id: invoiceId, tenantId },
-        include: {
-          customer: { select: { id: true, stripeCustomerId: true } },
-        },
-      });
       if (!invoice || invoice.balanceCents <= 0) {
         res.status(400).json({
           error: "Invoice not found or fully paid",
@@ -216,10 +251,39 @@ router.post(
         return;
       }
 
+      // Resolve the Stripe account: prefer location account, fall back to tenant.
+      let stripeAccountId: string | null = null;
+      if (invoice.location?.stripeAccountId) {
+        if (!invoice.location.stripeOnboardingComplete) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = invoice.location.stripeAccountId;
+      } else if (invoice.locationId) {
+        res.status(400).json({
+          error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+          code: "LOCATION_STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      } else {
+        stripeAccountId = tenant?.stripeAccountId ?? null;
+      }
+
+      if (!stripeAccountId) {
+        res.status(400).json({
+          error: "Stripe is not connected for this marina",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
       const applicationFee = calculateApplicationFee(
         invoice.balanceCents,
-        tenant.applicationFeePctBps,
-        tenant.applicationFeeFixedCents,
+        tenant?.applicationFeePctBps ?? 0,
+        tenant?.applicationFeeFixedCents ?? 0,
       );
 
       const params: Stripe.PaymentIntentCreateParams = {
@@ -238,7 +302,7 @@ router.post(
       if (paymentMethodId) params.payment_method = paymentMethodId;
 
       const intent = await requireStripe().paymentIntents.create(params, {
-        stripeAccount: tenant.stripeAccountId,
+        stripeAccount: stripeAccountId,
         idempotencyKey: `charge-on-file-${invoice.id}-${invoice.balanceCents}`,
       });
 
@@ -275,10 +339,15 @@ router.post(
 );
 
 // ---------------------------------------------------------------------------
-// GET /api/checkout/session-status?session_id=cs_…
+// GET /api/checkout/session-status?session_id=cs_…[&invoiceId=<uuid>]
 //
 // Used by the return page (after staff-initiated or customer-facing checkout)
 // to report whether the payment completed.
+//
+// Optional query param: invoiceId
+// When provided, the session is retrieved from the Stripe account for that
+// invoice's location (with fallback to the tenant account). Pass the same
+// invoiceId that was used when creating the session so the accounts match.
 // ---------------------------------------------------------------------------
 
 router.get(
@@ -292,11 +361,33 @@ router.get(
         return;
       }
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
+      const invoiceIdParam = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
+
+      // Resolve the Stripe account. When invoiceId is supplied, prefer the
+      // invoice's location account (same account the session was created in).
+      let stripeAccountId: string | null = null;
+      if (invoiceIdParam) {
+        const invoice = await prisma.invoice.findFirst({
+          where: { id: invoiceIdParam, tenantId },
+          select: {
+            locationId: true,
+            location: { select: { stripeAccountId: true, stripeOnboardingComplete: true } },
+          },
+        });
+        if (invoice?.location?.stripeAccountId && invoice.location.stripeOnboardingComplete) {
+          stripeAccountId = invoice.location.stripeAccountId;
+        }
+      }
+
+      if (!stripeAccountId) {
+        const tenant = await prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { stripeAccountId: true },
+        });
+        stripeAccountId = tenant?.stripeAccountId ?? null;
+      }
+
+      if (!stripeAccountId) {
         res.status(400).json({
           error: "Stripe is not connected for this marina",
           code: "STRIPE_NOT_CONFIGURED",
@@ -307,7 +398,7 @@ router.get(
       const session = await requireStripe().checkout.sessions.retrieve(
         sessionId,
         { expand: ["payment_intent"] },
-        { stripeAccount: tenant.stripeAccountId },
+        { stripeAccount: stripeAccountId },
       );
 
       res.json({

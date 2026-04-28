@@ -78,7 +78,10 @@ export default function InvoiceDetail() {
         },
         body: JSON.stringify({
           invoiceId: data.id,
-          returnPath: '/thank-you',
+          // Include the invoiceId in the return path so ThankYou.tsx can pass it
+          // to the session-status endpoint — required to retrieve the session from
+          // the correct location-specific Stripe account.
+          returnPath: `/thank-you?invoiceId=${encodeURIComponent(data.id)}`,
           uiMode: 'hosted',
         }),
       });

@@ -51,7 +51,7 @@ async function resolvePortalCustomer(
 router.use(resolvePortalCustomer);
 
 // ---------------------------------------------------------------------------
-// Helper — resolve tenant Stripe account ID
+// Helper — resolve tenant Stripe account ID (fallback)
 // ---------------------------------------------------------------------------
 async function getTenantStripeAccount(tenantId: string): Promise<string | null> {
   const tenant = await prisma.tenant.findUnique({
@@ -59,6 +59,71 @@ async function getTenantStripeAccount(tenantId: string): Promise<string | null> 
     select: { stripeAccountId: true },
   });
   return tenant?.stripeAccountId ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Helper — resolve Stripe account for a specific invoice
+//
+// Looks up invoice.locationId → location.stripeAccountId.
+// Falls back to the tenant-level Stripe account when the invoice has no
+// location or the location has no Stripe account connected yet.
+//
+// Returns:
+//   stripeAccountId   — the account to use (null if nothing is configured)
+//   locationConnected — false when the invoice belongs to a location whose
+//                       Stripe onboarding is NOT complete; callers can use
+//                       this to surface a clear error to the customer.
+//   invoiceNotFound   — true when a customer-scoped lookup found no invoice;
+//                       callers in portal context should return 404/403.
+// ---------------------------------------------------------------------------
+async function getStripeAccountForInvoice(
+  invoiceId: string,
+  tenantId: string,
+  // When provided, restricts the invoice lookup to this customer — required in
+  // portal context to prevent a portal user from supplying another customer's
+  // invoiceId and influencing Stripe account routing (BOLA protection).
+  customerId?: string,
+): Promise<{ stripeAccountId: string | null; locationConnected: boolean; invoiceNotFound?: boolean }> {
+  const invoice = await prisma.invoice.findFirst({
+    where: {
+      id: invoiceId,
+      tenantId,
+      ...(customerId ? { customerId } : {}),
+    },
+    select: {
+      locationId: true,
+      location: {
+        select: {
+          stripeAccountId: true,
+          stripeOnboardingComplete: true,
+        },
+      },
+    },
+  });
+
+  // When a customer-scoped lookup is performed and the invoice is not found,
+  // signal this explicitly so callers can return a 404 rather than silently
+  // falling back to the tenant account (which would mask authorization errors).
+  if (!invoice && customerId) {
+    return { stripeAccountId: null, locationConnected: false, invoiceNotFound: true };
+  }
+
+  // If the invoice has a location with a Stripe account, use it.
+  if (invoice?.location?.stripeAccountId) {
+    return {
+      stripeAccountId: invoice.location.stripeAccountId,
+      locationConnected: invoice.location.stripeOnboardingComplete,
+    };
+  }
+
+  // Location exists but Stripe onboarding is incomplete — signal this clearly.
+  if (invoice?.locationId && !invoice?.location?.stripeAccountId) {
+    return { stripeAccountId: null, locationConnected: false };
+  }
+
+  // No location on the invoice — fall back to the tenant-level account.
+  const tenantAccountId = await getTenantStripeAccount(tenantId);
+  return { stripeAccountId: tenantAccountId, locationConnected: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +300,10 @@ router.get(
 
 // ---------------------------------------------------------------------------
 // GET /api/portal/payment-methods — list saved payment methods + autopay
+//
+// Optional query param: ?invoiceId=<id>
+// When provided the response is scoped to the Stripe account for that invoice's
+// location (with fallback to the tenant account).
 // ---------------------------------------------------------------------------
 router.get(
   "/payment-methods",
@@ -242,6 +311,7 @@ router.get(
     try {
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
+      const invoiceId = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
 
       const customer = await prisma.customer.findUnique({
         where: { id: customerId },
@@ -253,7 +323,25 @@ router.get(
         return;
       }
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.json({ methods: [], autopay: false, defaultMethodId: null });
         return;
@@ -317,6 +405,10 @@ router.get(
 // POST /api/portal/payment-methods/setup-session
 // Creates a Stripe Checkout session in setup mode so the customer can securely
 // add a card or bank account via Stripe's hosted UI.
+//
+// Optional body field: invoiceId
+// When provided the session is created in the Stripe account for that
+// invoice's location (with fallback to the tenant account).
 // ---------------------------------------------------------------------------
 router.post(
   "/payment-methods/setup-session",
@@ -324,9 +416,10 @@ router.post(
     try {
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
-      const { returnUrl, type = "card" } = req.body as {
+      const { returnUrl, type = "card", invoiceId } = req.body as {
         returnUrl?: string;
         type?: "card" | "bank";
+        invoiceId?: string;
       };
 
       const customer = await prisma.customer.findUnique({
@@ -334,7 +427,25 @@ router.post(
         select: { stripeCustomerId: true, email: true, firstName: true, lastName: true },
       });
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.status(400).json({ error: "Stripe not configured for this marina", code: "STRIPE_NOT_CONFIGURED" });
         return;
@@ -388,6 +499,9 @@ router.post(
 
 // ---------------------------------------------------------------------------
 // DELETE /api/portal/payment-methods/:id — detach a payment method
+//
+// Optional query param: ?invoiceId=<id>
+// Use this when the payment method lives in a location-specific Stripe account.
 // ---------------------------------------------------------------------------
 router.delete(
   "/payment-methods/:id",
@@ -396,6 +510,7 @@ router.delete(
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
       const pmId = req.params.id;
+      const invoiceId = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
 
       const customer = await prisma.customer.findUnique({
         where: { id: customerId },
@@ -406,7 +521,25 @@ router.delete(
         return;
       }
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.status(400).json({ error: "Stripe not configured" });
         return;
@@ -432,6 +565,9 @@ router.delete(
 
 // ---------------------------------------------------------------------------
 // PUT /api/portal/payment-methods/:id/default — set default payment method
+//
+// Optional query param: ?invoiceId=<id>
+// Use this when the payment method lives in a location-specific Stripe account.
 // ---------------------------------------------------------------------------
 router.put(
   "/payment-methods/:id/default",
@@ -440,6 +576,7 @@ router.put(
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
       const pmId = req.params.id;
+      const invoiceId = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
 
       const customer = await prisma.customer.findUnique({
         where: { id: customerId },
@@ -450,7 +587,25 @@ router.put(
         return;
       }
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.status(400).json({ error: "Stripe not configured" });
         return;
@@ -474,6 +629,9 @@ router.put(
 
 // ---------------------------------------------------------------------------
 // GET /api/portal/autopay — get autopay status
+//
+// Optional query param: ?invoiceId=<id>
+// Scopes the lookup to the correct Stripe account for the invoice's location.
 // ---------------------------------------------------------------------------
 router.get(
   "/autopay",
@@ -481,6 +639,7 @@ router.get(
     try {
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
+      const invoiceId = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
 
       const customer = await prisma.customer.findUnique({
         where: { id: customerId },
@@ -492,7 +651,22 @@ router.get(
         return;
       }
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.json({ autopay: false });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.json({ autopay: false });
         return;
@@ -512,6 +686,9 @@ router.get(
 
 // ---------------------------------------------------------------------------
 // PUT /api/portal/autopay — toggle autopay on/off
+//
+// Optional body field: invoiceId
+// Scopes the update to the correct Stripe account for the invoice's location.
 // ---------------------------------------------------------------------------
 router.put(
   "/autopay",
@@ -519,14 +696,32 @@ router.put(
     try {
       const customerId = req.portalCustomerId!;
       const tenantId = req.tenantId!;
-      const { autopay } = req.body as { autopay: boolean };
+      const { autopay, invoiceId } = req.body as { autopay: boolean; invoiceId?: string };
 
       const customer = await prisma.customer.findUnique({
         where: { id: customerId },
         select: { stripeCustomerId: true, email: true, firstName: true, lastName: true },
       });
 
-      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      let stripeAccountId: string | null;
+      if (invoiceId) {
+        const result = await getStripeAccountForInvoice(invoiceId, tenantId, customerId);
+        if (result.invoiceNotFound) {
+          res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+          return;
+        }
+        if (!result.locationConnected) {
+          res.status(400).json({
+            error: "Stripe payments are not yet configured for this location. Please contact the marina.",
+            code: "LOCATION_STRIPE_NOT_CONFIGURED",
+          });
+          return;
+        }
+        stripeAccountId = result.stripeAccountId;
+      } else {
+        stripeAccountId = await getTenantStripeAccount(tenantId);
+      }
+
       if (!stripeAccountId) {
         res.status(400).json({ error: "Stripe not configured" });
         return;
