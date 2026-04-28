@@ -32,6 +32,15 @@ export interface EffectiveProductValues {
 
 const DEFAULT_TAX_CATEGORY = "general";
 
+// The product modal historically stored exempt status as the literal string
+// "Exempt"; the new categories form writes "Tax Exempt". Treat both (and any
+// case variant) as the same exempt sentinel so legacy products keep behaving
+// as expected.
+const TAX_EXEMPT_LABELS = new Set(["tax exempt", "exempt"]);
+export function isTaxExempt(taxClass: string | null | undefined): boolean {
+  return !!taxClass && TAX_EXEMPT_LABELS.has(taxClass.trim().toLowerCase());
+}
+
 /**
  * Merge per-product overrides onto a category's defaults. Per-product values
  * win when present (non-null). When no category is supplied the per-product
@@ -49,6 +58,7 @@ export function resolveEffectiveValues(opts: {
 }): EffectiveProductValues {
   const cat = opts.category ?? null;
   const ov = opts.override;
+  const exempt = isTaxExempt(ov.taxClass);
   return {
     revenueGlAccountId:
       ov.revenueGlAccountId ?? cat?.defaultRevenueGlAccountId ?? null,
@@ -61,17 +71,12 @@ export function resolveEffectiveValues(opts: {
     // Per-product taxClass takes precedence; fall back to the category's
     // defaultTaxCategory; final fallback to the engine's "general" bucket.
     taxCategory:
-      (ov.taxClass && ov.taxClass !== "Tax Exempt" ? ov.taxClass : null) ??
+      (ov.taxClass && !exempt ? ov.taxClass : null) ??
       cat?.defaultTaxCategory ??
       DEFAULT_TAX_CATEGORY,
     // The category's taxable flag wins when set; an explicit per-product
-    // taxClass of "Tax Exempt" forces non-taxable.
-    taxable:
-      ov.taxClass === "Tax Exempt"
-        ? false
-        : cat
-        ? cat.taxable
-        : true,
+    // taxClass of "Tax Exempt"/"Exempt" forces non-taxable.
+    taxable: exempt ? false : cat ? cat.taxable : true,
   };
 }
 
@@ -151,7 +156,7 @@ export function resolveProductTaxCategory(product: {
     taxable: boolean;
   } | null;
 }): { taxCategory: string | null; taxable: boolean } {
-  if (product.taxClass === "Tax Exempt") {
+  if (isTaxExempt(product.taxClass)) {
     return { taxCategory: null, taxable: false };
   }
   if (product.productCategory && !product.productCategory.taxable) {

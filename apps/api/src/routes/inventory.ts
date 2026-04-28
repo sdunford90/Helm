@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { Prisma } from "@prisma/client";
+import { Prisma, GLAccountType } from "@prisma/client";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -728,7 +728,7 @@ router.put("/categories/:id", async (req: Request, res: Response, next: NextFunc
     const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Category not found" });
 
-    const data: any = {};
+    const data: Prisma.ProductCategoryUncheckedUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
     if (body.defaultRevenueGlAccountId !== undefined) data.defaultRevenueGlAccountId = body.defaultRevenueGlAccountId;
     if (body.defaultCogsGlAccountId !== undefined) data.defaultCogsGlAccountId = body.defaultCogsGlAccountId;
@@ -778,12 +778,14 @@ router.get("/gl-accounts", async (req: Request, res: Response, next: NextFunctio
     // cross-tenant chart-of-accounts exposure.
     const tenantId = getTenantId(req);
     const typeQ = typeof req.query.type === "string" ? req.query.type : "";
-    const types = typeQ ? typeQ.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const types = typeQ
+      ? (typeQ.split(",").map((s) => s.trim()).filter(Boolean) as GLAccountType[])
+      : [];
     const rows = await prisma.glAccount.findMany({
       where: {
         tenantId,
         active: true,
-        ...(types.length ? { type: { in: types as any } } : {}),
+        ...(types.length ? { type: { in: types } } : {}),
       },
       orderBy: [{ type: "asc" }, { accountNumber: "asc" }],
       select: {

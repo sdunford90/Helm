@@ -228,9 +228,11 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
   const assetAccts = assetAccountsData?.accounts ?? [];
   const taxCats = taxCategoriesData?.categories ?? ['general'];
 
-  // Default new products to the first active category if one exists.
+  // For new products only, default to the first active category if one
+  // exists. Existing products are left as-is — legacy uncategorized rows must
+  // not silently get a category assigned just by opening the form.
   const initialCategoryId =
-    product?.productCategoryId ?? categoryList[0]?.id ?? null;
+    product?.productCategoryId ?? (isEdit ? null : categoryList[0]?.id ?? null);
 
   const [form, setForm] = useState<{
     sku: string;
@@ -263,24 +265,62 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
   });
 
   // When the categories list lands after the initial render, retro-fit the
-  // default category id so the rest of the form can react to it.
+  // default category id for new products only. Existing products preserve
+  // their stored category (or lack thereof) so opening the form never alters
+  // a legacy uncategorized row.
   React.useEffect(() => {
-    if (!form.productCategoryId && categoryList[0]) {
+    if (!isEdit && !form.productCategoryId && categoryList[0]) {
       setForm((p) => ({ ...p, productCategoryId: categoryList[0].id }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryList.length]);
-
-  // Override toggle: when off, the per-product GL/tax fields stay null so the
-  // category defaults flow through. When on, the user edits the per-product
-  // fields directly. For existing products we infer the initial state from
-  // whether any per-product GL field is populated.
-  const initialOverride =
-    isEdit &&
-    !!(product?.glRevenue || product?.glCogs || product?.glInventoryAsset || (product?.taxClass && product.taxClass !== 'Standard'));
-  const [override, setOverride] = useState(initialOverride);
+  }, [categoryList.length, isEdit]);
 
   const selectedCategory = categoryList.find((c) => c.id === form.productCategoryId) ?? null;
+
+  // Override toggle: when ON, the per-product GL/tax fields are sent to the
+  // server as overrides; when OFF, blanks are sent and the server applies the
+  // category defaults. Detecting initial state is tricky because the backend
+  // historically copied category defaults INTO per-product columns, so a
+  // populated field doesn't necessarily mean "override". The reliable signal
+  // is whether the per-product value DIFFERS from the selected category's
+  // default — only then is it a true override. For products without a
+  // category, fall back to "any per-product field is populated".
+  // Tax exempt is detected via the same set of legacy/canonical labels the
+  // server uses (Exempt / Tax Exempt, case-insensitive).
+  const isExemptLabel = (s: string | null | undefined) =>
+    !!s && ['exempt', 'tax exempt'].includes(s.trim().toLowerCase());
+  const [override, setOverride] = useState(false);
+  const overrideInitialized = React.useRef(false);
+  React.useEffect(() => {
+    if (!isEdit || overrideInitialized.current) return;
+    // Wait for both reference data and (if applicable) the selected category
+    // to be available so the comparison is meaningful.
+    if (categoryList.length === 0) return;
+    if (product?.productCategoryId && !selectedCategory) return;
+    let detected = false;
+    if (selectedCategory) {
+      const taxOverridden =
+        !!product?.taxClass &&
+        product.taxClass !== 'Standard' &&
+        product.taxClass !== (selectedCategory.defaultTaxCategory ?? null) &&
+        !(isExemptLabel(product.taxClass) && !selectedCategory.taxable);
+      detected =
+        (!!product?.glRevenue && product.glRevenue !== selectedCategory.defaultRevenueGlAccountId) ||
+        (!!product?.glCogs && product.glCogs !== selectedCategory.defaultCogsGlAccountId) ||
+        (!!product?.glInventoryAsset && product.glInventoryAsset !== selectedCategory.defaultInventoryAssetGlAccountId) ||
+        taxOverridden;
+    } else {
+      detected = !!(
+        product?.glRevenue ||
+        product?.glCogs ||
+        product?.glInventoryAsset ||
+        (product?.taxClass && product.taxClass !== 'Standard')
+      );
+    }
+    setOverride(detected);
+    overrideInitialized.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, categoryList.length, selectedCategory?.id]);
 
   const setField = <K extends keyof typeof form>(field: K, value: (typeof form)[K]) =>
     setForm((p) => ({ ...p, [field]: value }));
