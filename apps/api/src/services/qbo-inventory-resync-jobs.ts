@@ -62,7 +62,8 @@ export async function startQboInventoryResyncJob(
   tenantId: string,
   runner: (
     tenantId: string,
-    onProgress: Parameters<typeof retryFailedQboInventorySyncs>[1],
+    opts: Parameters<typeof retryFailedQboInventorySyncs>[1],
+    onProgress: Parameters<typeof retryFailedQboInventorySyncs>[2],
   ) => Promise<QboInventoryRetryResult> = retryFailedQboInventorySyncs,
 ): Promise<QboInventoryResyncJob> {
   pruneOldJobs();
@@ -91,7 +92,7 @@ export async function startQboInventoryResyncJob(
   // surface through the polling endpoint via job.status === "failed".
   void (async () => {
     try {
-      const result = await runner(tenantId, (snapshot) => {
+      const result = await runner(tenantId, {}, (snapshot) => {
         job.total = snapshot.total;
         job.processed = snapshot.processed;
         job.attempted = snapshot.attempted;

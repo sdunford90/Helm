@@ -1277,12 +1277,17 @@ export type QboInventoryRetryProgress = (snapshot: {
  * skipped) with cumulative counts and the most recent detail entry. It powers
  * the job-based polling endpoint that drives the Settings UI's live progress
  * counter so long-running retries don't block a single HTTP request.
+ *
+ * When `opts.dueOnly` is true, refs whose `nextRetryAt` is still in the future
+ * are excluded — used by the background sweep so a record under exponential
+ * backoff is not retried before its scheduled time.
  */
 export async function retryFailedQboInventorySyncs(
   tenantId: string,
+  opts: { dueOnly?: boolean; now?: Date } = {},
   onProgress?: QboInventoryRetryProgress,
 ): Promise<QboInventoryRetryResult> {
-  const failedRefs = await findFailedInventorySyncRefs(tenantId);
+  const failedRefs = await findFailedInventorySyncRefs(tenantId, opts);
   const total = failedRefs.length;
   const result: QboInventoryRetryResult = {
     attempted: 0,

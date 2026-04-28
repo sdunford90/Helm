@@ -537,7 +537,9 @@ export default function Settings() {
     billsSynced: number; billsWithErrors: number;
     adjustmentsSynced: number; adjustmentsWithErrors: number;
     lastItemSyncAt: string | null; lastBillSyncAt: string | null; lastAdjustmentSyncAt: string | null;
-    recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string }>;
+    recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string; retryCount: number; nextRetryAt: string | null }>;
+    nextAutomaticRetryAt: string | null;
+    earliestPendingRetryAt: string | null;
   }>('get', '/api/settings/qbo/inventory-status', { immediate: true });
   // Job-based bulk QBO inventory retry. The POST endpoint kicks off a
   // background job and returns a jobId; we poll the GET endpoint for live
@@ -1729,7 +1731,11 @@ export default function Settings() {
                               {qboInventoryStatus.recentErrors.map((e, i) => (
                                 <div key={i} style={{ fontSize: '12px', color: '#7F1D1D', marginBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 0 : '8px', paddingBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 0 : '8px', borderBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 'none' : '1px solid #FCA5A5' }}>
                                   <strong>{e.qboType}</strong> {e.sourceType}/{e.sourceId} — {e.error}
-                                  <div style={{ color: '#94A3B8', marginTop: '2px' }}>{new Date(e.at).toLocaleString()}</div>
+                                  <div style={{ color: '#94A3B8', marginTop: '2px' }}>
+                                    {new Date(e.at).toLocaleString()}
+                                    {e.retryCount > 0 && <> · {e.retryCount} retry attempt{e.retryCount === 1 ? '' : 's'}</>}
+                                    {e.nextRetryAt && <> · next auto-retry {new Date(e.nextRetryAt).toLocaleString()}</>}
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -1783,6 +1789,21 @@ export default function Settings() {
                               background: '#3B82F6',
                               transition: 'width 200ms ease-out',
                             }} />
+                          </div>
+                        )}
+                        {qboInventoryStatus.nextAutomaticRetryAt && (
+                          <div style={{ marginTop: '10px', fontSize: '12px', color: '#475569', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <RefreshCw size={12} style={{ color: '#94A3B8' }} />
+                            <span>
+                              Helm automatically retries failed syncs every 15 minutes. Next attempt at{' '}
+                              <strong style={{ color: '#0A2342' }}>{new Date(qboInventoryStatus.nextAutomaticRetryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>.
+                            </span>
+                            {qboInventoryStatus.earliestPendingRetryAt && new Date(qboInventoryStatus.earliestPendingRetryAt) > new Date(qboInventoryStatus.nextAutomaticRetryAt) && (
+                              <span style={{ color: '#94A3B8' }}>
+                                (Some records are in backoff until{' '}
+                                {new Date(qboInventoryStatus.earliestPendingRetryAt).toLocaleString()}.)
+                              </span>
+                            )}
                           </div>
                         )}
                       </>

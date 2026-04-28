@@ -1655,11 +1655,14 @@ model QboInventorySyncRef {
   lastSyncedAt DateTime?
   lastError    String?
   lastErrorAt  DateTime?
+  retryCount   Int       @default(0)
+  nextRetryAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@unique([tenantId, sourceType, sourceId])
   @@index([tenantId])
+  @@index([tenantId, nextRetryAt])
   @@map("qbo_inventory_sync_refs")
 }
 

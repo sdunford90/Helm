@@ -14,6 +14,7 @@ import { errorHandler } from "./middleware/error.js";
 import { assertAuthConfigOrExit } from "./middleware/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { redisConnection, queues } from "./lib/queue.js";
+import { startQboInventoryRetrySchedule, stopQboInventoryRetrySchedule } from "./jobs/qbo-inventory-retry.js";
 
 // Fail fast in production if Clerk keys aren't configured.
 assertAuthConfigOrExit();
@@ -213,6 +214,11 @@ if (!process.env.VITEST) {
     console.log(`[helm-api] listening on port ${PORT}`);
   });
 
+  // Schedule the recurring QBO inventory retry sweep. Lives in the API process
+  // because the retry logic touches in-memory product / adjustment / PO state
+  // owned by routes/inventory.ts.
+  startQboInventoryRetrySchedule();
+
   // Grace window: orchestrators typically give SIGKILL 30s after SIGTERM.
   const SHUTDOWN_TIMEOUT_MS = 25_000;
   let shuttingDown = false;
@@ -233,6 +239,9 @@ if (!process.env.VITEST) {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     }).catch((err) => console.error("[helm-api] server.close error:", err));
+
+    // 1a. Stop the in-process QBO inventory retry scheduler.
+    stopQboInventoryRetrySchedule();
 
     // 2. Close BullMQ queues so workers stop picking up new jobs.
     try {

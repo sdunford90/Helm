@@ -165,6 +165,9 @@ beforeEach(async () => {
     findUnique: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
     upsert: vi.fn().mockResolvedValue({}),
+    // Default: update simulates an existing row, returning post-increment count.
+    update: vi.fn().mockResolvedValue({ retryCount: 1 }),
+    create: vi.fn().mockResolvedValue({}),
   };
   (mockPrisma as any).vendor = {
     findFirst: vi.fn().mockResolvedValue(null),
@@ -198,7 +201,7 @@ describe('syncInventoryItem — GL account validation', () => {
     ).rejects.toThrow(/Missing GL account for Income/);
 
     // Failure should still be persisted to the sync ref so the UI can surface it
-    expect((mockPrisma as any).qboInventorySyncRef.upsert).toHaveBeenCalled();
+    expect((mockPrisma as any).qboInventorySyncRef.update).toHaveBeenCalled();
   });
 
   it('throws when the GL account exists but has not been mapped to QBO', async () => {
@@ -644,5 +647,199 @@ describe('pullVendorsAndBillsForTenant — iterates connected QBO endpoints', ()
     expect(result.endpoints).toHaveLength(0);
     expect(result.vendors).toEqual({ created: 0, updated: 0, skipped: 0 });
     expect(result.bills).toEqual({ created: 0, updated: 0, skipped: 0 });
+  });
+});
+
+describe('findFailedInventorySyncRefs — drives bulk retry endpoint', () => {
+  it('queries only sync refs whose lastError is set and shapes them for the retry helper', async () => {
+    const now = new Date();
+    const failingRow = {
+      qboType: 'Item',
+      qboId: null,
+      lastSyncedAt: null,
+      lastError: 'QBO 401',
+      lastErrorAt: now,
+      sourceType: 'product',
+      sourceId: 'inv-prod-100',
+      locationId: 'loc-1',
+      retryCount: 0,
+      nextRetryAt: null,
+    };
+    const findMany = vi.fn().mockResolvedValue([failingRow]);
+    (mockPrisma as any).qboInventorySyncRef.findMany = findMany;
+
+    const mod = await import('../../src/services/qbo-sync.js');
+    const refs = await mod.findFailedInventorySyncRefs('tenant-1');
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-1', lastError: { not: null } },
+      orderBy: [{ lastErrorAt: 'asc' }],
+    });
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toEqual({
+      sourceType: 'product',
+      sourceId: 'inv-prod-100',
+      qboType: 'Item',
+      qboId: null,
+      locationId: 'loc-1',
+      lastError: 'QBO 401',
+      lastErrorAt: now,
+      retryCount: 0,
+      nextRetryAt: null,
+    });
+  });
+
+  it('with dueOnly=true, filters out refs whose nextRetryAt is in the future', async () => {
+    const now = new Date('2026-04-28T12:00:00Z');
+    const findMany = vi.fn().mockResolvedValue([]);
+    (mockPrisma as any).qboInventorySyncRef.findMany = findMany;
+
+    const mod = await import('../../src/services/qbo-sync.js');
+    await mod.findFailedInventorySyncRefs('tenant-1', { dueOnly: true, now });
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        tenantId: 'tenant-1',
+        lastError: { not: null },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+      },
+      orderBy: [{ lastErrorAt: 'asc' }],
+    });
+  });
+});
+
+describe('computeRetryBackoffMs — exponential backoff for repeated sync failures', () => {
+  it('starts at 15 minutes and doubles each retry, capping at 24 hours', async () => {
+    const mod = await import('../../src/services/qbo-sync.js');
+    const min = (n: number) => n * 60 * 1000;
+    expect(mod.computeRetryBackoffMs(1)).toBe(min(15));
+    expect(mod.computeRetryBackoffMs(2)).toBe(min(30));
+    expect(mod.computeRetryBackoffMs(3)).toBe(min(60));
+    expect(mod.computeRetryBackoffMs(4)).toBe(min(120));
+    expect(mod.computeRetryBackoffMs(5)).toBe(min(240));
+    expect(mod.computeRetryBackoffMs(6)).toBe(min(480));
+    expect(mod.computeRetryBackoffMs(7)).toBe(min(960));
+    // 8+ caps at 24h
+    expect(mod.computeRetryBackoffMs(8)).toBe(min(24 * 60));
+    expect(mod.computeRetryBackoffMs(20)).toBe(min(24 * 60));
+  });
+});
+
+describe('nextQuarterHour — advertises the next sweep tick to the UI', () => {
+  it('returns the next 15-minute boundary after the given time, in UTC', async () => {
+    const mod = await import('../../src/services/qbo-sync.js');
+    expect(mod.nextQuarterHour(new Date('2026-04-28T12:00:00Z')).toISOString())
+      .toBe('2026-04-28T12:15:00.000Z');
+    expect(mod.nextQuarterHour(new Date('2026-04-28T12:14:59Z')).toISOString())
+      .toBe('2026-04-28T12:15:00.000Z');
+    expect(mod.nextQuarterHour(new Date('2026-04-28T12:46:30Z')).toISOString())
+      .toBe('2026-04-28T13:00:00.000Z');
+  });
+});
+
+describe('findTenantsWithDueFailedInventorySyncs — drives the background sweep', () => {
+  it('queries distinct tenantIds where lastError is set and nextRetryAt is null or past', async () => {
+    const now = new Date('2026-04-28T12:00:00Z');
+    const findMany = vi.fn().mockResolvedValue([
+      { tenantId: 'tenant-a' },
+      { tenantId: 'tenant-b' },
+    ]);
+    (mockPrisma as any).qboInventorySyncRef.findMany = findMany;
+
+    const mod = await import('../../src/services/qbo-sync.js');
+    const tenants = await mod.findTenantsWithDueFailedInventorySyncs(now);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        lastError: { not: null },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+      },
+      select: { tenantId: true },
+      distinct: ['tenantId'],
+    });
+    expect(tenants).toEqual(['tenant-a', 'tenant-b']);
+  });
+});
+
+describe('writeSyncRefFailure backoff bookkeeping', () => {
+  it('atomically increments retryCount and stamps nextRetryAt with exponential backoff on each failure', async () => {
+    // Existing row: first update() call returns the post-increment retryCount (3).
+    const update = vi.fn()
+      .mockResolvedValueOnce({ retryCount: 3 })
+      .mockResolvedValueOnce({});
+    (mockPrisma as any).qboInventorySyncRef.update = update;
+    (mockPrisma as any).qboInventorySyncRef.create = vi.fn();
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue(null);
+
+    const before = Date.now();
+    const mod = await import('../../src/services/qbo-sync.js');
+    await expect(
+      mod.syncInventoryItem(
+        {
+          productId: 'p-99',
+          name: 'Test',
+          sku: 'T-99',
+          priceCents: 100,
+          costCents: 50,
+          incomeGlAccountId: null,
+          inventoryAssetGlAccountId: 'gl-asset',
+          cogsGlAccountId: 'gl-cogs',
+        },
+        'tenant-1',
+      ),
+    ).rejects.toThrow();
+    const after = Date.now();
+
+    // First update increments retryCount atomically.
+    expect(update).toHaveBeenCalledTimes(2);
+    const incArgs = update.mock.calls[0][0];
+    expect(incArgs.data.retryCount).toEqual({ increment: 1 });
+    expect(incArgs.data.lastError).toMatch(/Missing GL account/);
+
+    // Second update stamps the nextRetryAt computed from the new retryCount.
+    const stampArgs = update.mock.calls[1][0];
+    const nextRetryAt: Date = stampArgs.data.nextRetryAt;
+    expect(nextRetryAt).toBeInstanceOf(Date);
+    const expectedDelay = 60 * 60 * 1000; // 1h for retryCount=3
+    expect(nextRetryAt.getTime()).toBeGreaterThanOrEqual(before + expectedDelay - 10);
+    expect(nextRetryAt.getTime()).toBeLessThanOrEqual(after + expectedDelay + 10);
+
+    // No create on the existing-row path.
+    expect((mockPrisma as any).qboInventorySyncRef.create).not.toHaveBeenCalled();
+  });
+
+  it('falls back to create with retryCount=1 when the ref does not yet exist (P2025)', async () => {
+    const notFound = Object.assign(new Error('Record to update not found'), { code: 'P2025' });
+    (mockPrisma as any).qboInventorySyncRef.update = vi.fn().mockRejectedValue(notFound);
+    const create = vi.fn().mockResolvedValue({});
+    (mockPrisma as any).qboInventorySyncRef.create = create;
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue(null);
+
+    const before = Date.now();
+    const mod = await import('../../src/services/qbo-sync.js');
+    await expect(
+      mod.syncInventoryItem(
+        {
+          productId: 'p-new',
+          name: 'New',
+          sku: 'N-1',
+          priceCents: 100,
+          costCents: 50,
+          incomeGlAccountId: null,
+          inventoryAssetGlAccountId: 'gl-asset',
+          cogsGlAccountId: 'gl-cogs',
+        },
+        'tenant-1',
+      ),
+    ).rejects.toThrow();
+    const after = Date.now();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    const args = create.mock.calls[0][0];
+    expect(args.data.retryCount).toBe(1);
+    const nextRetryAt: Date = args.data.nextRetryAt;
+    const expectedDelay = 15 * 60 * 1000; // 15m for first retry
+    expect(nextRetryAt.getTime()).toBeGreaterThanOrEqual(before + expectedDelay - 10);
+    expect(nextRetryAt.getTime()).toBeLessThanOrEqual(after + expectedDelay + 10);
   });
 });

@@ -1234,6 +1234,8 @@ async function writeSyncRefSuccess(
       lastSyncedAt: now,
       lastError: null,
       lastErrorAt: null,
+      retryCount: 0,
+      nextRetryAt: null,
     },
     update: {
       qboType,
@@ -1242,8 +1244,22 @@ async function writeSyncRefSuccess(
       lastSyncedAt: now,
       lastError: null,
       lastErrorAt: null,
+      retryCount: 0,
+      nextRetryAt: null,
     },
   });
+}
+
+// Exponential backoff for repeated sync failures. The background sweep runs
+// every 15 minutes, so the first delay aligns with the next sweep tick. Caps
+// at 24h so a permanently broken record stops hammering QuickBooks but still
+// gets a daily attempt in case the upstream issue (e.g. GL mapping) was fixed.
+//
+// retryCount=1 → 15m, 2 → 30m, 3 → 1h, 4 → 2h, 5 → 4h, 6 → 8h, 7 → 16h, 8+ → 24h
+export function computeRetryBackoffMs(retryCount: number): number {
+  const safeCount = Math.max(1, retryCount);
+  const minutes = Math.min(15 * Math.pow(2, safeCount - 1), 24 * 60);
+  return minutes * 60 * 1000;
 }
 
 async function writeSyncRefFailure(
@@ -1255,25 +1271,51 @@ async function writeSyncRefFailure(
   locationId?: string | null,
 ): Promise<void> {
   const now = new Date();
-  await (prisma as any).qboInventorySyncRef.upsert({
-    where: { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId } },
-    create: {
-      tenantId,
-      locationId: locationId ?? null,
-      sourceType,
-      sourceId,
-      qboType,
-      qboId: null,
-      lastError: errorMessage.slice(0, 1000),
-      lastErrorAt: now,
-    },
-    update: {
-      qboType,
-      locationId: locationId ?? null,
-      lastError: errorMessage.slice(0, 1000),
-      lastErrorAt: now,
-    },
-  });
+  const errSlice = errorMessage.slice(0, 1000);
+  const where = { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId } };
+
+  // Atomic-increment path: try to update an existing row using Prisma's
+  // `increment` operator so concurrent failure writes don't undercount via a
+  // read-modify-write race. If the row doesn't exist yet, fall back to create.
+  try {
+    const incremented = await (prisma as any).qboInventorySyncRef.update({
+      where,
+      data: {
+        qboType,
+        locationId: locationId ?? null,
+        lastError: errSlice,
+        lastErrorAt: now,
+        retryCount: { increment: 1 },
+      },
+      select: { retryCount: true },
+    });
+    const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(incremented.retryCount));
+    await (prisma as any).qboInventorySyncRef.update({
+      where,
+      data: { nextRetryAt },
+    });
+  } catch (err: any) {
+    // P2025 = "Record to update not found" — first failure for this ref.
+    if (err?.code === 'P2025') {
+      const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(1));
+      await (prisma as any).qboInventorySyncRef.create({
+        data: {
+          tenantId,
+          locationId: locationId ?? null,
+          sourceType,
+          sourceId,
+          qboType,
+          qboId: null,
+          lastError: errSlice,
+          lastErrorAt: now,
+          retryCount: 1,
+          nextRetryAt,
+        },
+      });
+    } else {
+      throw err;
+    }
+  }
 }
 
 // Translate a local GlAccount.id to its QBO account id (qboAccountId column).
@@ -1824,7 +1866,29 @@ export interface InventorySyncStatus {
     qboType: string;
     error: string;
     at: Date;
+    retryCount: number;
+    nextRetryAt: Date | null;
   }>;
+  // Wall-clock time of the next scheduled background retry sweep (every 15
+  // minutes on the quarter-hour, UTC). Null when there are no failing refs.
+  nextAutomaticRetryAt: Date | null;
+  // Earliest per-record nextRetryAt across all failing refs. Helps the UI
+  // explain why a record might not be retried until later (after backoff).
+  earliestPendingRetryAt: Date | null;
+}
+
+/**
+ * Returns the next quarter-hour boundary in UTC after `from`. Aligns with the
+ * cron pattern (every 15 minutes) used by the inventory-retry-sweep job so the
+ * Settings card can show the user when the next attempt will run.
+ */
+export function nextQuarterHour(from: Date): Date {
+  const next = new Date(from);
+  next.setUTCSeconds(0, 0);
+  const minute = next.getUTCMinutes();
+  const add = 15 - (minute % 15);
+  next.setUTCMinutes(minute + add);
+  return next;
 }
 
 export async function getInventorySyncStatus(tenantId: string): Promise<InventorySyncStatus> {
@@ -1845,8 +1909,11 @@ export async function getInventorySyncStatus(tenantId: string): Promise<Inventor
     lastBillSyncAt: null,
     lastAdjustmentSyncAt: null,
     recentErrors: [],
+    nextAutomaticRetryAt: null,
+    earliestPendingRetryAt: null,
   };
 
+  let hasFailing = false;
   for (const r of refs) {
     if (r.qboType === "Item") {
       if (r.qboId && !r.lastError) status.itemsSynced++;
@@ -1868,6 +1935,12 @@ export async function getInventorySyncStatus(tenantId: string): Promise<Inventor
         status.lastAdjustmentSyncAt = r.lastSyncedAt;
       }
     }
+    if (r.lastError) {
+      hasFailing = true;
+      if (r.nextRetryAt && (!status.earliestPendingRetryAt || r.nextRetryAt < status.earliestPendingRetryAt)) {
+        status.earliestPendingRetryAt = r.nextRetryAt;
+      }
+    }
     if (r.lastError && r.lastErrorAt && status.recentErrors.length < 10) {
       status.recentErrors.push({
         sourceType: r.sourceType,
@@ -1875,8 +1948,14 @@ export async function getInventorySyncStatus(tenantId: string): Promise<Inventor
         qboType: r.qboType,
         error: r.lastError,
         at: r.lastErrorAt,
+        retryCount: r.retryCount ?? 0,
+        nextRetryAt: r.nextRetryAt ?? null,
       });
     }
+  }
+
+  if (hasFailing) {
+    status.nextAutomaticRetryAt = nextQuarterHour(new Date());
   }
 
   return status;
@@ -1909,18 +1988,30 @@ export interface FailedInventorySyncRef {
   locationId: string | null;
   lastError: string;
   lastErrorAt: Date;
+  retryCount: number;
+  nextRetryAt: Date | null;
 }
 
 /**
  * Returns every QBO inventory sync ref for a tenant that is currently in an
  * error state (lastError set). Used by the bulk re-sync endpoint to drive a
  * "retry all failures" action from Settings → QuickBooks → Inventory Sync.
+ *
+ * When `dueOnly` is true, also filters out refs whose `nextRetryAt` is in the
+ * future — used by the background sweep so a record under exponential backoff
+ * is not retried before its scheduled time.
  */
 export async function findFailedInventorySyncRefs(
   tenantId: string,
+  opts: { dueOnly?: boolean; now?: Date } = {},
 ): Promise<FailedInventorySyncRef[]> {
+  const now = opts.now ?? new Date();
+  const where: Record<string, unknown> = { tenantId, lastError: { not: null } };
+  if (opts.dueOnly) {
+    where.OR = [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }];
+  }
   const refs = await (prisma as any).qboInventorySyncRef.findMany({
-    where: { tenantId, lastError: { not: null } },
+    where,
     orderBy: [{ lastErrorAt: "asc" }],
   });
   return refs.map((r: any) => ({
@@ -1931,7 +2022,28 @@ export async function findFailedInventorySyncRefs(
     locationId: r.locationId ?? null,
     lastError: r.lastError,
     lastErrorAt: r.lastErrorAt,
+    retryCount: r.retryCount ?? 0,
+    nextRetryAt: r.nextRetryAt ?? null,
   }));
+}
+
+/**
+ * Returns the distinct tenant IDs that currently have at least one failing
+ * inventory sync ref whose `nextRetryAt` is null or in the past. Used by the
+ * background sweep to decide which tenants need a retry pass.
+ */
+export async function findTenantsWithDueFailedInventorySyncs(
+  now: Date = new Date(),
+): Promise<string[]> {
+  const refs = await (prisma as any).qboInventorySyncRef.findMany({
+    where: {
+      lastError: { not: null },
+      OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+    },
+    select: { tenantId: true },
+    distinct: ["tenantId"],
+  });
+  return refs.map((r: { tenantId: string }) => r.tenantId);
 }
 
 export async function getBulkProductSyncStatus(

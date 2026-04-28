@@ -29,6 +29,7 @@ describe('startQboInventoryResyncJob', () => {
   it('returns a running job snapshot synchronously and isolates jobs by tenant', async () => {
     const runner = vi.fn(async (
       _tenantId: string,
+      _opts: { dueOnly?: boolean; now?: Date } | undefined,
       _onProgress: QboInventoryRetryProgress | undefined,
     ): Promise<QboInventoryRetryResult> => {
       // Simulate a slow QBO call that does not complete before the caller polls.
@@ -50,6 +51,7 @@ describe('startQboInventoryResyncJob', () => {
     let triggerNext: (() => void) | null = null;
     const runner = vi.fn(async (
       _tenantId: string,
+      _opts: { dueOnly?: boolean; now?: Date } | undefined,
       onProgress: QboInventoryRetryProgress | undefined,
     ): Promise<QboInventoryRetryResult> => {
       // First record finishes immediately.
