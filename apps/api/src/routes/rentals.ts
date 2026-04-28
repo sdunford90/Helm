@@ -29,6 +29,7 @@ const CreateProductSchema = z.object({
   ceilingPriceCents: z.number().int().min(0).optional().nullable(),
   damageWaiverCents: z.number().int().min(0).optional().nullable(),
   totalQuantity: z.number().int().min(1).default(1),
+  taxClass: z.string().optional().nullable(),
   isActive: z.boolean().optional().default(true),
 });
 
@@ -44,6 +45,7 @@ const UpdateProductSchema = z.object({
   ceilingPriceCents: z.number().int().min(0).optional().nullable(),
   damageWaiverCents: z.number().int().min(0).optional().nullable(),
   totalQuantity: z.number().int().min(1).optional(),
+  taxClass: z.string().optional().nullable(),
   isActive: z.boolean().optional(),
 });
 

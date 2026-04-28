@@ -941,7 +941,7 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
   try {
     const {
       locationId, slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
-      electricityMode, electricityRateCents, glAccountId, active, effectiveFrom, effectiveTo,
+      electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
     if (!locationId || !slipType || monthlyRateCents == null) {
       res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
@@ -957,6 +957,7 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
         electricityMode: electricityMode ?? "METERED",
         electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null,
         glAccountId: glAccountId ?? null,
+        taxClass: taxClass ?? "Standard",
         active: active ?? true,
         effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : null,
         effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
@@ -973,7 +974,7 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
     const {
       slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
-      electricityMode, electricityRateCents, glAccountId, active, effectiveFrom, effectiveTo,
+      electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
     const updated = await prisma.dockageRate.update({
       where: { id: req.params.id },
@@ -985,6 +986,7 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
         ...(electricityMode != null && { electricityMode }),
         ...(electricityRateCents !== undefined && { electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null }),
         ...(glAccountId !== undefined && { glAccountId }),
+        ...(taxClass != null && { taxClass }),
         ...(active !== undefined && { active }),
         ...(effectiveFrom !== undefined && { effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : null }),
         ...(effectiveTo !== undefined && { effectiveTo: effectiveTo ? new Date(effectiveTo) : null }),
@@ -1025,7 +1027,7 @@ router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", 
 // POST /api/settings/catalog/service-fees
 router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const { locationId, name, feeType, amountCents, pct, glAccountId, active } = req.body;
+    const { locationId, name, feeType, amountCents, pct, glAccountId, taxClass, active } = req.body;
     if (!locationId || !name) {
       res.status(400).json({ error: "locationId and name are required" }); return;
     }
@@ -1038,6 +1040,7 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
         amountCents: amountCents != null ? Number(amountCents) : null,
         pct: pct != null ? Number(pct) : null,
         glAccountId: glAccountId ?? null,
+        taxClass: taxClass ?? "Tax Exempt",
         active: active ?? true,
       },
     });
@@ -1050,7 +1053,7 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
   try {
     const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
-    const { name, feeType, amountCents, pct, glAccountId, active } = req.body;
+    const { name, feeType, amountCents, pct, glAccountId, taxClass, active } = req.body;
     const updated = await prisma.serviceFee.update({
       where: { id: req.params.id },
       data: {
@@ -1059,6 +1062,7 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
         ...(amountCents !== undefined && { amountCents: amountCents != null ? Number(amountCents) : null }),
         ...(pct !== undefined && { pct: pct != null ? Number(pct) : null }),
         ...(glAccountId !== undefined && { glAccountId }),
+        ...(taxClass != null && { taxClass }),
         ...(active !== undefined && { active }),
       },
     });

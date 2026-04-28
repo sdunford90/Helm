@@ -1037,6 +1037,7 @@ model RentalProduct {
   damageWaiverCents    Int?
   depositCents         Int?
   cancellationPolicyId String?
+  taxClass             String?  @default("Tax Exempt")
   active               Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -1636,6 +1637,7 @@ model DockageRate {
   electricityMode      ElectricityMode @default(METERED)
   electricityRateCents Int?
   glAccountId          String?
+  taxClass             String?         @default("Standard")
   active               Boolean         @default(true)
   effectiveFrom        DateTime?
   effectiveTo          DateTime?
@@ -1667,6 +1669,7 @@ model ServiceFee {
   amountCents Int?
   pct         Float?
   glAccountId String?
+  taxClass    String?  @default("Tax Exempt")
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

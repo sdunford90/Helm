@@ -155,6 +155,7 @@ interface DockageRate {
   electricityMode: 'FLAT_FEE' | 'METERED';
   electricityRate: number;
   glAccount: string;
+  taxClass: string;
   active: boolean;
   effectiveFrom: string;
   effectiveTo: string;
@@ -170,6 +171,7 @@ interface RentalProduct {
   damageWaiver: number;
   deposit: number;
   glAccount: string;
+  taxClass: string;
   active: boolean;
 }
 
@@ -194,6 +196,7 @@ interface ServiceFee {
   feeType: 'FLAT' | 'PERCENT';
   amount: number;
   glAccount: string;
+  taxClass: string;
   active: boolean;
 }
 
@@ -221,12 +224,12 @@ const TEAM: TeamMember[] = [
 const DOCKAGE_RATES_DATA: DockageRate[] = [];
 
 const RENTAL_PRODUCTS_DATA: RentalProduct[] = [
-  { id: 'r1', name: '20ft Pontoon - Sun Tracker', type: 'Pontoon', hourlyRate: 75, halfDayRate: 225, dailyRate: 395, damageWaiver: 35, deposit: 500, glAccount: '4300', active: true },
-  { id: 'r2', name: '22ft Pontoon - Bennington', type: 'Pontoon', hourlyRate: 95, halfDayRate: 275, dailyRate: 475, damageWaiver: 40, deposit: 500, glAccount: '4300', active: true },
-  { id: 'r3', name: 'Yamaha WaveRunner EX', type: 'Jet Ski', hourlyRate: 85, halfDayRate: 250, dailyRate: 425, damageWaiver: 30, deposit: 300, glAccount: '4300', active: true },
-  { id: 'r4', name: 'Sea-Doo Spark Trixx', type: 'Jet Ski', hourlyRate: 75, halfDayRate: 220, dailyRate: 375, damageWaiver: 30, deposit: 300, glAccount: '4300', active: true },
-  { id: 'r5', name: '17ft Boston Whaler', type: 'Motorboat', hourlyRate: 110, halfDayRate: 325, dailyRate: 550, damageWaiver: 45, deposit: 750, glAccount: '4300', active: true },
-  { id: 'r6', name: 'Hobie Cat 16', type: 'Sailboat', hourlyRate: 55, halfDayRate: 160, dailyRate: 275, damageWaiver: 25, deposit: 400, glAccount: '4300', active: false },
+  { id: 'r1', name: '20ft Pontoon - Sun Tracker', type: 'Pontoon', hourlyRate: 75, halfDayRate: 225, dailyRate: 395, damageWaiver: 35, deposit: 500, glAccount: '4300', taxClass: 'Tax Exempt', active: true },
+  { id: 'r2', name: '22ft Pontoon - Bennington', type: 'Pontoon', hourlyRate: 95, halfDayRate: 275, dailyRate: 475, damageWaiver: 40, deposit: 500, glAccount: '4300', taxClass: 'Tax Exempt', active: true },
+  { id: 'r3', name: 'Yamaha WaveRunner EX', type: 'Jet Ski', hourlyRate: 85, halfDayRate: 250, dailyRate: 425, damageWaiver: 30, deposit: 300, glAccount: '4300', taxClass: 'Tax Exempt', active: true },
+  { id: 'r4', name: 'Sea-Doo Spark Trixx', type: 'Jet Ski', hourlyRate: 75, halfDayRate: 220, dailyRate: 375, damageWaiver: 30, deposit: 300, glAccount: '4300', taxClass: 'Tax Exempt', active: true },
+  { id: 'r5', name: '17ft Boston Whaler', type: 'Motorboat', hourlyRate: 110, halfDayRate: 325, dailyRate: 550, damageWaiver: 45, deposit: 750, glAccount: '4300', taxClass: 'Tax Exempt', active: true },
+  { id: 'r6', name: 'Hobie Cat 16', type: 'Sailboat', hourlyRate: 55, halfDayRate: 160, dailyRate: 275, damageWaiver: 25, deposit: 400, glAccount: '4300', taxClass: 'Tax Exempt', active: false },
 ];
 
 const POS_ITEMS_DATA: POSItem[] = [
@@ -844,7 +847,7 @@ export default function Settings() {
   const blankDockage = (): DockageRate => ({
     id: '', locationId: catalogLocation, slipType: '', monthlyRate: 0,
     quarterlyRate: 0, annualRate: 0, electricityMode: 'METERED',
-    electricityRate: 0, glAccount: '4100', active: true, effectiveFrom: '', effectiveTo: '',
+    electricityRate: 0, glAccount: '4100', taxClass: 'Standard', active: true, effectiveFrom: '', effectiveTo: '',
   });
   const [newDockage, setNewDockage] = useState<DockageRate>(blankDockage());
 
@@ -865,6 +868,7 @@ export default function Settings() {
             electricityMode: r.electricityMode,
             electricityRate: r.electricityRateCents != null ? r.electricityRateCents / 100 : 0,
             glAccount: r.glAccountId ?? '4100',
+            taxClass: r.taxClass ?? 'Standard',
             active: r.active,
             effectiveFrom: r.effectiveFrom ? r.effectiveFrom.slice(0, 10) : '',
             effectiveTo: r.effectiveTo ? r.effectiveTo.slice(0, 10) : '',
@@ -888,6 +892,7 @@ export default function Settings() {
           electricityMode: rate.electricityMode,
           electricityRateCents: rate.electricityRate ? Math.round(rate.electricityRate * 100) : null,
           glAccountId: rate.glAccount || null,
+          taxClass: rate.taxClass || 'Standard',
           active: rate.active,
           effectiveFrom: rate.effectiveFrom || null,
           effectiveTo: rate.effectiveTo || null,
@@ -920,6 +925,7 @@ export default function Settings() {
           electricityMode: rate.electricityMode,
           electricityRateCents: rate.electricityRate ? Math.round(rate.electricityRate * 100) : null,
           glAccountId: rate.glAccount || null,
+          taxClass: rate.taxClass || 'Standard',
           active: rate.active,
           effectiveFrom: rate.effectiveFrom || null,
           effectiveTo: rate.effectiveTo || null,
@@ -943,7 +949,7 @@ export default function Settings() {
   const [editingRentalId, setEditingRentalId] = useState<string | null>(null);
   const [editingRental, setEditingRental] = useState<RentalProduct | null>(null);
   const [addingRental, setAddingRental] = useState(false);
-  const [newRental, setNewRental] = useState<RentalProduct>({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true });
+  const [newRental, setNewRental] = useState<RentalProduct>({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', taxClass: 'Tax Exempt', active: true });
 
   React.useEffect(() => {
     if (apiRentalProducts?.data && apiRentalProducts.data.length > 0) {
@@ -957,6 +963,7 @@ export default function Settings() {
         damageWaiver: p.damageWaiverCents != null ? p.damageWaiverCents / 100 : 0,
         deposit: p.depositCents != null ? p.depositCents / 100 : 0,
         glAccount: '4300',
+        taxClass: p.taxClass ?? 'Tax Exempt',
         active: p.active ?? true,
       })));
     }
@@ -976,6 +983,7 @@ export default function Settings() {
           damageWaiverCents: Math.round(rental.damageWaiver * 100),
           depositCents: Math.round(rental.deposit * 100),
           basePriceCents: Math.round(rental.dailyRate * 100),
+          taxClass: rental.taxClass || 'Tax Exempt',
           isActive: rental.active,
           totalQuantity: 1,
         }),
@@ -1006,6 +1014,7 @@ export default function Settings() {
           dailyRateCents: Math.round(rental.dailyRate * 100),
           damageWaiverCents: Math.round(rental.damageWaiver * 100),
           depositCents: Math.round(rental.deposit * 100),
+          taxClass: rental.taxClass || 'Tax Exempt',
           isActive: rental.active,
         }),
       });
@@ -1108,7 +1117,7 @@ export default function Settings() {
   const [editingFeeId, setEditingFeeId] = useState<string | null>(null);
   const [editingFee, setEditingFee] = useState<ServiceFee | null>(null);
   const [addingFee, setAddingFee] = useState(false);
-  const blankFee = (): ServiceFee => ({ id: '', locationId: catalogLocation, name: '', feeType: 'FLAT', amount: 0, glAccount: '4800', active: true });
+  const blankFee = (): ServiceFee => ({ id: '', locationId: catalogLocation, name: '', feeType: 'FLAT', amount: 0, glAccount: '4800', taxClass: 'Tax Exempt', active: true });
   const [newFee, setNewFee] = useState<ServiceFee>(blankFee());
 
   // Fetch service fees whenever selected location changes
@@ -1125,6 +1134,7 @@ export default function Settings() {
             feeType: f.feeType,
             amount: f.feeType === 'PERCENT' ? (f.pct ?? 0) : (f.amountCents != null ? f.amountCents / 100 : 0),
             glAccount: f.glAccountId ?? '4800',
+            taxClass: f.taxClass ?? 'Tax Exempt',
             active: f.active,
           })));
         }
@@ -1144,6 +1154,7 @@ export default function Settings() {
           amountCents: fee.feeType === 'FLAT' ? Math.round(fee.amount * 100) : null,
           pct: fee.feeType === 'PERCENT' ? fee.amount : null,
           glAccountId: fee.glAccount || null,
+          taxClass: fee.taxClass || 'Tax Exempt',
           active: fee.active,
         }),
       });
@@ -1165,6 +1176,7 @@ export default function Settings() {
           amountCents: fee.feeType === 'FLAT' ? Math.round(fee.amount * 100) : null,
           pct: fee.feeType === 'PERCENT' ? fee.amount : null,
           glAccountId: fee.glAccount || null,
+          taxClass: fee.taxClass || 'Tax Exempt',
           active: fee.active,
         }),
       });
@@ -1907,7 +1919,7 @@ export default function Settings() {
               style={st.addBtn}
               onClick={() => {
                 if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage(blankDockage()); }
-                if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', active: true }); }
+                if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, glAccount: '4300', taxClass: 'Tax Exempt', active: true }); }
                 if (catalogSection === 'pos') { setAddingPos(true); setNewPos({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', glRevenueAccount: '4500', glCogsAccount: '5200', trackInventory: true, active: true }); }
                 if (catalogSection === 'fees') { setAddingFee(true); setNewFee(blankFee()); }
               }}
@@ -1929,6 +1941,7 @@ export default function Settings() {
                     <th style={st.th}>Elec. Mode</th>
                     <th style={st.th}>Elec. Rate</th>
                     <th style={st.th}>GL Account</th>
+                    <th style={st.th}>Tax Class</th>
                     <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
                     <th style={st.th}>Actions</th>
                   </tr>
@@ -1951,6 +1964,13 @@ export default function Settings() {
                           {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
                         </select>
                       </td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '120px' }} value={newDockage.taxClass} onChange={(e) => setNewDockage({ ...newDockage, taxClass: e.target.value })}>
+                          <option value="Standard">Standard</option>
+                          <option value="Tax Exempt">Tax Exempt</option>
+                          <option value="Fuel Tax">Fuel Tax</option>
+                        </select>
+                      </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newDockage.active} onChange={(e) => setNewDockage({ ...newDockage, active: e.target.checked })} /></td>
                       <td style={st.td}>
                         <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleAddDockageRate(newDockage)}>Save</button>
@@ -1971,6 +1991,7 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.electricityMode} onChange={(e) => setEditingDockage({ ...ed, electricityMode: e.target.value as 'FLAT_FEE' | 'METERED' })}><option value="METERED">Metered</option><option value="FLAT_FEE">Flat Fee</option></select> : (d.electricityMode === 'FLAT_FEE' ? 'Flat Fee' : 'Metered')}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.electricityRate} onChange={(e) => setEditingDockage({ ...ed, electricityRate: +e.target.value })} /> : (d.electricityMode === 'FLAT_FEE' ? `$${d.electricityRate}/mo` : `$${d.electricityRate}/kWh`)}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '160px' }} value={ed.glAccount} onChange={(e) => setEditingDockage({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${d.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === d.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '120px' }} value={ed.taxClass} onChange={(e) => setEditingDockage({ ...ed, taxClass: e.target.value })}><option value="Standard">Standard</option><option value="Tax Exempt">Tax Exempt</option><option value="Fuel Tax">Fuel Tax</option></select> : <span style={{ ...st.badge, backgroundColor: '#EFF6FF', color: '#1E40AF' }}>{d.taxClass || 'Standard'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingDockage({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: d.active ? '#DEF7EC' : '#F3F4F6', color: d.active ? '#03543F' : '#64748B' }}>{d.active ? 'Yes' : 'No'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
@@ -2007,6 +2028,7 @@ export default function Settings() {
                     <th style={st.th}>Damage Waiver</th>
                     <th style={st.th}>Deposit</th>
                     <th style={st.th}>GL Account</th>
+                    <th style={st.th}>Tax Class</th>
                     <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
                     <th style={st.th}>Actions</th>
                   </tr>
@@ -2030,6 +2052,13 @@ export default function Settings() {
                           {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
                         </select>
                       </td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '120px' }} value={newRental.taxClass} onChange={(e) => setNewRental({ ...newRental, taxClass: e.target.value })}>
+                          <option value="Standard">Standard</option>
+                          <option value="Tax Exempt">Tax Exempt</option>
+                          <option value="Fuel Tax">Fuel Tax</option>
+                        </select>
+                      </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newRental.active} onChange={(e) => setNewRental({ ...newRental, active: e.target.checked })} /></td>
                       <td style={st.td}>
                         <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleSaveNewRental({ ...newRental, id: 'r' + Date.now() })}>Save</button>
@@ -2051,6 +2080,7 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.damageWaiver} onChange={(e) => setEditingRental({ ...ed, damageWaiver: +e.target.value })} /> : `$${r.damageWaiver}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" value={ed.deposit} onChange={(e) => setEditingRental({ ...ed, deposit: +e.target.value })} /> : `$${r.deposit}`}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '160px' }} value={ed.glAccount} onChange={(e) => setEditingRental({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${r.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === r.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '120px' }} value={ed.taxClass} onChange={(e) => setEditingRental({ ...ed, taxClass: e.target.value })}><option value="Standard">Standard</option><option value="Tax Exempt">Tax Exempt</option><option value="Fuel Tax">Fuel Tax</option></select> : <span style={{ ...st.badge, backgroundColor: '#EFF6FF', color: '#1E40AF' }}>{r.taxClass || 'Tax Exempt'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingRental({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: r.active ? '#DEF7EC' : '#F3F4F6', color: r.active ? '#03543F' : '#64748B' }}>{r.active ? 'Yes' : 'No'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
@@ -2174,6 +2204,7 @@ export default function Settings() {
                     <th style={st.th}>Type</th>
                     <th style={st.th}>Amount</th>
                     <th style={st.th}>GL Account</th>
+                    <th style={st.th}>Tax Class</th>
                     <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
                     <th style={st.th}>Actions</th>
                   </tr>
@@ -2193,6 +2224,13 @@ export default function Settings() {
                           {GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}
                         </select>
                       </td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '120px' }} value={newFee.taxClass} onChange={(e) => setNewFee({ ...newFee, taxClass: e.target.value })}>
+                          <option value="Standard">Standard</option>
+                          <option value="Tax Exempt">Tax Exempt</option>
+                          <option value="Fuel Tax">Fuel Tax</option>
+                        </select>
+                      </td>
                       <td style={{ ...st.td, textAlign: 'center' }}><input type="checkbox" checked={newFee.active} onChange={(e) => setNewFee({ ...newFee, active: e.target.checked })} /></td>
                       <td style={st.td}>
                         <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleAddFee(newFee)}>Save</button>
@@ -2210,6 +2248,7 @@ export default function Settings() {
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.feeType} onChange={(e) => setEditingFee({ ...ed, feeType: e.target.value as 'FLAT' | 'PERCENT' })}><option value="FLAT">Flat $</option><option value="PERCENT">Percent %</option></select> : (f.feeType === 'PERCENT' ? 'Percent %' : 'Flat $')}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" step="0.01" value={ed.amount} onChange={(e) => setEditingFee({ ...ed, amount: +e.target.value })} /> : (f.feeType === 'PERCENT' ? `${f.amount}%` : `$${f.amount.toFixed(2)}`)}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '180px' }} value={ed.glAccount} onChange={(e) => setEditingFee({ ...ed, glAccount: e.target.value })}>{GL_ACCOUNTS_FULL.filter((gl) => gl.code.startsWith('4')).map((gl) => <option key={gl.code} value={gl.code}>{gl.code} - {gl.name}</option>)}</select> : `${f.glAccount} - ${GL_ACCOUNTS_FULL.find((gl) => gl.code === f.glAccount)?.name || ''}`}</td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '120px' }} value={ed.taxClass} onChange={(e) => setEditingFee({ ...ed, taxClass: e.target.value })}><option value="Standard">Standard</option><option value="Tax Exempt">Tax Exempt</option><option value="Fuel Tax">Fuel Tax</option></select> : <span style={{ ...st.badge, backgroundColor: '#EFF6FF', color: '#1E40AF' }}>{f.taxClass || 'Tax Exempt'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>{isEditing ? <input type="checkbox" checked={ed.active} onChange={(e) => setEditingFee({ ...ed, active: e.target.checked })} /> : <span style={{ ...st.badge, backgroundColor: f.active ? '#DEF7EC' : '#F3F4F6', color: f.active ? '#03543F' : '#64748B' }}>{f.active ? 'Yes' : 'No'}</span>}</td>
                         <td style={{ ...st.td, backgroundColor: rowBg }}>
                           {isEditing ? (
