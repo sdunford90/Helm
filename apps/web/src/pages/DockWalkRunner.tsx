@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import {
-  ArrowLeft, CheckCircle2, AlertTriangle, Anchor, X,
+  ArrowLeft, CheckCircle2, AlertTriangle, Anchor,
+  Camera, ChevronLeft, ChevronRight, Trash2, X,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -17,6 +18,10 @@ interface WalkListItem {
   boatPresent: boolean | null;
   expectedMatch: boolean | null;
   expectedBoatId: string | null;
+  // Stored as Json? in Postgres; the API hands it back as an array of
+  // R2 storage keys (or null when never set). We don't render raw R2
+  // keys — they're swapped for short-lived signed URLs at load time.
+  photoUrls: string[] | null;
 }
 
 interface ExpectedBoat {
@@ -63,6 +68,16 @@ interface WalkListResponse {
   slips: WalkListSlip[];
 }
 
+interface PresignUploadResponse {
+  url: string;
+  key: string;
+}
+
+interface PresignDownloadBatchResponse {
+  urls: Record<string, string>;
+  errors: Record<string, { code: string; error: string }>;
+}
+
 /* ── Local UI state ─────────────────────────────────────── */
 
 interface DraftEntry {
@@ -71,8 +86,12 @@ interface DraftEntry {
   expectedMatch: boolean | null;
   notes: string;
   hasIssue: boolean;
+  // R2 storage keys for this slip; persisted to the DockWalkItem on save.
+  photoUrls: string[];
   saving: boolean;
+  uploading: boolean;
   error: string | null;
+  photoError: string | null;
 }
 
 function emptyDraft(): DraftEntry {
@@ -81,8 +100,11 @@ function emptyDraft(): DraftEntry {
     expectedMatch: null,
     notes: '',
     hasIssue: false,
+    photoUrls: [],
     saving: false,
+    uploading: false,
     error: null,
+    photoError: null,
   };
 }
 
@@ -93,8 +115,11 @@ function draftFromItem(item: WalkListItem | null): DraftEntry {
     expectedMatch: item.expectedMatch,
     notes: item.notes ?? '',
     hasIssue: !!(item.notes && item.notes.length > 0) || item.status !== 'OK',
+    photoUrls: Array.isArray(item.photoUrls) ? item.photoUrls.filter((k): k is string => typeof k === 'string') : [],
     saving: false,
+    uploading: false,
     error: null,
+    photoError: null,
   };
 }
 
@@ -109,16 +134,38 @@ function boatLabel(b: ExpectedBoat | null): string {
   return b.name || b.registrationNumber || `${b.make ?? ''} ${b.model ?? ''}`.trim() || 'Unnamed boat';
 }
 
+// The R2 keys currently saved on the DockWalkItem. We treat these as
+// "persisted" — removing one from the draft must NOT immediately delete
+// the R2 object, because the DB still references it until a successful
+// re-save with the shorter list.
+function persistedPhotoKeys(row: WalkListSlip): string[] {
+  const raw = row.item?.photoUrls;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((k): k is string => typeof k === 'string');
+}
+
+function resolvePhotoContentType(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.toLowerCase().split('.').pop();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'heic') return 'image/heic';
+  if (ext === 'heif') return 'image/heif';
+  return 'image/jpeg';
+}
+
 /* ── Inline styles (mobile-first) ───────────────────────── */
 
 const c = {
   navy: '#0A2342',
   navyDeep: '#06182E',
+  cyan: '#00D4FF',
   ink: '#0A2342',
   sub: '#475569',
+  subSoft: '#94A3B8',
   border: '#E2E8F0',
   borderStrong: '#CBD5E1',
-  bg: '#F8FAFC',
+  bg: '#F1F5F9',
   surface: '#FFFFFF',
   green: '#16A34A',
   greenSoft: '#DCFCE7',
@@ -135,26 +182,28 @@ const ui = {
     background: c.bg,
     color: c.ink,
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    paddingBottom: '120px',
+    paddingBottom: 'calc(96px + env(safe-area-inset-bottom))',
+    overflowX: 'hidden' as const,
   } as React.CSSProperties,
   header: {
     position: 'sticky' as const,
     top: 0,
-    zIndex: 10,
-    background: c.navy,
+    zIndex: 20,
+    background: `linear-gradient(135deg, ${c.navy} 0%, ${c.navyDeep} 100%)`,
     color: '#fff',
     padding: '12px 14px',
+    paddingTop: 'calc(12px + env(safe-area-inset-top))',
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+    boxShadow: '0 4px 14px rgba(6,24,46,0.25)',
   } as React.CSSProperties,
   backBtn: {
-    background: 'transparent',
+    background: 'rgba(255,255,255,0.1)',
     border: 'none',
     color: '#fff',
     padding: '8px',
-    borderRadius: '8px',
+    borderRadius: '10px',
     display: 'flex',
     alignItems: 'center',
     cursor: 'pointer',
@@ -162,148 +211,301 @@ const ui = {
     minHeight: '44px',
     justifyContent: 'center',
   } as React.CSSProperties,
-  headerTitle: { flex: 1, fontSize: '15px', fontWeight: 600, lineHeight: 1.25 } as React.CSSProperties,
-  headerSub: { fontSize: '12px', opacity: 0.8, marginTop: '2px' } as React.CSSProperties,
+  headerTitle: { flex: 1, fontSize: '15px', fontWeight: 700, lineHeight: 1.25 } as React.CSSProperties,
+  headerSub: { fontSize: '12px', opacity: 0.85, marginTop: '2px', fontWeight: 500 } as React.CSSProperties,
   doneBtn: {
     background: c.green,
     color: '#fff',
     border: 'none',
     padding: '10px 14px',
     borderRadius: '10px',
-    fontWeight: 600,
+    fontWeight: 700,
     fontSize: '14px',
     cursor: 'pointer',
     minHeight: '44px',
+    boxShadow: '0 2px 6px rgba(22,163,74,0.4)',
   } as React.CSSProperties,
-  list: { padding: '12px', display: 'flex', flexDirection: 'column' as const, gap: '12px' } as React.CSSProperties,
+  segmentBar: {
+    position: 'sticky' as const,
+    top: 'calc(68px + env(safe-area-inset-top))',
+    zIndex: 19,
+    background: c.surface,
+    borderBottom: `1px solid ${c.border}`,
+    padding: '10px 12px',
+    display: 'flex',
+    gap: '3px',
+    overflowX: 'auto' as const,
+    WebkitOverflowScrolling: 'touch' as const,
+    scrollbarWidth: 'none' as const,
+  } as React.CSSProperties,
+  segment: (color: string, active: boolean): React.CSSProperties => ({
+    flex: '1 0 14px',
+    minWidth: '14px',
+    height: active ? '14px' : '8px',
+    alignSelf: 'center',
+    background: color,
+    borderRadius: '999px',
+    cursor: 'pointer',
+    border: active ? `2px solid ${c.navy}` : 'none',
+    transition: 'height 0.15s, border 0.15s',
+  }),
+  cardWrap: {
+    padding: '14px',
+    transition: 'transform 0.25s ease, opacity 0.2s ease',
+  } as React.CSSProperties,
   card: {
     background: c.surface,
-    borderRadius: '14px',
+    borderRadius: '18px',
     border: `1px solid ${c.border}`,
-    padding: '14px',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+    overflow: 'hidden' as const,
+    boxShadow: '0 4px 16px rgba(10,35,66,0.08)',
   } as React.CSSProperties,
-  cardHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px' } as React.CSSProperties,
-  slipNum: { fontSize: '22px', fontWeight: 800, letterSpacing: '-0.02em', color: c.navy } as React.CSSProperties,
-  expected: { marginTop: '4px', fontSize: '14px', color: c.ink, lineHeight: 1.35 } as React.CSSProperties,
-  expectedSub: { fontSize: '12px', color: c.sub, marginTop: '2px' } as React.CSSProperties,
+  hero: {
+    background: `linear-gradient(135deg, ${c.navy} 0%, ${c.navyDeep} 100%)`,
+    color: '#fff',
+    padding: '20px 18px',
+    position: 'relative' as const,
+  } as React.CSSProperties,
+  heroLabel: {
+    fontSize: '11px',
+    fontWeight: 700,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase' as const,
+    opacity: 0.7,
+    marginBottom: '4px',
+  } as React.CSSProperties,
+  heroSlip: {
+    fontSize: '34px',
+    fontWeight: 800,
+    letterSpacing: '-0.02em',
+    margin: 0,
+    lineHeight: 1.05,
+  } as React.CSSProperties,
+  heroBoat: {
+    marginTop: '12px',
+    fontSize: '17px',
+    fontWeight: 700,
+    lineHeight: 1.25,
+    color: '#fff',
+  } as React.CSSProperties,
+  heroCustomer: {
+    fontSize: '13px',
+    opacity: 0.85,
+    marginTop: '2px',
+    fontWeight: 500,
+  } as React.CSSProperties,
   vacantPill: {
-    display: 'inline-block',
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
-    padding: '3px 8px',
-    borderRadius: '999px',
-    background: '#E0F2FE',
-    color: '#075985',
-    marginTop: '4px',
-  } as React.CSSProperties,
-  filedPill: {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '4px',
     fontSize: '11px',
     fontWeight: 700,
     textTransform: 'uppercase' as const,
     letterSpacing: '0.06em',
-    padding: '4px 8px',
+    padding: '4px 10px',
     borderRadius: '999px',
-    background: c.greenSoft,
-    color: '#166534',
+    background: 'rgba(14,165,233,0.2)',
+    color: '#bae6fd',
+    marginTop: '12px',
+    border: '1px solid rgba(186,230,253,0.4)',
   } as React.CSSProperties,
-  flagPill: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '4px',
-    fontSize: '11px',
-    fontWeight: 700,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
-    padding: '4px 8px',
-    borderRadius: '999px',
-    background: c.amberSoft,
-    color: '#92400E',
-  } as React.CSSProperties,
+  statusPill: (kind: 'ok' | 'attn' | 'vio' | 'pending'): React.CSSProperties => {
+    const palette = {
+      ok: { bg: 'rgba(22,163,74,0.2)', fg: '#bbf7d0', border: 'rgba(187,247,208,0.4)' },
+      attn: { bg: 'rgba(217,119,6,0.25)', fg: '#fde68a', border: 'rgba(253,230,138,0.4)' },
+      vio: { bg: 'rgba(220,38,38,0.25)', fg: '#fecaca', border: 'rgba(254,202,202,0.4)' },
+      pending: { bg: 'rgba(255,255,255,0.12)', fg: '#cbd5e1', border: 'rgba(203,213,225,0.3)' },
+    }[kind];
+    return {
+      position: 'absolute' as const,
+      top: '14px',
+      right: '14px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '4px',
+      fontSize: '10px',
+      fontWeight: 700,
+      textTransform: 'uppercase' as const,
+      letterSpacing: '0.08em',
+      padding: '5px 10px',
+      borderRadius: '999px',
+      background: palette.bg,
+      color: palette.fg,
+      border: `1px solid ${palette.border}`,
+    };
+  },
+  body: { padding: '16px 18px 20px' } as React.CSSProperties,
   questionLabel: {
-    fontSize: '12px',
+    fontSize: '11px',
     fontWeight: 700,
     color: c.sub,
     textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
-    marginTop: '14px',
-    marginBottom: '6px',
+    letterSpacing: '0.08em',
+    marginTop: '16px',
+    marginBottom: '8px',
   } as React.CSSProperties,
   buttonRow: { display: 'flex', gap: '8px' } as React.CSSProperties,
   choiceBtn: (active: boolean, tone: 'pos' | 'neg' | 'neutral'): React.CSSProperties => {
     const palette = {
-      pos: { bg: c.green, fg: '#fff', border: c.green, idleBg: '#fff', idleFg: c.ink, idleBorder: c.borderStrong },
-      neg: { bg: c.red, fg: '#fff', border: c.red, idleBg: '#fff', idleFg: c.ink, idleBorder: c.borderStrong },
-      neutral: { bg: c.navy, fg: '#fff', border: c.navy, idleBg: '#fff', idleFg: c.ink, idleBorder: c.borderStrong },
+      pos: { bg: c.green, fg: '#fff', border: c.green },
+      neg: { bg: c.red, fg: '#fff', border: c.red },
+      neutral: { bg: c.navy, fg: '#fff', border: c.navy },
     }[tone];
     return {
       flex: 1,
-      minHeight: '48px',
-      borderRadius: '10px',
-      border: `2px solid ${active ? palette.border : palette.idleBorder}`,
-      background: active ? palette.bg : palette.idleBg,
-      color: active ? palette.fg : palette.idleFg,
+      minHeight: '56px',
+      borderRadius: '12px',
+      border: `2px solid ${active ? palette.border : c.borderStrong}`,
+      background: active ? palette.bg : '#fff',
+      color: active ? palette.fg : c.ink,
       fontSize: '15px',
-      fontWeight: 600,
+      fontWeight: 700,
       cursor: 'pointer',
       transition: 'all 0.1s',
+      WebkitTapHighlightColor: 'transparent',
     };
   },
   notesArea: {
     width: '100%',
-    minHeight: '70px',
-    marginTop: '8px',
-    padding: '10px',
+    minHeight: '90px',
+    marginTop: '10px',
+    padding: '12px',
     border: `1px solid ${c.borderStrong}`,
-    borderRadius: '10px',
-    fontSize: '14px',
+    borderRadius: '12px',
+    fontSize: '15px',
     fontFamily: 'inherit',
     resize: 'vertical' as const,
     boxSizing: 'border-box' as const,
   } as React.CSSProperties,
-  saveBtn: (disabled: boolean): React.CSSProperties => ({
+  photoGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(86px, 1fr))',
+    gap: '8px',
+    marginTop: '10px',
+  } as React.CSSProperties,
+  photoTile: {
+    position: 'relative' as const,
     width: '100%',
-    marginTop: '12px',
-    minHeight: '48px',
-    background: disabled ? '#94A3B8' : c.navy,
-    color: '#fff',
-    border: 'none',
+    aspectRatio: '1 / 1',
     borderRadius: '10px',
-    fontSize: '15px',
-    fontWeight: 700,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-  }),
-  errorText: { color: c.red, fontSize: '13px', marginTop: '8px' } as React.CSSProperties,
-  progressTrack: {
+    overflow: 'hidden' as const,
+    background: c.bg,
+    border: `1px solid ${c.border}`,
+  } as React.CSSProperties,
+  photoImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover' as const,
+    display: 'block',
+  } as React.CSSProperties,
+  photoSpinner: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: c.subSoft,
+    fontSize: '11px',
+    fontWeight: 600,
+  } as React.CSSProperties,
+  photoRemove: {
+    position: 'absolute' as const,
+    top: '4px',
+    right: '4px',
+    width: '24px',
+    height: '24px',
+    border: 'none',
+    borderRadius: '999px',
+    background: 'rgba(10,35,66,0.85)',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    padding: 0,
+  } as React.CSSProperties,
+  photoAddTile: {
+    width: '100%',
+    aspectRatio: '1 / 1',
+    borderRadius: '10px',
+    border: `2px dashed ${c.borderStrong}`,
+    background: '#fff',
+    color: c.sub,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    fontSize: '11px',
+    fontWeight: 600,
+    gap: '4px',
+    WebkitTapHighlightColor: 'transparent',
+  } as React.CSSProperties,
+  hiddenInput: {
+    position: 'absolute' as const,
+    width: '1px',
+    height: '1px',
+    padding: 0,
+    margin: '-1px',
+    overflow: 'hidden' as const,
+    clip: 'rect(0,0,0,0)',
+    border: 0,
+  } as React.CSSProperties,
+  errorText: { color: c.red, fontSize: '13px', marginTop: '8px', fontWeight: 500 } as React.CSSProperties,
+  helperText: { color: c.sub, fontSize: '13px', marginTop: '6px' } as React.CSSProperties,
+  bottomBar: {
     position: 'fixed' as const,
     bottom: 0,
     left: 0,
     right: 0,
     background: c.surface,
     borderTop: `1px solid ${c.border}`,
-    padding: '12px 14px',
-    paddingBottom: 'calc(12px + env(safe-area-inset-bottom))',
-    boxShadow: '0 -2px 12px rgba(0,0,0,0.08)',
-    zIndex: 9,
+    padding: '10px 12px',
+    paddingBottom: 'calc(10px + env(safe-area-inset-bottom))',
+    boxShadow: '0 -4px 16px rgba(0,0,0,0.08)',
+    zIndex: 18,
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
   } as React.CSSProperties,
-  progressLabel: { fontSize: '12px', color: c.sub, marginBottom: '6px' } as React.CSSProperties,
-  progressBar: {
-    height: '8px',
-    background: c.border,
-    borderRadius: '999px',
-    overflow: 'hidden',
+  navBtn: (variant: 'ghost' | 'primary' | 'success', disabled?: boolean): React.CSSProperties => {
+    if (variant === 'ghost') {
+      return {
+        flex: '0 0 56px',
+        minHeight: '56px',
+        borderRadius: '12px',
+        border: `1px solid ${c.border}`,
+        background: '#fff',
+        color: disabled ? c.subSoft : c.ink,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        opacity: disabled ? 0.5 : 1,
+      };
+    }
+    const bg = variant === 'success' ? c.green : c.navy;
+    return {
+      flex: 1,
+      minHeight: '56px',
+      borderRadius: '12px',
+      border: 'none',
+      background: disabled ? '#94A3B8' : bg,
+      color: '#fff',
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      fontSize: '16px',
+      fontWeight: 700,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '6px',
+      boxShadow: disabled ? 'none' : '0 2px 8px rgba(10,35,66,0.25)',
+    };
+  },
+  emptyState: {
+    padding: '60px 24px',
+    textAlign: 'center' as const,
+    color: c.sub,
   } as React.CSSProperties,
-  progressFill: (pct: number): React.CSSProperties => ({
-    height: '100%',
-    width: `${pct}%`,
-    background: c.green,
-    transition: 'width 0.2s',
-  }),
 };
 
 /* ── Page ───────────────────────────────────────────────── */
@@ -319,11 +521,42 @@ export default function DockWalkRunner() {
   const [drafts, setDrafts] = useState<Record<string, DraftEntry>>({});
   const [completing, setCompleting] = useState(false);
   const [completeError, setCompleteError] = useState<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  // 'left' = card slides in from the right (next), 'right' = from the left (prev).
+  const [slideDir, setSlideDir] = useState<'left' | 'right' | null>(null);
+  // storageKey -> short-lived presigned download URL for thumbnail rendering.
+  const [photoUrlMap, setPhotoUrlMap] = useState<Record<string, string>>({});
 
   // Synchronous double-submit guard. Set BEFORE the await so two rapid taps
   // can't both observe row.item === null and issue two POSTs (the schema has
   // no unique (dockWalkId, slipId) constraint so we'd silently duplicate).
   const inFlightRef = useRef<Set<string>>(new Set());
+  // Hidden file input — one per render keyed off the current slip so the
+  // browser stays happy (we just reset .value after each pick).
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /* ── Resolve presigned download URLs for any keys we don't have yet ── */
+  const fetchPhotoUrls = useCallback(
+    async (keys: string[]) => {
+      if (keys.length === 0) return;
+      const missing = keys.filter((k) => !photoUrlMap[k]);
+      if (missing.length === 0) return;
+      try {
+        const token = await getToken();
+        const res = await api.post<PresignDownloadBatchResponse>(
+          '/api/storage/presign-download-batch',
+          { keys: missing },
+          token,
+        );
+        if (res.urls && Object.keys(res.urls).length > 0) {
+          setPhotoUrlMap((prev) => ({ ...prev, ...res.urls }));
+        }
+      } catch {
+        // Non-fatal — thumbnails just stay as a placeholder.
+      }
+    },
+    [getToken, photoUrlMap],
+  );
 
   // Initial load.
   useEffect(() => {
@@ -336,10 +569,21 @@ export default function DockWalkRunner() {
         if (cancelled) return;
         setData(res);
         const seeded: Record<string, DraftEntry> = {};
+        const allKeys: string[] = [];
         for (const row of res.slips) {
-          seeded[row.slip.id] = draftFromItem(row.item);
+          const draft = draftFromItem(row.item);
+          seeded[row.slip.id] = draft;
+          for (const k of draft.photoUrls) allKeys.push(k);
         }
         setDrafts(seeded);
+        // Jump to the first un-filed slip so the inspector picks up where
+        // they left off after a refresh / device swap.
+        const firstUnfiled = res.slips.findIndex((s) => !s.item);
+        setCurrentIndex(firstUnfiled === -1 ? 0 : firstUnfiled);
+        if (allKeys.length > 0) {
+          // Fire-and-forget — UI renders without waiting on signed URLs.
+          void fetchPhotoUrls(Array.from(new Set(allKeys)));
+        }
       } catch (err) {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : 'Could not load walk');
@@ -350,6 +594,8 @@ export default function DockWalkRunner() {
     return () => {
       cancelled = true;
     };
+    // fetchPhotoUrls intentionally omitted — only need to seed on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walkId, getToken]);
 
   const totalSlips = data?.slips.length ?? 0;
@@ -357,7 +603,6 @@ export default function DockWalkRunner() {
     () => (data ? data.slips.filter((s) => !!s.item).length : 0),
     [data],
   );
-  const progressPct = totalSlips === 0 ? 0 : Math.round((filedCount / totalSlips) * 100);
 
   function patchDraft(slipId: string, patch: Partial<DraftEntry>) {
     setDrafts((prev) => ({ ...prev, [slipId]: { ...prev[slipId], ...patch } }));
@@ -384,18 +629,130 @@ export default function DockWalkRunner() {
     // "Yes — flag it" only counts once notes have been written, so we don't
     // silently file an OK row when the inspector meant to flag something.
     if (d.hasIssue && d.notes.trim().length === 0) return false;
+    if (d.uploading) return false;
     return true;
+  }
+
+  /* ── Photo upload (presign → PUT → verify → attach) ───────────────── */
+  async function handlePhotoUpload(slipId: string, file: File) {
+    if (!file.type.startsWith('image/') && !/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name)) {
+      patchDraft(slipId, { photoError: 'Please pick an image file.' });
+      return;
+    }
+    patchDraft(slipId, { uploading: true, photoError: null });
+    let presignKey: string | null = null;
+    try {
+      const token = await getToken();
+      const contentType = resolvePhotoContentType(file);
+
+      const presign = await api.post<PresignUploadResponse>(
+        '/api/storage/presign-upload',
+        { category: 'photos', filename: file.name, contentType },
+        token,
+      );
+      presignKey = presign.key;
+
+      let put: Response;
+      try {
+        put = await fetch(presign.url, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': contentType },
+        });
+      } catch {
+        throw new Error("Couldn't reach file storage. Check your connection and try again.");
+      }
+      if (!put.ok) {
+        throw new Error(`Upload to storage failed (status ${put.status})`);
+      }
+
+      // Magic-byte verify; on failure, clean up the orphan and bail.
+      try {
+        await api.post('/api/storage/verify-upload', { key: presign.key, contentType }, token);
+      } catch (verifyErr) {
+        await api
+          .delete(`/api/storage/${encodeURIComponent(presign.key)}`, token)
+          .catch(() => {/* best effort */});
+        throw verifyErr;
+      }
+
+      // Get a presigned download URL so we can render the thumbnail right away.
+      try {
+        const dl = await api.post<PresignDownloadBatchResponse>(
+          '/api/storage/presign-download-batch',
+          { keys: [presign.key] },
+          token,
+        );
+        if (dl.urls?.[presign.key]) {
+          setPhotoUrlMap((prev) => ({ ...prev, [presign.key]: dl.urls[presign.key] }));
+        }
+      } catch {
+        // Non-fatal — the tile shows a placeholder; the photo is still saved.
+      }
+
+      // Attach to draft. NOTE: this only stages it; the inspector still
+      // needs to tap Save to write photoUrls to the DockWalkItem.
+      setDrafts((prev) => {
+        const cur = prev[slipId] ?? emptyDraft();
+        return {
+          ...prev,
+          [slipId]: {
+            ...cur,
+            photoUrls: [...cur.photoUrls, presign.key],
+            uploading: false,
+            photoError: null,
+          },
+        };
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Photo upload failed';
+      patchDraft(slipId, { uploading: false, photoError: msg });
+      // If we managed to presign but never finished, the orphan is benign:
+      // the storage quota worker will sweep it. We only proactively delete
+      // when verify failed (handled above).
+      void presignKey;
+    }
+  }
+
+  function removePhoto(row: WalkListSlip, key: string) {
+    const persistedKeys = persistedPhotoKeys(row);
+    const isPersisted = persistedKeys.includes(key);
+    setDrafts((prev) => {
+      const cur = prev[row.slip.id] ?? emptyDraft();
+      return {
+        ...prev,
+        [row.slip.id]: {
+          ...cur,
+          photoUrls: cur.photoUrls.filter((k) => k !== key),
+        },
+      };
+    });
+    // CORRECTNESS: only physically delete the R2 object when it isn't
+    // referenced by a saved DockWalkItem yet. Persisted keys must wait
+    // until the next successful save sweeps them — otherwise the DB row
+    // would still point at a deleted object if the inspector closes the
+    // tab without re-saving. Freshly-uploaded session keys are safe to
+    // delete immediately because nothing references them.
+    if (isPersisted) return;
+    (async () => {
+      try {
+        const token = await getToken();
+        await api.delete(`/api/storage/${encodeURIComponent(key)}`, token);
+      } catch {
+        /* best-effort */
+      }
+    })();
   }
 
   // Save (POST first time, PUT on edit). Idempotent against double-tap via
   // a synchronous in-flight set keyed by slipId.
-  async function handleSave(row: WalkListSlip) {
-    if (!walkId || !data) return;
+  async function handleSave(row: WalkListSlip): Promise<boolean> {
+    if (!walkId || !data) return false;
     const draft = drafts[row.slip.id];
-    if (!draft || !isSaveable(draft)) return;
+    if (!draft || !isSaveable(draft)) return false;
 
     // Synchronous guard — must run BEFORE any await.
-    if (inFlightRef.current.has(row.slip.id)) return;
+    if (inFlightRef.current.has(row.slip.id)) return false;
     inFlightRef.current.add(row.slip.id);
 
     patchDraft(row.slip.id, { saving: true, error: null });
@@ -416,10 +773,13 @@ export default function DockWalkRunner() {
         // linger if the inspector toggled boatPresent back to false.
         expectedMatch:
           draft.boatPresent && row.expectedBoat ? draft.expectedMatch : null,
+        photoUrls: draft.photoUrls.length > 0 ? draft.photoUrls : null,
       };
       if (isCreate) {
         body.expectedBoatId = row.expectedBoat?.id ?? null;
       }
+
+      const previouslyPersistedKeys = persistedPhotoKeys(row);
 
       const saved = isCreate
         ? await api.post<WalkListItem>(
@@ -444,9 +804,25 @@ export default function DockWalkRunner() {
         };
       });
       patchDraft(row.slip.id, { saving: false, error: null });
+
+      // Sweep R2 objects that used to be referenced by this DockWalkItem
+      // but aren't anymore — these are the keys whose physical delete we
+      // deferred in `removePhoto` for safety. Now that the DB no longer
+      // references them, it's safe to free the bytes.
+      const keptKeys = new Set(draft.photoUrls);
+      const orphans = previouslyPersistedKeys.filter((k) => !keptKeys.has(k));
+      if (orphans.length > 0) {
+        for (const k of orphans) {
+          api
+            .delete(`/api/storage/${encodeURIComponent(k)}`, token)
+            .catch(() => {/* best-effort */});
+        }
+      }
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Save failed';
       patchDraft(row.slip.id, { saving: false, error: msg });
+      return false;
     } finally {
       inFlightRef.current.delete(row.slip.id);
     }
@@ -464,6 +840,62 @@ export default function DockWalkRunner() {
       setCompleteError(err instanceof Error ? err.message : 'Could not complete walk');
       setCompleting(false);
     }
+  }
+
+  /* ── Navigation between slips ─────────────────────────── */
+  function goToIndex(target: number, dir: 'left' | 'right' | null) {
+    if (!data) return;
+    const clamped = Math.max(0, Math.min(target, data.slips.length - 1));
+    if (clamped === currentIndex) return;
+    setSlideDir(dir);
+    setCurrentIndex(clamped);
+    // Clear the slide direction after the animation lands so identical
+    // re-renders don't re-trigger the slide-in animation.
+    window.setTimeout(() => setSlideDir(null), 280);
+  }
+
+  async function handleSaveAndNext(row: WalkListSlip, idxAtClick: number) {
+    const ok = await handleSave(row);
+    if (!ok) return;
+    // STALE-STATE GUARD: only auto-advance if the inspector is still on
+    // the slip we just saved. They may have swiped/tapped to another slip
+    // while the request was in flight — respect that and don't yank them
+    // back. We use a functional setter so we read the LATEST currentIndex,
+    // not the closure-captured one.
+    setCurrentIndex((latest) => {
+      if (latest !== idxAtClick) return latest;
+      const next = Math.min(latest + 1, totalSlips - 1);
+      if (next === latest) return latest;
+      setSlideDir('left');
+      window.setTimeout(() => setSlideDir(null), 280);
+      return next;
+    });
+  }
+
+  /* ── Touch / pointer swipe ────────────────────────────── */
+  const swipeRef = useRef<{ startX: number; startY: number; active: boolean }>({
+    startX: 0,
+    startY: 0,
+    active: false,
+  });
+
+  function onPointerDown(e: React.PointerEvent) {
+    // Don't hijack swipes that begin on text inputs / buttons.
+    const target = e.target as HTMLElement;
+    if (target.closest('button, textarea, input, a, label')) return;
+    swipeRef.current = { startX: e.clientX, startY: e.clientY, active: true };
+  }
+
+  function onPointerUp(e: React.PointerEvent) {
+    if (!swipeRef.current.active) return;
+    const dx = e.clientX - swipeRef.current.startX;
+    const dy = e.clientY - swipeRef.current.startY;
+    swipeRef.current.active = false;
+    // Require mostly-horizontal motion of ≥ 60px so accidental scrolls
+    // never flip the slip.
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return;
+    if (dx < 0) goToIndex(currentIndex + 1, 'left');
+    else goToIndex(currentIndex - 1, 'right');
   }
 
   /* ── Render ───────────────────────────────────────────── */
@@ -498,8 +930,79 @@ export default function DockWalkRunner() {
   const dockLabel = data.dockWalk.dockId ? `Dock ${data.dockWalk.dockId}` : 'All slips';
   const isCompleted = data.dockWalk.status === 'COMPLETED';
 
+  // Empty dock — nothing to inspect.
+  if (data.slips.length === 0) {
+    return (
+      <div style={ui.page}>
+        <header style={ui.header}>
+          <button style={ui.backBtn} onClick={() => navigate('/dock-walks')} aria-label="Back">
+            <ArrowLeft size={20} />
+          </button>
+          <div style={ui.headerTitle}>
+            <div>{dockLabel}</div>
+            <div style={ui.headerSub}>0 slips on this dock</div>
+          </div>
+        </header>
+        <div style={ui.emptyState}>
+          <Anchor size={48} style={{ margin: '0 auto 12px', display: 'block', opacity: 0.4 }} />
+          <div style={{ fontSize: '15px' }}>No slips on this dock to walk.</div>
+        </div>
+      </div>
+    );
+  }
+
+  const row = data.slips[currentIndex];
+  const draft = drafts[row.slip.id] ?? emptyDraft();
+  const filed = !!row.item;
+  const hasExpectedBoat = !!row.expectedBoat;
+  const customerName = customerLabel(row.expectedCustomer);
+  const slideAnim =
+    slideDir === 'left'
+      ? 'helm-slide-in-right 0.25s ease'
+      : slideDir === 'right'
+      ? 'helm-slide-in-left 0.25s ease'
+      : undefined;
+
+  function segmentColor(s: WalkListSlip): string {
+    if (!s.item) return c.borderStrong;
+    if (s.item.status === 'VIOLATION') return c.red;
+    if (s.item.status === 'NEEDS_ATTENTION') return c.amber;
+    return c.green;
+  }
+
+  const filedStatusKind: 'ok' | 'attn' | 'vio' | 'pending' = !filed
+    ? 'pending'
+    : row.item!.status === 'VIOLATION'
+    ? 'vio'
+    : row.item!.status === 'NEEDS_ATTENTION'
+    ? 'attn'
+    : 'ok';
+  const filedStatusLabel =
+    filedStatusKind === 'ok'
+      ? 'Filed'
+      : filedStatusKind === 'attn'
+      ? 'Follow-up'
+      : filedStatusKind === 'vio'
+      ? 'Issue'
+      : 'Not filed';
+
+  const canSave = isSaveable(draft) && !draft.saving && !isCompleted;
+  const atLast = currentIndex >= data.slips.length - 1;
+
   return (
     <div style={ui.page}>
+      <style>{`
+        @keyframes helm-slide-in-right {
+          from { transform: translateX(40px); opacity: 0; }
+          to   { transform: translateX(0);    opacity: 1; }
+        }
+        @keyframes helm-slide-in-left {
+          from { transform: translateX(-40px); opacity: 0; }
+          to   { transform: translateX(0);     opacity: 1; }
+        }
+        .helm-segbar::-webkit-scrollbar { display: none; }
+      `}</style>
+
       <header style={ui.header}>
         <button style={ui.backBtn} onClick={() => navigate('/dock-walks')} aria-label="Back">
           <ArrowLeft size={20} />
@@ -507,7 +1010,9 @@ export default function DockWalkRunner() {
         <div style={ui.headerTitle}>
           <div>{dockLabel}</div>
           <div style={ui.headerSub}>
-            {filedCount} / {totalSlips} slips filed
+            Slip {currentIndex + 1} of {totalSlips}
+            <span style={{ opacity: 0.6, margin: '0 6px' }}>·</span>
+            {filedCount} filed
           </div>
         </div>
         {!isCompleted && (
@@ -521,174 +1026,248 @@ export default function DockWalkRunner() {
         )}
       </header>
 
+      {/* Segmented progress bar — one segment per slip, color = status */}
+      <div style={ui.segmentBar} className="helm-segbar">
+        {data.slips.map((s, idx) => (
+          <button
+            key={s.slip.id}
+            type="button"
+            aria-label={`Go to slip ${s.slip.slipNumber}`}
+            style={{
+              ...ui.segment(segmentColor(s), idx === currentIndex),
+              padding: 0,
+            }}
+            onClick={() =>
+              goToIndex(idx, idx > currentIndex ? 'left' : 'right')
+            }
+          />
+        ))}
+      </div>
+
       {completeError && (
         <div style={{ padding: '12px 14px', background: c.redSoft, color: c.red, fontSize: '14px' }}>
           {completeError}
         </div>
       )}
 
-      {data.slips.length === 0 && (
-        <div style={{ padding: '40px 24px', textAlign: 'center', color: c.sub }}>
-          <Anchor size={48} style={{ margin: '0 auto 12px', display: 'block', opacity: 0.4 }} />
-          <div style={{ fontSize: '15px' }}>No slips on this dock to walk.</div>
-        </div>
-      )}
+      <div
+        style={{ ...ui.cardWrap, animation: slideAnim }}
+        key={row.slip.id}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+      >
+        <div style={ui.card}>
+          {/* Hero header */}
+          <div style={ui.hero}>
+            <div style={ui.heroLabel}>Slip</div>
+            <h2 style={ui.heroSlip}>{row.slip.slipNumber}</h2>
+            {hasExpectedBoat ? (
+              <>
+                <div style={ui.heroBoat}>{boatLabel(row.expectedBoat)}</div>
+                {customerName && <div style={ui.heroCustomer}>{customerName}</div>}
+              </>
+            ) : (
+              <span style={ui.vacantPill}>Vacant — no active contract</span>
+            )}
+            {filed && (
+              <span style={ui.statusPill(filedStatusKind)}>
+                {filedStatusKind === 'ok' && <CheckCircle2 size={11} />}
+                {filedStatusKind === 'attn' && <AlertTriangle size={11} />}
+                {filedStatusKind === 'vio' && <AlertTriangle size={11} />}
+                {filedStatusLabel}
+              </span>
+            )}
+          </div>
 
-      <div style={ui.list}>
-        {data.slips.map((row) => {
-          const draft = drafts[row.slip.id] ?? emptyDraft();
-          const filed = !!row.item;
-          const hasExpectedBoat = !!row.expectedBoat;
-          const customerName = customerLabel(row.expectedCustomer);
-          const flagged = filed && row.item && row.item.status !== 'OK';
+          <div style={ui.body}>
+            {/* Q1 — Boat in slip */}
+            <div style={ui.questionLabel}>Boat in slip?</div>
+            <div style={ui.buttonRow}>
+              <button
+                style={ui.choiceBtn(draft.boatPresent === true, 'pos')}
+                onClick={() =>
+                  patchDraft(row.slip.id, {
+                    boatPresent: true,
+                    expectedMatch: draft.boatPresent === true ? draft.expectedMatch : null,
+                  })
+                }
+              >
+                Yes
+              </button>
+              <button
+                style={ui.choiceBtn(draft.boatPresent === false, 'neg')}
+                onClick={() =>
+                  patchDraft(row.slip.id, {
+                    boatPresent: false,
+                    expectedMatch: null,
+                  })
+                }
+              >
+                No (vacant)
+              </button>
+            </div>
 
-          return (
-            <div key={row.slip.id} style={ui.card}>
-              <div style={ui.cardHeader}>
-                <div style={{ flex: 1 }}>
-                  <div style={ui.slipNum}>Slip {row.slip.slipNumber}</div>
-                  {hasExpectedBoat ? (
+            {/* Q2 — Right boat? (only when present + expected boat exists) */}
+            {draft.boatPresent === true && hasExpectedBoat && (
+              <>
+                <div style={ui.questionLabel}>Right boat?</div>
+                <div style={ui.buttonRow}>
+                  <button
+                    style={ui.choiceBtn(draft.expectedMatch === true, 'pos')}
+                    onClick={() => patchDraft(row.slip.id, { expectedMatch: true })}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    style={ui.choiceBtn(draft.expectedMatch === false, 'neg')}
+                    onClick={() => patchDraft(row.slip.id, { expectedMatch: false })}
+                  >
+                    Different boat
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Q3 — Issue */}
+            <div style={ui.questionLabel}>Issue to flag?</div>
+            <div style={ui.buttonRow}>
+              <button
+                style={ui.choiceBtn(!draft.hasIssue, 'neutral')}
+                onClick={() => patchDraft(row.slip.id, { hasIssue: false, notes: '' })}
+              >
+                No
+              </button>
+              <button
+                style={ui.choiceBtn(draft.hasIssue, 'neg')}
+                onClick={() => patchDraft(row.slip.id, { hasIssue: true })}
+              >
+                Yes — flag it
+              </button>
+            </div>
+
+            {draft.hasIssue && (
+              <textarea
+                style={ui.notesArea}
+                placeholder="Describe the issue (lines, power, condition, debris…)"
+                value={draft.notes}
+                onChange={(e) => patchDraft(row.slip.id, { notes: e.target.value })}
+              />
+            )}
+
+            {/* Photos */}
+            <div style={ui.questionLabel}>Photos ({draft.photoUrls.length})</div>
+            <div style={ui.photoGrid}>
+              {draft.photoUrls.map((key) => {
+                const url = photoUrlMap[key];
+                return (
+                  <div key={key} style={ui.photoTile}>
+                    {url ? (
+                      <img src={url} alt="Slip" style={ui.photoImg} />
+                    ) : (
+                      <div style={ui.photoSpinner}>Loading…</div>
+                    )}
+                    {!isCompleted && (
+                      <button
+                        type="button"
+                        style={ui.photoRemove}
+                        onClick={() => removePhoto(row, key)}
+                        aria-label="Remove photo"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {!isCompleted && (
+                <label style={ui.photoAddTile}>
+                  {draft.uploading ? (
                     <>
-                      <div style={ui.expected}>
-                        <strong>{boatLabel(row.expectedBoat)}</strong>
-                      </div>
-                      {customerName && (
-                        <div style={ui.expectedSub}>{customerName}</div>
-                      )}
+                      <Camera size={22} />
+                      <span>Uploading…</span>
                     </>
                   ) : (
-                    <div style={ui.vacantPill}>Vacant — no active contract</div>
+                    <>
+                      <Camera size={22} />
+                      <span>Add photo</span>
+                    </>
                   )}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end' }}>
-                  {flagged && (
-                    <span style={ui.flagPill}>
-                      <AlertTriangle size={11} />
-                      {row.item!.status === 'VIOLATION' ? 'Issue' : 'Follow-up'}
-                    </span>
-                  )}
-                  {filed && !flagged && (
-                    <span style={ui.filedPill}>
-                      <CheckCircle2 size={11} />
-                      Filed
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div style={ui.questionLabel}>Boat in slip?</div>
-              <div style={ui.buttonRow}>
-                <button
-                  style={ui.choiceBtn(draft.boatPresent === true, 'pos')}
-                  onClick={() =>
-                    patchDraft(row.slip.id, {
-                      boatPresent: true,
-                      // reset expectedMatch when toggling
-                      expectedMatch: draft.boatPresent === true ? draft.expectedMatch : null,
-                    })
-                  }
-                >
-                  Yes
-                </button>
-                <button
-                  style={ui.choiceBtn(draft.boatPresent === false, 'neg')}
-                  onClick={() =>
-                    patchDraft(row.slip.id, {
-                      boatPresent: false,
-                      expectedMatch: null,
-                    })
-                  }
-                >
-                  No (vacant)
-                </button>
-              </div>
-
-              {draft.boatPresent === true && hasExpectedBoat && (
-                <>
-                  <div style={ui.questionLabel}>Right boat?</div>
-                  <div style={ui.buttonRow}>
-                    <button
-                      style={ui.choiceBtn(draft.expectedMatch === true, 'pos')}
-                      onClick={() => patchDraft(row.slip.id, { expectedMatch: true })}
-                    >
-                      Yes
-                    </button>
-                    <button
-                      style={ui.choiceBtn(draft.expectedMatch === false, 'neg')}
-                      onClick={() => patchDraft(row.slip.id, { expectedMatch: false })}
-                    >
-                      Different boat
-                    </button>
-                  </div>
-                </>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={ui.hiddenInput}
+                    disabled={draft.uploading}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handlePhotoUpload(row.slip.id, file);
+                      // Reset so the same file can be re-picked.
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                  />
+                </label>
               )}
-
-              <div style={ui.questionLabel}>Issue to flag?</div>
-              <div style={ui.buttonRow}>
-                <button
-                  style={ui.choiceBtn(!draft.hasIssue, 'neutral')}
-                  onClick={() =>
-                    patchDraft(row.slip.id, { hasIssue: false, notes: '' })
-                  }
-                >
-                  No
-                </button>
-                <button
-                  style={ui.choiceBtn(draft.hasIssue, 'neg')}
-                  onClick={() => patchDraft(row.slip.id, { hasIssue: true })}
-                >
-                  Yes — flag it
-                </button>
-              </div>
-
-              {draft.hasIssue && (
-                <textarea
-                  style={ui.notesArea}
-                  placeholder="Describe the issue (lines, power, condition, debris…)"
-                  value={draft.notes}
-                  onChange={(e) =>
-                    patchDraft(row.slip.id, { notes: e.target.value })
-                  }
-                />
-              )}
-
-              <button
-                style={ui.saveBtn(
-                  draft.saving || !isSaveable(draft) || isCompleted,
-                )}
-                disabled={
-                  draft.saving || !isSaveable(draft) || isCompleted
-                }
-                onClick={() => handleSave(row)}
-              >
-                {draft.saving
-                  ? 'Saving…'
-                  : filed
-                    ? 'Update'
-                    : 'Save & next slip'}
-              </button>
-
-              {draft.hasIssue && draft.notes.trim().length === 0 && (
-                <div style={{ ...ui.errorText, color: c.sub }}>
-                  Add a note describing the issue before saving.
-                </div>
-              )}
-              {draft.error && <div style={ui.errorText}>{draft.error}</div>}
             </div>
-          );
-        })}
-      </div>
+            {draft.photoError && <div style={ui.errorText}>{draft.photoError}</div>}
 
-      {data.slips.length > 0 && !isCompleted && (
-        <div style={ui.progressTrack}>
-          <div style={ui.progressLabel}>
-            Progress: {filedCount} / {totalSlips}
-          </div>
-          <div style={ui.progressBar}>
-            <div style={ui.progressFill(progressPct)} />
+            {/* Save state hints */}
+            {draft.hasIssue && draft.notes.trim().length === 0 && (
+              <div style={ui.helperText}>
+                Add a note describing the issue before saving.
+              </div>
+            )}
+            {draft.boatPresent === null && (
+              <div style={ui.helperText}>
+                Pick whether a boat is in the slip to save this row.
+              </div>
+            )}
+            {draft.error && <div style={ui.errorText}>{draft.error}</div>}
           </div>
         </div>
-      )}
+      </div>
+
+      {/* Sticky bottom action bar */}
+      <div style={ui.bottomBar}>
+        <button
+          type="button"
+          style={ui.navBtn('ghost', currentIndex === 0)}
+          disabled={currentIndex === 0}
+          onClick={() => goToIndex(currentIndex - 1, 'right')}
+          aria-label="Previous slip"
+        >
+          <ChevronLeft size={22} />
+        </button>
+
+        {canSave ? (
+          <button
+            type="button"
+            style={ui.navBtn(atLast ? 'success' : 'primary', false)}
+            onClick={() => handleSaveAndNext(row, currentIndex)}
+          >
+            {draft.saving
+              ? 'Saving…'
+              : filed
+              ? atLast
+                ? 'Update'
+                : 'Update & next'
+              : atLast
+              ? 'Save slip'
+              : 'Save & next'}
+            {!atLast && !draft.saving && <ChevronRight size={20} />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            style={ui.navBtn('primary', atLast)}
+            disabled={atLast}
+            onClick={() => goToIndex(currentIndex + 1, 'left')}
+          >
+            {filed ? 'Next slip' : 'Skip for now'}
+            {!atLast && <ChevronRight size={20} />}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
