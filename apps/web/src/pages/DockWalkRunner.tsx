@@ -1252,6 +1252,7 @@ export default function DockWalkRunner() {
             <div style={ui.buttonRow}>
               <button
                 style={ui.choiceBtn(draft.boatPresent === true, 'pos')}
+                disabled={isCompleted || draft.saving}
                 onClick={() =>
                   patchDraft(row.slip.id, {
                     boatPresent: true,
@@ -1263,7 +1264,7 @@ export default function DockWalkRunner() {
               </button>
               <button
                 style={ui.choiceBtn(draft.boatPresent === false, 'neg')}
-                disabled={isCompleted}
+                disabled={isCompleted || draft.saving}
                 onClick={() =>
                   patchDraft(row.slip.id, {
                     boatPresent: false,
@@ -1282,14 +1283,14 @@ export default function DockWalkRunner() {
                 <div style={ui.buttonRow}>
                   <button
                     style={ui.choiceBtn(draft.expectedMatch === true, 'pos')}
-                    disabled={isCompleted}
+                    disabled={isCompleted || draft.saving}
                     onClick={() => patchDraft(row.slip.id, { expectedMatch: true })}
                   >
                     Yes
                   </button>
                   <button
                     style={ui.choiceBtn(draft.expectedMatch === false, 'neg')}
-                    disabled={isCompleted}
+                    disabled={isCompleted || draft.saving}
                     onClick={() => patchDraft(row.slip.id, { expectedMatch: false })}
                   >
                     Different boat
@@ -1303,14 +1304,14 @@ export default function DockWalkRunner() {
             <div style={ui.buttonRow}>
               <button
                 style={ui.choiceBtn(!draft.hasIssue, 'neutral')}
-                disabled={isCompleted}
+                disabled={isCompleted || draft.saving}
                 onClick={() => patchDraft(row.slip.id, { hasIssue: false, notes: '' })}
               >
                 No
               </button>
               <button
                 style={ui.choiceBtn(draft.hasIssue, 'neg')}
-                disabled={isCompleted}
+                disabled={isCompleted || draft.saving}
                 onClick={() => patchDraft(row.slip.id, { hasIssue: true })}
               >
                 Yes — flag it
@@ -1322,7 +1323,7 @@ export default function DockWalkRunner() {
                 style={ui.notesArea}
                 placeholder="Describe the issue (lines, power, condition, debris…)"
                 value={draft.notes}
-                readOnly={isCompleted}
+                readOnly={isCompleted || draft.saving}
                 onChange={(e) => patchDraft(row.slip.id, { notes: e.target.value })}
               />
             )}
