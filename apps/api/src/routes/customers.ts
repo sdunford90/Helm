@@ -3,6 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
+import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 import type Stripe from "stripe";
 
@@ -127,71 +128,10 @@ function appError(message: string, statusCode: number, code: string): Error {
 // ─── Stripe account resolver for customers ─────────────────────────────────
 //
 // Marina-staff payment-method operations need to talk to the Stripe Connect
-// account that owns the customer's Stripe customer record. Since Customer
-// has no homeLocationId column, we derive the location the same way invoice
-// payments do: take the most recent invoice's locationId. If the customer
-// has no invoices with a location yet (brand-new customer), or that location
-// has no Stripe account connected, we fall back to the tenant-level Stripe
-// account so single-location marinas continue to work.
-//
-// Returns:
-//   stripeAccountId   — account to use, or null when nothing is configured
-//   locationConnected — false when the chosen location has no completed
-//                       Stripe onboarding; the UI uses this to surface a
-//                       clear "Stripe is not set up for this location" msg
-//   locationName      — name of the chosen location (for nicer UI messages)
-async function getStripeAccountForCustomer(
-  customerId: string,
-  tenantId: string,
-): Promise<{
-  stripeAccountId: string | null;
-  locationConnected: boolean;
-  locationName: string | null;
-}> {
-  // Find the customer's most recent invoice that has a location attached.
-  const recentInvoice = await prisma.invoice.findFirst({
-    where: { customerId, tenantId, locationId: { not: null } },
-    orderBy: { issuedDate: "desc" },
-    select: {
-      location: {
-        select: {
-          name: true,
-          stripeAccountId: true,
-          stripeOnboardingComplete: true,
-        },
-      },
-    },
-  });
-
-  if (recentInvoice?.location?.stripeAccountId) {
-    return {
-      stripeAccountId: recentInvoice.location.stripeAccountId,
-      locationConnected: recentInvoice.location.stripeOnboardingComplete,
-      locationName: recentInvoice.location.name,
-    };
-  }
-
-  // Location exists but no Stripe account on it.
-  if (recentInvoice?.location && !recentInvoice.location.stripeAccountId) {
-    return {
-      stripeAccountId: null,
-      locationConnected: false,
-      locationName: recentInvoice.location.name,
-    };
-  }
-
-  // No invoices yet — fall back to tenant-level Stripe account.
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: { stripeAccountId: true },
-  });
-
-  return {
-    stripeAccountId: tenant?.stripeAccountId ?? null,
-    locationConnected: !!tenant?.stripeAccountId,
-    locationName: null,
-  };
-}
+// account that owns the customer's Stripe customer record. The shared
+// resolver in `lib/stripe-account.ts` is the single source of truth for
+// that mapping — both this route file and the recurring billing job import
+// it so reads and writes always target the same account.
 
 // Ensures the customer has a Stripe customer record in the given Connect
 // account, creating one on the fly if missing. Persists the new id back to

@@ -101,6 +101,180 @@ describe('generateRecurringInvoices', () => {
     expect(results[0].totalCents).toBeGreaterThan(0);
   });
 
+  // ─── Autopay gate ──────────────────────────────────────────────────────
+  // The recurring-billing job must only auto-charge customers who have
+  // explicitly turned autopay ON (Stripe metadata.autopay === "true"). The
+  // staff/portal toggle writes that flag; these tests pin the read side.
+  describe('autopay gate', () => {
+    let stripeMock: any;
+    beforeEach(async () => {
+      stripeMock = (await import('../../src/lib/stripe.js')).stripe;
+      // Reset Stripe spies so per-test mockResolvedValue calls don't stack.
+      stripeMock.customers.retrieve.mockReset();
+      stripeMock.customers.update.mockReset();
+      stripeMock.paymentIntents.create.mockReset();
+      stripeMock.customers.retrieve.mockResolvedValue({
+        id: 'cus_test',
+        metadata: { autopay: 'true' },
+      });
+      stripeMock.paymentIntents.create.mockResolvedValue({
+        id: 'pi_test',
+        status: 'succeeded',
+      });
+    });
+
+    function mockContract(opts: { stripeCustomerId: string | null; achBlocked: boolean }) {
+      const today = new Date();
+      const customer = buildCustomer({ stripeCustomerId: opts.stripeCustomerId });
+      const slip = buildSlip({
+        slipNumber: 'A-1',
+        electricityMode: null,
+        flatFeeCents: null,
+        kwhRateCents: null,
+      });
+      const contract = buildContract({
+        status: 'ACTIVE',
+        billingAnchor: today.getDate(),
+        rateCents: 100000,
+        customerId: customer.id,
+        slipId: slip.id,
+        billingCycle: 'MONTHLY',
+        startDate: new Date(today.getFullYear(), today.getMonth() - 1, 1),
+      });
+      mockPrisma.slipContract.findMany.mockResolvedValue([
+        {
+          ...contract,
+          customer: {
+            id: customer.id,
+            stripeCustomerId: opts.stripeCustomerId,
+            achBlocked: opts.achBlocked,
+            firstName: 'Test',
+            lastName: 'User',
+          },
+          slip: {
+            id: slip.id,
+            slipNumber: 'A-1',
+            locationId: null,
+            electricityMode: null,
+            flatFeeCents: null,
+            kwhRateCents: null,
+          },
+        },
+      ]);
+      // Both the "existing invoice this month" check AND the
+      // getStripeAccountForCustomer "recent invoice with location" lookup
+      // call invoice.findFirst — return null both times to drive the
+      // tenant-account fallback.
+      mockPrisma.invoice.findFirst.mockResolvedValue(null);
+      mockPrisma.tenant.findUnique.mockResolvedValue({
+        stripeAccountId: 'acct_test',
+      });
+      // $transaction is called twice in the auto-charge path: once to
+      // create the invoice + lines, once again INSIDE the auto-charge
+      // block to record the payment + mark the invoice paid. Provide a
+      // tx that supports the union of both call sites.
+      mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+        const inv = buildInvoice({
+          tenantId: 'tenant-1',
+          customerId: customer.id,
+          totalCents: 100000,
+          balanceCents: 100000,
+          lineItems: [
+            { id: 'li-1', extendedCents: 100000, taxCents: 0, isDeferred: false },
+          ],
+        });
+        const tx = {
+          invoice: {
+            create: vi.fn().mockResolvedValue(inv),
+            update: vi.fn().mockResolvedValue(inv),
+          },
+          payment: { create: vi.fn().mockResolvedValue({ id: 'pay-test' }) },
+        };
+        return fn(tx);
+      });
+      mockPrisma.invoice.findUnique.mockResolvedValue({ balanceCents: 100000 });
+      return { customer, slip, contract };
+    }
+
+    it('charges the customer when autopay is turned on', async () => {
+      mockContract({ stripeCustomerId: 'cus_test', achBlocked: false });
+      stripeMock.customers.retrieve.mockResolvedValue({
+        id: 'cus_test',
+        metadata: { autopay: 'true' },
+      });
+
+      const results = await generateRecurringInvoices('tenant-1');
+
+      expect(results).toHaveLength(1);
+      expect(results[0].autoChargeResult).toBe('SUCCESS');
+      expect(stripeMock.paymentIntents.create).toHaveBeenCalledTimes(1);
+      // Both reads (metadata) and write (paymentIntent) target the SAME
+      // resolved Connect account — no cross-account drift.
+      expect(stripeMock.customers.retrieve).toHaveBeenCalledWith(
+        'cus_test',
+        {},
+        { stripeAccount: 'acct_test' },
+      );
+      expect(stripeMock.paymentIntents.create).toHaveBeenCalledWith(
+        expect.objectContaining({ customer: 'cus_test', amount: 100000 }),
+        { stripeAccount: 'acct_test' },
+      );
+    });
+
+    it('skips charging when autopay is OFF (the bug this gate closes)', async () => {
+      mockContract({ stripeCustomerId: 'cus_test', achBlocked: false });
+      stripeMock.customers.retrieve.mockResolvedValue({
+        id: 'cus_test',
+        metadata: { autopay: 'false' },
+      });
+
+      const results = await generateRecurringInvoices('tenant-1');
+
+      expect(results).toHaveLength(1);
+      expect(results[0].autoChargeResult).toBe('SKIPPED');
+      // Critically: NO payment intent is created when the customer never
+      // opted in. This is the exact regression that prompted Task #103.
+      expect(stripeMock.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('skips charging when the autopay flag is missing entirely', async () => {
+      mockContract({ stripeCustomerId: 'cus_test', achBlocked: false });
+      // Brand-new customer who saved a card without ever toggling autopay
+      // — Stripe metadata simply has no `autopay` key.
+      stripeMock.customers.retrieve.mockResolvedValue({
+        id: 'cus_test',
+        metadata: {},
+      });
+
+      const results = await generateRecurringInvoices('tenant-1');
+
+      expect(results[0].autoChargeResult).toBe('SKIPPED');
+      expect(stripeMock.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('still skips ACH-blocked customers without ever calling Stripe', async () => {
+      mockContract({ stripeCustomerId: 'cus_test', achBlocked: true });
+
+      const results = await generateRecurringInvoices('tenant-1');
+
+      expect(results[0].autoChargeResult).toBe('SKIPPED');
+      // ACH-blocked is a short-circuit BEFORE the autopay metadata read,
+      // so Stripe shouldn't be touched at all for these customers.
+      expect(stripeMock.customers.retrieve).not.toHaveBeenCalled();
+      expect(stripeMock.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('skips customers with no Stripe customer record', async () => {
+      mockContract({ stripeCustomerId: null, achBlocked: false });
+
+      const results = await generateRecurringInvoices('tenant-1');
+
+      expect(results[0].autoChargeResult).toBe('SKIPPED');
+      expect(stripeMock.customers.retrieve).not.toHaveBeenCalled();
+      expect(stripeMock.paymentIntents.create).not.toHaveBeenCalled();
+    });
+  });
+
   it('skips contracts that already have an invoice this month', async () => {
     const customer = buildCustomer();
     const slip = buildSlip();

@@ -347,4 +347,28 @@ describe('PUT /api/customers/:id/autopay', () => {
     expect(res.status).toBe(404);
     expect(res.body).toHaveProperty('code', 'NOT_FOUND');
   });
+
+  it('refuses to expose customers from another tenant', async () => {
+    // The route looks up the customer with `where: { id, tenantId }`. The
+    // request comes through the test app under tenantId "test-tenant-id"
+    // (see tenantMiddleware mock in tests/setup.ts). A customer that
+    // exists in a different tenant would NOT match that compound where —
+    // mirror that by returning null and confirm the endpoint refuses the
+    // write without ever touching Stripe.
+    mockPrisma.customer.findFirst.mockImplementation(({ where }: any) => {
+      // Sanity-check the route is actually scoping by tenantId so this
+      // test would catch a regression that drops it.
+      expect(where).toEqual(expect.objectContaining({ tenantId: 'test-tenant-id' }));
+      return Promise.resolve(null);
+    });
+
+    const res = await request(app)
+      .put('/api/customers/cust-belongs-to-other-tenant/autopay')
+      .send({ autopay: true });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty('code', 'NOT_FOUND');
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
 });

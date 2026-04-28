@@ -4,6 +4,7 @@ import { calculateTax } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
 import { stripe, requireStripe } from "../lib/stripe.js";
+import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
 
 // ---------------------------------------------------------------------------
 // Billing Engine Service
@@ -336,29 +337,15 @@ export async function generateRecurringInvoices(
         skipReason = "ACH blocked";
       } else {
         try {
-          // Resolve the Stripe Connect account once, preferring the slip's
-          // location account (where the customer record + saved cards
-          // actually live for this contract). Fall back to the tenant
-          // account for marinas that haven't split locations onto separate
-          // Connect accounts yet. This is the same account the portal +
-          // staff autopay toggles write to via the per-customer resolver,
-          // so the metadata read here matches the metadata written there.
-          const [tenant, slipLocation] = await Promise.all([
-            prisma.tenant.findUnique({
-              where: { id: tenantId },
-              select: { stripeAccountId: true },
-            }),
-            contract.slip.locationId
-              ? prisma.location.findUnique({
-                  where: { id: contract.slip.locationId },
-                  select: { stripeAccountId: true },
-                })
-              : Promise.resolve(null),
-          ]);
-          const stripeAccountId =
-            slipLocation?.stripeAccountId ??
-            tenant?.stripeAccountId ??
-            null;
+          // Resolve the Stripe Connect account using the SHARED helper used
+          // by the staff/portal autopay toggles. This guarantees the
+          // metadata.autopay flag is read from the same Stripe account it
+          // was written to — no cross-account drift in multi-location
+          // marinas.
+          const { stripeAccountId } = await getStripeAccountForCustomer(
+            contract.customer.id,
+            tenantId,
+          );
 
           if (!stripeAccountId) {
             skipReason = "no Stripe account configured";

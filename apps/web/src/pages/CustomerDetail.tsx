@@ -1319,16 +1319,24 @@ export default function CustomerDetailPage() {
   }
 
   const [autopayBusy, setAutopayBusy] = useState(false);
+  // Optimistic flag: when set, overrides the displayed autopay value while
+  // the network request is in flight so the badge flips instantly. Cleared
+  // after the refetch (success) or on error rollback.
+  const [autopayOptimistic, setAutopayOptimistic] = useState<boolean | null>(null);
   async function toggleAutopay() {
     if (!paymentMethods) return;
     const next = !paymentMethods.autopay;
     setPmError(null);
+    setAutopayOptimistic(next);
     setAutopayBusy(true);
     try {
       const token = await getToken();
       await api.put(`/api/customers/${id}/autopay`, { autopay: next }, token);
       await refetchPaymentMethods();
+      setAutopayOptimistic(null);
     } catch (err) {
+      // Roll the badge back to the server-known value.
+      setAutopayOptimistic(null);
       setPmError(
         err instanceof Error ? err.message : 'Could not update autopay',
       );
@@ -1536,11 +1544,15 @@ export default function CustomerDetailPage() {
               <CreditCard size={16} color="#0F2E4D" />
               Cards on File
               {paymentMethods && paymentMethods.stripeConfigured && paymentMethods.locationConnected && (() => {
+                // Show the optimistic flag while a toggle is in flight so
+                // the badge flips immediately on click; falls back to the
+                // server value once refetch completes (or on error rollback).
+                const displayedAutopay = autopayOptimistic ?? paymentMethods.autopay;
                 const hasMethods = paymentMethods.methods.length > 0;
-                const disabled = autopayBusy || (!paymentMethods.autopay && !hasMethods);
-                const title = !paymentMethods.autopay && !hasMethods
+                const disabled = autopayBusy || (!displayedAutopay && !hasMethods);
+                const title = !displayedAutopay && !hasMethods
                   ? 'Add a card or bank account before enabling autopay'
-                  : paymentMethods.autopay
+                  : displayedAutopay
                     ? 'Click to turn autopay off'
                     : 'Click to turn autopay on';
                 return (
@@ -1556,17 +1568,17 @@ export default function CustomerDetailPage() {
                       fontWeight: 600,
                       textTransform: 'none',
                       letterSpacing: 0,
-                      backgroundColor: paymentMethods.autopay ? '#DCFCE7' : '#F1F5F9',
-                      color: paymentMethods.autopay ? '#166534' : '#64748B',
+                      backgroundColor: displayedAutopay ? '#DCFCE7' : '#F1F5F9',
+                      color: displayedAutopay ? '#166534' : '#64748B',
                       border: '1px solid',
-                      borderColor: paymentMethods.autopay ? '#86EFAC' : '#CBD5E1',
+                      borderColor: displayedAutopay ? '#86EFAC' : '#CBD5E1',
                       cursor: disabled ? 'not-allowed' : 'pointer',
-                      opacity: disabled && !paymentMethods.autopay ? 0.6 : 1,
+                      opacity: disabled && !displayedAutopay ? 0.6 : 1,
                     }}
                   >
                     {autopayBusy
                       ? 'Saving…'
-                      : paymentMethods.autopay
+                      : displayedAutopay
                         ? 'Autopay on · click to disable'
                         : 'Autopay off · click to enable'}
                   </button>
