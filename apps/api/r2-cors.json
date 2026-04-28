@@ -1,0 +1,33 @@
+{
+  "_comment": "Cloudflare R2 bucket CORS policy for the helm-files bucket. Apply with `pnpm --filter @helm/api apply:r2-cors` (see apps/api/scripts/README.md). Web origins listed below must include every origin that PUTs (uploads) or GETs (downloads) a presigned URL. R2 supports wildcards in the subdomain segment of an origin.",
+  "CORSRules": [
+    {
+      "_comment": "Direct-PUT uploads from the web app to R2 + presigned-GET downloads. The browser sends `Content-Type` and may attach `Content-MD5` / `Content-Length`; the AWS SDK signed URL also accepts the `x-amz-*` family. ETag is exposed so the client can verify the upload.",
+      "AllowedOrigins": [
+        "https://gethelm.com",
+        "https://*.gethelm.com",
+        "https://app.gethelm.com",
+        "https://*.replit.dev",
+        "https://*.repl.co",
+        "http://localhost:5000",
+        "http://localhost:5001",
+        "http://localhost:5002",
+        "http://localhost:5173"
+      ],
+      "AllowedMethods": ["GET", "PUT", "HEAD"],
+      "AllowedHeaders": [
+        "Content-Type",
+        "Content-Length",
+        "Content-MD5",
+        "Authorization",
+        "x-amz-content-sha256",
+        "x-amz-date",
+        "x-amz-user-agent",
+        "x-amz-acl",
+        "x-amz-meta-*"
+      ],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+}

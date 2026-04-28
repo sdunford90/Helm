@@ -48,6 +48,8 @@ const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
     'Antivirus scanning is temporarily unavailable. Please try again in a few minutes.',
   FORBIDDEN: "You don't have permission to upload to this location.",
   INVALID_STORAGE_KEY: 'The upload could not be linked to this customer. Please try again.',
+  STORAGE_NETWORK_BLOCKED:
+    "Couldn't reach file storage. This is usually a network or CORS issue — please contact support.",
 };
 
 function describeUploadError(err: unknown): { title: string; message: string } {
@@ -2359,11 +2361,39 @@ export default function CustomerDetailPage() {
       presignKey = presign.key;
 
       // 2. PUT the file directly to R2 using the presigned URL.
-      const put = await fetch(presign.url, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': contentType },
-      });
+      // A `TypeError`/"Failed to fetch" here means the request was blocked
+      // before any HTTP response arrived — almost always the bucket's CORS
+      // policy not allowing PUT (or the Content-Type request header) from
+      // this origin. See apps/api/r2-cors.json + apps/api/scripts/README.md.
+      let put: Response;
+      try {
+        put = await fetch(presign.url, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': contentType },
+        });
+      } catch (netErr) {
+        let r2Host = 'unknown';
+        try {
+          r2Host = new URL(presign.url).host;
+        } catch {
+          /* presign URL was malformed; the host helps diagnose anyway */
+        }
+        console.error('[document upload network error]', {
+          stage: 'r2-put',
+          r2Host,
+          storageKey: presignKey,
+          filename: file.name,
+          sizeBytes: file.size,
+          contentType,
+          error: netErr,
+        });
+        throw new ApiClientError(
+          UPLOAD_ERROR_MESSAGES.STORAGE_NETWORK_BLOCKED,
+          0,
+          'STORAGE_NETWORK_BLOCKED',
+        );
+      }
       if (!put.ok) {
         throw new ApiClientError(
           `Upload to storage failed (status ${put.status})`,
