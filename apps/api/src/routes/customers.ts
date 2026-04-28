@@ -745,4 +745,98 @@ router.post(
   },
 );
 
+// ─── Customer Documents ─────────────────────────────────────────────────────
+
+const CreateDocumentSchema = z.object({
+  category: z.string().min(1).max(64),
+  filename: z.string().min(1).max(255),
+  contentType: z.string().min(1).max(128),
+  sizeBytes: z.number().int().nonnegative(),
+  storageKey: z.string().min(1).max(512),
+});
+
+router.get(
+  "/:id/documents",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const docs = await prisma.customerDocument.findMany({
+        where: { customerId },
+        orderBy: { createdAt: "desc" },
+      });
+      res.json(docs);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/:id/documents",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const body = CreateDocumentSchema.parse(req.body);
+
+      // Ensure key belongs to this tenant (presigned upload places objects
+      // under `${tenantId}/...`). This prevents cross-tenant linking.
+      if (!body.storageKey.startsWith(`${tenantId}/`)) {
+        throw appError("Invalid storage key", 400, "INVALID_STORAGE_KEY");
+      }
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const doc = await prisma.customerDocument.create({
+        data: {
+          tenantId,
+          customerId,
+          category: body.category,
+          filename: body.filename,
+          contentType: body.contentType,
+          sizeBytes: body.sizeBytes,
+          storageKey: body.storageKey,
+          uploadedById: req.userId ?? null,
+        } as any,
+      });
+
+      res.status(201).json(doc);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  "/:id/documents/:docId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { id: customerId, docId } = req.params;
+
+      const doc = await prisma.customerDocument.findFirst({
+        where: { id: docId, customerId, tenantId },
+      });
+      if (!doc) throw appError("Document not found", 404, "NOT_FOUND");
+
+      await prisma.customerDocument.delete({ where: { id: docId } });
+      res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;

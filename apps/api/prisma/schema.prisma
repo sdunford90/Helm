@@ -580,9 +580,29 @@ model Customer {
   rampTickets              RampTicket[]
   communicationPreferences CommunicationPreference[]
   portalMessages           PortalMessage[]
+  documents                CustomerDocument[]
 
   @@index([tenantId])
   @@map("customers")
+}
+
+model CustomerDocument {
+  id           String   @id @default(uuid())
+  tenantId     String
+  customerId   String
+  category     String
+  filename     String
+  contentType  String
+  sizeBytes    Int
+  storageKey   String
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@map("customer_documents")
 }
 
 model Boat {

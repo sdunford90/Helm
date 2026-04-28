@@ -53,6 +53,7 @@ const TENANT_SCOPED_MODELS = new Set([
   "PoLineItem",
   "InventoryAdjustment",
   "InventoryCountSession",
+  "CustomerDocument",
 ]);
 
 // --------------------------------------------------------------------------

@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
+  Download, Trash2,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
@@ -143,6 +144,17 @@ interface ApiTimelineEvent {
   date: string;
   description: string;
   meta?: Record<string, unknown>;
+}
+
+interface ApiCustomerDocument {
+  id: string;
+  customerId: string;
+  category: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  storageKey: string;
+  createdAt: string;
 }
 
 function mapApiBoat(b: ApiBoat): Boat {
@@ -820,6 +832,11 @@ export default function CustomerDetailPage() {
   const { data: apiInvoiceData } = useApi<{ data: ApiInvoice[]; pagination: unknown }>('get', `/api/invoices?customerId=${id}&take=50`, { immediate: true });
   const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
+  const { data: documentsData, execute: refetchDocuments } = useApi<ApiCustomerDocument[]>('get', `/api/customers/${id}/documents`, { immediate: true });
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   if (!apiCustomer && loading) {
     return (
@@ -1198,20 +1215,211 @@ export default function CustomerDetailPage() {
   );
 
   /* ── Documents Tab ─── */
-  const renderDocuments = () => (
-    <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
-      <FileText size={32} style={{ color: '#2E4A6B', marginBottom: '16px' }} />
-      <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px' }}>
-        No documents uploaded
-      </h3>
-      <p style={{ fontSize: '15px', color: '#64748B', margin: '0 0 24px' }}>
-        Upload insurance certificates, registration papers, or other documents.
-      </p>
-      <button style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
-        Upload Document
+  async function uploadDocument(file: File) {
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const token = await getToken();
+      const contentType = file.type || 'application/octet-stream';
+
+      // 1. Get a presigned upload URL from the API.
+      const presign = await api.post<{ url: string; key: string }>(
+        '/api/storage/presign-upload',
+        { category: 'documents', filename: file.name, contentType },
+        token,
+      );
+
+      // 2. PUT the file directly to R2 using the presigned URL.
+      const put = await fetch(presign.url, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': contentType },
+      });
+      if (!put.ok) throw new Error('Upload to storage failed');
+
+      // 3. Verify magic bytes server-side. If the file is rejected, clean up
+      // the orphan in R2 so it doesn't count against the tenant's quota.
+      try {
+        await api.post(
+          '/api/storage/verify-upload',
+          { key: presign.key, contentType },
+          token,
+        );
+      } catch (verifyErr) {
+        await api.delete(`/api/storage/${presign.key}`, token).catch(() => {
+          /* best-effort cleanup; ignore secondary failure */
+        });
+        throw verifyErr;
+      }
+
+      // 4. Persist the document record linked to this customer.
+      await api.post(
+        `/api/customers/${id}/documents`,
+        {
+          category: 'documents',
+          filename: file.name,
+          contentType,
+          sizeBytes: file.size,
+          storageKey: presign.key,
+        },
+        token,
+      );
+
+      await refetchDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function downloadDocument(doc: ApiCustomerDocument) {
+    setUploadError(null);
+    try {
+      const token = await getToken();
+      const { url } = await api.get<{ url: string }>(
+        `/api/storage/presign-download/${doc.storageKey}`,
+        token,
+      );
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Download failed');
+    }
+  }
+
+  async function deleteDocument(doc: ApiCustomerDocument) {
+    if (!window.confirm(`Delete "${doc.filename}"?`)) return;
+    setUploadError(null);
+    try {
+      const token = await getToken();
+      await api.delete(`/api/customers/${id}/documents/${doc.id}`, token);
+      await api.delete(`/api/storage/${doc.storageKey}`, token).catch(() => {
+        /* DB row already gone — orphaned object will be cleaned up by lifecycle policy */
+      });
+      await refetchDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Delete failed');
+    }
+  }
+
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  const renderDocuments = () => {
+    const docs = documentsData ?? [];
+
+    const uploadButton = (
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={uploading}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: '6px',
+          padding: '8px 20px', fontSize: '14px', fontWeight: 600,
+          color: '#FFFFFF', backgroundColor: uploading ? '#94A3B8' : '#0A2342',
+          border: 'none', borderRadius: '6px',
+          cursor: uploading ? 'wait' : 'pointer',
+        }}
+      >
+        <Plus size={16} />
+        {uploading ? 'Uploading…' : 'Upload Document'}
       </button>
-    </div>
-  );
+    );
+
+    const hiddenInput = (
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void uploadDocument(file);
+        }}
+      />
+    );
+
+    if (docs.length === 0) {
+      return (
+        <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
+          <FileText size={32} style={{ color: '#2E4A6B', marginBottom: '16px' }} />
+          <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px' }}>
+            No documents uploaded
+          </h3>
+          <p style={{ fontSize: '15px', color: '#64748B', margin: '0 0 24px' }}>
+            Upload insurance certificates, registration papers, or other documents.
+          </p>
+          {uploadError && (
+            <div style={{ color: '#B71C1C', fontSize: '14px', marginBottom: '16px' }}>{uploadError}</div>
+          )}
+          {uploadButton}
+          {hiddenInput}
+        </div>
+      );
+    }
+
+    return (
+      <div style={s.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #E2E8F0' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', margin: 0 }}>
+            Documents ({docs.length})
+          </h3>
+          {uploadButton}
+        </div>
+        {uploadError && (
+          <div style={{ color: '#B71C1C', fontSize: '14px', padding: '12px 20px', borderBottom: '1px solid #E2E8F0' }}>{uploadError}</div>
+        )}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+          <thead>
+            <tr style={{ backgroundColor: '#F8FAFC', textAlign: 'left' }}>
+              <th style={{ padding: '12px 20px', fontWeight: 600, color: '#475569' }}>Filename</th>
+              <th style={{ padding: '12px 20px', fontWeight: 600, color: '#475569' }}>Size</th>
+              <th style={{ padding: '12px 20px', fontWeight: 600, color: '#475569' }}>Uploaded</th>
+              <th style={{ padding: '12px 20px', fontWeight: 600, color: '#475569', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {docs.map((d) => (
+              <tr key={d.id} style={{ borderTop: '1px solid #E2E8F0' }}>
+                <td style={{ padding: '12px 20px', color: '#0A2342' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    <FileText size={14} style={{ color: '#64748B' }} />
+                    {d.filename}
+                  </span>
+                </td>
+                <td style={{ padding: '12px 20px', color: '#64748B' }}>{formatBytes(d.sizeBytes)}</td>
+                <td style={{ padding: '12px 20px', color: '#64748B' }}>
+                  {new Date(d.createdAt).toLocaleDateString()}
+                </td>
+                <td style={{ padding: '12px 20px', textAlign: 'right' }}>
+                  <button
+                    type="button"
+                    onClick={() => void downloadDocument(d)}
+                    title="Download"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B', padding: '4px 8px' }}
+                  >
+                    <Download size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteDocument(d)}
+                    title="Delete"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#B71C1C', padding: '4px 8px' }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {hiddenInput}
+      </div>
+    );
+  };
 
   /* ── Activity Tab ─── */
   const renderActivity = () => (
