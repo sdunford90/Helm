@@ -370,6 +370,51 @@ export async function postRefund(
 }
 
 // ---------------------------------------------------------------------------
+// Refund reversal — undo a previously-posted REFUND when the external
+// processor refund (e.g. Stripe) ultimately failed. Posts the inverse of
+// postRefund so the net effect on AR / cash / bank is zero.
+// ---------------------------------------------------------------------------
+
+export async function reversePostRefund(
+  payment: {
+    id: string;
+    tenantId: string;
+    method: string;
+  },
+  refundAmountCents: number,
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string> {
+  const { tenantId } = payment;
+
+  const cashAccountNumber =
+    payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
+
+  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
+  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+
+  return postEntries(
+    tenantId,
+    [
+      {
+        accountId: cashAccountId,
+        debitCents: refundAmountCents,
+        creditCents: 0,
+        description: `Refund reversal on payment ${payment.id} — cash/bank`,
+      },
+      {
+        accountId: arAccountId,
+        debitCents: 0,
+        creditCents: refundAmountCents,
+        description: `Refund reversal on payment ${payment.id} — A/R restored`,
+      },
+    ],
+    "REFUND_REVERSAL",
+    payment.id,
+    tx,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Void invoice (reverse all invoice GL entries)
 // ---------------------------------------------------------------------------
 

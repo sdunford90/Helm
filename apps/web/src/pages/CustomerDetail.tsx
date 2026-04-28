@@ -161,6 +161,7 @@ interface ApiCustomerDocument {
 interface ApiPaymentHistoryEntry {
   id: string;
   amountCents: number;
+  refundedCents: number;
   method: 'CARD' | 'ACH' | 'CASH' | 'CHARGE_TO_SLIP' | 'GIFT_CARD' | string;
   status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'REFUNDED' | 'PARTIALLY_REFUNDED' | string;
   postedDate: string;
@@ -1358,7 +1359,11 @@ export default function CustomerDetailPage() {
   /* ── Refund a payment from history ─── */
   function openRefundDialog(payment: ApiPaymentHistoryEntry) {
     setRefundTarget(payment);
-    setRefundAmount((payment.amountCents / 100).toFixed(2));
+    const remaining = Math.max(
+      0,
+      payment.amountCents - (payment.refundedCents ?? 0),
+    );
+    setRefundAmount((remaining / 100).toFixed(2));
     setRefundReason('');
     setRefundError(null);
   }
@@ -1382,8 +1387,12 @@ export default function CustomerDetailPage() {
       return;
     }
     const cents = Math.round(dollars * 100);
-    if (cents > refundTarget.amountCents) {
-      setRefundError('Refund amount cannot exceed the original payment.');
+    const remainingRefundable = Math.max(
+      0,
+      refundTarget.amountCents - (refundTarget.refundedCents ?? 0),
+    );
+    if (cents > remainingRefundable) {
+      setRefundError('Refund amount cannot exceed the remaining refundable balance.');
       return;
     }
 
@@ -1519,13 +1528,19 @@ export default function CustomerDetailPage() {
                     {history.map((p, idx) => {
                       const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
                       const sb = paymentStatusColors[p.status] || { bg: '#F2F4F6', color: '#64748B' };
-                      // Refund is only meaningful for Stripe-backed completed
-                      // payments. Fully-refunded and failed rows expose no
-                      // action; partially-refunded rows match the existing
-                      // /api/payments/:id/refund handler which permits
-                      // additional partial refunds up to the original amount.
+                      // Refund is only meaningful for Stripe-backed payments
+                      // that still have a remaining refundable balance. The
+                      // refundedCents ledger is the source of truth; a
+                      // PARTIALLY_REFUNDED row whose ledger is exhausted
+                      // hides the action, and the API enforces the same
+                      // check server-side.
+                      const remainingRefundable = Math.max(
+                        0,
+                        p.amountCents - (p.refundedCents ?? 0),
+                      );
                       const canRefund =
                         !!p.stripePaymentId &&
+                        remainingRefundable > 0 &&
                         (p.status === 'COMPLETED' || p.status === 'PARTIALLY_REFUNDED');
                       return (
                         <tr key={p.id}>
@@ -1534,6 +1549,19 @@ export default function CustomerDetailPage() {
                           <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
                           <td style={{ ...s.td, backgroundColor: rowBg }}>
                             <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
+                            {p.status === 'PARTIALLY_REFUNDED' && (
+                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                {fmtCents(p.refundedCents ?? 0)} of {fmtCents(p.amountCents)} refunded
+                                {remainingRefundable > 0 && (
+                                  <> · {fmtCents(remainingRefundable)} remaining</>
+                                )}
+                              </div>
+                            )}
+                            {p.status === 'REFUNDED' && (p.refundedCents ?? 0) > 0 && (
+                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                {fmtCents(p.refundedCents ?? 0)} refunded
+                              </div>
+                            )}
                           </td>
                           <td style={{ ...s.td, backgroundColor: rowBg }}>
                             {p.invoice ? (
@@ -2355,6 +2383,19 @@ export default function CustomerDetailPage() {
               Original payment of {fmtCents(refundTarget.amountCents)}{' '}
               {refundTarget.invoice ? `for invoice ${refundTarget.invoice.invoiceNumber}` : ''}
               .
+              {(refundTarget.refundedCents ?? 0) > 0 && (
+                <div style={{ marginTop: '4px' }}>
+                  Already refunded: {fmtCents(refundTarget.refundedCents ?? 0)}
+                  {' · '}
+                  Remaining refundable:{' '}
+                  {fmtCents(
+                    Math.max(
+                      0,
+                      refundTarget.amountCents - (refundTarget.refundedCents ?? 0),
+                    ),
+                  )}
+                </div>
+              )}
             </div>
 
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#0F2E4D', marginBottom: '6px' }}>
@@ -2364,7 +2405,12 @@ export default function CustomerDetailPage() {
               type="number"
               step="0.01"
               min="0.01"
-              max={(refundTarget.amountCents / 100).toFixed(2)}
+              max={(
+                Math.max(
+                  0,
+                  refundTarget.amountCents - (refundTarget.refundedCents ?? 0),
+                ) / 100
+              ).toFixed(2)}
               value={refundAmount}
               onChange={(e) => setRefundAmount(e.target.value)}
               disabled={refundBusy}

@@ -817,6 +817,7 @@ model Payment {
   customerId      String
   invoiceId       String?
   amountCents     Int
+  refundedCents   Int           @default(0)
   method          PaymentMethod
   stripePaymentId String?
   postedDate      DateTime

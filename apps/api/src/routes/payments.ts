@@ -5,6 +5,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
+import { rollbackReservedRefund } from "../services/payment-refund.js";
 import { voidQboPayment } from "../services/qbo-sync.js";
 import { v4 as uuid } from "uuid";
 
@@ -496,42 +497,52 @@ router.post(
         throw appError("Cannot refund a failed payment", 400, "PAYMENT_FAILED");
       }
 
-      const refundAmount = requestedAmount ?? payment.amountCents;
+      const remainingRefundable = payment.amountCents - payment.refundedCents;
 
-      if (refundAmount > payment.amountCents) {
+      if (remainingRefundable <= 0) {
         throw appError(
-          "Refund amount exceeds payment amount",
+          "Payment is already fully refunded",
+          400,
+          "ALREADY_REFUNDED",
+        );
+      }
+
+      const refundAmount = requestedAmount ?? remainingRefundable;
+
+      if (refundAmount > remainingRefundable) {
+        throw appError(
+          "Refund amount exceeds remaining refundable balance",
           400,
           "EXCESS_REFUND",
         );
       }
 
-      // Process Stripe refund if applicable
-      if (payment.stripePaymentId) {
-        const tenant = await prisma.tenant.findUnique({
-          where: { id: tenantId },
-          select: { stripeAccountId: true },
+      const newRefundedTotal = payment.refundedCents + refundAmount;
+      const isFullRefund = newRefundedTotal === payment.amountCents;
+
+      // Reserve-then-charge: first claim the refundable balance in the DB
+      // with an optimistic-concurrency guard, then call Stripe. If Stripe
+      // fails, the reservation is rolled back in a compensating
+      // transaction so the ledger never diverges from the processor.
+      // Concurrent refund attempts that lose the optimistic race fail
+      // with REFUND_CONFLICT before any external charge is issued.
+      const updated = await prisma.$transaction(async (tx) => {
+        const updateResult = await tx.payment.updateMany({
+          where: { id: payment.id, refundedCents: payment.refundedCents },
+          data: {
+            refundedCents: newRefundedTotal,
+            status: isFullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED",
+          },
         });
 
-        if (tenant?.stripeAccountId) {
-          await requireStripe().refunds.create(
-            {
-              payment_intent: payment.stripePaymentId,
-              amount: refundAmount,
-              reason: "requested_by_customer",
-            },
-            {
-              stripeAccount: tenant.stripeAccountId,
-              idempotencyKey: `refund-${payment.id}-${refundAmount}`,
-            },
+        if (updateResult.count === 0) {
+          throw appError(
+            "Refund conflicted with a concurrent refund; please retry",
+            409,
+            "REFUND_CONFLICT",
           );
         }
-      }
 
-      const isFullRefund = refundAmount === payment.amountCents;
-
-      const updated = await prisma.$transaction(async (tx) => {
-        // Reverse GL entries
         await postRefund(
           {
             id: payment.id,
@@ -543,15 +554,6 @@ router.post(
           tx,
         );
 
-        // Update payment status
-        const pay = await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: isFullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED",
-          },
-        });
-
-        // Reinstate invoice balance if applicable
         if (payment.invoice) {
           const newBalance = payment.invoice.balanceCents + refundAmount;
           await tx.invoice.update({
@@ -563,8 +565,58 @@ router.post(
           });
         }
 
-        return pay;
+        return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
       });
+
+      // Phase 2: external Stripe refund. We've already locked the slot in
+      // the DB, so concurrent callers will fail before reaching Stripe.
+      // The idempotency key includes the prior refundedCents so two
+      // separate partial refunds for the same dollar amount produce
+      // distinct Stripe calls instead of being collapsed into one.
+      if (payment.stripePaymentId) {
+        const tenant = await prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { stripeAccountId: true },
+        });
+
+        if (tenant?.stripeAccountId) {
+          try {
+            await requireStripe().refunds.create(
+              {
+                payment_intent: payment.stripePaymentId,
+                amount: refundAmount,
+                reason: "requested_by_customer",
+              },
+              {
+                stripeAccount: tenant.stripeAccountId,
+                idempotencyKey: `refund-${payment.id}-${payment.refundedCents}-${refundAmount}`,
+              },
+            );
+          } catch (stripeErr) {
+            // Compensating rollback: undo Phase 1 using atomic
+            // decrements so a concurrent successful refund (which
+            // could only have raced if it committed AFTER ours) is
+            // not clobbered. If the rollback itself fails we log
+            // loudly so an operator can reconcile manually.
+            try {
+              await rollbackReservedRefund({
+                paymentId: payment.id,
+                tenantId,
+                paymentMethod: payment.method,
+                paymentAmountCents: payment.amountCents,
+                refundAmountCents: refundAmount,
+                invoiceId: payment.invoice?.id ?? null,
+              });
+            } catch (rollbackErr) {
+              console.error(
+                `[payments] CRITICAL: refund rollback failed for ${payment.id} after Stripe error; manual reconciliation required.`,
+                { stripeErr, rollbackErr },
+              );
+            }
+            throw stripeErr;
+          }
+        }
+      }
 
       // Audit log
       await prisma.auditLog.create({

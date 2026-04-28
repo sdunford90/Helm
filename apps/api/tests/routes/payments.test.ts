@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createTestApp, buildPayment, buildCustomer, buildInvoice } from '../helpers.js';
 import { mockPrisma } from '../setup.js';
+import { requireStripe } from '../../src/lib/stripe.js';
+import { reversePostRefund } from '../../src/services/gl-posting.js';
 
 let app: Express;
 
@@ -218,6 +220,306 @@ describe('POST /api/payments', () => {
 
     expect(res.status).toBe(400);
     expect(res.body).toHaveProperty('code', 'OVERPAYMENT');
+  });
+
+  it('rejects partial refund that exceeds the remaining refundable balance', async () => {
+    // A previously partial-refunded payment: $1000 originally, $700 already
+    // refunded. A new request for $400 must fail (only $300 remaining), even
+    // though it would have passed the legacy "amount <= original" check.
+    const payment = buildPayment({
+      id: 'pay-partial',
+      amountCents: 100000,
+      refundedCents: 70000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: 'pi_partial',
+      invoice: { id: 'inv-1', balanceCents: 70000, totalCents: 100000, status: 'ISSUED' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+
+    const res = await request(app)
+      .post('/api/payments/pay-partial/refund')
+      .send({ amountCents: 40000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'EXCESS_REFUND');
+  });
+
+  it('rejects refund when payment is already fully refunded via the ledger', async () => {
+    // Status is still PARTIALLY_REFUNDED but the ledger shows the full
+    // amount has been refunded — should reject as ALREADY_REFUNDED so a
+    // stale row cannot be re-refunded.
+    const payment = buildPayment({
+      id: 'pay-exhausted',
+      amountCents: 100000,
+      refundedCents: 100000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: 'pi_exhausted',
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+
+    const res = await request(app)
+      .post('/api/payments/pay-exhausted/refund')
+      .send({ amountCents: 1000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'ALREADY_REFUNDED');
+  });
+
+  it('rejects with REFUND_CONFLICT and skips Stripe when a concurrent refund wins the race', async () => {
+    // Simulate a concurrent refund: both requests pass the
+    // remaining-balance check, but updateMany only returns count=1 for
+    // the one that matches the prior refundedCents value. The losing
+    // request must fail BEFORE any external Stripe charge is issued.
+    const payment = buildPayment({
+      id: 'pay-race',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: 'pi_race',
+      invoice: { id: 'inv-race', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    // Optimistic guard fails — a concurrent caller already bumped
+    // refundedCents.
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_x' });
+
+    const stripe = requireStripe();
+    (stripe.refunds.create as any).mockClear();
+
+    const res = await request(app)
+      .post('/api/payments/pay-race/refund')
+      .send({ amountCents: 50000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toHaveProperty('code', 'REFUND_CONFLICT');
+    // Critical: no external charge issued for the losing request.
+    expect(stripe.refunds.create).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the ledger with atomic decrements when Stripe refund fails', async () => {
+    // Phase 1 succeeds (DB reserves the slot), Phase 2 (Stripe) fails.
+    // The compensating transaction must back out using atomic
+    // decrements (NOT absolute snapshot restores) so any concurrent
+    // refund that committed in the meantime is preserved. It must
+    // also post a REFUND_REVERSAL GL entry and decrement the invoice
+    // balance.
+    const payment = buildPayment({
+      id: 'pay-rollback',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: 'pi_rollback',
+      invoice: { id: 'inv-rb', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    // Sequence the two findUniqueOrThrow calls:
+    //   1. End of Phase 1 — returns the reserved state (refundedCents=30000).
+    //   2. Inside rollback — returns the post-decrement state
+    //      (refundedCents=0, no concurrent refund here).
+    mockPrisma.payment.findUniqueOrThrow
+      .mockResolvedValueOnce({
+        ...payment,
+        refundedCents: 30000,
+        status: 'PARTIALLY_REFUNDED',
+      })
+      .mockResolvedValueOnce({
+        refundedCents: 0,
+        status: 'PARTIALLY_REFUNDED',
+      });
+    mockPrisma.invoice.findUniqueOrThrow.mockResolvedValue({
+      balanceCents: 0,
+      status: 'PAID',
+    });
+    mockPrisma.payment.update.mockResolvedValue(payment);
+    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_x' });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const stripe = requireStripe();
+    (stripe.refunds.create as any).mockRejectedValueOnce(
+      new Error('stripe down'),
+    );
+    (reversePostRefund as any).mockClear();
+    mockPrisma.payment.update.mockClear();
+    mockPrisma.invoice.update.mockClear();
+
+    const res = await request(app)
+      .post('/api/payments/pay-rollback/refund')
+      .send({ amountCents: 30000 });
+
+    expect(res.status).toBe(500);
+    // Atomic-decrement rollback on the payment ledger.
+    expect(mockPrisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay-rollback' },
+        data: { refundedCents: { decrement: 30000 } },
+      }),
+    );
+    // Status recomputed from the post-decrement value (now 0 → COMPLETED).
+    expect(mockPrisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay-rollback' },
+        data: { status: 'COMPLETED' },
+      }),
+    );
+    // Invoice balance restored via decrement, never an absolute write.
+    expect(mockPrisma.invoice.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'inv-rb' },
+        data: { balanceCents: { decrement: 30000 } },
+      }),
+    );
+    expect(reversePostRefund).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'pay-rollback', method: 'CARD' }),
+      30000,
+      expect.anything(),
+    );
+  });
+
+  it('preserves a concurrent successful refund when rolling back a Stripe failure', async () => {
+    // Concurrency interleaving: A reserves $30 (refundedCents 0→30), then
+    // B reserves AND completes $20 (refundedCents 30→50). A's Stripe call
+    // then fails. Rollback must use atomic decrements so B's $20 stays
+    // reflected — naively writing back A's pre-request snapshot
+    // (refundedCents=0, status=COMPLETED) would erase B's valid refund.
+    const payment = buildPayment({
+      id: 'pay-interleave',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: 'pi_interleave',
+      invoice: { id: 'inv-il', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.payment.findUniqueOrThrow
+      // End of Phase 1 — A's reserved state.
+      .mockResolvedValueOnce({
+        ...payment,
+        refundedCents: 30000,
+        status: 'PARTIALLY_REFUNDED',
+      })
+      // Inside rollback — POST-decrement: A's 30000 just came back off
+      // the 50000 total (which included B's 20000), leaving 20000.
+      .mockResolvedValueOnce({
+        refundedCents: 20000,
+        status: 'PARTIALLY_REFUNDED',
+      });
+    mockPrisma.invoice.findUniqueOrThrow.mockResolvedValue({
+      // B's refund left 20000 outstanding on the invoice; rollback
+      // decremented A's 30000 from 50000.
+      balanceCents: 20000,
+      status: 'ISSUED',
+    });
+    mockPrisma.payment.update.mockResolvedValue(payment);
+    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_x' });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const stripe = requireStripe();
+    (stripe.refunds.create as any).mockRejectedValueOnce(
+      new Error('stripe down'),
+    );
+    mockPrisma.payment.update.mockClear();
+    mockPrisma.invoice.update.mockClear();
+
+    const res = await request(app)
+      .post('/api/payments/pay-interleave/refund')
+      .send({ amountCents: 30000 });
+
+    expect(res.status).toBe(500);
+
+    // Critical: rollback must NOT issue an absolute refundedCents
+    // write — that would clobber B's concurrent refund. The payment
+    // ledger is only touched during rollback in this scenario (Phase 1
+    // uses updateMany), so every payment.update must be either a
+    // decrement of refundedCents or a status-only update.
+    const paymentUpdateCalls = mockPrisma.payment.update.mock.calls;
+    expect(paymentUpdateCalls.length).toBeGreaterThan(0);
+    for (const [args] of paymentUpdateCalls) {
+      if ('refundedCents' in (args.data ?? {})) {
+        expect(args.data.refundedCents).toEqual({ decrement: 30000 });
+      }
+    }
+
+    // Status must reflect the post-rollback ledger (still
+    // PARTIALLY_REFUNDED because B's $20 refund remains). The
+    // mocked findUniqueOrThrow already reports status=PARTIALLY_REFUNDED
+    // and the recomputed value (20000 between 0 and 100000) matches,
+    // so no status update should be issued. Critically, no
+    // status:'COMPLETED' write — that would erase B's PARTIALLY_REFUNDED.
+    const statusResetToCompleted = paymentUpdateCalls.some(
+      ([args]) => args.data?.status === 'COMPLETED',
+    );
+    expect(statusResetToCompleted).toBe(false);
+
+    // Invoice: Phase 1 forward path writes an absolute balance (safe
+    // because the payment-level optimistic guard serialises refunds
+    // on a given payment row). The rollback path MUST use a decrement
+    // so concurrent refunds on the same invoice (e.g. via a different
+    // payment) aren't clobbered. Verify the rollback decrement was
+    // issued and that no rollback-style absolute reset (balanceCents:0)
+    // occurred.
+    const invoiceUpdateCalls = mockPrisma.invoice.update.mock.calls;
+    const sawDecrement = invoiceUpdateCalls.some(
+      ([args]) =>
+        args.data?.balanceCents &&
+        typeof args.data.balanceCents === 'object' &&
+        args.data.balanceCents.decrement === 30000,
+    );
+    expect(sawDecrement).toBe(true);
+    const sawAbsoluteReset = invoiceUpdateCalls.some(
+      ([args]) => args.data?.balanceCents === 0,
+    );
+    expect(sawAbsoluteReset).toBe(false);
+  });
+
+  it('accepts a partial refund up to the remaining refundable balance', async () => {
+    const payment = buildPayment({
+      id: 'pay-ok',
+      amountCents: 100000,
+      refundedCents: 60000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: null, // skip Stripe path
+      invoice: { id: 'inv-ok', balanceCents: 60000, totalCents: 100000, status: 'ISSUED' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+      ...payment,
+      refundedCents: 100000,
+      status: 'REFUNDED',
+    });
+    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/payments/pay-ok/refund')
+      .send({ amountCents: 40000 });
+
+    expect(res.status).toBe(200);
+    // Atomic guard: updateMany must filter on the prior refundedCents
+    // value to detect concurrent refunds.
+    expect(mockPrisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'pay-ok',
+          refundedCents: 60000,
+        }),
+        data: expect.objectContaining({
+          refundedCents: 100000,
+          status: 'REFUNDED',
+        }),
+      }),
+    );
   });
 
   it('rejects payment on voided invoice', async () => {

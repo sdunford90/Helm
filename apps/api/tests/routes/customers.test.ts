@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
-import { createTestApp, buildCustomer } from '../helpers.js';
+import { createTestApp, buildCustomer, buildPayment } from '../helpers.js';
 import { mockPrisma } from '../setup.js';
+import { requireStripe } from '../../src/lib/stripe.js';
 
 let app: Express;
 
@@ -534,5 +535,148 @@ describe('PUT /api/customers/:id/autopay', () => {
     expect(res.body).toHaveProperty('code', 'NOT_FOUND');
     expect(stripe.customers.update).not.toHaveBeenCalled();
     expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/customers/:id/payments/:paymentId/refund', () => {
+  // Mirrors the key remaining-balance scenarios already covered for the
+  // sibling /api/payments/:id/refund handler, since both endpoints share
+  // the reserve-then-charge + atomic-decrement-rollback flow and must
+  // behave identically with respect to the new refundedCents ledger.
+
+  it('rejects a partial refund that exceeds the remaining refundable balance', async () => {
+    const customer = buildCustomer({ id: 'cust-partial' });
+    // $1000 originally, $700 already refunded → only $300 remaining;
+    // a $400 request must fail even though it's < the original amount.
+    const payment = buildPayment({
+      id: 'pay-cust-partial',
+      amountCents: 100000,
+      refundedCents: 70000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: 'pi_cust_partial',
+      invoice: {
+        id: 'inv-cust',
+        balanceCents: 70000,
+        totalCents: 100000,
+        status: 'ISSUED',
+        location: { stripeAccountId: 'acct_x' },
+      },
+    });
+
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+
+    const res = await request(app)
+      .post('/api/customers/cust-partial/payments/pay-cust-partial/refund')
+      .send({ amountCents: 40000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'EXCESS_REFUND');
+  });
+
+  it('rejects refund when the ledger is already exhausted', async () => {
+    const customer = buildCustomer({ id: 'cust-exhausted' });
+    const payment = buildPayment({
+      id: 'pay-cust-exhausted',
+      amountCents: 100000,
+      refundedCents: 100000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: 'pi_cust_exhausted',
+    });
+
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+
+    const res = await request(app)
+      .post('/api/customers/cust-exhausted/payments/pay-cust-exhausted/refund')
+      .send({ amountCents: 1000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'ALREADY_REFUNDED');
+  });
+
+  it('returns REFUND_CONFLICT and does not call Stripe when a concurrent refund wins the race', async () => {
+    const customer = buildCustomer({ id: 'cust-race' });
+    const payment = buildPayment({
+      id: 'pay-cust-race',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: 'pi_cust_race',
+      invoice: {
+        id: 'inv-race',
+        balanceCents: 0,
+        totalCents: 100000,
+        status: 'PAID',
+        location: { stripeAccountId: 'acct_x' },
+      },
+    });
+
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    // Optimistic guard fails — a concurrent caller already bumped
+    // refundedCents past the prior value.
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 0 });
+
+    const stripe = requireStripe();
+    (stripe.refunds.create as any).mockClear();
+
+    const res = await request(app)
+      .post('/api/customers/cust-race/payments/pay-cust-race/refund')
+      .send({ amountCents: 50000 });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toHaveProperty('code', 'REFUND_CONFLICT');
+    // Critical: no external charge issued for the losing request.
+    expect(stripe.refunds.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts a partial top-up and atomically updates the refundedCents ledger', async () => {
+    const customer = buildCustomer({ id: 'cust-ok' });
+    const payment = buildPayment({
+      id: 'pay-cust-ok',
+      amountCents: 100000,
+      refundedCents: 60000,
+      status: 'PARTIALLY_REFUNDED',
+      stripePaymentId: null, // skip the Stripe path
+      invoice: {
+        id: 'inv-ok',
+        balanceCents: 60000,
+        totalCents: 100000,
+        status: 'ISSUED',
+        location: { stripeAccountId: 'acct_x' },
+      },
+    });
+
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+      ...payment,
+      refundedCents: 100000,
+      status: 'REFUNDED',
+    });
+    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/customers/cust-ok/payments/pay-cust-ok/refund')
+      .send({ amountCents: 40000 });
+
+    expect(res.status).toBe(200);
+    // Atomic guard: updateMany must filter on the prior refundedCents
+    // value to detect concurrent refunds.
+    expect(mockPrisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'pay-cust-ok',
+          refundedCents: 60000,
+        }),
+        data: expect.objectContaining({
+          refundedCents: 100000,
+          status: 'REFUNDED',
+        }),
+      }),
+    );
   });
 });

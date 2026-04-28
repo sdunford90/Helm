@@ -130,6 +130,7 @@ export function buildPayment(overrides = {}) {
     customerId: 'cust-1',
     invoiceId: 'inv-1',
     amountCents: 107000,
+    refundedCents: 0,
     method: 'CARD',
     status: 'COMPLETED',
     stripePaymentId: 'pi_test',
