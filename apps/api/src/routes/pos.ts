@@ -1048,23 +1048,69 @@ router.get(
   },
 );
 
+// ─── Helper: resolve Stripe account for Terminal routes ─────────────────────
+//
+// Priority order:
+//  1. shiftId  — look up the Shift's locationId (trusted server-side context)
+//  2. locationId — explicit location override (e.g. reader management)
+//  3. Tenant-level fallback for single-location marinas
+//
+// Returns null when no Stripe account is configured so callers can respond
+// with STRIPE_NOT_CONFIGURED.
+
+async function resolveStripeAccount(
+  tenantId: string,
+  opts: { shiftId?: string | null; locationId?: string | null } = {},
+): Promise<string | null> {
+  let resolvedLocationId: string | null = null;
+
+  if (opts.shiftId) {
+    const shift = await prisma.shift.findFirst({
+      where: { id: opts.shiftId, tenantId },
+      select: { locationId: true },
+    });
+    if (shift?.locationId) {
+      resolvedLocationId = shift.locationId;
+    }
+  }
+
+  if (!resolvedLocationId && opts.locationId) {
+    resolvedLocationId = opts.locationId;
+  }
+
+  if (resolvedLocationId) {
+    // When an explicit location is specified, resolve strictly — if the
+    // location doesn't belong to this tenant or has no Stripe account we
+    // return null rather than silently routing to the tenant account.
+    const location = await prisma.location.findFirst({
+      where: { id: resolvedLocationId, tenantId },
+      select: { stripeAccountId: true },
+    });
+    return location?.stripeAccountId ?? null;
+  }
+
+  // No location context: fall back to the tenant-level account (single-location
+  // marinas that haven't configured per-location Stripe accounts).
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { stripeAccountId: true },
+  });
+  return tenant?.stripeAccountId ?? null;
+}
+
 // ─── POST /terminal/connection-token — Terminal SDK auth ────────────────────
 
 router.post(
   "/terminal/connection-token",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res
-          .status(400)
-          .json({ error: "No Stripe account connected for this marina." });
+      const locationId = (req.query.locationId ?? req.body?.locationId) as string | undefined;
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      const secret = await createConnectionToken(tenant.stripeAccountId);
+      const secret = await createConnectionToken(stripeAccountId);
       res.json({ secret });
     } catch (err) {
       next(err);
@@ -1078,15 +1124,13 @@ router.get(
   "/terminal/readers",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.json({ data: [] });
+      const locationId = req.query.locationId as string | undefined;
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      const readers = await listReaders(tenant.stripeAccountId);
+      const readers = await listReaders(stripeAccountId);
       res.json({ data: readers });
     } catch (err) {
       next(err);
@@ -1099,22 +1143,20 @@ router.get(
 const RegisterReaderSchema = z.object({
   registrationCode: z.string().min(1),
   label: z.string().min(1).max(80),
+  locationId: z.string().optional(),
 });
 
 router.post(
   "/terminal/readers/register",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.status(400).json({ error: "No Stripe account connected for this marina." });
+      const { registrationCode, label, locationId } = RegisterReaderSchema.parse(req.body);
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      const { registrationCode, label } = RegisterReaderSchema.parse(req.body);
-      const reader = await registerReader(tenant.stripeAccountId, registrationCode, label);
+      const reader = await registerReader(stripeAccountId, registrationCode, label);
       res.json(reader);
     } catch (err) {
       next(err);
@@ -1128,15 +1170,13 @@ router.delete(
   "/terminal/readers/:id",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.status(400).json({ error: "No Stripe account connected for this marina." });
+      const locationId = req.query.locationId as string | undefined;
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      await deleteReader(tenant.stripeAccountId, req.params.id);
+      await deleteReader(stripeAccountId, req.params.id);
       res.json({ deleted: true });
     } catch (err) {
       next(err);
@@ -1150,26 +1190,26 @@ const TerminalPaymentSchema = z.object({
   amountCents: z.number().int().positive(),
   tipEnabled: z.boolean().default(false),
   tipAmounts: z.array(z.number().int().min(0)).optional(),
+  shiftId: z.string().optional(),
+  locationId: z.string().optional(),
 });
 
 router.post(
   "/terminal/payment-intents",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
+      const data = TerminalPaymentSchema.parse(req.body);
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, {
+        shiftId: data.shiftId,
+        locationId: data.locationId,
       });
-      if (!tenant?.stripeAccountId) {
-        res
-          .status(400)
-          .json({ error: "No Stripe account connected for this marina." });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      const data = TerminalPaymentSchema.parse(req.body);
       const clientSecret = await createTerminalPaymentIntent({
         amount: data.amountCents,
-        connectedAccountId: tenant.stripeAccountId,
+        connectedAccountId: stripeAccountId,
         applicationFee: Math.round(data.amountCents * 0.005),
         tipEnabled: data.tipEnabled,
         tipAmounts: data.tipAmounts,
@@ -1185,6 +1225,8 @@ router.post(
 
 const CaptureSchema = z.object({
   tipAmountCents: z.number().int().min(0).optional(),
+  shiftId: z.string().optional(),
+  locationId: z.string().optional(),
 });
 
 // ─── POST /payments/cnp — Card-not-present (keyed-in) payment ────────────────
@@ -1193,22 +1235,21 @@ const CnpPaymentSchema = z.object({
   amountCents: z.number().int().min(50),
   paymentMethodId: z.string().min(1),
   description: z.string().optional(),
+  shiftId: z.string().optional(),
+  locationId: z.string().optional(),
 });
 
 router.post(
   "/payments/cnp",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.status(400).json({ error: "No Stripe account connected for this marina." });
+      const { amountCents, paymentMethodId, description, shiftId, locationId } = CnpPaymentSchema.parse(req.body);
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
 
-      const { amountCents, paymentMethodId, description } = CnpPaymentSchema.parse(req.body);
       const { stripe: stripeClient } = await import("../lib/stripe.js");
       if (!stripeClient) {
         res.status(500).json({ error: "Stripe is not configured." });
@@ -1224,7 +1265,7 @@ router.post(
         payment_method: paymentMethodId,
         payment_method_types: ["card"],
         confirm: true,
-        transfer_data: { destination: tenant.stripeAccountId },
+        transfer_data: { destination: stripeAccountId },
         description: description ?? "POS card-not-present payment",
       });
 
@@ -1239,20 +1280,15 @@ router.post(
   "/terminal/payment-intents/:id/capture",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.tenantId! },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res
-          .status(400)
-          .json({ error: "No Stripe account connected for this marina." });
+      const { tipAmountCents, shiftId, locationId } = CaptureSchema.parse(req.body);
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
         return;
       }
-      const { tipAmountCents } = CaptureSchema.parse(req.body);
       await capturePayment(
         req.params.id,
-        tenant.stripeAccountId,
+        stripeAccountId,
         tipAmountCents,
       );
       res.json({ captured: true });
