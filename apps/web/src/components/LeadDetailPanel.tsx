@@ -747,33 +747,14 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
               </div>
             </div>
 
-            {/* Source Info — view only */}
-            {!isEditing && (
-              <div style={s.section}>
-                <div style={s.sectionTitle}>
-                  <Globe size={14} />
-                  Source Details
-                </div>
-                <div style={s.fieldGrid}>
-                  <div style={s.field}>
-                    <span style={s.fieldLabel}>Form</span>
-                    <span style={s.fieldValue}>Slip Inquiry Form</span>
-                  </div>
-                  <div style={s.field}>
-                    <span style={s.fieldLabel}>Landing URL</span>
-                    <span style={{ ...s.fieldValue, color: '#0369A1', fontSize: '13px' }}>/marina/slips</span>
-                  </div>
-                  <div style={s.field}>
-                    <span style={s.fieldLabel}>UTM Source</span>
-                    <span style={s.fieldValue}>google</span>
-                  </div>
-                  <div style={s.field}>
-                    <span style={s.fieldLabel}>UTM Campaign</span>
-                    <span style={s.fieldValue}>spring_promo</span>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Source/UTM details block removed: it previously rendered a
+                hardcoded mock (Slip Inquiry Form / /marina/slips / google /
+                spring_promo) unrelated to the persisted lead. The real
+                Source + Source Detail are now shown in the field grid above
+                using the LeadSource enum and `sourceDetail` column. When a
+                future task wires sourceFormId / sourceUrl / utmSource /
+                utmCampaign through to shared-types, this section can be
+                re-added with real values. */}
 
             {/* Activity Timeline */}
             <div style={s.section}>
