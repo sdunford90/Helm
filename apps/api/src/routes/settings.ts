@@ -1248,6 +1248,36 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
       return;
     }
 
+    // Check if any catalog products still reference this GL account.
+    // Deleting (or NULL-ing) the FK on these would silently break GL posting,
+    // so block the delete until the operator reassigns them.
+    const [dockageRateRefs, serviceFeeRefs, productRefs, rentalProductRefs] = await Promise.all([
+      prisma.dockageRate.count({ where: { tenantId, glAccountId: req.params.id } }),
+      prisma.serviceFee.count({ where: { tenantId, glAccountId: req.params.id } }),
+      prisma.product.count({ where: { tenantId, glAccountId: req.params.id } }),
+      prisma.rentalProduct.count({ where: { tenantId, glAccountId: req.params.id } }),
+    ]);
+    const totalRefs = dockageRateRefs + serviceFeeRefs + productRefs + rentalProductRefs;
+    if (totalRefs > 0) {
+      const parts: string[] = [];
+      if (dockageRateRefs > 0) parts.push(`${dockageRateRefs} dockage rate${dockageRateRefs === 1 ? "" : "s"}`);
+      if (serviceFeeRefs > 0) parts.push(`${serviceFeeRefs} service fee${serviceFeeRefs === 1 ? "" : "s"}`);
+      if (productRefs > 0) parts.push(`${productRefs} product${productRefs === 1 ? "" : "s"}`);
+      if (rentalProductRefs > 0) parts.push(`${rentalProductRefs} rental product${rentalProductRefs === 1 ? "" : "s"}`);
+      res.status(409).json({
+        error: `This GL account is assigned to ${parts.join(", ")}. Reassign them before deleting.`,
+        code: "GL_ACCOUNT_IN_USE",
+        references: {
+          dockageRates: dockageRateRefs,
+          serviceFees: serviceFeeRefs,
+          products: productRefs,
+          rentalProducts: rentalProductRefs,
+          total: totalRefs,
+        },
+      });
+      return;
+    }
+
     // Check if account has any GL entries posted to it
     const entryCount = await prisma.glEntry.count({
       where: { accountId: req.params.id },
