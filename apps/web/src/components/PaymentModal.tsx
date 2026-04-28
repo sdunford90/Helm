@@ -95,6 +95,31 @@ const s: Record<string, React.CSSProperties> = {
     letterSpacing: '0.05em', marginBottom: '8px', marginTop: '4px',
   },
   methodList: { display: 'grid', gap: '10px', marginBottom: '20px' },
+  amountRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: '12px', padding: '12px 14px', borderRadius: '8px',
+    border: '1px solid #CCCCCC', backgroundColor: '#F7F9FB',
+    marginBottom: '12px',
+  },
+  amountLabel: {
+    fontSize: '12px', fontWeight: 600, color: '#0A2342',
+  },
+  amountHint: {
+    fontSize: '11px', fontWeight: 400, color: '#2E4A6B', marginTop: '2px',
+  },
+  amountInputWrap: {
+    display: 'flex', alignItems: 'center', gap: '4px',
+    border: '1px solid #CCCCCC', borderRadius: '6px',
+    backgroundColor: '#FFFFFF', padding: '6px 10px',
+  },
+  amountInput: {
+    width: '100px', border: 'none', outline: 'none', fontSize: '14px',
+    fontWeight: 600, color: '#0A2342', textAlign: 'right',
+    fontFamily: '"JetBrains Mono", monospace', backgroundColor: 'transparent',
+  },
+  amountError: {
+    fontSize: '12px', color: '#B71C1C', marginTop: '6px', marginBottom: '12px',
+  },
   methodBtn: {
     display: 'flex', alignItems: 'center', gap: '12px',
     padding: '14px 18px', borderRadius: '8px', border: '1px solid #CCCCCC',
@@ -200,7 +225,14 @@ export default function PaymentModal({
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [chargingMethodId, setChargingMethodId] = useState<string | null>(null);
   const [chargedMethodKind, setChargedMethodKind] = useState<'card' | 'bank' | null>(null);
+  const [chargedAmountCents, setChargedAmountCents] = useState<number>(balanceDue);
   const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+  // Amount input for charging a saved method. Defaults to the full balance
+  // and is editable so staff can take a partial payment (deposit, instalment).
+  // Stored as a string to allow free-form typing; parsed on submit.
+  const [amountInput, setAmountInput] = useState<string>(
+    (balanceDue / 100).toFixed(2),
+  );
 
   const savedMethods = useApi<PaymentMethodsResponse>(
     'get',
@@ -222,16 +254,42 @@ export default function PaymentModal({
     return 0;
   });
 
-  // Reset transient state when the customer changes (defensive).
+  // Reset transient state when the customer changes (defensive). Also reseed
+  // the amount field so a freshly-opened modal shows the current balance.
   useEffect(() => {
     setStep('choose');
     setStatus('idle');
     setErrorMessage('');
     setChargingMethodId(null);
     setChargedMethodKind(null);
-  }, [customerId, invoiceId]);
+    setChargedAmountCents(balanceDue);
+    setAmountInput((balanceDue / 100).toFixed(2));
+  }, [customerId, invoiceId, balanceDue]);
+
+  // Parse the amount input into cents. Accepts decimals like "12.5" and
+  // whole-dollar values. Returns null when the input is empty or invalid.
+  const parsedAmountCents = (() => {
+    const trimmed = amountInput.trim();
+    if (!trimmed) return null;
+    const num = Number(trimmed);
+    if (!Number.isFinite(num)) return null;
+    return Math.round(num * 100);
+  })();
+  const amountValid =
+    parsedAmountCents !== null &&
+    parsedAmountCents > 0 &&
+    parsedAmountCents <= balanceDue;
+  const amountErrorMsg = (() => {
+    if (parsedAmountCents === null) return 'Enter an amount.';
+    if (parsedAmountCents <= 0) return 'Amount must be greater than zero.';
+    if (parsedAmountCents > balanceDue) {
+      return `Amount can't exceed the balance due (${formatCents(balanceDue)}).`;
+    }
+    return null;
+  })();
 
   const handleChargeSavedMethod = async (method: SavedMethod) => {
+    if (!amountValid || parsedAmountCents === null) return;
     if (isCardExpired(method)) {
       const proceed = window.confirm(
         `This card looks expired (${method.expiry ?? 'past expiry date'}) and the bank ` +
@@ -243,10 +301,12 @@ export default function PaymentModal({
     }
     setChargingMethodId(method.id);
     setChargedMethodKind(method.kind);
+    setChargedAmountCents(parsedAmountCents);
     setStatus('processing');
     const result = await chargeCardOnFile.execute({
       invoiceId,
       paymentMethodId: method.id,
+      amountCents: parsedAmountCents,
     });
     if (result && result.status === 'succeeded') {
       setStatus('success');
@@ -407,19 +467,50 @@ export default function PaymentModal({
                       to add one for them.
                     </div>
                   )}
+                  <div style={s.amountRow}>
+                    <div>
+                      <div style={s.amountLabel}>Amount to charge</div>
+                      <div style={s.amountHint}>
+                        Defaults to the full balance — edit for a partial payment.
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        ...s.amountInputWrap,
+                        borderColor: amountErrorMsg ? '#B71C1C' : '#CCCCCC',
+                      }}
+                    >
+                      <span style={{ color: '#2E4A6B', fontWeight: 600 }}>$</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={amountInput}
+                        onChange={(e) => setAmountInput(e.target.value)}
+                        disabled={status === 'processing'}
+                        style={s.amountInput}
+                        aria-label="Amount to charge"
+                      />
+                    </div>
+                  </div>
+                  {amountErrorMsg && (
+                    <div style={s.amountError}>{amountErrorMsg}</div>
+                  )}
                   <div style={s.methodList}>
                     {sortedMethods.map((m) => {
                       const isCharging = chargingMethodId === m.id;
                       const Icon = m.kind === 'bank' ? Building2 : CreditCard;
                       const expired = isCardExpired(m);
+                      const disabled = status === 'processing' || !amountValid;
                       return (
                         <button
                           key={m.id}
                           style={{
                             ...s.savedMethodBtn,
-                            opacity: status === 'processing' && !isCharging ? 0.5 : 1,
-                            cursor:
-                              status === 'processing' ? 'not-allowed' : 'pointer',
+                            opacity:
+                              (status === 'processing' && !isCharging) || !amountValid
+                                ? 0.5
+                                : 1,
+                            cursor: disabled ? 'not-allowed' : 'pointer',
                             ...(expired
                               ? {
                                   backgroundColor: '#FFFFFF',
@@ -429,7 +520,7 @@ export default function PaymentModal({
                               : {}),
                           }}
                           onClick={() => handleChargeSavedMethod(m)}
-                          disabled={status === 'processing'}
+                          disabled={disabled}
                         >
                           {isCharging ? (
                             <Loader2 size={20} />
@@ -517,7 +608,7 @@ export default function PaymentModal({
           {step === 'card_on_file_result' && status === 'success' && (
             <div style={s.successBox}>
               <CheckCircle size={24} />
-              Payment of {formatCents(balanceDue)} charged to{' '}
+              Payment of {formatCents(chargedAmountCents)} charged to{' '}
               {chargedMethodKind === 'bank' ? 'bank account on file' : 'card on file'}.
             </div>
           )}

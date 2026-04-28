@@ -207,6 +207,10 @@ const CardOnFileSchema = z.object({
   // Optional: pick a specific saved payment method. If omitted, Stripe uses
   // the customer's default.
   paymentMethodId: z.string().optional(),
+  // Optional: charge a partial amount (in cents). When omitted, the full
+  // invoice balance is charged. Must be a positive integer no greater than
+  // the current balance due.
+  amountCents: z.number().int().positive().optional(),
 });
 
 router.post(
@@ -214,7 +218,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-      const { invoiceId, paymentMethodId } = CardOnFileSchema.parse(req.body);
+      const { invoiceId, paymentMethodId, amountCents } = CardOnFileSchema.parse(req.body);
 
       // Fetch tenant (for fee settings and fallback account) and invoice in parallel.
       const [tenant, invoice] = await Promise.all([
@@ -239,6 +243,17 @@ router.post(
         res.status(400).json({
           error: "Invoice not found or fully paid",
           code: "INVOICE_INVALID",
+        });
+        return;
+      }
+      // Resolve the amount to charge: caller's value when supplied, otherwise
+      // the full balance. Reject anything above the balance due so partial
+      // payments can never overpay an invoice.
+      const chargeAmountCents = amountCents ?? invoice.balanceCents;
+      if (chargeAmountCents > invoice.balanceCents) {
+        res.status(400).json({
+          error: "Amount exceeds invoice balance due",
+          code: "AMOUNT_EXCEEDS_BALANCE",
         });
         return;
       }
@@ -281,13 +296,13 @@ router.post(
       }
 
       const applicationFee = calculateApplicationFee(
-        invoice.balanceCents,
+        chargeAmountCents,
         tenant?.applicationFeePctBps ?? 0,
         tenant?.applicationFeeFixedCents ?? 0,
       );
 
       const params: Stripe.PaymentIntentCreateParams = {
-        amount: invoice.balanceCents,
+        amount: chargeAmountCents,
         currency: "usd",
         customer: invoice.customer.stripeCustomerId,
         confirm: true,
@@ -303,7 +318,9 @@ router.post(
 
       const intent = await requireStripe().paymentIntents.create(params, {
         stripeAccount: stripeAccountId,
-        idempotencyKey: `charge-on-file-${invoice.id}-${invoice.balanceCents}`,
+        // Include both the current balance and the chosen amount so retries
+        // remain idempotent while distinct partial charges get distinct keys.
+        idempotencyKey: `charge-on-file-${invoice.id}-${invoice.balanceCents}-${chargeAmountCents}`,
       });
 
       // The PaymentIntent webhook (payment_intent.succeeded) will promote the
