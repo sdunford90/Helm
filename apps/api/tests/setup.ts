@@ -190,6 +190,7 @@ export const mockPrisma = {
     findMany: vi.fn().mockResolvedValue([]),
     findFirst: vi.fn(),
     findUnique: vi.fn(),
+    update: vi.fn(),
     count: vi.fn().mockResolvedValue(0),
   },
   apiKey: { findUnique: vi.fn() },

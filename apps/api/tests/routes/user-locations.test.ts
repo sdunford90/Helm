@@ -246,8 +246,8 @@ describe('PUT /api/settings/team/:userId', () => {
 describe('Location filter helpers (via GET /api/locations)', () => {
   it('admin (allowedLocationIds=null) sees all locations', async () => {
     mockPrisma.location.findMany.mockResolvedValue([
-      { id: LOC_1, name: 'Main', tenantId: TEST_TENANT_ID, active: true, transientEnabled: true, rentalsEnabled: true },
-      { id: LOC_2, name: 'Fuel', tenantId: TEST_TENANT_ID, active: true, transientEnabled: false, rentalsEnabled: false },
+      { id: LOC_1, name: 'Main', tenantId: TEST_TENANT_ID, active: true, transientEnabled: true, rentalsEnabled: true, rampEnabled: true, conciergeEnabled: true },
+      { id: LOC_2, name: 'Fuel', tenantId: TEST_TENANT_ID, active: true, transientEnabled: false, rentalsEnabled: false, rampEnabled: false, conciergeEnabled: false },
     ]);
 
     const res = await request(app).get('/api/locations');
@@ -256,5 +256,166 @@ describe('Location filter helpers (via GET /api/locations)', () => {
     const call = mockPrisma.location.findMany.mock.calls[0][0];
     expect(call.where).toEqual(expect.objectContaining({ tenantId: TEST_TENANT_ID, active: true }));
     expect(call.where).not.toHaveProperty('id');
+  });
+
+  it('returns rampEnabled and conciergeEnabled in the response and selects them from prisma', async () => {
+    mockPrisma.location.findMany.mockResolvedValue([
+      {
+        id: LOC_1,
+        name: 'Main',
+        address: '1 Pier',
+        city: 'Newport',
+        state: 'RI',
+        phone: '555',
+        timezone: 'America/New_York',
+        transientEnabled: true,
+        rentalsEnabled: true,
+        rampEnabled: true,
+        conciergeEnabled: false,
+      },
+      {
+        id: LOC_2,
+        name: 'Fuel',
+        address: null,
+        city: null,
+        state: null,
+        phone: null,
+        timezone: null,
+        transientEnabled: false,
+        rentalsEnabled: false,
+        rampEnabled: false,
+        conciergeEnabled: true,
+      },
+    ]);
+
+    const res = await request(app).get('/api/locations');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+
+    const main = res.body.data.find((l: any) => l.id === LOC_1);
+    const fuel = res.body.data.find((l: any) => l.id === LOC_2);
+    expect(main).toEqual(
+      expect.objectContaining({ rampEnabled: true, conciergeEnabled: false }),
+    );
+    expect(fuel).toEqual(
+      expect.objectContaining({ rampEnabled: false, conciergeEnabled: true }),
+    );
+
+    const call = mockPrisma.location.findMany.mock.calls[0][0];
+    expect(call.select).toEqual(
+      expect.objectContaining({ rampEnabled: true, conciergeEnabled: true }),
+    );
+  });
+});
+
+describe('PATCH /api/locations/:id/features', () => {
+  beforeEach(() => {
+    mockPrisma.location.findFirst.mockResolvedValue({
+      id: LOC_1,
+      tenantId: TEST_TENANT_ID,
+      name: 'Main',
+      transientEnabled: true,
+      rentalsEnabled: true,
+      rampEnabled: false,
+      conciergeEnabled: false,
+    });
+    mockPrisma.location.update.mockImplementation(({ data }: any) =>
+      Promise.resolve({
+        id: LOC_1,
+        name: 'Main',
+        transientEnabled: data.transientEnabled ?? true,
+        rentalsEnabled: data.rentalsEnabled ?? true,
+        rampEnabled: data.rampEnabled ?? false,
+        conciergeEnabled: data.conciergeEnabled ?? false,
+      }),
+    );
+  });
+
+  it('updates rampEnabled independently without touching other flags', async () => {
+    const res = await request(app)
+      .patch(`/api/locations/${LOC_1}/features`)
+      .send({ rampEnabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({ id: LOC_1, rampEnabled: true }),
+    );
+
+    expect(mockPrisma.location.update).toHaveBeenCalledTimes(1);
+    const call = mockPrisma.location.update.mock.calls[0][0];
+    expect(call.where).toEqual({ id: LOC_1 });
+    expect(call.data).toEqual({ rampEnabled: true });
+    expect(call.data).not.toHaveProperty('transientEnabled');
+    expect(call.data).not.toHaveProperty('rentalsEnabled');
+    expect(call.data).not.toHaveProperty('conciergeEnabled');
+    expect(call.select).toEqual(
+      expect.objectContaining({ rampEnabled: true, conciergeEnabled: true }),
+    );
+  });
+
+  it('updates conciergeEnabled independently without touching other flags', async () => {
+    const res = await request(app)
+      .patch(`/api/locations/${LOC_1}/features`)
+      .send({ conciergeEnabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({ id: LOC_1, conciergeEnabled: true }),
+    );
+
+    const call = mockPrisma.location.update.mock.calls[0][0];
+    expect(call.data).toEqual({ conciergeEnabled: true });
+    expect(call.data).not.toHaveProperty('transientEnabled');
+    expect(call.data).not.toHaveProperty('rentalsEnabled');
+    expect(call.data).not.toHaveProperty('rampEnabled');
+  });
+
+  it('updates rampEnabled and conciergeEnabled together in a single PATCH', async () => {
+    const res = await request(app)
+      .patch(`/api/locations/${LOC_1}/features`)
+      .send({ rampEnabled: true, conciergeEnabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        id: LOC_1,
+        rampEnabled: true,
+        conciergeEnabled: true,
+      }),
+    );
+
+    const call = mockPrisma.location.update.mock.calls[0][0];
+    expect(call.data).toEqual({ rampEnabled: true, conciergeEnabled: true });
+    expect(call.data).not.toHaveProperty('transientEnabled');
+    expect(call.data).not.toHaveProperty('rentalsEnabled');
+  });
+
+  it('can disable rampEnabled (false is forwarded, not stripped)', async () => {
+    mockPrisma.location.findFirst.mockResolvedValue({
+      id: LOC_1,
+      tenantId: TEST_TENANT_ID,
+      rampEnabled: true,
+      conciergeEnabled: true,
+    });
+
+    const res = await request(app)
+      .patch(`/api/locations/${LOC_1}/features`)
+      .send({ rampEnabled: false });
+
+    expect(res.status).toBe(200);
+    const call = mockPrisma.location.update.mock.calls[0][0];
+    expect(call.data).toEqual({ rampEnabled: false });
+  });
+
+  it('returns 404 when the location does not belong to the tenant', async () => {
+    mockPrisma.location.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch(`/api/locations/${LOC_BOGUS}/features`)
+      .send({ rampEnabled: true, conciergeEnabled: true });
+
+    expect(res.status).toBe(404);
+    expect(mockPrisma.location.update).not.toHaveBeenCalled();
   });
 });
