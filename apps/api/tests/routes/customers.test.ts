@@ -321,6 +321,47 @@ describe('PUT /api/customers/:id/autopay', () => {
     );
   });
 
+  it('upserts a Stripe customer when disabling autopay for someone never charged before', async () => {
+    // Edge case flagged in code review: Stripe is configured for the
+    // tenant, but the local customer row has no stripeCustomerId yet
+    // (they've never been charged). Disabling autopay must succeed —
+    // the route should call ensureStripeCustomer to lazily create the
+    // Stripe record and then write metadata.autopay: "false".
+    mockPrisma.customer.findFirst.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: null,
+      email: 'jane@example.com',
+      firstName: 'Jane',
+      lastName: 'Doe',
+    } as any);
+    mockPrisma.customer.update.mockResolvedValue({} as any);
+    mockTenantWithStripe();
+    mockPrisma.auditLog.create.mockResolvedValue({} as any);
+    stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+
+    const res = await request(app)
+      .put('/api/customers/cust-1/autopay')
+      .send({ autopay: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ autopay: false });
+    // ensureStripeCustomer creates the Stripe-side record on the
+    // tenant's Connect account.
+    expect(stripe.customers.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ helmCustomerId: 'cust-1' }),
+      }),
+      { stripeAccount: 'acct_test' },
+    );
+    // Then the freshly-created customer gets autopay=false written to
+    // its metadata — same Connect account, no cross-account drift.
+    expect(stripe.customers.update).toHaveBeenCalledWith(
+      'cus_new',
+      { metadata: { autopay: 'false' } },
+      { stripeAccount: 'acct_test' },
+    );
+  });
+
   it('returns STRIPE_NOT_CONFIGURED when no Stripe account is connected', async () => {
     mockPrisma.customer.findFirst.mockResolvedValue({
       id: 'cust-1',
