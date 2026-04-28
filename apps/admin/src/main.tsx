@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { ClerkProvider, RedirectToSignIn, SignedIn, SignedOut } from '@clerk/clerk-react';
 import App from './App';
 import { ClerkAuthBridge, NoAuthBridge } from './lib/api';
+import PlatformAdminGate from './components/PlatformAdminGate';
 
 const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
@@ -108,9 +109,11 @@ if (DEV_BYPASS) {
           </SignedOut>
           <SignedIn>
             <ClerkAuthBridge>
-              <BrowserRouter>
-                <App />
-              </BrowserRouter>
+              <PlatformAdminGate>
+                <BrowserRouter>
+                  <App />
+                </BrowserRouter>
+              </PlatformAdminGate>
             </ClerkAuthBridge>
           </SignedIn>
         </ClerkProvider>

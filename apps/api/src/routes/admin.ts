@@ -1,5 +1,6 @@
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { randomUUID, createHmac } from "node:crypto";
+import { requireAuth, getAuth } from "@clerk/express";
 import { requirePlatformAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
@@ -16,7 +17,97 @@ import {
 
 const router: Router = Router();
 
-// All admin routes require platform_admin role
+// --------------------------------------------------------------------------
+// GET /api/admin/me — returns whether the current Clerk user is a Platform
+// Admin. Mounted BEFORE requirePlatformAdmin so unauthorized users can call
+// it without getting a 403 — the admin SPA uses it to decide whether to
+// render the dashboard chrome or a "no access" screen.
+//
+// Honours ENABLE_AUTH_DEV_BYPASS the same way the rest of the auth stack
+// does so the admin SPA's own dev-bypass shortcut keeps working end-to-end.
+// --------------------------------------------------------------------------
+function isDevBypassEnabled(): boolean {
+  return (
+    process.env.ENABLE_AUTH_DEV_BYPASS === "true" &&
+    process.env.NODE_ENV !== "production"
+  );
+}
+
+if (isDevBypassEnabled()) {
+  router.get("/me", async (_req, res, next) => {
+    try {
+      const user = await prisma.user.findFirst({
+        where: { role: "PLATFORM_ADMIN" },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          firstName: true,
+          lastName: true,
+        },
+      });
+      res.json({ isPlatformAdmin: true, user: user ?? null });
+    } catch (err) {
+      next(err);
+    }
+  });
+} else {
+  router.get(
+    "/me",
+    requireAuth(),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const auth = getAuth(req);
+        const clerkUserId = auth.userId;
+        if (!clerkUserId) {
+          res
+            .status(401)
+            .json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+          return;
+        }
+
+        // A Clerk user can theoretically map to multiple internal User rows
+        // (one per tenant). They count as a Platform Admin if any of those
+        // rows has the PLATFORM_ADMIN role — same predicate used by
+        // requirePlatformAdmin.
+        const adminUser = await prisma.user.findFirst({
+          where: { clerkUserId, role: "PLATFORM_ADMIN" },
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            firstName: true,
+            lastName: true,
+          },
+        });
+
+        if (adminUser) {
+          res.json({ isPlatformAdmin: true, user: adminUser });
+          return;
+        }
+
+        // Not a Platform Admin — still surface basic identity so the
+        // "no access" screen can show who they're signed in as.
+        const anyUser = await prisma.user.findFirst({
+          where: { clerkUserId },
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            firstName: true,
+            lastName: true,
+          },
+        });
+
+        res.json({ isPlatformAdmin: false, user: anyUser ?? null });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+}
+
+// All other admin routes require platform_admin role
 router.use(...requirePlatformAdmin());
 
 // --------------------------------------------------------------------------
