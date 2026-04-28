@@ -16,6 +16,7 @@ import Disputes from './pages/Disputes';
 import Rentals from './pages/Rentals';
 import POS from './pages/POS';
 import DockWalks from './pages/DockWalks';
+import DockWalkRunner from './pages/DockWalkRunner';
 import Reports from './pages/Reports';
 import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
@@ -46,6 +47,8 @@ function AppRoutes() {
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/oauth-complete" element={<OAuthComplete />} />
       <Route path="/esign/:requestId" element={<ESignPage />} />
+      {/* Mobile-first dock walk runner — full screen, no AppLayout chrome. */}
+      <Route path="/dock-walks/:id/walk" element={<DockWalkRunner />} />
       <Route element={<AppLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/leads" element={<Leads />} />

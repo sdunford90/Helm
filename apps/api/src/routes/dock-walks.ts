@@ -45,6 +45,10 @@ const CreateDockWalkItemSchema = z.object({
   powerCheck: z.boolean().optional(),
   bilgeCheck: z.boolean().optional(),
   boatCondition: z.string().optional().nullable(),
+  // Inspection results (per-slip walk flow)
+  boatPresent: z.boolean().optional().nullable(),
+  expectedMatch: z.boolean().optional().nullable(),
+  expectedBoatId: z.string().optional().nullable(),
 });
 
 const UpdateDockWalkItemSchema = z.object({
@@ -57,6 +61,9 @@ const UpdateDockWalkItemSchema = z.object({
   powerCheck: z.boolean().optional(),
   bilgeCheck: z.boolean().optional(),
   boatCondition: z.string().optional().nullable(),
+  boatPresent: z.boolean().optional().nullable(),
+  expectedMatch: z.boolean().optional().nullable(),
+  expectedBoatId: z.string().optional().nullable(),
 });
 
 const ListIssuesQuerySchema = z.object({
@@ -232,6 +239,128 @@ router.get(
   },
 );
 
+// ─── GET /:id/walk-list — Slips to inspect for a dock walk ────────────────
+//
+// Returns the ordered list of slips that the inspector should walk for this
+// dock walk, plus, for each slip, the expected boat / customer (taken from
+// the slip's currently active SlipContract) and any DockWalkItem already
+// filed against that slip during this walk. This powers the mobile-first
+// "walk runner" UI: one slip per row, inspector marks boat-present / right-
+// boat / issues, page survives reloads because already-filed items come back.
+//
+// Walks scoped to a single dock (DockWalk.dockId set) only return that
+// dock's slips. Walks with no dock return every slip in the tenant — the
+// inspector can still pick through them, but typically a dock is selected.
+
+router.get(
+  "/:id/walk-list",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const dockWalk = await prisma.dockWalk.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!dockWalk) {
+        throw appError("Dock walk not found", 404, "NOT_FOUND");
+      }
+
+      const slips = await prisma.slip.findMany({
+        where: {
+          tenantId,
+          ...(dockWalk.dockId ? { dockId: dockWalk.dockId } : {}),
+        },
+        include: {
+          contracts: {
+            where: { status: "ACTIVE" },
+            // Deterministic pick when (rarely) more than one ACTIVE contract
+            // exists on a slip — newest start wins, then newest createdAt.
+            orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+            include: {
+              boat: {
+                select: {
+                  id: true,
+                  name: true,
+                  registrationNumber: true,
+                  lengthFt: true,
+                  beamFt: true,
+                  make: true,
+                  model: true,
+                },
+              },
+              customer: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  company: true,
+                  phone: true,
+                  email: true,
+                },
+              },
+            },
+            take: 1,
+          },
+        },
+      });
+
+      // Stable, human-friendly slip ordering: numeric prefix when present,
+      // then lexical fallback. "A-12" < "A-101" should not flip just because
+      // strings sort differently from numbers.
+      const slipNumKey = (s: string): [string, number, string] => {
+        const m = /^([^\d]*)(\d+)(.*)$/.exec(s);
+        if (!m) return [s, Number.POSITIVE_INFINITY, ""];
+        return [m[1], parseInt(m[2], 10), m[3]];
+      };
+      slips.sort((a, b) => {
+        const [pa, na, sa] = slipNumKey(a.slipNumber);
+        const [pb, nb, sb] = slipNumKey(b.slipNumber);
+        if (pa !== pb) return pa.localeCompare(pb);
+        if (na !== nb) return na - nb;
+        return sa.localeCompare(sb);
+      });
+
+      const items = await prisma.dockWalkItem.findMany({
+        where: { dockWalkId: dockWalk.id },
+      });
+      const itemsBySlip = new Map<string, (typeof items)[number]>();
+      for (const it of items) {
+        if (it.slipId) itemsBySlip.set(it.slipId, it);
+      }
+
+      const walkList = slips.map((slip) => {
+        const contract = slip.contracts[0] ?? null;
+        return {
+          slip: {
+            id: slip.id,
+            slipNumber: slip.slipNumber,
+            dockId: slip.dockId,
+            lengthFt: slip.lengthFt,
+            beamFt: slip.beamFt,
+            status: slip.status,
+          },
+          expectedBoat: contract?.boat ?? null,
+          expectedCustomer: contract?.customer ?? null,
+          item: itemsBySlip.get(slip.id) ?? null,
+        };
+      });
+
+      res.json({
+        dockWalk: {
+          id: dockWalk.id,
+          dockId: dockWalk.dockId,
+          status: dockWalk.status,
+          startedAt: dockWalk.startedAt,
+          completedAt: dockWalk.completedAt,
+        },
+        slips: walkList,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── POST / — Start a new dock walk ────────────────────────────────────────
 
 router.post(
@@ -354,6 +483,9 @@ router.post(
           violationType: data.violationType ?? null,
           photoUrls: (data.photoUrls ?? null) as any,
           feeCents: data.feeCents ?? null,
+          boatPresent: data.boatPresent ?? null,
+          expectedMatch: data.expectedMatch ?? null,
+          expectedBoatId: data.expectedBoatId ?? null,
         },
       });
 
@@ -393,6 +525,9 @@ router.put(
       if (data.violationType !== undefined) updateData.violationType = data.violationType;
       if (data.photoUrls !== undefined) updateData.photoUrls = data.photoUrls;
       if (data.feeCents !== undefined) updateData.feeCents = data.feeCents;
+      if (data.boatPresent !== undefined) updateData.boatPresent = data.boatPresent;
+      if (data.expectedMatch !== undefined) updateData.expectedMatch = data.expectedMatch;
+      if (data.expectedBoatId !== undefined) updateData.expectedBoatId = data.expectedBoatId;
 
       const updated = await prisma.dockWalkItem.update({
         where: { id: req.params.itemId },

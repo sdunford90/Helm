@@ -4,6 +4,7 @@ import {
   Eye, CheckCircle2, Clock, Camera, Droplets,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
+import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 
@@ -187,6 +188,7 @@ function StartWalkModal({
   teamMembers: TeamMember[];
 }) {
   const { getToken } = useAuth();
+  const navigate = useNavigate();
   const dockStaff = teamMembers.filter((m) => m.active);
   const firstStaff = dockStaff[0];
   const [inspector, setInspector] = useState(firstStaff?.id ?? '');
@@ -223,6 +225,8 @@ function StartWalkModal({
       };
       onSave?.(newWalk);
       onClose();
+      // Drop the inspector straight into the mobile-first per-slip walk.
+      navigate(`/dock-walks/${raw.id}/walk`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not start dock walk';
       setError(msg);

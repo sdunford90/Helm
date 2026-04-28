@@ -1891,15 +1891,18 @@ model DockWalk {
 }
 
 model DockWalkItem {
-  id            String             @id @default(uuid())
-  dockWalkId    String
-  slipId        String?
-  status        DockWalkItemStatus @default(OK)
-  notes         String?
-  violationType String?
-  photoUrls     Json?
-  feeCents      Int?
-  notifiedAt    DateTime?
+  id             String             @id @default(uuid())
+  dockWalkId     String
+  slipId         String?
+  status         DockWalkItemStatus @default(OK)
+  notes          String?
+  violationType  String?
+  photoUrls      Json?
+  feeCents       Int?
+  notifiedAt     DateTime?
+  boatPresent    Boolean?
+  expectedMatch  Boolean?
+  expectedBoatId String?
 
   dockWalk DockWalk @relation(fields: [dockWalkId], references: [id])
   slip     Slip?    @relation(fields: [slipId], references: [id])
