@@ -7,13 +7,31 @@ import {
   Upload,
   Bell,
   ArrowRight,
+  AlertCircle,
   Loader2,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { usePortalApi, formatCents, formatDate } from '../lib/api';
+import { getExpiryWindow } from '../lib/cardExpiry';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
+
+interface PortalPaymentMethod {
+  id: string;
+  expMonth: number | null;
+  expYear: number | null;
+  isDefault: boolean;
+  kind: 'card' | 'bank';
+  label: string;
+  last4: string;
+}
+
+interface PaymentMethodsData {
+  methods: PortalPaymentMethod[];
+  autopay: boolean;
+  defaultMethodId: string | null;
+}
 
 interface DashboardData {
   outstandingBalanceCents: number;
@@ -51,6 +69,20 @@ export default function Dashboard() {
     '/api/portal/dashboard',
     { immediate: true },
   );
+  // Quietly load payment methods so we can warn about a soon-to-expire
+  // default card. Errors here are swallowed — the rest of the dashboard
+  // should still render even if the payment-methods endpoint is down.
+  const { data: pmData } = usePortalApi<PaymentMethodsData>(
+    'get',
+    '/api/portal/payment-methods',
+    { immediate: true },
+  );
+
+  const defaultMethod = pmData?.methods.find((m) => m.isDefault) ?? null;
+  const expiryWindow =
+    defaultMethod && defaultMethod.kind === 'card' && defaultMethod.expMonth && defaultMethod.expYear
+      ? getExpiryWindow(defaultMethod.expMonth, defaultMethod.expYear)
+      : null;
 
   const statusBadge = (status: string): CSSProperties => ({
     display: 'inline-block',
@@ -99,6 +131,48 @@ export default function Dashboard() {
       <p style={{ color: '#64748B', fontSize: 14, marginBottom: 28 }}>
         Here's an overview of your account.
       </p>
+
+      {/* Card-expiry warning banner. Mirrors the proactive 30/7-day email
+          reminders so customers who skipped/lost the email still see the
+          warning when they log in. The whole banner is a button so the
+          target hit area matches the visual. */}
+      {expiryWindow && defaultMethod && (
+        <button
+          type="button"
+          onClick={() => navigate('/payments')}
+          style={{
+            ...card,
+            width: '100%',
+            textAlign: 'left',
+            marginBottom: 20,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            border:
+              expiryWindow === '7_DAY'
+                ? '1px solid #E57373'
+                : '1px solid #FFB74D',
+            background: expiryWindow === '7_DAY' ? '#FFEBEE' : '#FFF4E5',
+            color: expiryWindow === '7_DAY' ? '#B71C1C' : '#7A4F01',
+          }}
+        >
+          <AlertCircle size={20} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              {expiryWindow === '7_DAY'
+                ? `Your default card expires in less than a week`
+                : `Your default card expires within 30 days`}
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.5 }}>
+              {defaultMethod.label} ending in {defaultMethod.last4} expires{' '}
+              {String(defaultMethod.expMonth).padStart(2, '0')}/{defaultMethod.expYear}.
+              Update your payment method to avoid a declined auto-pay.
+            </div>
+          </div>
+          <ArrowRight size={18} style={{ flexShrink: 0, marginTop: 3 }} />
+        </button>
+      )}
 
       {/* Account Summary */}
       <div

@@ -3,6 +3,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { CreditCard, Building2, Star, Trash2, Plus, ToggleLeft, ToggleRight, Loader, AlertCircle } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { usePortalApi } from '../lib/api';
+import { isCardExpired } from '../lib/cardExpiry';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
@@ -24,16 +25,6 @@ interface PaymentMethod {
   expYear: number | null;
   isDefault: boolean;
   kind: 'card' | 'bank';
-}
-
-function isCardExpired(method: PaymentMethod, now: Date = new Date()): boolean {
-  if (method.kind !== 'card') return false;
-  if (!method.expMonth || !method.expYear) return false;
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
-  if (method.expYear < currentYear) return true;
-  if (method.expYear === currentYear && method.expMonth < currentMonth) return true;
-  return false;
 }
 
 interface PaymentMethodsResponse {
