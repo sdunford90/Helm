@@ -29,6 +29,10 @@ externalPort = 3000
 localPort = 5002
 externalPort = 4200
 
+[[ports]]
+localPort = 5099
+externalPort = 3002
+
 [workflows]
 runButton = "Project"
 
@@ -86,9 +90,10 @@ args = "pnpm --filter @helm/admin dev"
 waitForPort = 3003
 
 [deployment]
-deploymentTarget = "static"
-build = ["bash", "-c", "pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build"]
-publicDir = "apps/web/dist"
+deploymentTarget = "autoscale"
+build = ["bash", "-c", "pnpm install --frozen-lockfile && pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build && pnpm --filter @helm/admin build"]
+publicDir = "."
+run = ["node", "apps/frontend-server/server.js"]
 
 [userenv]
 

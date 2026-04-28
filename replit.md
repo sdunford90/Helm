@@ -72,6 +72,29 @@ Versioned migrations live in `apps/api/prisma/migrations/`. Workflow:
 - `apps/admin/tsconfig.json` references `tsconfig.node.json` (both files present)
 - The app shows a Clerk auth error when `VITE_CLERK_PUBLISHABLE_KEY` is not set
 
+## Production deployment topology
+- `apps/frontend-server` is a tiny Express server (`server.js`) that
+  serves **both** SPAs and routes by request `Host` header:
+  - `admin.*` → `apps/admin/dist`
+  - everything else → `apps/web/dist`
+  Each host gets its own SPA fallback to its own `index.html`. The server
+  also reverse-proxies `/api/*` to `API_PROXY_TARGET`
+  (defaults to `http://localhost:3001`) so admin / web `fetch('/api/...')`
+  stays same-origin.
+- `.replit` `[deployment]` is **autoscale**, build runs both Vite builds
+  (`pnpm --filter @helm/web build && pnpm --filter @helm/admin build`),
+  run is `node apps/frontend-server/server.js`. Attach both
+  `app.tracktheturn.com` and `admin.tracktheturn.com` to the same Replit
+  deployment.
+- `Dockerfile.web` + `nginx.conf` are the equivalent self-hosted Docker
+  path (used by `docker-compose.yml`). They mirror the same Host-header
+  routing and `/api` proxy behavior.
+- DNS + Clerk-dashboard rollout steps live in
+  `docs/admin-subdomain-deployment.md`.
+- Tenant middleware (`apps/api/src/middleware/tenant.ts`) bypasses
+  `/api/admin/*`, so requests from `admin.tracktheturn.com` never try to
+  resolve `admin` as a tenant subdomain.
+
 ## Recently completed features (Apr 2026)
 - **Email Automation** — `EmailTemplate` + `AutomationRule` Prisma models added and pushed to DB. Route registered at `/api/email-automation/*`. Frontend (`EmailAutomation.tsx`) now fetches real rules/templates/logs from API; falls back to defaults when DB is empty. Toggle persists to DB for UUID-based rules.
 - **Reports generate endpoint** — `POST /api/reports/generate` added to `reports.ts`. Maps `reportId` to the correct sub-endpoint and returns a success envelope so the UI toast works.

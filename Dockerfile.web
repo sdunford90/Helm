@@ -1,5 +1,10 @@
 # =============================================================================
-# Dockerfile.web - Multi-stage build for the Helm web application
+# Dockerfile.web - Multi-stage build for the Helm web + admin frontends
+#
+# Builds two SPAs (apps/web and apps/admin) and serves them from a single
+# Nginx instance that routes by `Host` header:
+#   - admin.* hosts        -> /usr/share/nginx/html/admin  (apps/admin/dist)
+#   - everything else      -> /usr/share/nginx/html/web    (apps/web/dist)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -14,6 +19,7 @@ COPY package.json package-lock.json turbo.json ./
 
 # Copy all workspace package.json files to preserve workspace structure
 COPY apps/web/package.json ./apps/web/
+COPY apps/admin/package.json ./apps/admin/
 COPY packages/shared-types/package.json ./packages/shared-types/
 COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY packages/database/package.json ./packages/database/
@@ -22,7 +28,7 @@ COPY tools/package.json ./tools/
 RUN npm ci
 
 # ---------------------------------------------------------------------------
-# Stage 2: Build the web app with Vite
+# Stage 2: Build the web + admin apps with Vite
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS build
 
@@ -30,17 +36,19 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules 2>/dev/null || true
+COPY --from=deps /app/apps/admin/node_modules ./apps/admin/node_modules 2>/dev/null || true
 COPY --from=deps /app/packages/ui-kit/node_modules ./packages/ui-kit/node_modules 2>/dev/null || true
 COPY --from=deps /app/packages/shared-types/node_modules ./packages/shared-types/node_modules 2>/dev/null || true
 
 # Copy all source files
 COPY package.json package-lock.json turbo.json tsconfig.json ./
 COPY apps/web/ ./apps/web/
+COPY apps/admin/ ./apps/admin/
 COPY packages/ ./packages/
 COPY tools/ ./tools/
 
 # Build using Turborepo (builds dependencies first via dependsOn)
-RUN npx turbo build --filter=@helm/web
+RUN npx turbo build --filter=@helm/web --filter=@helm/admin
 
 # ---------------------------------------------------------------------------
 # Stage 3: Serve with nginx
@@ -56,8 +64,10 @@ RUN rm /etc/nginx/conf.d/default.conf
 # Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy built static files
-COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+# Copy built static files into per-app subdirectories so nginx can pick the
+# right bundle based on the request's Host header.
+COPY --from=build /app/apps/web/dist   /usr/share/nginx/html/web
+COPY --from=build /app/apps/admin/dist /usr/share/nginx/html/admin
 
 EXPOSE 80
 
