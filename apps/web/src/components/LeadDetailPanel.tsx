@@ -168,6 +168,10 @@ interface LeadDetailPanelProps {
   onClose: () => void;
   onStageChange: (stage: string) => void;
   onSave?: (lead: Lead) => void;
+  /** When set on a new-lead create flow, the Source field is locked to this
+   * enum value so quick-add buttons (Log walk-in / Log phone call) can't be
+   * accidentally re-tagged as something else before submit. */
+  lockSource?: string | null;
 }
 
 /* ── Stage Flow ───────────────────────────────────────── */
@@ -445,7 +449,7 @@ function getActivityIcon(type: string) {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
+export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, lockSource }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
   const { data: apiActivity } = useApi<AuditLogResponse>(
@@ -637,10 +641,11 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                     <span style={s.fieldValue}>{lead.slipType || '—'}</span>
                   )}
                 </div>
-                {/* Source */}
+                {/* Source — locked when launched from a quick-add button so
+                    "Log walk-in" / "Log phone call" can't be re-tagged. */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Source</span>
-                  {isEditing ? (
+                  {isEditing && !(isNew && lockSource) ? (
                     <select
                       style={s.fieldSelect}
                       value={editData.source || 'OTHER'}
@@ -651,7 +656,12 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                       ))}
                     </select>
                   ) : (
-                    <span style={s.fieldValue}>{sourceLabel(lead.source)}</span>
+                    <span style={s.fieldValue}>
+                      {sourceLabel(isNew && lockSource ? lockSource : (isEditing ? editData.source : lead.source))}
+                      {isNew && lockSource && (
+                        <span style={{ marginLeft: 6, fontSize: 11, color: '#64748B' }}>(locked)</span>
+                      )}
+                    </span>
                   )}
                 </div>
                 {/* Source Detail — free-form context (e.g. "took the call",

@@ -45,8 +45,10 @@ export interface Lead {
   phone: string | null;
   /** Current stage in the pipeline. */
   stage: LeadStage;
-  /** How the lead was acquired (e.g. "WEBSITE", "REFERRAL", "WALK_IN"). */
-  source: string;
+  /** How the lead was acquired. Mirrors the Prisma `LeadSource` enum. */
+  source: LeadSource;
+  /** Free-form note about the source (e.g. partner name, phone number called from). */
+  sourceDetail?: string | null;
   /** The referral partner who sent this lead, if applicable. */
   referralPartnerId: string | null;
   /** ID of the lead form submission that created this lead. */

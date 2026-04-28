@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import {
   UserPlus,
@@ -353,11 +353,34 @@ export default function Leads() {
   const [sourceFilter, setSourceFilter] = useState<'All' | SourceEnum>('All');
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  // When set, the source field in the create panel is locked to this value.
+  // We only lock for the dedicated quick-add buttons (walk-in / phone), so a
+  // user clicking "Log walk-in" can't accidentally save it as a website lead.
+  const [lockedNewSource, setLockedNewSource] = useState<SourceEnum | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
   const [localLeads, setLocalLeads] = useState<Lead[]>([]);
 
-  // API calls
-  const { data: apiLeadsResp, loading, execute: refetchLeads } = useApi<{ data: Lead[] }>('get', '/api/leads', { immediate: true });
+  // API calls — leads list re-fetches whenever sourceFilter changes so the
+  // server-side `?source=` filter actually applies (avoids client-only
+  // filtering, which would be wrong once results are paginated/limited).
+  const [apiLeadsResp, setApiLeadsResp] = useState<{ data: Lead[] } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const refetchLeads = useCallback(async () => {
+    const token = await getToken();
+    setLoading(true);
+    try {
+      const qs = sourceFilter !== 'All' ? `?source=${encodeURIComponent(sourceFilter)}` : '';
+      const result = await api.get<{ data: Lead[] }>(`/api/leads${qs}`, token);
+      setApiLeadsResp(result);
+    } catch (err) {
+      console.error('Failed to fetch leads', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [getToken, sourceFilter]);
+  useEffect(() => {
+    void refetchLeads();
+  }, [refetchLeads]);
   const { data: stats, execute: refetchStats } = useApi<LeadStatsResponse>('get', '/api/leads/stats', { immediate: true });
   const createLeadApi = useApi<Lead>('post', '/api/leads');
 
@@ -415,9 +438,11 @@ export default function Leads() {
 
   const leads = localLeads;
 
+  // Source filter is applied server-side via `?source=` (refetchLeads runs on
+  // sourceFilter change). Stage and free-text search remain client-side
+  // because the kanban needs all stages visible at once.
   const filtered = leads.filter((l) => {
     if (stageFilter !== 'All' && l.stage !== stageFilter) return false;
-    if (sourceFilter !== 'All' && l.source !== sourceFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       const full = `${l.firstName} ${l.lastName} ${l.email}`.toLowerCase();
@@ -428,8 +453,11 @@ export default function Leads() {
 
   const leadsByStage = (stage: Stage) => filtered.filter((l) => l.stage === stage);
 
-  /** Open the detail panel pre-populated for a quick-add walk-in / phone-call. */
-  const startQuickAdd = (source: SourceEnum) => {
+  /** Open the detail panel pre-populated for a quick-add walk-in / phone-call.
+   * Pass `lock: true` for the dedicated walk-in / phone buttons so the source
+   * field is non-editable; the generic "Add Lead" button leaves it unlocked. */
+  const startQuickAdd = (source: SourceEnum, opts?: { lock?: boolean }) => {
+    setLockedNewSource(opts?.lock ? source : null);
     setSelectedLead({
       id: '',
       firstName: '',
@@ -509,7 +537,7 @@ export default function Leads() {
 
         <button
           style={s.secondaryBtn}
-          onClick={() => startQuickAdd('WALK_IN')}
+          onClick={() => startQuickAdd('WALK_IN', { lock: true })}
           title="Log a walk-in lead"
         >
           <Footprints size={16} />
@@ -518,7 +546,7 @@ export default function Leads() {
 
         <button
           style={s.secondaryBtn}
-          onClick={() => startQuickAdd('PHONE')}
+          onClick={() => startQuickAdd('PHONE', { lock: true })}
           title="Log a phone-call lead"
         >
           <Phone size={16} />
@@ -573,34 +601,63 @@ export default function Leads() {
           >
             {stats.bySource
               .filter((b) => b.total > 0)
-              .map((b) => (
-                <div
-                  key={b.source}
-                  style={{
-                    padding: '10px 12px',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '6px',
-                    background: '#F7F9FB',
-                  }}
-                >
-                  <div style={{ fontSize: '12px', color: '#64748B', fontWeight: 600 }}>
-                    {SOURCE_LABELS[b.source]}
-                  </div>
+              .map((b) => {
+                const closed = b.won + b.lost;
+                const ratePct = Math.max(0, Math.min(100, b.conversionRate));
+                return (
                   <div
+                    key={b.source}
                     style={{
-                      fontSize: '20px',
-                      fontWeight: 700,
-                      color: '#0A2342',
-                      marginTop: '2px',
+                      padding: '10px 12px',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '6px',
+                      background: '#F7F9FB',
                     }}
                   >
-                    {b.conversionRate.toFixed(1)}%
+                    <div style={{ fontSize: '12px', color: '#64748B', fontWeight: 600 }}>
+                      {SOURCE_LABELS[b.source]}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '20px',
+                        fontWeight: 700,
+                        color: '#0A2342',
+                        marginTop: '2px',
+                      }}
+                    >
+                      {b.conversionRate.toFixed(1)}%
+                    </div>
+                    {/* Conversion bar — width = won / (won+lost). Grey track
+                        when nothing is closed yet so users still see the
+                        affordance. */}
+                    <div
+                      style={{
+                        marginTop: 6,
+                        height: 4,
+                        background: '#E2E8F0',
+                        borderRadius: 2,
+                        overflow: 'hidden',
+                      }}
+                      title={closed > 0 ? `${b.won} won of ${closed} closed` : 'No closed leads yet'}
+                    >
+                      <div
+                        style={{
+                          width: closed > 0 ? `${ratePct}%` : '0%',
+                          height: '100%',
+                          background: '#16A34A',
+                        }}
+                      />
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#64748B', marginTop: 6 }}>
+                      <span style={{ color: '#16A34A', fontWeight: 600 }}>{b.won} won</span>
+                      {' · '}
+                      <span style={{ color: '#DC2626', fontWeight: 600 }}>{b.lost} lost</span>
+                      {' · '}
+                      {b.total} total
+                    </div>
                   </div>
-                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>
-                    {b.won}/{b.won + b.lost} closed &middot; {b.total} total
-                  </div>
-                </div>
-              ))}
+                );
+              })}
           </div>
         </div>
       )}
@@ -739,7 +796,11 @@ export default function Leads() {
       {selectedLead && (
         <LeadDetailPanel
           lead={selectedLead}
-          onClose={() => setSelectedLead(null)}
+          lockSource={lockedNewSource}
+          onClose={() => {
+            setSelectedLead(null);
+            setLockedNewSource(null);
+          }}
           onSave={(updated) => {
             if (updated.id) {
               setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated as Lead : l));
@@ -750,8 +811,11 @@ export default function Leads() {
             } else {
               // For walk-ins / phone calls, the API generates the id; we
               // optimistically add a placeholder, then refetch to pick up the
-              // real one from the server.
-              const newLead = { ...updated, id: String(Date.now()) } as Lead;
+              // real one from the server. If the panel was launched with a
+              // locked source, force it onto the payload so a stray edit
+              // before the server round-trip can't sneak through.
+              const sourceForCreate = lockedNewSource ?? (updated.source as SourceEnum);
+              const newLead = { ...updated, source: sourceForCreate, id: String(Date.now()) } as Lead;
               setLocalLeads((prev) => [newLead, ...prev]);
               createLeadApi.execute(newLead).then(() => {
                 refetchLeads();
@@ -759,6 +823,7 @@ export default function Leads() {
               });
             }
             setSelectedLead(null);
+            setLockedNewSource(null);
           }}
           onStageChange={async (newStage) => {
             const stage = newStage as Stage;
