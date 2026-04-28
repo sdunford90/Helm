@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
-import { Ship, Search, ArrowUp, ArrowDown } from 'lucide-react';
+import { Ship, Search, ChevronLeft, ChevronRight, ArrowUp, ArrowDown } from 'lucide-react';
 import { api } from '../lib/api';
 
 type ComplianceStatus = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
 type InsuranceStatus = 'VALID' | 'EXPIRED' | 'MISSING';
 type RegistrationStatus = 'VALID' | 'EXPIRED' | 'MISSING';
+type SortKey = 'name' | 'lengthFt' | 'createdAt';
+type SortOrder = 'asc' | 'desc';
 
 interface ApiInsuranceRecord {
   id: string;
@@ -163,16 +165,11 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '2px solid #00D4FF',
     whiteSpace: 'nowrap' as const,
   },
-  thButton: {
-    background: 'transparent',
-    border: 'none',
-    color: '#FFFFFF',
-    fontWeight: 600,
-    fontSize: '12px',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
+  thSortable: {
     cursor: 'pointer',
-    padding: 0,
+    userSelect: 'none' as const,
+  },
+  sortLabel: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: '4px',
@@ -215,13 +212,34 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#64748B',
     marginTop: '2px',
   },
+  pagination: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '16px',
+    borderTop: '1px solid #E2E8F0',
+    background: '#F8FAFC',
+  },
+  pageBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '6px 12px',
+    fontSize: '13px',
+    fontWeight: 600,
+    border: '1px solid #CCC',
+    borderRadius: '4px',
+    background: '#FFFFFF',
+    cursor: 'pointer',
+    color: '#0A2342',
+  },
+  pageBtnDisabled: {
+    opacity: 0.5,
+    cursor: 'not-allowed',
+  },
 };
 
-const PAGE_SIZE = 100;
-const SAFETY_LIMIT = 50; // refuse to fetch more than 5,000 boats client-side
-
-type SortField = 'name' | 'insuranceExpiry' | 'registrationExpiry';
-type SortOrder = 'asc' | 'desc';
+const PAGE_SIZE = 25;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
@@ -234,26 +252,25 @@ function formatDate(iso: string | null): string {
   });
 }
 
-function compareNullable(a: number | null, b: number | null, dir: 1 | -1): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1; // nulls always last
-  if (b === null) return -1;
-  return (a - b) * dir;
-}
-
 export default function Boats() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
   const [complianceFilter, setComplianceFilter] = useState<'All' | ComplianceStatus>('All');
   const [search, setSearch] = useState('');
   const [boats, setBoats] = useState<ApiBoat[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<SortKey>('createdAt');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortField, setSortField] = useState<SortField>('name');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
-  // The API caps `take` at 100, so paginate through every page until we
-  // have all boats for the tenant.
+  // Reset to first page whenever sort or server-side filter changes.
+  useEffect(() => {
+    setPage(1);
+  }, [sortBy, sortOrder, complianceFilter]);
+
+  // Fetch a single page from the API using the active sort and filter.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -261,19 +278,20 @@ export default function Boats() {
       setError(null);
       try {
         const token = await getToken();
-        const collected: ApiBoat[] = [];
-        for (let page = 0; page < SAFETY_LIMIT; page++) {
-          const skip = page * PAGE_SIZE;
-          const res = await api.get<ApiResponse>(
-            `/api/boats?take=${PAGE_SIZE}&skip=${skip}`,
-            token,
-          );
-          collected.push(...res.data);
-          if (collected.length >= res.pagination.total || res.data.length < PAGE_SIZE) {
-            break;
-          }
+        const params = new URLSearchParams({
+          take: String(PAGE_SIZE),
+          skip: String((page - 1) * PAGE_SIZE),
+          sortBy,
+          sortOrder,
+        });
+        if (complianceFilter !== 'All') {
+          params.set('complianceStatus', complianceFilter);
         }
-        if (!cancelled) setBoats(collected);
+        const res = await api.get<ApiResponse>(`/api/boats?${params.toString()}`, token);
+        if (!cancelled) {
+          setBoats(res.data);
+          setTotal(res.pagination.total);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load boats');
@@ -285,64 +303,51 @@ export default function Boats() {
     return () => {
       cancelled = true;
     };
-  }, [getToken]);
+  }, [getToken, page, sortBy, sortOrder, complianceFilter]);
 
-  const filtered = boats.filter((b) => {
-    if (
-      complianceFilter !== 'All' &&
-      b.compliance.overallScore !== complianceFilter
-    ) {
-      return false;
-    }
-    if (search) {
-      const q = search.toLowerCase();
-      const customerName = `${b.customer.firstName} ${b.customer.lastName}`.toLowerCase();
-      const match =
-        (b.name ?? '').toLowerCase().includes(q) ||
-        (b.registrationNumber ?? '').toLowerCase().includes(q) ||
-        customerName.includes(q);
-      if (!match) return false;
-    }
-    return true;
-  });
-
-  const sorted = [...filtered].sort((a, b) => {
-    const dir: 1 | -1 = sortOrder === 'asc' ? 1 : -1;
-    if (sortField === 'name') {
-      const an = (a.name ?? '').toLowerCase();
-      const bn = (b.name ?? '').toLowerCase();
-      if (an < bn) return -1 * dir;
-      if (an > bn) return 1 * dir;
-      return 0;
-    }
-    if (sortField === 'insuranceExpiry') {
-      const ax = a.insuranceRecords[0]?.expiryDate
-        ? new Date(a.insuranceRecords[0].expiryDate).getTime()
-        : null;
-      const bx = b.insuranceRecords[0]?.expiryDate
-        ? new Date(b.insuranceRecords[0].expiryDate).getTime()
-        : null;
-      return compareNullable(ax, bx, dir);
-    }
-    // registrationExpiry
-    const ax = a.registrationExpiry ? new Date(a.registrationExpiry).getTime() : null;
-    const bx = b.registrationExpiry ? new Date(b.registrationExpiry).getTime() : null;
-    return compareNullable(ax, bx, dir);
-  });
-
-  const toggleSort = (field: SortField) => {
-    if (sortField === field) {
+  const handleSort = (key: SortKey) => {
+    if (key === sortBy) {
       setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
     } else {
-      setSortField(field);
-      setSortOrder('asc');
+      setSortBy(key);
+      setSortOrder(key === 'createdAt' ? 'desc' : 'asc');
     }
   };
 
-  const sortIndicator = (field: SortField) => {
-    if (sortField !== field) return null;
+  // Search remains a client-side filter over the current page because the
+  // boats API does not yet support a server-side text search.
+  const visible = boats.filter((b) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    const customerName = `${b.customer.firstName} ${b.customer.lastName}`.toLowerCase();
+    return (
+      (b.name ?? '').toLowerCase().includes(q) ||
+      (b.registrationNumber ?? '').toLowerCase().includes(q) ||
+      customerName.includes(q)
+    );
+  });
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const showingStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const showingEnd = Math.min(page * PAGE_SIZE, total);
+
+  const renderSortIcon = (key: SortKey) => {
+    if (sortBy !== key) return null;
     return sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />;
   };
+
+  const sortableHeader = (label: string, key: SortKey, extra?: React.CSSProperties) => (
+    <th
+      style={{ ...styles.th, ...styles.thSortable, ...(extra ?? {}) }}
+      onClick={() => handleSort(key)}
+      aria-sort={sortBy === key ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <span style={styles.sortLabel}>
+        {label}
+        {renderSortIcon(key)}
+      </span>
+    </th>
+  );
 
   return (
     <div style={styles.page}>
@@ -377,51 +382,24 @@ export default function Boats() {
       </div>
 
       {/* Data Table */}
-      {sorted.length > 0 ? (
+      {visible.length > 0 ? (
         <div style={styles.tableWrap} className="helm-table-wrap">
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>
-                  <button
-                    type="button"
-                    style={styles.thButton}
-                    onClick={() => toggleSort('name')}
-                    aria-label="Sort by boat name"
-                  >
-                    Boat {sortIndicator('name')}
-                  </button>
-                </th>
+                {sortableHeader('Boat', 'name')}
                 <th style={styles.th}>Owner</th>
                 <th style={styles.th}>Type</th>
-                <th style={{ ...styles.th, textAlign: 'right' }}>Length</th>
-                <th style={styles.th}>
-                  <button
-                    type="button"
-                    style={styles.thButton}
-                    onClick={() => toggleSort('registrationExpiry')}
-                    aria-label="Sort by registration expiry"
-                  >
-                    Registration {sortIndicator('registrationExpiry')}
-                  </button>
-                </th>
-                <th style={styles.th}>
-                  <button
-                    type="button"
-                    style={styles.thButton}
-                    onClick={() => toggleSort('insuranceExpiry')}
-                    aria-label="Sort by insurance expiry"
-                  >
-                    Insurance {sortIndicator('insuranceExpiry')}
-                  </button>
-                </th>
+                {sortableHeader('Length', 'lengthFt', { textAlign: 'right' })}
+                <th style={styles.th}>Registration</th>
+                <th style={styles.th}>Insurance</th>
                 <th style={styles.th}>Slip Contract</th>
-                <th style={styles.th}>Added On</th>
+                {sortableHeader('Added On', 'createdAt')}
                 <th style={styles.th}>Compliance</th>
               </tr>
             </thead>
             <tbody>
-              {sorted.map((b, idx) => {
+              {visible.map((b, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                 const cb = complianceBadgeColors[b.compliance.overallScore];
                 const typeLabel = [b.year, b.make, b.model].filter(Boolean).join(' ') || '—';
@@ -517,6 +495,27 @@ export default function Boats() {
               })}
             </tbody>
           </table>
+          <div style={styles.pagination}>
+            <span style={{ fontSize: '13px', color: '#64748B' }}>
+              Showing {showingStart}–{showingEnd} of {total} boats
+            </span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                style={{ ...styles.pageBtn, ...(page <= 1 ? styles.pageBtnDisabled : {}) }}
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                <ChevronLeft size={14} /> Prev
+              </button>
+              <button
+                style={{ ...styles.pageBtn, ...(page >= totalPages ? styles.pageBtnDisabled : {}) }}
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
         </div>
       ) : (
         !loading && (
@@ -526,7 +525,7 @@ export default function Boats() {
               No boats found
             </h3>
             <p style={{ fontSize: '14px', color: '#64748B', margin: 0 }}>
-              {boats.length === 0
+              {total === 0 && complianceFilter === 'All' && !search
                 ? 'No boats are recorded for this marina yet. Add a boat from a customer detail page.'
                 : 'No boats match your search and filter criteria.'}
             </p>
