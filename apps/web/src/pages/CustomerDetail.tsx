@@ -962,14 +962,14 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
 
 /* ── Component ─────────────────────────────────────────── */
 
-type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
+type Tab = 'overview' | 'boats' | 'billing' | 'payments' | 'documents' | 'activity';
 
 export default function CustomerDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'overview';
-  const validTabs: Tab[] = ['overview', 'boats', 'billing', 'documents', 'activity'];
+  const validTabs: Tab[] = ['overview', 'boats', 'billing', 'payments', 'documents', 'activity'];
   const [tab, setTab] = useState<Tab>(validTabs.includes(initialTab) ? initialTab : 'overview');
   const [showEdit, setShowEdit] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
@@ -1192,6 +1192,7 @@ export default function CustomerDetailPage() {
     { key: 'overview', label: 'Overview' },
     { key: 'boats', label: 'Boats' },
     { key: 'billing', label: 'Billing' },
+    { key: 'payments', label: 'Payments' },
     { key: 'documents', label: 'Documents' },
     { key: 'activity', label: 'Activity' },
   ];
@@ -1482,8 +1483,9 @@ export default function CustomerDetailPage() {
     setSetupBusy(type);
     try {
       const token = await getToken();
-      // Strip any existing ?tab so the return URL lands back on the Billing tab.
-      const returnUrl = `${window.location.origin}/customers/${id}?tab=billing`;
+      // Strip any existing ?tab so the return URL lands back on the Payments tab,
+      // where Cards on File lives.
+      const returnUrl = `${window.location.origin}/customers/${id}?tab=payments`;
       const resp = await api.post<{ url: string }>(
         `/api/customers/${id}/payment-methods/setup-session`,
         { type, returnUrl },
@@ -1622,369 +1624,334 @@ export default function CustomerDetailPage() {
     }
   }
 
-  const renderBilling = () => {
+  // Shared card / section-header styling used by both the Billing tab
+  // (Cards on File) and the Payments tab (Payment History). Lifted to the
+  // component scope so both render functions can reuse the exact same look.
+  const sectionHeader: React.CSSProperties = {
+    fontSize: '13px',
+    fontWeight: 700,
+    color: '#0F2E4D',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginBottom: '12px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  };
+  const card: React.CSSProperties = {
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #E2E8F0',
+    borderRadius: '8px',
+    padding: '20px',
+    marginTop: '24px',
+  };
+
+  const renderPayments = () => {
     const history = paymentHistory?.data ?? [];
     const total = paymentHistory?.pagination.total ?? 0;
     const page = Math.floor(paymentSkip / PAYMENT_PAGE_SIZE) + 1;
     const totalPages = Math.max(1, Math.ceil(total / PAYMENT_PAGE_SIZE));
-    const sectionHeader: React.CSSProperties = {
-      fontSize: '13px',
-      fontWeight: 700,
-      color: '#0F2E4D',
-      textTransform: 'uppercase',
-      letterSpacing: '0.05em',
-      marginBottom: '12px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px',
-    };
-    const card: React.CSSProperties = {
-      backgroundColor: '#FFFFFF',
-      border: '1px solid #E2E8F0',
-      borderRadius: '8px',
-      padding: '20px',
-      marginTop: '24px',
-    };
 
     return (
-      <div>
-        {/* Existing Invoices table */}
-        <div style={s.tableWrap} className="helm-table-wrap">
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Invoice</th>
-                <th style={s.th}>Description</th>
-                <th style={s.th}>Amount</th>
-                <th style={s.th}>Status</th>
-                <th style={s.th}>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map((inv, idx) => {
-                const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
-                return (
-                  <tr
-                    key={inv.id}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => navigate(`/billing/invoices/${inv.id}`)}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
-                  >
-                    <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg }}>
-                      <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
-                    </td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      <>
+      <div style={card}>
+        <div style={sectionHeader}>
+          <DollarSign size={16} color="#1B5E20" />
+          Payment History
+          {total > 0 && (
+            <span style={{ fontSize: '12px', fontWeight: 500, color: '#64748B', textTransform: 'none', letterSpacing: 0 }}>
+              ({total} total)
+            </span>
+          )}
         </div>
-
-        {/* Payment History */}
-        <div style={card}>
-          <div style={sectionHeader}>
-            <DollarSign size={16} color="#1B5E20" />
-            Payment History
-            {total > 0 && (
-              <span style={{ fontSize: '12px', fontWeight: 500, color: '#64748B', textTransform: 'none', letterSpacing: 0 }}>
-                ({total} total)
-              </span>
-            )}
+        {history.length === 0 ? (
+          <div style={{ padding: '32px 16px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
+            No payments recorded yet.
           </div>
-          {history.length === 0 ? (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
-              No payments recorded yet.
-            </div>
-          ) : (
-            <>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={s.table}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...s.th, width: '32px', padding: '8px 4px' }} aria-label="Expand row" />
-                      <th style={s.th}>Date</th>
-                      <th style={s.th}>Amount</th>
-                      <th style={s.th}>Method</th>
-                      <th style={s.th}>Status</th>
-                      <th style={s.th}>Invoice</th>
-                      <th style={s.th}>Recorded by</th>
-                      <th style={s.th}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((p, idx) => {
-                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
-                      const sb = paymentStatusColors[p.status] || { bg: '#F2F4F6', color: '#64748B' };
-                      // Refund is only meaningful for Stripe-backed payments
-                      // that still have a remaining refundable balance. The
-                      // refundedCents ledger is the source of truth; a
-                      // PARTIALLY_REFUNDED row whose ledger is exhausted
-                      // hides the action, and the API enforces the same
-                      // check server-side.
-                      const remainingRefundable = Math.max(
-                        0,
-                        p.amountCents - (p.refundedCents ?? 0),
-                      );
-                      const canRefund =
-                        !!p.stripePaymentId &&
-                        remainingRefundable > 0 &&
-                        (p.status === 'COMPLETED' || p.status === 'PARTIALLY_REFUNDED');
-                      const hasRefunds = (p.refundCount ?? 0) > 0;
-                      const isExpanded = expandedPaymentIds.has(p.id);
-                      const refundsForRow = refundsByPaymentId[p.id];
-                      const refundsErrorForRow = refundsErrorById[p.id];
-                      return (
-                        <React.Fragment key={p.id}>
+        ) : (
+          <>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={s.table}>
+                <thead>
+                  <tr>
+                    <th style={{ ...s.th, width: '32px', padding: '8px 4px' }} aria-label="Expand row" />
+                    <th style={s.th}>Date</th>
+                    <th style={s.th}>Amount</th>
+                    <th style={s.th}>Method</th>
+                    <th style={s.th}>Status</th>
+                    <th style={s.th}>Invoice</th>
+                    <th style={s.th}>Recorded by</th>
+                    <th style={s.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((p, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+                    const sb = paymentStatusColors[p.status] || { bg: '#F2F4F6', color: '#64748B' };
+                    // Refund is only meaningful for Stripe-backed payments
+                    // that still have a remaining refundable balance. The
+                    // refundedCents ledger is the source of truth; a
+                    // PARTIALLY_REFUNDED row whose ledger is exhausted
+                    // hides the action, and the API enforces the same
+                    // check server-side.
+                    const remainingRefundable = Math.max(
+                      0,
+                      p.amountCents - (p.refundedCents ?? 0),
+                    );
+                    const canRefund =
+                      !!p.stripePaymentId &&
+                      remainingRefundable > 0 &&
+                      (p.status === 'COMPLETED' || p.status === 'PARTIALLY_REFUNDED');
+                    const hasRefunds = (p.refundCount ?? 0) > 0;
+                    const isExpanded = expandedPaymentIds.has(p.id);
+                    const refundsForRow = refundsByPaymentId[p.id];
+                    const refundsErrorForRow = refundsErrorById[p.id];
+                    return (
+                      <React.Fragment key={p.id}>
+                        <tr>
+                          <td style={{ ...s.td, backgroundColor: rowBg, padding: '8px 4px', textAlign: 'center' }}>
+                            {hasRefunds ? (
+                              <button
+                                type="button"
+                                onClick={() => togglePaymentExpanded(p)}
+                                aria-expanded={isExpanded}
+                                aria-label={
+                                  isExpanded
+                                    ? `Hide ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                    : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                }
+                                title={
+                                  isExpanded
+                                    ? 'Hide refund history'
+                                    : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                }
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: '2px 6px',
+                                  cursor: 'pointer',
+                                  color: '#0F2E4D',
+                                  fontSize: '12px',
+                                  fontWeight: 700,
+                                  lineHeight: 1,
+                                }}
+                              >
+                                {isExpanded ? '▾' : '▸'}
+                              </button>
+                            ) : (
+                              <span style={{ color: '#CBD5E1' }}>·</span>
+                            )}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600 }}>{fmtCents(p.amountCents)}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
+                            {p.status === 'PARTIALLY_REFUNDED' && (
+                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                {fmtCents(p.refundedCents ?? 0)} of {fmtCents(p.amountCents)} refunded
+                                {remainingRefundable > 0 && (
+                                  <> · {fmtCents(remainingRefundable)} remaining</>
+                                )}
+                              </div>
+                            )}
+                            {p.status === 'REFUNDED' && (p.refundedCents ?? 0) > 0 && (
+                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                {fmtCents(p.refundedCents ?? 0)} refunded
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            {p.invoice ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/billing/invoices/${p.invoice!.id}`)}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  color: '#0066CC',
+                                  textDecoration: 'underline',
+                                  cursor: 'pointer',
+                                  fontFamily: 'inherit',
+                                  fontSize: 'inherit',
+                                }}
+                              >
+                                {p.invoice.invoiceNumber}
+                              </button>
+                            ) : (
+                              <span style={{ color: '#94A3B8' }}>—</span>
+                            )}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
+                            {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            {canRefund ? (
+                              <button
+                                type="button"
+                                onClick={() => openRefundDialog(p)}
+                                style={{
+                                  padding: '4px 10px',
+                                  border: '1px solid #B91C1C',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#FFFFFF',
+                                  color: '#B91C1C',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Refund
+                              </button>
+                            ) : (
+                              <span style={{ color: '#94A3B8' }}>—</span>
+                            )}
+                          </td>
+                        </tr>
+                        {isExpanded && hasRefunds && (
                           <tr>
-                            <td style={{ ...s.td, backgroundColor: rowBg, padding: '8px 4px', textAlign: 'center' }}>
-                              {hasRefunds ? (
-                                <button
-                                  type="button"
-                                  onClick={() => togglePaymentExpanded(p)}
-                                  aria-expanded={isExpanded}
-                                  aria-label={
-                                    isExpanded
-                                      ? `Hide ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
-                                      : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
-                                  }
-                                  title={
-                                    isExpanded
-                                      ? 'Hide refund history'
-                                      : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
-                                  }
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    padding: '2px 6px',
-                                    cursor: 'pointer',
-                                    color: '#0F2E4D',
-                                    fontSize: '12px',
-                                    fontWeight: 700,
-                                    lineHeight: 1,
-                                  }}
-                                >
-                                  {isExpanded ? '▾' : '▸'}
-                                </button>
-                              ) : (
-                                <span style={{ color: '#CBD5E1' }}>·</span>
-                              )}
-                            </td>
-                            <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
-                            <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600 }}>{fmtCents(p.amountCents)}</td>
-                            <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
-                            <td style={{ ...s.td, backgroundColor: rowBg }}>
-                              <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
-                              {p.status === 'PARTIALLY_REFUNDED' && (
-                                <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
-                                  {fmtCents(p.refundedCents ?? 0)} of {fmtCents(p.amountCents)} refunded
-                                  {remainingRefundable > 0 && (
-                                    <> · {fmtCents(remainingRefundable)} remaining</>
-                                  )}
+                            <td
+                              colSpan={8}
+                              style={{
+                                backgroundColor: '#F1F5F9',
+                                borderBottom: '1px solid #E2E8F0',
+                                padding: '12px 24px 16px 56px',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: '11px',
+                                  fontWeight: 700,
+                                  color: '#0F2E4D',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px',
+                                }}
+                              >
+                                Refund history
+                              </div>
+                              {refundsErrorForRow ? (
+                                <div style={{ fontSize: '13px', color: '#B91C1C' }}>
+                                  {refundsErrorForRow}{' '}
+                                  <button
+                                    type="button"
+                                    onClick={() => loadRefundsFor(p.id)}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      padding: 0,
+                                      color: '#0066CC',
+                                      textDecoration: 'underline',
+                                      cursor: 'pointer',
+                                      fontSize: '13px',
+                                    }}
+                                  >
+                                    Retry
+                                  </button>
                                 </div>
-                              )}
-                              {p.status === 'REFUNDED' && (p.refundedCents ?? 0) > 0 && (
-                                <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
-                                  {fmtCents(p.refundedCents ?? 0)} refunded
+                              ) : refundsForRow === undefined || refundsForRow === null ? (
+                                <div style={{ fontSize: '13px', color: '#64748B' }}>
+                                  Loading refunds…
                                 </div>
-                              )}
-                            </td>
-                            <td style={{ ...s.td, backgroundColor: rowBg }}>
-                              {p.invoice ? (
-                                <button
-                                  type="button"
-                                  onClick={() => navigate(`/billing/invoices/${p.invoice!.id}`)}
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    padding: 0,
-                                    color: '#0066CC',
-                                    textDecoration: 'underline',
-                                    cursor: 'pointer',
-                                    fontFamily: 'inherit',
-                                    fontSize: 'inherit',
-                                  }}
-                                >
-                                  {p.invoice.invoiceNumber}
-                                </button>
+                              ) : refundsForRow.length === 0 ? (
+                                <div style={{ fontSize: '13px', color: '#64748B' }}>
+                                  No individual refund records found.
+                                </div>
                               ) : (
-                                <span style={{ color: '#94A3B8' }}>—</span>
-                              )}
-                            </td>
-                            <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
-                              {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
-                            </td>
-                            <td style={{ ...s.td, backgroundColor: rowBg }}>
-                              {canRefund ? (
-                                <button
-                                  type="button"
-                                  onClick={() => openRefundDialog(p)}
+                                <table
                                   style={{
-                                    padding: '4px 10px',
-                                    border: '1px solid #B91C1C',
-                                    borderRadius: '6px',
-                                    backgroundColor: '#FFFFFF',
-                                    color: '#B91C1C',
+                                    width: '100%',
+                                    borderCollapse: 'collapse',
                                     fontSize: '12px',
-                                    fontWeight: 600,
-                                    cursor: 'pointer',
                                   }}
                                 >
-                                  Refund
-                                </button>
-                              ) : (
-                                <span style={{ color: '#94A3B8' }}>—</span>
+                                  <thead>
+                                    <tr>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Date</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Amount</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Type</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Issued by</th>
+                                      <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Reason</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {refundsForRow.map((r) => (
+                                      <tr key={r.id} style={{ borderTop: '1px solid #E2E8F0' }}>
+                                        <td style={{ padding: '6px 8px', color: '#334155' }}>
+                                          {fmtDate(r.createdAt)}
+                                        </td>
+                                        <td style={{ padding: '6px 8px', ...s.mono, fontWeight: 600 }}>
+                                          {fmtCents(r.amountCents)}
+                                        </td>
+                                        <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                          {r.isFullRefund ? 'Full' : 'Partial'}
+                                          {r.source === 'BACKFILL' && (
+                                            <span style={{ marginLeft: '6px', color: '#94A3B8', fontStyle: 'italic' }}>
+                                              (legacy)
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                          {r.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                                        </td>
+                                        <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                          {r.reason ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
                               )}
                             </td>
                           </tr>
-                          {isExpanded && hasRefunds && (
-                            <tr>
-                              <td
-                                colSpan={8}
-                                style={{
-                                  backgroundColor: '#F1F5F9',
-                                  borderBottom: '1px solid #E2E8F0',
-                                  padding: '12px 24px 16px 56px',
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    fontSize: '11px',
-                                    fontWeight: 700,
-                                    color: '#0F2E4D',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.05em',
-                                    marginBottom: '8px',
-                                  }}
-                                >
-                                  Refund history
-                                </div>
-                                {refundsErrorForRow ? (
-                                  <div style={{ fontSize: '13px', color: '#B91C1C' }}>
-                                    {refundsErrorForRow}{' '}
-                                    <button
-                                      type="button"
-                                      onClick={() => loadRefundsFor(p.id)}
-                                      style={{
-                                        background: 'none',
-                                        border: 'none',
-                                        padding: 0,
-                                        color: '#0066CC',
-                                        textDecoration: 'underline',
-                                        cursor: 'pointer',
-                                        fontSize: '13px',
-                                      }}
-                                    >
-                                      Retry
-                                    </button>
-                                  </div>
-                                ) : refundsForRow === undefined || refundsForRow === null ? (
-                                  <div style={{ fontSize: '13px', color: '#64748B' }}>
-                                    Loading refunds…
-                                  </div>
-                                ) : refundsForRow.length === 0 ? (
-                                  <div style={{ fontSize: '13px', color: '#64748B' }}>
-                                    No individual refund records found.
-                                  </div>
-                                ) : (
-                                  <table
-                                    style={{
-                                      width: '100%',
-                                      borderCollapse: 'collapse',
-                                      fontSize: '12px',
-                                    }}
-                                  >
-                                    <thead>
-                                      <tr>
-                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Date</th>
-                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Amount</th>
-                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Type</th>
-                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Issued by</th>
-                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Reason</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {refundsForRow.map((r) => (
-                                        <tr key={r.id} style={{ borderTop: '1px solid #E2E8F0' }}>
-                                          <td style={{ padding: '6px 8px', color: '#334155' }}>
-                                            {fmtDate(r.createdAt)}
-                                          </td>
-                                          <td style={{ padding: '6px 8px', ...s.mono, fontWeight: 600 }}>
-                                            {fmtCents(r.amountCents)}
-                                          </td>
-                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
-                                            {r.isFullRefund ? 'Full' : 'Partial'}
-                                            {r.source === 'BACKFILL' && (
-                                              <span style={{ marginLeft: '6px', color: '#94A3B8', fontStyle: 'italic' }}>
-                                                (legacy)
-                                              </span>
-                                            )}
-                                          </td>
-                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
-                                            {r.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
-                                          </td>
-                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
-                                            {r.reason ?? <span style={{ color: '#94A3B8' }}>—</span>}
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              {totalPages > 1 && (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px', fontSize: '13px', color: '#64748B' }}>
-                  <span>Page {page} of {totalPages}</span>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      type="button"
-                      disabled={paymentSkip === 0}
-                      onClick={() => setPaymentSkip(Math.max(0, paymentSkip - PAYMENT_PAGE_SIZE))}
-                      style={{
-                        padding: '6px 12px',
-                        border: '1px solid #CBD5E1',
-                        borderRadius: '6px',
-                        backgroundColor: paymentSkip === 0 ? '#F1F5F9' : '#FFFFFF',
-                        cursor: paymentSkip === 0 ? 'not-allowed' : 'pointer',
-                        fontSize: '13px',
-                      }}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      type="button"
-                      disabled={page >= totalPages}
-                      onClick={() => setPaymentSkip(paymentSkip + PAYMENT_PAGE_SIZE)}
-                      style={{
-                        padding: '6px 12px',
-                        border: '1px solid #CBD5E1',
-                        borderRadius: '6px',
-                        backgroundColor: page >= totalPages ? '#F1F5F9' : '#FFFFFF',
-                        cursor: page >= totalPages ? 'not-allowed' : 'pointer',
-                        fontSize: '13px',
-                      }}
-                    >
-                      Next
-                    </button>
-                  </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px', fontSize: '13px', color: '#64748B' }}>
+                <span>Page {page} of {totalPages}</span>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    disabled={paymentSkip === 0}
+                    onClick={() => setPaymentSkip(Math.max(0, paymentSkip - PAYMENT_PAGE_SIZE))}
+                    style={{
+                      padding: '6px 12px',
+                      border: '1px solid #CBD5E1',
+                      borderRadius: '6px',
+                      backgroundColor: paymentSkip === 0 ? '#F1F5F9' : '#FFFFFF',
+                      cursor: paymentSkip === 0 ? 'not-allowed' : 'pointer',
+                      fontSize: '13px',
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={page >= totalPages}
+                    onClick={() => setPaymentSkip(paymentSkip + PAYMENT_PAGE_SIZE)}
+                    style={{
+                      padding: '6px 12px',
+                      border: '1px solid #CBD5E1',
+                      borderRadius: '6px',
+                      backgroundColor: page >= totalPages ? '#F1F5F9' : '#FFFFFF',
+                      cursor: page >= totalPages ? 'not-allowed' : 'pointer',
+                      fontSize: '13px',
+                    }}
+                  >
+                    Next
+                  </button>
                 </div>
-              )}
-            </>
-          )}
-        </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
         {/* Cards on File */}
         <div style={card}>
@@ -2316,6 +2283,50 @@ export default function CustomerDetailPage() {
               })}
             </div>
           )}
+        </div>
+      </>
+    );
+  };
+
+  const renderBilling = () => {
+    return (
+      <div>
+        {/* Existing Invoices table */}
+        <div style={s.tableWrap} className="helm-table-wrap">
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>Invoice</th>
+                <th style={s.th}>Description</th>
+                <th style={s.th}>Amount</th>
+                <th style={s.th}>Status</th>
+                <th style={s.th}>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {invoices.map((inv, idx) => {
+                const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
+                return (
+                  <tr
+                    key={inv.id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigate(`/billing/invoices/${inv.id}`)}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
+                  >
+                    <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>
+                      <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
+                    </td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     );
@@ -2675,6 +2686,7 @@ export default function CustomerDetailPage() {
       {tab === 'overview' && renderOverview()}
       {tab === 'boats' && renderBoats()}
       {tab === 'billing' && renderBilling()}
+      {tab === 'payments' && renderPayments()}
       {tab === 'documents' && renderDocuments()}
       {tab === 'activity' && renderActivity()}
 
