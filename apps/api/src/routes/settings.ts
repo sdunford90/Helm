@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getInventorySyncStatus } from "../services/qbo-sync.js";
+import { retryFailedQboInventorySyncs } from "./inventory.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
@@ -628,6 +629,23 @@ router.get("/qbo/inventory-status", ...clerkAuth(), requireRole("MARINA_OWNER", 
   try {
     const status = await getInventorySyncStatus(req.tenantId!);
     res.json(status);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/settings/qbo/inventory-resync — bulk retry failed inventory syncs
+//
+// Iterates every QBO inventory sync ref currently in an error state for the
+// tenant and re-attempts the appropriate push (item, bill, journal, vendor).
+// Per-record error fields are cleared on success and updated on continued
+// failure. Returns counts + a per-record breakdown so the UI can summarize.
+// --------------------------------------------------------------------------
+router.post("/qbo/inventory-resync", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const result = await retryFailedQboInventorySyncs(req.tenantId!);
+    res.json(result);
   } catch (err) {
     next(err);
   }

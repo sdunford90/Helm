@@ -431,3 +431,46 @@ describe('handleQboWebhook — Location-first realm routing', () => {
     expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
   });
 });
+
+describe('findFailedInventorySyncRefs — drives bulk retry endpoint', () => {
+  it('queries only sync refs whose lastError is set and shapes them for the retry helper', async () => {
+    const now = new Date();
+    const failingRow = {
+      qboType: 'Item',
+      qboId: null,
+      lastSyncedAt: null,
+      lastError: 'QBO 401',
+      lastErrorAt: now,
+      sourceType: 'product',
+      sourceId: 'inv-prod-100',
+      locationId: 'loc-1',
+    };
+    const findMany = vi.fn().mockResolvedValue([failingRow]);
+    (mockPrisma as any).qboInventorySyncRef.findMany = findMany;
+
+    const mod = await import('../../src/services/qbo-sync.js');
+    const refs = await mod.findFailedInventorySyncRefs('tenant-1');
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-1', lastError: { not: null } },
+      orderBy: [{ lastErrorAt: 'asc' }],
+    });
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toEqual({
+      sourceType: 'product',
+      sourceId: 'inv-prod-100',
+      qboType: 'Item',
+      qboId: null,
+      locationId: 'loc-1',
+      lastError: 'QBO 401',
+      lastErrorAt: now,
+    });
+  });
+
+  it('returns an empty array when no refs are in an error state', async () => {
+    (mockPrisma as any).qboInventorySyncRef.findMany = vi.fn().mockResolvedValue([]);
+    const mod = await import('../../src/services/qbo-sync.js');
+    const refs = await mod.findFailedInventorySyncRefs('tenant-1');
+    expect(refs).toEqual([]);
+  });
+});

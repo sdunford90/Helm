@@ -535,6 +535,32 @@ export default function Settings() {
     lastItemSyncAt: string | null; lastBillSyncAt: string | null; lastAdjustmentSyncAt: string | null;
     recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string }>;
   }>('get', '/api/settings/qbo/inventory-status', { immediate: true });
+  const { execute: retryFailedInventorySyncs, loading: qboInventoryRetrying } = useApi<{
+    attempted: number; succeeded: number; failed: number; skipped: number;
+    details: Array<{ sourceType: string; sourceId: string; qboType: string; status: 'succeeded' | 'failed' | 'skipped'; error?: string }>;
+  }>('post', '/api/settings/qbo/inventory-resync');
+  const [qboRetryMsg, setQboRetryMsg] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const handleRetryFailedQboInventory = async () => {
+    setQboRetryMsg(null);
+    const result = await retryFailedInventorySyncs();
+    if (!result) {
+      setQboRetryMsg({ kind: 'error', text: 'Failed to start re-sync. Please try again.' });
+      return;
+    }
+    if (result.attempted === 0 && result.skipped === 0) {
+      setQboRetryMsg({ kind: 'info', text: 'No failed sync records to retry.' });
+    } else {
+      const parts: string[] = [];
+      parts.push(`${result.succeeded} succeeded`);
+      if (result.failed > 0) parts.push(`${result.failed} still failing`);
+      if (result.skipped > 0) parts.push(`${result.skipped} skipped`);
+      setQboRetryMsg({
+        kind: result.failed > 0 ? 'error' : 'success',
+        text: `Retry complete — ${parts.join(', ')}.`,
+      });
+    }
+    await fetchQboInventoryStatus();
+  };
 
   // Stripe integration
   interface StripeStatus { connected: boolean; accountId: string | null; dashboardUrl: string | null; }
@@ -1652,10 +1678,31 @@ export default function Settings() {
                             </div>
                           </div>
                         )}
-                        <div style={{ marginTop: '12px' }}>
+                        <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                           <button style={st.outlineBtn} onClick={() => fetchQboInventoryStatus()}>
                             <RefreshCw size={14} /> Refresh status
                           </button>
+                          {(qboInventoryStatus.itemsWithErrors + qboInventoryStatus.billsWithErrors + qboInventoryStatus.adjustmentsWithErrors) > 0 && (
+                            <button
+                              style={{ ...st.addBtn, opacity: qboInventoryRetrying ? 0.7 : 1 }}
+                              onClick={handleRetryFailedQboInventory}
+                              disabled={qboInventoryRetrying}
+                            >
+                              <RefreshCw size={14} />{qboInventoryRetrying ? ' Retrying…' : ' Retry all failures'}
+                            </button>
+                          )}
+                          {qboRetryMsg && (
+                            <span style={{
+                              fontSize: '13px',
+                              color: qboRetryMsg.kind === 'success' ? '#03543F' : qboRetryMsg.kind === 'error' ? '#7F1D1D' : '#1E40AF',
+                              backgroundColor: qboRetryMsg.kind === 'success' ? '#DEF7EC' : qboRetryMsg.kind === 'error' ? '#FEE2E2' : '#DBEAFE',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              fontWeight: 500,
+                            }}>
+                              {qboRetryMsg.text}
+                            </span>
+                          )}
                         </div>
                       </>
                     ) : (

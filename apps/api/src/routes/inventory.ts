@@ -9,6 +9,7 @@ import {
   postInventoryAdjustmentJournal,
   getBulkProductSyncStatus,
   getProductSyncStatus,
+  findFailedInventorySyncRefs,
   type PoBillLineInput,
 } from "../services/qbo-sync.js";
 
@@ -1099,5 +1100,169 @@ router.delete("/vendors/:id", async (req: Request, res: Response, next: NextFunc
     next(err);
   }
 });
+
+// ─── Bulk QBO retry ───────────────────────────────────────────────────────────
+
+export interface QboInventoryRetryResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  details: Array<{
+    sourceType: string;
+    sourceId: string;
+    qboType: string;
+    status: "succeeded" | "failed" | "skipped";
+    error?: string;
+  }>;
+}
+
+/**
+ * Walks every failed QBO inventory sync ref for a tenant and re-attempts the
+ * push. Iterates products, inventory adjustments, purchase-order bills, and
+ * vendors. Per-record error fields are cleared on success and re-stamped on
+ * continued failure (the underlying try* helpers do that bookkeeping). Records
+ * whose local source row is no longer present in memory are reported as
+ * "skipped" rather than counted as a failure.
+ */
+export async function retryFailedQboInventorySyncs(
+  tenantId: string,
+): Promise<QboInventoryRetryResult> {
+  const failedRefs = await findFailedInventorySyncRefs(tenantId);
+  const result: QboInventoryRetryResult = {
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    details: [],
+  };
+
+  for (const ref of failedRefs) {
+    if (ref.sourceType === "product") {
+      const product = products.find((p) => p.id === ref.sourceId && p.tenantId === tenantId);
+      if (!product) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
+        continue;
+      }
+      if (!product.trackInventory) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer tracks inventory" });
+        continue;
+      }
+      result.attempted++;
+      await tryPushProductToQbo(product);
+      if (product.qboItemSyncError) {
+        result.failed++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: product.qboItemSyncError });
+      } else {
+        result.succeeded++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+      }
+    } else if (ref.sourceType === "inventory_adjustment") {
+      const adjustment = adjustments.find((a) => a.id === ref.sourceId && a.tenantId === tenantId);
+      if (!adjustment) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment no longer exists locally" });
+        continue;
+      }
+      const product = products.find((p) => p.id === adjustment.productId && p.tenantId === tenantId);
+      if (!product) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment's product no longer exists locally" });
+        continue;
+      }
+      result.attempted++;
+      await tryPushAdjustmentJournal(adjustment, product);
+      if (adjustment.qboSyncError) {
+        result.failed++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: adjustment.qboSyncError });
+      } else {
+        result.succeeded++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+      }
+    } else if (ref.sourceType === "purchase_order") {
+      const po = purchaseOrders.find((p) => p.id === ref.sourceId && p.tenantId === tenantId);
+      if (!po) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Purchase order no longer exists locally" });
+        continue;
+      }
+      const billLines = po.lineItems
+        .filter((li) => li.receivedQty > 0)
+        .map((li) => ({
+          productId: li.productId,
+          productName: li.productName,
+          receivedQty: li.receivedQty,
+          unitCostCents: li.unitCostCents,
+        }));
+      if (!billLines.length) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "No received lines to bill" });
+        continue;
+      }
+      // Don't force-push on retry: if a Bill was already created we must not
+      // double-bill the vendor. The sync ref's qboId tracks that state.
+      result.attempted++;
+      try {
+        const billResult = await syncReceivingBill(
+          {
+            purchaseOrderId: po.id,
+            poNumber: po.poNumber,
+            vendorId: po.vendorId,
+            expectedDate: po.expectedDate ? new Date(po.expectedDate) : null,
+            lines: billLines,
+            forcePush: false,
+          },
+          po.tenantId,
+          po.locationId,
+        );
+        po.qboBillId = billResult.qboBillId;
+        po.qboBillSyncedAt = new Date().toISOString();
+        po.qboBillSyncError = null;
+        po.qboBillSyncErrorAt = null;
+        result.succeeded++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        po.qboBillSyncError = msg.slice(0, 1000);
+        po.qboBillSyncErrorAt = new Date().toISOString();
+        result.failed++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
+      }
+    } else if (ref.sourceType === "vendor") {
+      const vendor = await prisma.vendor.findFirst({ where: { id: ref.sourceId, tenantId } });
+      if (!vendor) {
+        result.skipped++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Vendor no longer exists" });
+        continue;
+      }
+      result.attempted++;
+      try {
+        await syncVendor(
+          {
+            vendorId: vendor.id,
+            name: vendor.name,
+            email: vendor.email,
+            phone: vendor.phone,
+            address: vendor.address,
+          },
+          tenantId,
+        );
+        result.succeeded++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.failed++;
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
+      }
+    } else {
+      result.skipped++;
+      result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: `Unsupported sourceType: ${ref.sourceType}` });
+    }
+  }
+
+  return result;
+}
 
 export default router;

@@ -1887,6 +1887,39 @@ export async function getProductSyncStatus(
   };
 }
 
+export interface FailedInventorySyncRef {
+  sourceType: string;
+  sourceId: string;
+  qboType: string;
+  qboId: string | null;
+  locationId: string | null;
+  lastError: string;
+  lastErrorAt: Date;
+}
+
+/**
+ * Returns every QBO inventory sync ref for a tenant that is currently in an
+ * error state (lastError set). Used by the bulk re-sync endpoint to drive a
+ * "retry all failures" action from Settings → QuickBooks → Inventory Sync.
+ */
+export async function findFailedInventorySyncRefs(
+  tenantId: string,
+): Promise<FailedInventorySyncRef[]> {
+  const refs = await (prisma as any).qboInventorySyncRef.findMany({
+    where: { tenantId, lastError: { not: null } },
+    orderBy: [{ lastErrorAt: "asc" }],
+  });
+  return refs.map((r: any) => ({
+    sourceType: r.sourceType,
+    sourceId: r.sourceId,
+    qboType: r.qboType,
+    qboId: r.qboId ?? null,
+    locationId: r.locationId ?? null,
+    lastError: r.lastError,
+    lastErrorAt: r.lastErrorAt,
+  }));
+}
+
 export async function getBulkProductSyncStatus(
   tenantId: string,
   productIds: string[],
