@@ -78,3 +78,22 @@ jobs:
           labels: ${{ steps.meta-web.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  smoke-test-admin:
+    name: Smoke-test admin subdomain
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    env:
+      ADMIN_URL: ${{ vars.ADMIN_URL || 'https://admin.tracktheturn.com' }}
+      WEB_URL: ${{ vars.WEB_URL || 'https://app.tracktheturn.com' }}
+      RETRIES: '8'
+      RETRY_WAIT: '15'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for rollout to propagate
+        run: sleep 30
+
+      - name: Run admin / web smoke checks
+        run: bash scripts/smoke-test-admin.sh

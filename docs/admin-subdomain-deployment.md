@@ -96,20 +96,47 @@ returning `TENANT_NOT_FOUND`.
 
 ## Verifying the rollout
 
-After deploying:
+### Automated (runs after every deploy)
+
+`scripts/smoke-test-admin.sh` is wired into the `Deploy` GitHub Actions
+workflow as the `smoke-test-admin` job (see `.github/workflows/deploy.yml`).
+It runs after `build-and-push` and asserts:
+
+1. `https://admin.tracktheturn.com/` returns `200` with
+   `<title>Helm Admin</title>` in the body.
+2. `https://admin.tracktheturn.com/tenants/abc-123` (a deep link) also
+   returns `200` with `<title>Helm Admin</title>` — proves SPA fallback
+   on the admin bundle is working and the request didn't get routed to
+   the marina app.
+3. `https://app.tracktheturn.com/` still returns the marina bundle
+   (`<title>Helm</title>` and **not** `Helm Admin`).
+
+If any check fails after the configured retries, the job exits non-zero
+which fails the workflow run and triggers GitHub Actions' standard
+failure notifications (on-call paging).
+
+The hosts default to production but can be overridden via repo
+**Variables** (`ADMIN_URL`, `WEB_URL`) — useful for staging or
+preview environments.
+
+You can also run the same script locally against any environment:
+
+```bash
+ADMIN_URL=https://admin.tracktheturn.com \
+  WEB_URL=https://app.tracktheturn.com \
+  scripts/smoke-test-admin.sh
+```
+
+### Manual sanity checks
+
+Useful when investigating a failed automated run, or for things the
+script can't easily assert (auth, in-browser rendering):
 
 1. `curl -sI https://admin.tracktheturn.com/` → expect `200` with
    `content-type: text/html`.
-2. `curl -s https://admin.tracktheturn.com/ | grep '<title>'` → expect
-   `<title>Helm Admin</title>` (proves you're hitting the admin bundle,
-   not the web bundle).
-3. `curl -sI https://admin.tracktheturn.com/tenants/abc-123` (a deep link)
-   → expect `200` and the same `index.html` body (SPA fallback).
-4. `curl -s https://admin.tracktheturn.com/api/health` → expect a JSON
+2. `curl -s https://admin.tracktheturn.com/api/health` → expect a JSON
    body from the API (proves the `/api` proxy works on the admin host).
-5. `curl -s https://app.tracktheturn.com/ | grep '<title>'` → expect
-   `<title>Helm</title>` (the marina app, unchanged).
-6. Open the admin URL in a browser, sign in via Clerk, and confirm the
+3. Open the admin URL in a browser, sign in via Clerk, and confirm the
    Dashboard, Tenants, Billing, Analytics, Support, and Settings pages
    all render and that API calls under the **Network** tab return `200`
    (not `404 TENANT_NOT_FOUND` and not CORS-blocked).
