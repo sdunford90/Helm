@@ -10,7 +10,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users, Landmark, Percent,
+  Lock, Shield, Users, Landmark, Percent, Copy, Info,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 
@@ -1664,6 +1664,46 @@ export default function Settings() {
                   </div>
                 )}
 
+                {/* QBO Webhook registration info — surface URL + realm ID
+                    so operators can register the endpoint in the Intuit
+                    developer console for this location's company file. */}
+                {locationDetail.qboConnected && (
+                  <div style={{ marginTop: '8px', padding: '14px 16px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '10px' }}>
+                      <Info size={14} style={{ color: '#64748B', marginTop: '2px', flexShrink: 0 }} />
+                      <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5 }}>
+                        Register this webhook endpoint in your QuickBooks Online developer console (Webhooks → Endpoint URL) so this location's invoice and customer changes sync back into Helm.
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Webhook URL</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <code style={{ flex: 1, fontSize: '12px', padding: '8px 10px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', color: '#0A2342', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                          {`${window.location.origin}/api/qbo/webhook`}
+                        </code>
+                        <button
+                          type="button"
+                          style={{ ...st.outlineBtn, padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                          onClick={() => {
+                            void navigator.clipboard.writeText(`${window.location.origin}/api/qbo/webhook`);
+                          }}
+                          title="Copy webhook URL"
+                        >
+                          <Copy size={12} /> Copy URL
+                        </button>
+                      </div>
+                    </div>
+                    {locationDetail.qboRealmId && (
+                      <div>
+                        <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Realm ID (this location)</div>
+                        <code style={{ display: 'inline-block', fontSize: '12px', padding: '6px 10px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', color: '#0A2342', fontFamily: 'monospace' }}>
+                          {locationDetail.qboRealmId}
+                        </code>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Stripe per-location */}
                 <div style={{ ...st.integrationCard, marginTop: '12px' }}>
                   <div style={st.integrationInfo}>
@@ -1708,6 +1748,18 @@ export default function Settings() {
                         {locationStripeActing ? 'Connecting…' : locationDetail.stripeAccountId ? 'Resume Onboarding' : 'Connect Stripe'}
                       </button>
                     )}
+                  </div>
+                </div>
+
+                {/* Stripe Connect webhook note — Stripe Connect uses a single
+                    platform-wide webhook endpoint that's already registered
+                    by Helm; nothing to set up in this location's Express
+                    dashboard. */}
+                <div style={{ marginTop: '8px', padding: '12px 14px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <Info size={14} style={{ color: '#64748B', marginTop: '2px', flexShrink: 0 }} />
+                  <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5 }}>
+                    <strong style={{ color: '#0A2342' }}>Webhooks: managed centrally.</strong>{' '}
+                    Stripe Connect delivers events for every connected location to one Helm endpoint, which is registered once at the platform level. No webhook setup is needed inside this location's Stripe Express dashboard.
                   </div>
                 </div>
 

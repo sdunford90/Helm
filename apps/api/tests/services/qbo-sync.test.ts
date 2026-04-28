@@ -6,11 +6,13 @@ vi.mock('../../src/services/qbo-sync.js', async (importOriginal) => {
 });
 
 let syncInvoice: typeof import('../../src/services/qbo-sync.js').syncInvoice;
+let handleQboWebhook: typeof import('../../src/services/qbo-sync.js').handleQboWebhook;
 
 beforeEach(async () => {
   vi.clearAllMocks();
   const mod = await import('../../src/services/qbo-sync.js');
   syncInvoice = mod.syncInvoice;
+  handleQboWebhook = mod.handleQboWebhook;
 });
 
 describe('syncInvoice — location credential guard', () => {
@@ -306,5 +308,126 @@ describe('getInventorySyncStatus — aggregates sync refs into a status summary'
     expect(status.adjustmentsSynced).toBe(1);
     expect(status.recentErrors).toHaveLength(1);
     expect(status.recentErrors[0].error).toBe('boom');
+  });
+});
+
+describe('handleQboWebhook — Location-first realm routing', () => {
+  it('routes a webhook event to the Location whose realmId matches', async () => {
+    const realmId = 'realm-loc-123';
+
+    (mockPrisma as any).location = {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'loc-qbo-1',
+        tenantId: 'tenant-qbo-1',
+      }),
+    };
+    mockPrisma.tenant.findFirst = vi.fn() as any;
+
+    // No matching invoice — handler should still resolve location and not crash.
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    await handleQboWebhook({
+      eventNotifications: [
+        {
+          realmId,
+          dataChangeEvent: {
+            entities: [
+              { name: 'Payment', id: 'qbo-pay-1', operation: 'Create' },
+            ],
+          },
+        },
+      ],
+    });
+
+    // Location must have been consulted first by realmId.
+    expect((mockPrisma as any).location.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ qboRealmId: realmId }),
+      }),
+    );
+    // Tenant fallback must NOT be used when a location matches.
+    expect(mockPrisma.tenant.findFirst).not.toHaveBeenCalled();
+
+    // Audit log should record the resolved locationId.
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          tenantId: 'tenant-qbo-1',
+          action: 'QBO_WEBHOOK_PAYMENT_RECEIVED',
+          changedFieldsJson: expect.objectContaining({
+            qboPaymentId: 'qbo-pay-1',
+            locationId: 'loc-qbo-1',
+            realmId,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('falls back to Tenant lookup when no Location owns the realmId', async () => {
+    const realmId = 'realm-tenant-only';
+
+    (mockPrisma as any).location = {
+      findFirst: vi.fn().mockResolvedValue(null),
+    };
+    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue({
+      id: 'tenant-legacy-qbo',
+    }) as any;
+
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    await handleQboWebhook({
+      eventNotifications: [
+        {
+          realmId,
+          dataChangeEvent: {
+            entities: [
+              { name: 'Payment', id: 'qbo-pay-2', operation: 'Create' },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect((mockPrisma as any).location.findFirst).toHaveBeenCalled();
+    expect(mockPrisma.tenant.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ qboRealmId: realmId }),
+      }),
+    );
+
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          tenantId: 'tenant-legacy-qbo',
+          action: 'QBO_WEBHOOK_PAYMENT_RECEIVED',
+          changedFieldsJson: expect.objectContaining({
+            locationId: null,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('silently skips events for an unknown realmId without crashing', async () => {
+    (mockPrisma as any).location = {
+      findFirst: vi.fn().mockResolvedValue(null),
+    };
+    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue(null) as any;
+
+    await expect(
+      handleQboWebhook({
+        eventNotifications: [
+          {
+            realmId: 'realm-unknown',
+            dataChangeEvent: {
+              entities: [{ name: 'Customer', id: 'x', operation: 'Update' }],
+            },
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
   });
 });

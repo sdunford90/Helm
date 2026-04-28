@@ -72,26 +72,27 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
   // event.account is set for events fired on a connected account.
   const connectedAccountId = (event as Stripe.Event & { account?: string }).account ?? null;
 
-  // Resolve which Helm tenant this event belongs to.
-  // Check tenant-level accounts first, then location-level accounts.
+  // Resolve which Helm location/tenant this event belongs to.
+  // Per-Location Stripe Connect accounts are now primary, so check Location
+  // first and fall back to Tenant for legacy tenant-level connections.
   let tenantId: string | null = null;
   let locationId: string | null = null;
 
   if (connectedAccountId) {
-    const tenant = await prisma.tenant.findFirst({
+    const location = await prisma.location.findFirst({
       where: { stripeAccountId: connectedAccountId },
-      select: { id: true },
+      select: { id: true, tenantId: true },
     });
-    if (tenant) {
-      tenantId = tenant.id;
+    if (location) {
+      tenantId = location.tenantId;
+      locationId = location.id;
     } else {
-      const location = await prisma.location.findFirst({
+      const tenant = await prisma.tenant.findFirst({
         where: { stripeAccountId: connectedAccountId },
-        select: { id: true, tenantId: true },
+        select: { id: true },
       });
-      if (location) {
-        tenantId = location.tenantId;
-        locationId = location.id;
+      if (tenant) {
+        tenantId = tenant.id;
       }
     }
   }
@@ -112,18 +113,18 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
       break;
 
     case "payment_intent.succeeded":
-      await handlePaymentIntentSucceeded(event, tenantId);
+      await handlePaymentIntentSucceeded(event, tenantId, locationId);
       break;
 
     case "payment_intent.payment_failed":
-      await handlePaymentIntentFailed(event, tenantId);
+      await handlePaymentIntentFailed(event, tenantId, locationId);
       break;
 
     case "charge.refunded":
       // Refunds are applied synchronously via POST /api/payments/:id/refund.
       // This handler is a safety net for refunds issued out-of-band in Stripe.
       console.log(
-        `[stripe-webhook] charge.refunded for tenant ${tenantId ?? "unknown"}`,
+        `[stripe-webhook] charge.refunded for tenant ${tenantId ?? "unknown"}${locationId ? ` location ${locationId}` : ""}`,
       );
       break;
 
@@ -138,15 +139,12 @@ async function dispatchConnectEvent(event: Stripe.Event): Promise<void> {
     case "charge.dispute.created":
     case "charge.dispute.closed":
     case "charge.dispute.updated":
-      await handleDispute(event, tenantId);
+      await handleDispute(event, tenantId, locationId);
       break;
 
     case "payout.failed":
       // Marina's payout to their bank failed. Log and alert staff.
-      console.warn(
-        `[stripe-webhook] payout.failed for tenant ${tenantId ?? "unknown"}:`,
-        event.data.object,
-      );
+      await handlePayoutFailed(event, tenantId, locationId);
       break;
 
     case "account.updated":
@@ -348,6 +346,7 @@ async function handleConnectCheckoutCompleted(
 async function handlePaymentIntentSucceeded(
   event: Stripe.Event,
   tenantId: string | null,
+  locationId: string | null = null,
 ): Promise<void> {
   const pi = event.data.object as Stripe.PaymentIntent;
 
@@ -398,11 +397,28 @@ async function handlePaymentIntentSucceeded(
       });
     }
   });
+
+  // Audit so per-location reconciliation can match payments back to the
+  // connected account that produced them.
+  await prisma.auditLog.create({
+    data: {
+      tenantId: payment.tenantId,
+      recordType: "Payment",
+      recordId: payment.id,
+      action: "PAYMENT_SUCCEEDED",
+      changedFieldsJson: {
+        stripePaymentId: pi.id,
+        amountCents: payment.amountCents,
+        locationId,
+      },
+    },
+  });
 }
 
 async function handlePaymentIntentFailed(
   event: Stripe.Event,
   tenantId: string | null,
+  locationId: string | null = null,
 ): Promise<void> {
   const pi = event.data.object as Stripe.PaymentIntent;
 
@@ -426,6 +442,39 @@ async function handlePaymentIntentFailed(
       changedFieldsJson: {
         stripePaymentId: pi.id,
         lastPaymentError: pi.last_payment_error?.message ?? null,
+        locationId,
+      },
+    },
+  });
+}
+
+async function handlePayoutFailed(
+  event: Stripe.Event,
+  tenantId: string | null,
+  locationId: string | null = null,
+): Promise<void> {
+  const payout = event.data.object as Stripe.Payout;
+
+  console.warn(
+    `[stripe-webhook] payout.failed for tenant ${tenantId ?? "unknown"}${locationId ? ` location ${locationId}` : ""}:`,
+    payout,
+  );
+
+  if (!tenantId) return;
+
+  await prisma.auditLog.create({
+    data: {
+      tenantId,
+      recordType: locationId ? "Location" : "Tenant",
+      recordId: locationId ?? tenantId,
+      action: "STRIPE_PAYOUT_FAILED",
+      changedFieldsJson: {
+        payoutId: payout.id,
+        amount: payout.amount,
+        currency: payout.currency,
+        failureCode: payout.failure_code ?? null,
+        failureMessage: payout.failure_message ?? null,
+        locationId,
       },
     },
   });
@@ -443,6 +492,7 @@ async function maybeHandleAchReturn(
 async function handleDispute(
   event: Stripe.Event,
   tenantId: string | null,
+  locationId: string | null = null,
 ): Promise<void> {
   const dispute = event.data.object as Stripe.Dispute;
   if (!tenantId) return;
@@ -505,6 +555,7 @@ async function handleDispute(
         reason: dispute.reason,
         status: dispute.status,
         amountCents: dispute.amount,
+        locationId,
       },
     },
   });

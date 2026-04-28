@@ -923,24 +923,47 @@ export async function syncAll(
 
 export async function handleQboWebhook(
   payload: any,
-  tenantId: string,
+  _tenantId?: string,
 ): Promise<void> {
   if (!payload?.eventNotifications) return;
 
   for (const notification of payload.eventNotifications) {
     const realmId = notification.realmId;
 
-    // Find tenant by realmId
-    const tenant = await prisma.tenant.findFirst({
+    // Resolve which Helm location/tenant owns this realm.
+    // Per-Location QBO connections are now primary, so check Location first
+    // and fall back to Tenant for legacy tenant-level connections.
+    let effectiveTenantId: string | null = null;
+    let effectiveLocationId: string | null = null;
+
+    const location = await prisma.location.findFirst({
       where: { qboRealmId: realmId } as any,
+      select: { id: true, tenantId: true },
     });
 
-    if (!tenant) {
+    if (location) {
+      effectiveTenantId = location.tenantId;
+      effectiveLocationId = location.id;
+    } else {
+      const tenant = await prisma.tenant.findFirst({
+        where: { qboRealmId: realmId } as any,
+        select: { id: true },
+      });
+      if (tenant) {
+        effectiveTenantId = tenant.id;
+      }
+    }
+
+    if (!effectiveTenantId) {
       console.warn("[qbo-sync] Unknown realmId in webhook", { realmId });
       continue;
     }
 
-    const effectiveTenantId = tenant.id;
+    // Build credential context once per notification — location-scoped
+    // when the realm belongs to a Location, tenant-scoped otherwise.
+    const ctx: QboCredentialContext = effectiveLocationId
+      ? { tenantId: effectiveTenantId, locationId: effectiveLocationId }
+      : { tenantId: effectiveTenantId };
 
     for (const entity of notification.dataChangeEvent?.entities || []) {
       const { name, id, operation } = entity;
@@ -949,7 +972,7 @@ export async function handleQboWebhook(
         if (name === "Customer" && (operation === "Create" || operation === "Update")) {
           // Fetch QBO customer and update our records
           const qboCustomer = await qboRequest(
-            effectiveTenantId,
+            ctx,
             "GET",
             `customer/${id}?minorversion=73`,
           );
@@ -974,6 +997,8 @@ export async function handleQboWebhook(
               customerId: existing.id,
               qboCustomerId: id,
               operation,
+              locationId: effectiveLocationId,
+              realmId,
             });
           }
         }
@@ -981,7 +1006,7 @@ export async function handleQboWebhook(
         if (name === "Invoice" && operation === "Update") {
           // Fetch QBO invoice and update status
           const qboInvoice = await qboRequest(
-            effectiveTenantId,
+            ctx,
             "GET",
             `invoice/${id}?minorversion=73`,
           );
@@ -1005,6 +1030,8 @@ export async function handleQboWebhook(
               invoiceId: existing.id,
               qboInvoiceId: id,
               newBalance: balance,
+              locationId: effectiveLocationId,
+              realmId,
             });
           }
         }
@@ -1013,6 +1040,8 @@ export async function handleQboWebhook(
           await auditLog(effectiveTenantId, "QBO_WEBHOOK_PAYMENT_RECEIVED", {
             qboPaymentId: id,
             operation,
+            locationId: effectiveLocationId,
+            realmId,
           });
         }
       } catch (err) {
@@ -1020,6 +1049,7 @@ export async function handleQboWebhook(
           name,
           id,
           operation,
+          locationId: effectiveLocationId,
           error: err,
         });
       }

@@ -217,7 +217,9 @@ router.post(
         }
       }
 
-      await handleQboWebhook(payload, req.tenantId!);
+      // The webhook handler resolves tenant/location from the payload's
+      // realmId — no tenant context required from the request.
+      await handleQboWebhook(payload);
 
       res.json({ success: true });
     } catch (err) {
