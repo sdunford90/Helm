@@ -12,6 +12,10 @@ import {
   disconnect,
   pullVendorsAndBillsForTenant,
 } from "../services/qbo-sync.js";
+import {
+  listDeliveries,
+  replayDelivery,
+} from "../services/qbo-webhook-deliveries.js";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
 const router: Router = Router();
@@ -180,6 +184,56 @@ router.post(
 
       res.json({ success: true, message: "QuickBooks Online disconnected" });
     } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// GET /webhook-deliveries — List recent QBO webhook deliveries for the
+// signed-in tenant. Operators use this (and the replay endpoint below) to
+// recover from background dispatcher failures, since Intuit no longer
+// retries deliveries we've already ack'd 200.
+// --------------------------------------------------------------------------
+
+router.get(
+  "/webhook-deliveries",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const QuerySchema = z.object({
+        status: z.enum(["PENDING", "PROCESSED", "FAILED"]).optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      });
+      const { status, limit } = QuerySchema.parse(req.query);
+      const deliveries = await listDeliveries(tenantId, { status, limit });
+      res.json({ deliveries });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// POST /webhook-deliveries/:id/replay — Re-run the saved dispatcher for a
+// single delivery. The dispatcher updates the row to PROCESSED or FAILED.
+// Tenant ownership is enforced inside replayDelivery.
+// --------------------------------------------------------------------------
+
+router.post(
+  "/webhook-deliveries/:id/replay",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const deliveryId = req.params.id;
+      const result = await replayDelivery(deliveryId, tenantId);
+      res.json({ id: deliveryId, ...result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) {
+        res.status(404).json({ error: message });
+        return;
+      }
       next(err);
     }
   },

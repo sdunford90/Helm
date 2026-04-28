@@ -248,45 +248,45 @@ enum ChargebackStatus {
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model Tenant {
-  id                   String       @id @default(uuid())
-  name                 String
-  subdomain            String       @unique
-  customDomain         String?
-  brandingJson         Json?
-  invoiceTemplateJson  Json?
-  stripeAccountId      String?
-  stripeCustomerId     String?    // Helm's platform customer record for SaaS billing
-  stripeSubscriptionId String?    // active SaaS subscription on the platform account
+  id                       String       @id @default(uuid())
+  name                     String
+  subdomain                String       @unique
+  customDomain             String?
+  brandingJson             Json?
+  invoiceTemplateJson      Json?
+  stripeAccountId          String?
+  stripeCustomerId         String? // Helm's platform customer record for SaaS billing
+  stripeSubscriptionId     String? // active SaaS subscription on the platform account
   // Per-tenant platform fee taken via Stripe Connect application_fee_amount.
   // Negotiated individually. Total fee = ceil(amount * pctBps / 10000) + fixedCents.
-  applicationFeePctBps   Int @default(0)  // basis points (100 = 1%)
-  applicationFeeFixedCents Int @default(0)
-  qboRealmId           String?
-  qboAccessToken       String?
-  qboRefreshToken      String?
-  qboTokenExpiresAt    DateTime?
-  qboConnectedAt       DateTime?
+  applicationFeePctBps     Int          @default(0) // basis points (100 = 1%)
+  applicationFeeFixedCents Int          @default(0)
+  qboRealmId               String?
+  qboAccessToken           String?
+  qboRefreshToken          String?
+  qboTokenExpiresAt        DateTime?
+  qboConnectedAt           DateTime?
   // Last time we pulled Vendors / Bills from QBO for this tenant. Used as
   // the watermark when querying QBO for "everything updated since X".
-  qboLastVendorPullAt  DateTime?
-  qboLastBillPullAt    DateTime?
-  timezone             String       @default("America/New_York")
-  fiscalYearEnd        String       @default("12/31")
-  saasTierId           String?
-  status               TenantStatus @default(ACTIVE)
-  gracePeriodStartedAt DateTime?
-  lockedAt             DateTime?
+  qboLastVendorPullAt      DateTime?
+  qboLastBillPullAt        DateTime?
+  timezone                 String       @default("America/New_York")
+  fiscalYearEnd            String       @default("12/31")
+  saasTierId               String?
+  status                   TenantStatus @default(ACTIVE)
+  gracePeriodStartedAt     DateTime?
+  lockedAt                 DateTime?
   // Operator opt-in: when true, autoRenewCheck() not only creates and
   // approves the renewal batch but also executes it immediately. Default
   // false because rate-change batches usually want a human glance.
-  autoExecuteRenewals  Boolean      @default(false)
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
+  autoExecuteRenewals      Boolean      @default(false)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
 
-  saasTier       SaasTier?      @relation(fields: [saasTierId], references: [id])
-  users          User[]
-  locations      Location[]
-  saasInvoices   SaasInvoice[]
+  saasTier         SaasTier?         @relation(fields: [saasTierId], references: [id])
+  users            User[]
+  locations        Location[]
+  saasInvoices     SaasInvoice[]
   supportTickets   SupportTicket[]
   portalMessages   PortalMessage[]
   customRoles      CustomRole[]
@@ -313,22 +313,22 @@ model EmailSuppression {
 }
 
 model Location {
-  id                  String    @id @default(uuid())
-  tenantId            String
-  name                String
-  address             String?
-  city                String?
-  state               String?
-  zip                 String?
-  phone               String?
-  timezone            String    @default("America/New_York")
-  active              Boolean   @default(true)
-  transientEnabled    Boolean   @default(true)
-  rentalsEnabled      Boolean   @default(true)
+  id               String  @id @default(uuid())
+  tenantId         String
+  name             String
+  address          String?
+  city             String?
+  state            String?
+  zip              String?
+  phone            String?
+  timezone         String  @default("America/New_York")
+  active           Boolean @default(true)
+  transientEnabled Boolean @default(true)
+  rentalsEnabled   Boolean @default(true)
 
   // Per-location branding
-  logoUrl             String?
-  brandingJson        Json?
+  logoUrl      String?
+  brandingJson Json?
 
   // Per-location QuickBooks connection (each property files its own books)
   qboRealmId          String?
@@ -342,14 +342,14 @@ model Location {
   qboLastBillPullAt   DateTime?
 
   // Per-location Stripe Connect (each property routes payments to its own account)
-  stripeAccountId           String?
-  stripeOnboardingComplete  Boolean   @default(false)
+  stripeAccountId          String?
+  stripeOnboardingComplete Boolean @default(false)
 
   // Per-location renewal behavior
-  autoExecuteRenewals Boolean   @default(false)
+  autoExecuteRenewals Boolean @default(false)
 
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id])
   dockageRates   DockageRate[]
@@ -364,14 +364,14 @@ model Location {
 }
 
 model SaasTier {
-  id                 String @id @default(uuid())
-  name               String
-  monthlyFeeCents    Int
+  id                  String  @id @default(uuid())
+  name                String
+  monthlyFeeCents     Int
   perLocationFeeCents Int
-  achFeeRate         Float
-  cardFeeRate        Float
-  storageLimitGb     Int
-  stripePriceId      String? // Stripe recurring Price used for SaaS subscription checkout
+  achFeeRate          Float
+  cardFeeRate         Float
+  storageLimitGb      Int
+  stripePriceId       String? // Stripe recurring Price used for SaaS subscription checkout
 
   tenants Tenant[]
 
@@ -391,8 +391,8 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant     Tenant      @relation(fields: [tenantId], references: [id])
-  customRole CustomRole? @relation(fields: [customRoleId], references: [id])
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  customRole    CustomRole?    @relation(fields: [customRoleId], references: [id])
   userLocations UserLocation[]
 
   @@index([tenantId])
@@ -469,30 +469,30 @@ model LeadForm {
 }
 
 model Lead {
-  id            String    @id @default(uuid())
-  tenantId      String
-  locationId    String?
-  stage         LeadStage @default(NEW)
-  sourceFormId  String?
-  sourceUrl     String?
-  utmSource     String?
-  utmMedium     String?
-  referralCode  String?
-  firstName     String
-  lastName      String
-  email         String?
-  phone         String?
-  boatLength    Float?
-  slipType      String?
-  notes         String?
-  assignedTo    String?
-  lostReason    String?
-  convertedAt   DateTime?
-  customerId    String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id           String    @id @default(uuid())
+  tenantId     String
+  locationId   String?
+  stage        LeadStage @default(NEW)
+  sourceFormId String?
+  sourceUrl    String?
+  utmSource    String?
+  utmMedium    String?
+  referralCode String?
+  firstName    String
+  lastName     String
+  email        String?
+  phone        String?
+  boatLength   Float?
+  slipType     String?
+  notes        String?
+  assignedTo   String?
+  lostReason   String?
+  convertedAt  DateTime?
+  customerId   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  sourceForm     LeadForm?      @relation(fields: [sourceFormId], references: [id])
+  sourceForm      LeadForm?       @relation(fields: [sourceFormId], references: [id])
   waitlistEntries WaitlistEntry[]
 
   @@index([tenantId])
@@ -500,14 +500,14 @@ model Lead {
 }
 
 model ReferralPartner {
-  id               String @id @default(uuid())
+  id               String  @id @default(uuid())
   tenantId         String
   name             String
-  code             String @unique
+  code             String  @unique
   contactEmail     String?
   type             String
-  leadsCount       Int    @default(0)
-  conversionsCount Int    @default(0)
+  leadsCount       Int     @default(0)
+  conversionsCount Int     @default(0)
 
   @@index([tenantId])
   @@map("referral_partners")
@@ -536,50 +536,50 @@ model WaitlistEntry {
 }
 
 model Customer {
-  id                  String         @id @default(uuid())
-  tenantId            String
-  firstName           String
-  lastName            String
-  company             String?
-  email               String?
-  phone               String?
-  addressJson         Json?
-  dob                 DateTime?
-  dlNumber            String?
-  dlState             String?
-  dlExpiry            DateTime?
-  dlPhotoUrl          String?
+  id                   String         @id @default(uuid())
+  tenantId             String
+  firstName            String
+  lastName             String
+  company              String?
+  email                String?
+  phone                String?
+  addressJson          Json?
+  dob                  DateTime?
+  dlNumber             String?
+  dlState              String?
+  dlExpiry             DateTime?
+  dlPhotoUrl           String?
   emergencyContactJson Json?
-  status              CustomerStatus @default(ACTIVE)
-  taxExempt           Boolean        @default(false)
-  exemptionCertUrl    String?
-  exemptionExpiry     DateTime?
-  achBlocked          Boolean        @default(false)
-  stripeCustomerId    String?
-  qboCustomerId       String?
-  leadSource          String?
-  convertedFromLeadId String?
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  status               CustomerStatus @default(ACTIVE)
+  taxExempt            Boolean        @default(false)
+  exemptionCertUrl     String?
+  exemptionExpiry      DateTime?
+  achBlocked           Boolean        @default(false)
+  stripeCustomerId     String?
+  qboCustomerId        String?
+  leadSource           String?
+  convertedFromLeadId  String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
-  boats               Boat[]
-  waitlistEntries     WaitlistEntry[]
-  slipContracts       SlipContract[]
-  invoices            Invoice[]
-  payments            Payment[]
-  reservations        Reservation[]
-  conciergeRequests   ConciergeRequest[]
-  securityDeposits    SecurityDeposit[]
-  insuranceRecords    InsuranceRecord[]
-  announcementDeliveries AnnouncementDelivery[]
-  achReturns          AchReturn[]
-  chargebacks         Chargeback[]
-  collectionsAccounts CollectionsAccount[]
-  npsSurveys          NpsSurvey[]
-  transientBookings   TransientBooking[]
-  rampTickets         RampTicket[]
+  boats                    Boat[]
+  waitlistEntries          WaitlistEntry[]
+  slipContracts            SlipContract[]
+  invoices                 Invoice[]
+  payments                 Payment[]
+  reservations             Reservation[]
+  conciergeRequests        ConciergeRequest[]
+  securityDeposits         SecurityDeposit[]
+  insuranceRecords         InsuranceRecord[]
+  announcementDeliveries   AnnouncementDelivery[]
+  achReturns               AchReturn[]
+  chargebacks              Chargeback[]
+  collectionsAccounts      CollectionsAccount[]
+  npsSurveys               NpsSurvey[]
+  transientBookings        TransientBooking[]
+  rampTickets              RampTicket[]
   communicationPreferences CommunicationPreference[]
-  portalMessages      PortalMessage[]
+  portalMessages           PortalMessage[]
 
   @@index([tenantId])
   @@map("customers")
@@ -606,7 +606,7 @@ model Boat {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  customer         Customer           @relation(fields: [customerId], references: [id])
+  customer         Customer             @relation(fields: [customerId], references: [id])
   safetyRecords    VesselSafetyRecord[]
   insuranceRecords InsuranceRecord[]
   slipContracts    SlipContract[]
@@ -638,28 +638,28 @@ model VesselSafetyRecord {
 }
 
 model Slip {
-  id              String          @id @default(uuid())
-  tenantId        String
-  dockId          String?
-  locationId      String?
-  slipNumber      String
-  lengthFt        Float
-  beamFt          Float?
-  depthFt         Float?
-  slipType        String?
-  shorePower      String?
-  status          SlipStatus      @default(VACANT)
-  transientCapable Boolean        @default(false)
-  electricityMode ElectricityMode @default(FLAT_FEE)
-  flatFeeCents    Int?
-  kwhRateCents    Int?
-  qrCodeUrl       String?
+  id               String          @id @default(uuid())
+  tenantId         String
+  dockId           String?
+  locationId       String?
+  slipNumber       String
+  lengthFt         Float
+  beamFt           Float?
+  depthFt          Float?
+  slipType         String?
+  shorePower       String?
+  status           SlipStatus      @default(VACANT)
+  transientCapable Boolean         @default(false)
+  electricityMode  ElectricityMode @default(FLAT_FEE)
+  flatFeeCents     Int?
+  kwhRateCents     Int?
+  qrCodeUrl        String?
 
-  contracts        SlipContract[]
-  meterReadings    MeterReading[]
+  contracts         SlipContract[]
+  meterReadings     MeterReading[]
   transientBookings TransientBooking[]
-  dockWalkItems    DockWalkItem[]
-  pumpOuts         PumpOut[]
+  dockWalkItems     DockWalkItem[]
+  pumpOuts          PumpOut[]
 
   @@index([tenantId])
   @@map("slips")
@@ -690,10 +690,10 @@ model SlipContract {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
-  slip           Slip           @relation(fields: [slipId], references: [id])
-  customer       Customer       @relation(fields: [customerId], references: [id])
-  boat           Boat?          @relation(fields: [boatId], references: [id])
-  renewalBatch   RenewalBatch?  @relation(fields: [renewalBatchId], references: [id])
+  slip             Slip              @relation(fields: [slipId], references: [id])
+  customer         Customer          @relation(fields: [customerId], references: [id])
+  boat             Boat?             @relation(fields: [boatId], references: [id])
+  renewalBatch     RenewalBatch?     @relation(fields: [renewalBatchId], references: [id])
   securityDeposits SecurityDeposit[]
 
   @@index([tenantId])
@@ -701,7 +701,7 @@ model SlipContract {
 }
 
 model RenewalBatch {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   tenantId          String
   createdBy         String
   status            String
@@ -711,7 +711,7 @@ model RenewalBatch {
   revenueDeltaCents Int?
   approvedBy        String?
   approvedAt        DateTime?
-  createdAt         DateTime @default(now())
+  createdAt         DateTime  @default(now())
 
   contracts SlipContract[]
 
@@ -756,8 +756,8 @@ model Invoice {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  customer  Customer         @relation(fields: [customerId], references: [id])
-  location  Location?        @relation(fields: [locationId], references: [id])
+  customer  Customer          @relation(fields: [customerId], references: [id])
+  location  Location?         @relation(fields: [locationId], references: [id])
   lineItems InvoiceLineItem[]
   payments  Payment[]
 
@@ -767,19 +767,19 @@ model Invoice {
 }
 
 model InvoiceLineItem {
-  id            String  @id @default(uuid())
-  invoiceId     String
-  description   String
-  quantity      Float   @default(1)
+  id             String  @id @default(uuid())
+  invoiceId      String
+  description    String
+  quantity       Float   @default(1)
   unitPriceCents Int
-  discountCents Int     @default(0)
-  taxRate       Float   @default(0)
-  taxCents      Int     @default(0)
-  extendedCents Int
-  glAccountId   String?
-  isDeferred    Boolean @default(false)
-  sourceType    String?
-  sourceId      String?
+  discountCents  Int     @default(0)
+  taxRate        Float   @default(0)
+  taxCents       Int     @default(0)
+  extendedCents  Int
+  glAccountId    String?
+  isDeferred     Boolean @default(false)
+  sourceType     String?
+  sourceId       String?
 
   invoice           Invoice              @relation(fields: [invoiceId], references: [id])
   glAccount         GlAccount?           @relation(fields: [glAccountId], references: [id])
@@ -802,8 +802,8 @@ model Payment {
   qboPaymentId    String?
   createdAt       DateTime      @default(now())
 
-  customer   Customer   @relation(fields: [customerId], references: [id])
-  invoice    Invoice?   @relation(fields: [invoiceId], references: [id])
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  invoice    Invoice?    @relation(fields: [invoiceId], references: [id])
   achReturns AchReturn[]
 
   @@index([tenantId])
@@ -820,17 +820,49 @@ model ProcessedWebhook {
   @@map("processed_webhooks")
 }
 
+// Persisted log of every accepted Intuit QuickBooks Online webhook delivery.
+// We respond 200 to Intuit immediately and process entities in the background,
+// which loses Intuit's built-in retry behavior on transient failures. Saving
+// the raw payload + signature with a status lets operators review failures
+// and trigger a replay from an admin endpoint or script.
+//
+// status: "PENDING" while the background dispatcher is running, then
+//   "PROCESSED" or "FAILED" depending on the outcome. lastError captures
+//   the most recent failure message for FAILED rows.
+//
+// tenantId / locationId are populated when the realmId resolves to a known
+// Helm tenant/location; they remain null for deliveries we cannot route
+// (still saved so an operator can investigate).
+model QboWebhookDelivery {
+  id          String    @id @default(uuid())
+  realmId     String
+  tenantId    String?
+  locationId  String?
+  signature   String
+  payloadJson Json
+  status      String    @default("PENDING")
+  attempts    Int       @default(0)
+  lastError   String?
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([status, receivedAt])
+  @@index([tenantId, status])
+  @@index([realmId])
+  @@map("qbo_webhook_deliveries")
+}
+
 model AchReturn {
-  id                String    @id @default(uuid())
-  tenantId          String
-  paymentId         String
-  customerId        String
-  rCode             String
-  returnedAt        DateTime
-  reversalEntryId   String?
-  returnFeeCents    Int?
+  id                 String    @id @default(uuid())
+  tenantId           String
+  paymentId          String
+  customerId         String
+  rCode              String
+  returnedAt         DateTime
+  reversalEntryId    String?
+  returnFeeCents     Int?
   customerNotifiedAt DateTime?
-  achBlockedSet     Boolean   @default(false)
+  achBlockedSet      Boolean   @default(false)
 
   payment  Payment  @relation(fields: [paymentId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
@@ -840,16 +872,16 @@ model AchReturn {
 }
 
 model Chargeback {
-  id                 String           @id @default(uuid())
-  tenantId           String
-  customerId         String
-  stripeDisputeId    String           @unique
-  amountCents        Int
-  status             ChargebackStatus @default(OPEN)
+  id                  String           @id @default(uuid())
+  tenantId            String
+  customerId          String
+  stripeDisputeId     String           @unique
+  amountCents         Int
+  status              ChargebackStatus @default(OPEN)
   evidenceSubmittedAt DateTime?
-  outcome            String?
-  creditIssuedCents  Int?
-  platformFeeCents   Int?
+  outcome             String?
+  creditIssuedCents   Int?
+  platformFeeCents    Int?
 
   customer Customer @relation(fields: [customerId], references: [id])
 
@@ -858,17 +890,17 @@ model Chargeback {
 }
 
 model CollectionsAccount {
-  id                   String               @id @default(uuid())
-  tenantId             String
-  customerId           String
-  assignedAt           DateTime             @default(now())
-  assignedBy           String
-  agencyName           String?
+  id                    String                @id @default(uuid())
+  tenantId              String
+  customerId            String
+  assignedAt            DateTime              @default(now())
+  assignedBy            String
+  agencyName            String?
   balanceAtHandoffCents Int
-  status               String
-  recoveredCents       Int                  @default(0)
-  resolvedAt           DateTime?
-  resolutionType       CollectionResolution?
+  status                String
+  recoveredCents        Int                   @default(0)
+  resolvedAt            DateTime?
+  resolutionType        CollectionResolution?
 
   customer Customer @relation(fields: [customerId], references: [id])
 
@@ -894,7 +926,7 @@ model DeferredSchedule {
 }
 
 model DeferredEntry {
-  id              String             @id @default(uuid())
+  id              String              @id @default(uuid())
   scheduleId      String
   recognitionDate DateTime
   amountCents     Int
@@ -907,7 +939,7 @@ model DeferredEntry {
 }
 
 model SecurityDeposit {
-  id                  String       @id @default(uuid())
+  id                  String        @id @default(uuid())
   tenantId            String
   customerId          String
   contractId          String?
@@ -939,11 +971,11 @@ model GlAccount {
 
   entries                GlEntry[]
   lineItems              InvoiceLineItem[]
-  products               Product[]       @relation(name: "ProductGlAccount")
-  productsCogs           Product[]       @relation(name: "ProductCogsGlAccount")
-  productsInventoryAsset Product[]       @relation(name: "ProductInventoryAssetGlAccount")
-  productsRevenue        Product[]       @relation(name: "ProductRevenueGlAccount")
-  rentalProducts         RentalProduct[] @relation(name: "RentalProductGlAccount")
+  products               Product[]         @relation(name: "ProductGlAccount")
+  productsCogs           Product[]         @relation(name: "ProductCogsGlAccount")
+  productsInventoryAsset Product[]         @relation(name: "ProductInventoryAssetGlAccount")
+  productsRevenue        Product[]         @relation(name: "ProductRevenueGlAccount")
+  rentalProducts         RentalProduct[]   @relation(name: "RentalProductGlAccount")
 
   @@index([tenantId])
   @@map("gl_accounts")
@@ -968,16 +1000,16 @@ model GlEntry {
 }
 
 model AuditLog {
-  id               String   @id @default(uuid())
-  tenantId         String
-  userId           String?
-  userName         String?
-  recordType       String
-  recordId         String
-  action           String
+  id                String   @id @default(uuid())
+  tenantId          String
+  userId            String?
+  userName          String?
+  recordType        String
+  recordId          String
+  action            String
   changedFieldsJson Json?
-  ipAddress        String?
-  createdAt        DateTime @default(now())
+  ipAddress         String?
+  createdAt         DateTime @default(now())
 
   @@index([tenantId])
   @@index([recordType, recordId])
@@ -1003,17 +1035,17 @@ model EmailTemplate {
 }
 
 model AutomationRule {
-  id            String   @id @default(uuid())
-  tenantId      String
-  name          String
-  trigger       String
-  enabled       Boolean  @default(true)
-  delayMinutes  Int      @default(0)
-  templateId    String
-  channels      Json     @default("[\"email\"]")
-  conditions    Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(uuid())
+  tenantId     String
+  name         String
+  trigger      String
+  enabled      Boolean  @default(true)
+  delayMinutes Int      @default(0)
+  templateId   String
+  channels     Json     @default("[\"email\"]")
+  conditions   Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   template EmailTemplate @relation(fields: [templateId], references: [id])
 
@@ -1083,14 +1115,14 @@ model RentalProduct {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  glAccount             GlAccount?              @relation(name: "RentalProductGlAccount", fields: [glAccountId], references: [id])
-  cancellationPolicy    CancellationPolicy?     @relation(fields: [cancellationPolicyId], references: [id])
-  pricingRules          PricingRule[]
-  calendarOverrides     PricingCalendarOverride[]
-  demandSurgeTiers      DemandSurgeTier[]
+  glAccount              GlAccount?                @relation(name: "RentalProductGlAccount", fields: [glAccountId], references: [id])
+  cancellationPolicy     CancellationPolicy?       @relation(fields: [cancellationPolicyId], references: [id])
+  pricingRules           PricingRule[]
+  calendarOverrides      PricingCalendarOverride[]
+  demandSurgeTiers       DemandSurgeTier[]
   algorithmicSuggestions AlgorithmicSuggestion[]
-  reservations          Reservation[]
-  units                 RentalUnit[]
+  reservations           Reservation[]
+  units                  RentalUnit[]
 
   @@index([tenantId])
   @@map("rental_products")
@@ -1125,11 +1157,11 @@ model PricingCalendarOverride {
 }
 
 model DemandSurgeTier {
-  id                      String @id @default(uuid())
-  rentalProductId         String
+  id                       String @id @default(uuid())
+  rentalProductId          String
   availabilityThresholdPct Float
-  multiplier              Float
-  priority                Int    @default(0)
+  multiplier               Float
+  priority                 Int    @default(0)
 
   rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
 
@@ -1137,15 +1169,15 @@ model DemandSurgeTier {
 }
 
 model AlgorithmicSuggestion {
-  id                String           @id @default(uuid())
-  rentalProductId   String
-  suggestedDate     DateTime
-  rulePriceCents    Int
+  id                  String           @id @default(uuid())
+  rentalProductId     String
+  suggestedDate       DateTime
+  rulePriceCents      Int
   suggestedPriceCents Int
-  reason            String?
-  status            SuggestionStatus @default(PENDING)
-  reviewedBy        String?
-  reviewedAt        DateTime?
+  reason              String?
+  status              SuggestionStatus @default(PENDING)
+  reviewedBy          String?
+  reviewedAt          DateTime?
 
   rentalProduct RentalProduct @relation(fields: [rentalProductId], references: [id])
 
@@ -1153,33 +1185,33 @@ model AlgorithmicSuggestion {
 }
 
 model Reservation {
-  id                   String            @id @default(uuid())
-  tenantId             String
-  customerId           String
-  rentalProductId      String
-  unitId               String?
-  timeSlotId           String?
-  startDt              DateTime
-  endDt                DateTime
-  totalCents           Int
-  damageWaiverCents    Int               @default(0)
-  notes                String?
-  waiverSelected       Boolean           @default(false)
-  depositAuthId        String?
-  status               ReservationStatus @default(PENDING)
-  cancellationReason   String?
-  refundCents          Int?
+  id                    String            @id @default(uuid())
+  tenantId              String
+  customerId            String
+  rentalProductId       String
+  unitId                String?
+  timeSlotId            String?
+  startDt               DateTime
+  endDt                 DateTime
+  totalCents            Int
+  damageWaiverCents     Int               @default(0)
+  notes                 String?
+  waiverSelected        Boolean           @default(false)
+  depositAuthId         String?
+  status                ReservationStatus @default(PENDING)
+  cancellationReason    String?
+  refundCents           Int?
   stripePaymentIntentId String?
-  priceLockExpiresAt   DateTime?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
+  priceLockExpiresAt    DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
-  customer        Customer              @relation(fields: [customerId], references: [id])
-  rentalProduct   RentalProduct         @relation(fields: [rentalProductId], references: [id])
-  unit            RentalUnit?           @relation(fields: [unitId], references: [id])
-  timeSlot        RentalTimeSlot?       @relation(fields: [timeSlotId], references: [id])
+  customer         Customer                @relation(fields: [customerId], references: [id])
+  rentalProduct    RentalProduct           @relation(fields: [rentalProductId], references: [id])
+  unit             RentalUnit?             @relation(fields: [unitId], references: [id])
+  timeSlot         RentalTimeSlot?         @relation(fields: [timeSlotId], references: [id])
   automationEvents RentalAutomationEvent[]
-  npsSurveys      NpsSurvey[]
+  npsSurveys       NpsSurvey[]
 
   @@index([tenantId])
   @@map("reservations")
@@ -1237,14 +1269,14 @@ model RentalAutomationEvent {
 }
 
 model NpsSurvey {
-  id                String    @id @default(uuid())
-  tenantId          String
-  reservationId     String
-  customerId        String
-  score             Int?
-  comment           String?
-  sentAt            DateTime?
-  respondedAt       DateTime?
+  id                 String    @id @default(uuid())
+  tenantId           String
+  reservationId      String
+  customerId         String
+  score              Int?
+  comment            String?
+  sentAt             DateTime?
+  respondedAt        DateTime?
   googlePromptSentAt DateTime?
 
   reservation Reservation @relation(fields: [reservationId], references: [id])
@@ -1331,9 +1363,9 @@ model ConciergeRequest {
   approvedAt    DateTime?
   completedAt   DateTime?
   invoiceId     String?
-  createdAt     DateTime       @default(now())
+  createdAt     DateTime        @default(now())
 
-  customer Customer        @relation(fields: [customerId], references: [id])
+  customer Customer         @relation(fields: [customerId], references: [id])
   vendor   ConciergeVendor? @relation(fields: [vendorId], references: [id])
 
   @@index([tenantId])
@@ -1357,18 +1389,18 @@ model ConciergeVendor {
 }
 
 model PosTransaction {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   tenantId      String
   cashierId     String?
   shiftId       String?
   subtotalCents Int
-  taxCents      Int      @default(0)
-  tipCents      Int      @default(0)
+  taxCents      Int       @default(0)
+  tipCents      Int       @default(0)
   totalCents    Int
-  offlineQueued Boolean  @default(false)
+  offlineQueued Boolean   @default(false)
   syncedAt      DateTime?
   status        String
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])
   lineItems PosLineItem[]
@@ -1378,14 +1410,14 @@ model PosTransaction {
 }
 
 model PosLineItem {
-  id            String @id @default(uuid())
-  transactionId String
-  productId     String?
-  quantity      Int     @default(1)
+  id             String  @id @default(uuid())
+  transactionId  String
+  productId      String?
+  quantity       Int     @default(1)
   unitPriceCents Int
-  discountCents Int     @default(0)
-  taxCents      Int     @default(0)
-  extendedCents Int
+  discountCents  Int     @default(0)
+  taxCents       Int     @default(0)
+  extendedCents  Int
 
   transaction PosTransaction @relation(fields: [transactionId], references: [id])
   product     Product?       @relation(fields: [productId], references: [id])
@@ -1394,16 +1426,16 @@ model PosLineItem {
 }
 
 model Shift {
-  id               String      @id @default(uuid())
-  tenantId         String
-  locationId       String?
-  cashierId        String
-  openedAt         DateTime    @default(now())
-  closedAt         DateTime?
+  id                String      @id @default(uuid())
+  tenantId          String
+  locationId        String?
+  cashierId         String
+  openedAt          DateTime    @default(now())
+  closedAt          DateTime?
   openingFloatCents Int
-  closingCashCents Int?
-  tipTotalCents    Int         @default(0)
-  status           ShiftStatus @default(OPEN)
+  closingCashCents  Int?
+  tipTotalCents     Int         @default(0)
+  status            ShiftStatus @default(OPEN)
 
   transactions PosTransaction[]
 
@@ -1412,23 +1444,23 @@ model Shift {
 }
 
 model Product {
-  id             String  @id @default(uuid())
-  tenantId       String
-  locationId     String?
-  name           String
-  sku            String?
-  barcode        String?
-  departmentId   String?
-  category       String?
-  costCents      Int?
-  priceCents     Int
-  taxClass       String?
-  trackInventory Boolean @default(false)
-  reorderQty     Int?
-  reorderPoint   Int     @default(0)
-  qoh            Int     @default(0)
-  active         Boolean @default(true)
-  glAccountId    String?
+  id                        String  @id @default(uuid())
+  tenantId                  String
+  locationId                String?
+  name                      String
+  sku                       String?
+  barcode                   String?
+  departmentId              String?
+  category                  String?
+  costCents                 Int?
+  priceCents                Int
+  taxClass                  String?
+  trackInventory            Boolean @default(false)
+  reorderQty                Int?
+  reorderPoint              Int     @default(0)
+  qoh                       Int     @default(0)
+  active                    Boolean @default(true)
+  glAccountId               String?
   // GL accounts required to mirror this Product as a QBO Inventory item
   cogsGlAccountId           String?
   inventoryAssetGlAccountId String?
@@ -1441,7 +1473,7 @@ model Product {
   qboItemSyncErrorAt DateTime?
 
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   glAccount               GlAccount?            @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
   cogsGlAccount           GlAccount?            @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
@@ -1486,7 +1518,7 @@ model PurchaseOrder {
   notes        String?
   totalCents   Int
   createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
 
   // QuickBooks Online Bill sync state (populated when PO is received)
   qboBillId          String?
@@ -1504,14 +1536,14 @@ model PurchaseOrder {
 }
 
 model PoLineItem {
-  id              String  @id @default(uuid())
+  id              String @id @default(uuid())
   tenantId        String
   purchaseOrderId String
   productId       String
   productName     String
   quantity        Int
   unitCostCents   Int
-  receivedQty     Int     @default(0)
+  receivedQty     Int    @default(0)
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
@@ -1522,18 +1554,18 @@ model PoLineItem {
 }
 
 model InventoryAdjustment {
-  id              String   @id @default(uuid())
-  tenantId        String
-  productId       String
-  productName     String
-  quantityChange  Int
-  quantityBefore  Int
-  quantityAfter   Int
-  reason          String
-  notes           String?
-  staffName       String?
-  countSessionId  String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(uuid())
+  tenantId       String
+  productId      String
+  productName    String
+  quantityChange Int
+  quantityBefore Int
+  quantityAfter  Int
+  reason         String
+  notes          String?
+  staffName      String?
+  countSessionId String?
+  createdAt      DateTime @default(now())
 
   // QuickBooks Online journal entry sync state
   qboJournalEntryId String?
@@ -1584,13 +1616,13 @@ model InventoryCountItem {
 
 // Vendor / supplier — minimal record so a QBO Bill can reference a payee.
 model Vendor {
-  id          String  @id @default(uuid())
-  tenantId    String
-  name        String
-  email       String?
-  phone       String?
-  address     String?
-  active      Boolean @default(true)
+  id       String  @id @default(uuid())
+  tenantId String
+  name     String
+  email    String?
+  phone    String?
+  address  String?
+  active   Boolean @default(true)
 
   // QuickBooks Online sync state
   qboVendorId          String?
@@ -1616,9 +1648,9 @@ model QboInventorySyncRef {
   id           String    @id @default(uuid())
   tenantId     String
   locationId   String?
-  sourceType   String    // 'product' | 'purchase_order' | 'inventory_adjustment' | 'vendor'
+  sourceType   String // 'product' | 'purchase_order' | 'inventory_adjustment' | 'vendor'
   sourceId     String
-  qboType      String    // 'Item' | 'Bill' | 'JournalEntry' | 'Vendor'
+  qboType      String // 'Item' | 'Bill' | 'JournalEntry' | 'Vendor'
   qboId        String?
   lastSyncedAt DateTime?
   lastError    String?
@@ -1737,8 +1769,8 @@ model CommunicationPreference {
   id         String   @id @default(uuid())
   tenantId   String   @map("tenant_id")
   customerId String   @map("customer_id")
-  channel    String   // email, sms
-  category   String   // billing, inspections, marketing, announcements
+  channel    String // email, sms
+  category   String // billing, inspections, marketing, announcements
   optedIn    Boolean  @default(true) @map("opted_in")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
@@ -1773,11 +1805,11 @@ enum JurisdictionKind {
 }
 
 model TaxJurisdiction {
-  id        String           @id @default(uuid())
-  tenantId  String
-  code      String
-  name      String
-  kind      JurisdictionKind
+  id       String           @id @default(uuid())
+  tenantId String
+  code     String
+  name     String
+  kind     JurisdictionKind
 
   rates         TaxRate[]
   locationLinks LocationTaxJurisdiction[]
@@ -1905,7 +1937,7 @@ model SaasInvoice {
   periodStart DateTime
   periodEnd   DateTime
   amountCents Int
-  status      String    @default("issued")  // draft | issued | paid | past_due
+  status      String    @default("issued") // draft | issued | paid | past_due
   issuedAt    DateTime  @default(now())
   paidAt      DateTime?
 
@@ -1920,14 +1952,14 @@ model SaasInvoice {
 // ==========================================================================
 
 model PortalMessage {
-  id          String   @id @default(uuid())
-  tenantId    String
-  customerId  String
-  sender      String   // "customer" | "staff"
-  staffName   String?
-  content     String
-  read        Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  id         String   @id @default(uuid())
+  tenantId   String
+  customerId String
+  sender     String // "customer" | "staff"
+  staffName  String?
+  content    String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
@@ -1941,15 +1973,15 @@ model PortalMessage {
 // ==========================================================================
 
 model SupportTicket {
-  id          String    @id @default(uuid())
+  id          String   @id @default(uuid())
   tenantId    String
   subject     String
   description String
-  status      String    @default("open")    // open | in_progress | waiting_on_customer | resolved | closed
-  priority    String    @default("medium")  // low | medium | high | urgent
+  status      String   @default("open") // open | in_progress | waiting_on_customer | resolved | closed
+  priority    String   @default("medium") // low | medium | high | urgent
   assignedTo  String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
@@ -1962,34 +1994,34 @@ model SupportTicket {
 // ==========================================================================
 
 model FuelSale {
-  id             String   @id @default(uuid())
-  tenantId       String
-  customerId     String?
-  guestName      String?
-  fuelType       String
-  gallons        Float
+  id                  String   @id @default(uuid())
+  tenantId            String
+  customerId          String?
+  guestName           String?
+  fuelType            String
+  gallons             Float
   priceCentsPerGallon Int
-  totalCents     Int
-  pumpNumber     Int?
-  staffId        String?
-  paymentMethod  String?
-  createdAt      DateTime @default(now())
+  totalCents          Int
+  pumpNumber          Int?
+  staffId             String?
+  paymentMethod       String?
+  createdAt           DateTime @default(now())
 
   @@index([tenantId])
   @@map("fuel_sales")
 }
 
 model FuelDelivery {
-  id                  String   @id @default(uuid())
-  tenantId            String
-  supplier            String
-  fuelType            String
-  gallons             Float
-  costCentsPerGallon  Int
-  totalCostCents      Int
+  id                    String   @id @default(uuid())
+  tenantId              String
+  supplier              String
+  fuelType              String
+  gallons               Float
+  costCentsPerGallon    Int
+  totalCostCents        Int
   tankLevelAfterGallons Float?
-  notes               String?
-  deliveredAt         DateTime @default(now())
+  notes                 String?
+  deliveredAt           DateTime @default(now())
 
   @@index([tenantId])
   @@map("fuel_deliveries")
@@ -2000,18 +2032,18 @@ model FuelDelivery {
 // ==========================================================================
 
 model ScheduledReport {
-  id          String   @id @default(uuid())
-  tenantId    String
-  reportId    String
-  reportName  String
-  frequency   String   // "Daily" | "Weekly" | "Monthly"
-  format      String   @default("CSV")  // "CSV" | "JSON" (scheduled delivery only)
-  recipients  String   // comma-separated email addresses
-  status      String   @default("Active")  // "Active" | "Paused"
-  nextRun     DateTime
-  lastRun     DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String    @id @default(uuid())
+  tenantId   String
+  reportId   String
+  reportName String
+  frequency  String // "Daily" | "Weekly" | "Monthly"
+  format     String    @default("CSV") // "CSV" | "JSON" (scheduled delivery only)
+  recipients String // comma-separated email addresses
+  status     String    @default("Active") // "Active" | "Paused"
+  nextRun    DateTime
+  lastRun    DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 

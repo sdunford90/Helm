@@ -88,6 +88,34 @@ export const mockPrisma = {
   },
   apiKey: { findUnique: vi.fn() },
   processed_webhooks: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+  qboWebhookDelivery: (() => {
+    // Tiny in-memory store so create + findUnique + update behave like the
+    // real Prisma model. Tests that need richer behavior can still
+    // .mockResolvedValueOnce on individual methods.
+    const rows = new Map<string, any>();
+    let counter = 0;
+    return {
+      create: vi.fn().mockImplementation(({ data }: any) => {
+        const id = `qbo-delivery-${++counter}`;
+        const row = { id, attempts: 0, ...data };
+        rows.set(id, row);
+        return Promise.resolve(row);
+      }),
+      update: vi.fn().mockImplementation(({ where, data }: any) => {
+        const existing = rows.get(where.id);
+        const merged = { ...(existing ?? { id: where.id }), ...data };
+        if (data?.attempts && typeof data.attempts === 'object' && 'increment' in data.attempts) {
+          merged.attempts = (existing?.attempts ?? 0) + data.attempts.increment;
+        }
+        rows.set(where.id, merged);
+        return Promise.resolve(merged);
+      }),
+      findUnique: vi.fn().mockImplementation(({ where }: any) =>
+        Promise.resolve(rows.get(where.id) ?? null),
+      ),
+      findMany: vi.fn().mockResolvedValue([]),
+    };
+  })(),
   inventory: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
   purchaseOrder: { findMany: vi.fn().mockResolvedValue([]) },
   tenant: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },

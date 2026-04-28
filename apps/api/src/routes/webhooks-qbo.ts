@@ -1,6 +1,9 @@
 import express, { Router, type Request, type Response, type NextFunction } from "express";
 import crypto from "node:crypto";
-import { handleQboWebhook } from "../services/qbo-sync.js";
+import {
+  recordIncomingDelivery,
+  processDelivery,
+} from "../services/qbo-webhook-deliveries.js";
 
 // --------------------------------------------------------------------------
 // Intuit QuickBooks Online webhook receiver.
@@ -22,8 +25,13 @@ import { handleQboWebhook } from "../services/qbo-sync.js";
 // timeouts). Entity processing fans out to QBO API calls and DB writes for
 // every changed entity, which can easily exceed that budget. Following the
 // same pattern as the Stripe webhook handler, we respond 200 as soon as the
-// signature is verified and the payload is parsed, and run the dispatcher
+// signature is verified and the payload is parsed, then run the dispatcher
 // in the background.
+//
+// Because we ack immediately, Intuit will NOT retry on dispatcher errors.
+// Every accepted delivery is persisted to qbo_webhook_deliveries with its
+// raw payload + signature so operators can review FAILED rows and replay
+// them via the admin endpoints on /api/qbo/webhook-deliveries.
 // --------------------------------------------------------------------------
 
 const router: Router = Router();
@@ -87,26 +95,49 @@ router.post(
         return;
       }
 
+      // Persist the delivery before responding so a crash between the ack
+      // and the background dispatcher doesn't lose the event entirely.
+      // recordIncomingDelivery resolves the realmId to a tenant/location
+      // when it can — unrouted deliveries are still saved for inspection.
+      let deliveryId: string | null = null;
+      try {
+        deliveryId = await recordIncomingDelivery(payload, signature);
+      } catch (err) {
+        // Don't 500 to Intuit when the log write fails — that would only
+        // trigger a retry that the dispatcher already handles in-process.
+        console.error("[qbo-webhook] failed to persist delivery:", err);
+      }
+
       // Acknowledge the delivery immediately, then process in the background.
       // Intuit retries on slow/non-2xx responses; we must not block the
       // response on the per-entity QBO API calls inside handleQboWebhook.
-      // The handler resolves tenant/location from the payload's realmId —
-      // no tenant context is required from the request.
       res.status(200).json({ success: true });
 
-      void processWebhookInBackground(payload);
+      if (deliveryId) {
+        void processDeliveryInBackground(deliveryId);
+      }
     } catch (err) {
       next(err);
     }
   },
 );
 
-async function processWebhookInBackground(payload: unknown): Promise<void> {
+async function processDeliveryInBackground(deliveryId: string): Promise<void> {
   try {
-    await handleQboWebhook(payload);
+    const result = await processDelivery(deliveryId);
+    if (result.status === "FAILED") {
+      console.error(
+        `[qbo-webhook] delivery ${deliveryId} marked FAILED: ${result.error}`,
+      );
+    }
   } catch (err) {
-    // Already responded 200 to Intuit; log so operators can investigate.
-    console.error("[qbo-webhook] background processing failed:", err);
+    // processDelivery already records FAILED status in the dispatcher's
+    // catch path; this top-level catch only fires if the row update itself
+    // throws (e.g. brief DB outage). Already responded 200 to Intuit.
+    console.error(
+      `[qbo-webhook] background dispatch crashed for ${deliveryId}:`,
+      err,
+    );
   }
 }
 

@@ -952,6 +952,13 @@ export async function handleQboWebhook(
 ): Promise<void> {
   if (!payload?.eventNotifications) return;
 
+  // Collect per-entity processing errors so the webhook receiver can mark
+  // the persisted delivery row as FAILED. We deliberately keep the
+  // per-entity try/catch so a single bad entity does not block the rest of
+  // the batch — but we surface the failures by throwing an aggregated error
+  // at the end of the dispatch.
+  const errors: string[] = [];
+
   for (const notification of payload.eventNotifications) {
     const realmId = notification.realmId;
     const ctx = await resolveWebhookContext(realmId);
@@ -1044,6 +1051,8 @@ export async function handleQboWebhook(
           await applyQboBill(effectiveTenantId, ctx.locationId ?? null, qboBill.Bill, "webhook");
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`${name}/${operation}/${id}: ${message}`);
         console.error("[qbo-sync] Webhook entity processing failed", {
           name,
           id,
@@ -1053,6 +1062,12 @@ export async function handleQboWebhook(
         });
       }
     }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `QBO webhook dispatch had ${errors.length} entity failure(s): ${errors.join("; ")}`,
+    );
   }
 }
 
