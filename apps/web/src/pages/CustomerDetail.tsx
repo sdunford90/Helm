@@ -5,10 +5,12 @@ import {
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
 } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
@@ -621,7 +623,7 @@ function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, va
   );
 }
 
-function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void }) {
+function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void | Promise<void> }) {
   const [vals, setVals] = useState<Record<string, string>>({
     name: boat.name, type: boat.type, length: String(boat.length), registration: boat.registration,
     make: boat.make ?? '', model: boat.model ?? '', year: boat.year ?? '', color: boat.color ?? '',
@@ -631,12 +633,15 @@ function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => v
   const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!vals.name) return;
     setSaving(true);
-    onSave({ ...boat, ...vals, length: parseFloat(vals.length) || boat.length });
-    setSaving(false);
-    onClose();
+    try {
+      await onSave({ ...boat, ...vals, length: parseFloat(vals.length) || boat.length });
+    } finally {
+      setSaving(false);
+      onClose();
+    }
   };
 
   const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
@@ -657,7 +662,7 @@ function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => v
   );
 }
 
-function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Partial<Boat>) => void }) {
+function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Partial<Boat>) => void | Promise<void> }) {
   const [vals, setVals] = useState<Record<string, string>>({
     name: '', type: BOAT_TYPES[0], length: '', registration: '',
     make: '', model: '', year: '', color: '',
@@ -668,12 +673,15 @@ function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Pa
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!vals.name) { setErr('Vessel name is required.'); return; }
     setSaving(true);
-    onSave({ ...vals, length: parseFloat(vals.length) || 0 });
-    setSaving(false);
-    onClose();
+    try {
+      await onSave({ ...vals, length: parseFloat(vals.length) || 0 });
+    } finally {
+      setSaving(false);
+      onClose();
+    }
   };
 
   const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
@@ -804,16 +812,14 @@ export default function CustomerDetailPage() {
   const [editingBoat, setEditingBoat] = useState<Boat | null>(null);
   const [showAddBoat, setShowAddBoat] = useState(false);
   const [newContractBoat, setNewContractBoat] = useState<Boat | null>(null);
-  const [localBoats, setLocalBoats] = useState<Boat[]>([]);
 
   // API calls
+  const { getToken } = useAuth();
   const { data: apiCustomer, loading, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
-  const { data: apiBoatData } = useApi<{ data: ApiBoat[]; pagination: unknown }>('get', `/api/boats?customerId=${id}&take=50`, { immediate: true });
+  const { data: apiBoatData, execute: refetchBoats } = useApi<{ data: ApiBoat[]; pagination: unknown }>('get', `/api/boats?customerId=${id}&take=50`, { immediate: true });
   const { data: apiInvoiceData } = useApi<{ data: ApiInvoice[]; pagination: unknown }>('get', `/api/invoices?customerId=${id}&take=50`, { immediate: true });
   const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
-  const updateBoatApi = useApi('put', '/api/boats/update');
-  const addBoatApi = useApi('post', '/api/boats');
 
   if (!apiCustomer && loading) {
     return (
@@ -826,23 +832,73 @@ export default function CustomerDetailPage() {
     );
   }
   const c = apiCustomer;
-  const apiBoatsMapped = (apiBoatData?.data ?? []).map(mapApiBoat);
-  const boats = localBoats.length > 0 ? localBoats : apiBoatsMapped;
+  const boats = (apiBoatData?.data ?? []).map(mapApiBoat);
   const invoices = (apiInvoiceData?.data ?? []).map(mapApiInvoice);
   const activity = timelineData?.data ?? [];
   const allInsurance: InsuranceRecord[] = (apiBoatData?.data ?? []).flatMap((b) =>
     b.insuranceRecords.map((ins) => mapApiInsurance(ins, b.id, b.name ?? '—'))
   );
 
-  const handleSaveBoat = (updated: Boat) => {
-    setLocalBoats(boats.map((b) => b.id === updated.id ? updated : b));
-    updateBoatApi.execute({ body: updated }).catch(() => {});
+  const toIntOrNull = (s: string | undefined | null) => {
+    if (s === undefined || s === null || s === '') return null;
+    const n = parseInt(s as string, 10);
+    return Number.isNaN(n) ? null : n;
+  };
+  const toFloatOrNull = (s: string | undefined | null) => {
+    if (s === undefined || s === null || s === '') return null;
+    const n = parseFloat(s as string);
+    return Number.isNaN(n) ? null : n;
   };
 
-  const handleAddBoat = (data: Partial<Boat>) => {
-    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', complianceStatus: 'NON_COMPLIANT', insuranceStatus: 'MISSING', registrationStatus: 'MISSING', activeSlipNumber: null };
-    setLocalBoats([...boats, newBoat]);
-    addBoatApi.execute({ body: { ...data, customerId: id } }).catch(() => {});
+  // Display placeholders (e.g. '—' from mapApiBoat) should never be saved as real values.
+  const cleanText = (v: string | null | undefined) => {
+    const t = (v ?? '').trim();
+    return t === '' || t === '—' ? null : t;
+  };
+
+  const handleSaveBoat = async (updated: Boat) => {
+    try {
+      const token = await getToken();
+      await api.put(`/api/boats/${updated.id}`, {
+        name: cleanText(updated.name),
+        registrationNumber: cleanText(updated.registration),
+        make: cleanText(updated.make),
+        model: cleanText(updated.model),
+        year: toIntOrNull(updated.year),
+        lengthFt: updated.length,
+        beamFt: toFloatOrNull(updated.beam),
+        draftFt: toFloatOrNull(updated.draft),
+        fuelType: cleanText(updated.fuelType),
+        engineHp: toIntOrNull(updated.engineHp),
+        hin: cleanText(updated.hin),
+      }, token);
+    } catch {
+      /* surface failure via refetch — list will keep showing server state */
+    }
+    await refetchBoats();
+  };
+
+  const handleAddBoat = async (data: Partial<Boat>) => {
+    try {
+      const token = await getToken();
+      await api.post('/api/boats', {
+        customerId: id,
+        name: data.name || null,
+        registrationNumber: data.registration || null,
+        make: data.make || null,
+        model: data.model || null,
+        year: toIntOrNull(data.year as string | undefined),
+        lengthFt: data.length || 0,
+        beamFt: toFloatOrNull(data.beam as string | undefined),
+        draftFt: toFloatOrNull(data.draft as string | undefined),
+        fuelType: data.fuelType || null,
+        engineHp: toIntOrNull(data.engineHp as string | undefined),
+        hin: data.hin || null,
+      }, token);
+    } catch {
+      /* surface failure via refetch — list will keep showing server state */
+    }
+    await refetchBoats();
   };
   const badgeStyle = statusBadgeColors[c.status];
 
