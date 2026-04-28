@@ -691,20 +691,20 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
                     </div>
                   );
                 })()}
-                {/* Stage */}
+                {/* Stage — read-only in the edit form. Stage transitions
+                    must go through the dedicated stage buttons below so the
+                    API enforces pipeline rules (one-step advance, lostReason
+                    on Lost, conversion side-effects on Won). */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Stage</span>
-                  {isEditing ? (
-                    <select
-                      style={s.fieldSelect}
-                      value={editData.stage}
-                      onChange={(e) => handleEdit('stage', e.target.value)}
-                    >
-                      {STAGES.map((st) => <option key={st}>{st}</option>)}
-                    </select>
-                  ) : (
-                    <span style={s.fieldValue}>{lead.stage}</span>
-                  )}
+                  <span style={s.fieldValue}>
+                    {lead.stage}
+                    {isEditing && (
+                      <span style={{ marginLeft: 6, fontSize: 11, color: '#64748B' }}>
+                        (use the stage buttons to advance)
+                      </span>
+                    )}
+                  </span>
                 </div>
                 {/* Assigned To */}
                 <div style={{ ...s.field, gridColumn: '1 / -1' }}>
