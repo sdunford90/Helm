@@ -25,7 +25,11 @@ const TENANT_SCOPED_MODELS = new Set([
   "Boat",
   "VesselSafetyRecord",
   "DockWalk",
-  "DockWalkItem",
+  // NOTE: DockWalkItem is intentionally NOT tenant-scoped here — the
+  // model has no `tenantId` column. It inherits tenancy through its
+  // parent DockWalk; call sites filter via `dockWalk: { tenantId }`
+  // (or via slip/contracts). Adding it back would auto-inject an
+  // unknown `tenantId` argument and crash every read.
   "PumpOut",
   "POSTransaction",
   "PosTransaction",
@@ -41,7 +45,10 @@ const TENANT_SCOPED_MODELS = new Set([
   "RentalTimeSlot",
   "CancellationPolicy",
   "Announcement",
-  "AnnouncementDelivery",
+  // NOTE: AnnouncementDelivery is intentionally NOT tenant-scoped —
+  // the model has no `tenantId` column. It inherits tenancy through
+  // its parent Announcement; call sites filter via
+  // `announcement: { tenantId }`.
   "User",
   "RampTicket",
   "FuelDispense",
