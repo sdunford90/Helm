@@ -23,6 +23,7 @@ function openOAuthPopup(url: string, onComplete: () => void): void {
 interface TenantResponse {
   tenant: { id: string; name: string; subdomain: string };
   adminUser: { id: string; email: string };
+  defaultLocation: { id: string; name: string };
   setupSteps: Record<string, { complete: boolean; label: string }>;
 }
 
@@ -313,7 +314,7 @@ export default function Onboarding() {
 }
 
 function OnboardingInner() {
-  const { userId } = useAuth();
+  const { userId, getToken } = useAuth();
   const { user } = useUser();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -333,6 +334,9 @@ function OnboardingInner() {
 
   // Result of step 1
   const [tenantId, setTenantId] = useState<string | null>(null);
+  // First Location auto-created with the tenant. Stripe Connect and QBO now
+  // bind to a Location, so subsequent steps post this id.
+  const [locationId, setLocationId] = useState<string | null>(null);
 
   // Step 2 — Branding
   const [logo, setLogo] = useState('');
@@ -382,6 +386,7 @@ function OnboardingInner() {
       }
       const data: TenantResponse = await res.json();
       setTenantId(data.tenant.id);
+      setLocationId(data.defaultLocation.id);
       setStep(2);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -421,21 +426,34 @@ function OnboardingInner() {
     }
   }
 
+  // Helper that calls an authenticated settings endpoint as the newly
+  // signed-in marina owner. The /start handler links this Clerk user to a
+  // MARINA_OWNER User row, so the settings endpoints' role check passes.
+  async function postSettingsJson(path: string, body: Record<string, unknown>) {
+    const token = await getToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error ?? `Request failed (${res.status})`);
+    }
+    return res.json() as Promise<{ url?: string }>;
+  }
+
   async function handleConnectStripe() {
-    if (!tenantId) return;
+    if (!tenantId || !locationId) return;
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/stripe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed (${res.status})`);
+      const data = await postSettingsJson('/api/settings/stripe/connect', { locationId });
+      if (data.url) {
+        openOAuthPopup(data.url, () => setStripeConnected(true));
       }
-      const data = await res.json();
-      openOAuthPopup(data.url, () => setStripeConnected(true));
       setStripeConnected(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -445,20 +463,14 @@ function OnboardingInner() {
   }
 
   async function handleConnectQBO() {
-    if (!tenantId) return;
+    if (!tenantId || !locationId) return;
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/qbo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed (${res.status})`);
+      const data = await postSettingsJson('/api/settings/qbo/connect', { locationId });
+      if (data.url) {
+        openOAuthPopup(data.url, () => setQboConnected(true));
       }
-      const data = await res.json();
-      openOAuthPopup(data.url, () => setQboConnected(true));
       setQboConnected(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');

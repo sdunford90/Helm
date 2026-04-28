@@ -80,6 +80,20 @@ router.post("/start", async (req, res, next) => {
     const schemaName = `tenant_${tenant.id.replace(/-/g, "_")}`;
     await prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
 
+    // Create the marina's first Location. Stripe Connect and QuickBooks now
+    // bind to a Location (each property files its own books and routes its
+    // own payments), so the onboarding wizard needs at least one to exist
+    // before its Stripe/QBO steps. The owner can rename or add more later
+    // from Settings → Locations.
+    const defaultLocation = await prisma.location.create({
+      data: {
+        tenantId: tenant.id,
+        name: data.marinaName,
+        timezone: data.timezone,
+        active: true,
+      },
+    });
+
     // Create admin user with MARINA_OWNER role. If the request came from an
     // authenticated Clerk sign-up, link the clerkUserId so subsequent
     // auth webhooks don't re-create the record.
@@ -142,6 +156,7 @@ router.post("/start", async (req, res, next) => {
       tenant,
       adminUser,
       clerkOrganizationId,
+      defaultLocation: { id: defaultLocation.id, name: defaultLocation.name },
       setupSteps,
     });
   } catch (err) {

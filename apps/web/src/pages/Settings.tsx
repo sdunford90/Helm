@@ -5,7 +5,7 @@ import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 import { useBranding } from '../context/BrandingContext';
 import {
-  Building2, Palette, CreditCard, Link, ShieldCheck,
+  Building2, Palette, CreditCard, ShieldCheck,
   Settings as SettingsIcon, Plus, X, Eye, EyeOff,
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
@@ -211,7 +211,7 @@ interface ApiKeyEntry {
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
-interface MarinaLocation { id: string; name: string; active?: boolean; }
+interface MarinaLocation { id: string; name: string; active?: boolean; stripeConnected?: boolean; qboConnected?: boolean; }
 
 const TEAM: TeamMember[] = [
   { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', roleEnum: 'MARINA_OWNER', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
@@ -372,10 +372,17 @@ export default function Settings() {
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'integrations', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax'];
-  const tabFromUrl = searchParams.get('tab') as SettingsTab | null;
-  const initialTab: SettingsTab = tabFromUrl && VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'profile';
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax'];
+  const tabFromUrl = searchParams.get('tab');
+  // The Integrations tab was retired — Stripe Connect and QuickBooks are now
+  // managed per-Location. Redirect any old deep-links to the Locations tab.
+  const initialTab: SettingsTab =
+    tabFromUrl === 'integrations'
+      ? 'locations'
+      : tabFromUrl && (VALID_TABS as string[]).includes(tabFromUrl)
+        ? (tabFromUrl as SettingsTab)
+        : 'profile';
   const [tab, setTabState] = useState<SettingsTab>(initialTab);
   const setTab = (next: SettingsTab) => {
     setTabState(next);
@@ -501,57 +508,14 @@ export default function Settings() {
     }
   };
 
-  // QBO integration
+  // Tenant-level Stripe/QBO status. The Integrations tab was retired; these
+  // are only kept so the Locations tab can show a one-time migration banner
+  // when a legacy tenant-wide connection still exists. Marina owners need to
+  // re-link Stripe/QBO under each Location to opt into per-property routing.
   interface QboStatus { connected: boolean; realmId: string | null; lastSync: string | null; }
-  const { data: qboStatus, loading: qboLoading, execute: fetchQboStatus } = useApi<QboStatus>('get', '/api/settings/qbo', { immediate: true });
-  const { execute: qboConnect, loading: qboConnecting } = useApi<{ url: string }>('post', '/api/settings/qbo/connect');
-  const { execute: qboSync, loading: qboSyncing } = useApi<{ syncing: boolean; startedAt: string }>('post', '/api/settings/qbo/sync');
-  const { execute: qboDisconnect, loading: qboDisconnecting } = useApi<{ disconnected: boolean }>('post', '/api/settings/qbo/disconnect');
-
-  const handleQboConnect = async () => {
-    const res = await qboConnect({});
-    if (res?.url) {
-      openOAuthPopup(res.url, () => {
-        setTimeout(() => fetchQboStatus(), 800);
-        setSavedMsg('QuickBooks Online connected');
-        setTimeout(() => setSavedMsg(null), 3000);
-      });
-    }
-  };
-
-  const handleQboSync = async () => {
-    const res = await qboSync({});
-    if (res?.syncing) { setSavedMsg('QuickBooks sync started'); setTimeout(() => setSavedMsg(null), 3000); fetchQboStatus(); }
-  };
-
-  const handleQboDisconnect = async () => {
-    if (!window.confirm('Disconnect QuickBooks Online? Existing synced records will remain but future changes will not sync.')) return;
-    const res = await qboDisconnect({ confirm: true });
-    if (res?.disconnected) { setSavedMsg('QuickBooks disconnected'); setTimeout(() => setSavedMsg(null), 3000); fetchQboStatus(); }
-  };
-
-  // Stripe integration
+  const { data: qboStatus } = useApi<QboStatus>('get', '/api/settings/qbo', { immediate: true });
   interface StripeStatus { connected: boolean; accountId: string | null; dashboardUrl: string | null; }
-  const { data: stripeStatus, loading: stripeLoading, execute: fetchStripeStatus } = useApi<StripeStatus>('get', '/api/settings/stripe', { immediate: true });
-  const { execute: stripeConnect, loading: stripeConnecting } = useApi<{ url: string }>('post', '/api/settings/stripe/connect');
-  const { execute: stripeDisconnect, loading: stripeDisconnecting } = useApi<{ disconnected: boolean }>('post', '/api/settings/stripe/disconnect');
-
-  const handleStripeConnect = async () => {
-    const res = await stripeConnect({});
-    if (res?.url) {
-      openOAuthPopup(res.url, () => {
-        setTimeout(() => fetchStripeStatus(), 800);
-        setSavedMsg('Stripe connected successfully');
-        setTimeout(() => setSavedMsg(null), 3000);
-      });
-    }
-  };
-
-  const handleStripeDisconnect = async () => {
-    if (!window.confirm('Disconnect Stripe? Payment processing will stop working until you reconnect.')) return;
-    const res = await stripeDisconnect({ confirm: true });
-    if (res?.disconnected) { setSavedMsg('Stripe disconnected'); setTimeout(() => setSavedMsg(null), 3000); fetchStripeStatus(); }
-  };
+  const { data: stripeStatus } = useApi<StripeStatus>('get', '/api/settings/stripe', { immediate: true });
 
   // GL Account Mapping state
   const [revenueMapping, setRevenueMapping] = useState<Record<string, string>>(
@@ -768,7 +732,7 @@ export default function Settings() {
       const body = await res.json();
       if (body.url) {
         openOAuthPopup(body.url, () => {
-          setTimeout(() => fetchQboStatus(), 800);
+          setTimeout(() => fetchLocationDetail(selectedLocationId), 800);
           setSavedMsg('QuickBooks Online connected for this location');
           setTimeout(() => setSavedMsg(null), 3000);
         });
@@ -1324,7 +1288,6 @@ export default function Settings() {
     { key: 'branding', label: 'Branding', icon: Palette },
     { key: 'billing', label: 'Billing', icon: CreditCard },
     { key: 'catalog', label: 'Catalog', icon: Package },
-    { key: 'integrations', label: 'Integrations', icon: Link },
     { key: 'team', label: 'Team', icon: Users },
     { key: 'roles', label: 'Roles', icon: Shield },
     { key: 'tax', label: 'Tax', icon: Landmark },
@@ -1428,6 +1391,51 @@ export default function Settings() {
 
       {/* Locations */}
       {tab === 'locations' && (
+        <>
+          {/* Migration intro — orient existing customers who used to manage
+              integrations under a separate Settings tab. */}
+          <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '8px', padding: '16px 20px', marginBottom: '20px', display: 'flex', gap: '12px' }}>
+            <MapPin size={20} style={{ color: '#1D4ED8', flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0A2342', marginBottom: '4px' }}>Stripe and QuickBooks now live here</div>
+              <div style={{ fontSize: '13px', color: '#1E3A8A', lineHeight: 1.5 }}>
+                Each location has its own Stripe Connect account and QuickBooks company file so payments and books stay separated by property. Pick a location below to connect or manage its integrations.
+              </div>
+            </div>
+          </div>
+
+          {/* Legacy migration banner — only shown while a tenant-wide
+              Stripe or QuickBooks connection from the old single-account
+              model still exists AND at least one location has not yet been
+              re-linked. Once every location is connected, the banner
+              disappears even if the legacy tenant-level fields remain
+              (kept in the database for fallback behavior in
+              payments/billing/QBO sync). */}
+          {(() => {
+            const stripeNeedsMigration = !!stripeStatus?.connected
+              && marinaLocations.some((l) => !l.stripeConnected);
+            const qboNeedsMigration = !!qboStatus?.connected
+              && marinaLocations.some((l) => !l.qboConnected);
+            if (!stripeNeedsMigration && !qboNeedsMigration) return null;
+            return (
+              <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: '8px', padding: '16px 20px', marginBottom: '20px', display: 'flex', gap: '12px' }}>
+                <AlertTriangle size={20} style={{ color: '#B45309', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#7C2D12', marginBottom: '4px' }}>Action needed: migrate to per-location integrations</div>
+                  <div style={{ fontSize: '13px', color: '#7C2D12', lineHeight: 1.5 }}>
+                    This account still has a marina-wide
+                    {stripeNeedsMigration && qboNeedsMigration
+                      ? ' Stripe and QuickBooks '
+                      : stripeNeedsMigration
+                        ? ' Stripe '
+                        : ' QuickBooks '}
+                    connection from the old setup, and one or more locations have not been re-linked yet. Connect each location individually below — once every location is linked, its sales and books route through the location&apos;s own account.
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
         <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
           {/* Sidebar — location list */}
           <div style={{ width: '220px', flexShrink: 0 }}>
@@ -1656,6 +1664,7 @@ export default function Settings() {
             )}
           </div>
         </div>
+        </>
       )}
 
       {/* Branding */}
@@ -2318,103 +2327,6 @@ export default function Settings() {
               </table>
             </div>
           )}
-        </>
-      )}
-
-      {/* Integrations */}
-      {tab === 'integrations' && (
-        <>
-          <div style={st.integrationCard}>
-            <div style={st.integrationInfo}>
-              <div style={st.integrationIcon}><CreditCard size={24} style={{ color: '#635BFF' }} /></div>
-              <div>
-                <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>Stripe Connect</div>
-                <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Accept payments and process payouts</div>
-                <div style={{ marginTop: '8px' }}>
-                  {stripeLoading ? (
-                    <span style={{ fontSize: '12px', color: '#94A3B8' }}>Checking connection…</span>
-                  ) : stripeStatus?.connected ? (
-                    <>
-                      <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
-                      {stripeStatus.accountId && (
-                        <span style={{ ...st.mono, fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>{stripeStatus.accountId}</span>
-                      )}
-                    </>
-                  ) : (
-                    <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {stripeStatus?.connected ? (
-                <>
-                  {stripeStatus.dashboardUrl && (
-                    <a href={stripeStatus.dashboardUrl} target="_blank" rel="noopener noreferrer" style={{ ...st.outlineBtn, textDecoration: 'none' }}>Dashboard</a>
-                  )}
-                  <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleStripeDisconnect} disabled={stripeDisconnecting}>
-                    {stripeDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                  </button>
-                </>
-              ) : (
-                <button style={st.addBtn} onClick={handleStripeConnect} disabled={stripeConnecting}>
-                  {stripeConnecting ? 'Connecting…' : 'Connect Stripe'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={st.integrationCard}>
-            <div style={st.integrationInfo}>
-              <div style={st.integrationIcon}><Building2 size={24} style={{ color: '#2CA01C' }} /></div>
-              <div>
-                <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342' }}>QuickBooks Online</div>
-                <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Sync invoices, payments, and customers</div>
-                <div style={{ marginTop: '8px' }}>
-                  {qboLoading ? (
-                    <span style={{ fontSize: '12px', color: '#94A3B8' }}>Checking connection…</span>
-                  ) : qboStatus?.connected ? (
-                    <>
-                      <span style={{ ...st.badge, backgroundColor: '#DEF7EC', color: '#03543F' }}>Connected</span>
-                      {qboStatus.realmId && (
-                        <span style={{ fontSize: '12px', color: '#64748B', marginLeft: '12px' }}>
-                          Realm: {qboStatus.realmId}
-                          {qboStatus.lastSync && ` | Last sync: ${new Date(qboStatus.lastSync).toLocaleString()}`}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span style={{ ...st.badge, backgroundColor: '#F3F4F6', color: '#64748B' }}>Not connected</span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {qboStatus?.connected ? (
-                <>
-                  <button style={st.outlineBtn} onClick={handleQboSync} disabled={qboSyncing}>
-                    <RefreshCw size={14} />{qboSyncing ? ' Syncing…' : ' Sync Now'}
-                  </button>
-                  <button style={{ ...st.outlineBtn, color: '#DC2626', borderColor: '#FCA5A5' }} onClick={handleQboDisconnect} disabled={qboDisconnecting}>
-                    {qboDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                  </button>
-                </>
-              ) : (
-                <button style={st.addBtn} onClick={handleQboConnect} disabled={qboConnecting}>
-                  {qboConnecting ? 'Connecting…' : 'Connect QuickBooks'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ ...st.card, marginTop: '24px' }}>
-            <h3 style={st.sectionTitle}><Webhook size={20} /> Webhook Endpoints</h3>
-            <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '14px', background: '#F8FAFC', borderRadius: '6px', border: '1px dashed #CBD5E1' }}>
-              <Webhook size={28} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
-              <p style={{ margin: '0 0 6px', fontWeight: 600, color: '#64748B' }}>No webhook endpoints configured</p>
-              <p style={{ margin: 0, fontSize: '13px' }}>Webhook management is coming soon. You will be able to subscribe to events like invoice.created, payment.received, and more.</p>
-            </div>
-          </div>
         </>
       )}
 

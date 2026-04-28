@@ -1105,10 +1105,22 @@ router.get("/locations", ...clerkAuth(), async (req, res, next) => {
   try {
     const locations = await prisma.location.findMany({
       where: { tenantId: req.tenantId! },
-      select: { id: true, name: true, active: true },
+      select: {
+        id: true, name: true, active: true,
+        stripeAccountId: true, stripeOnboardingComplete: true,
+        qboRealmId: true,
+      },
       orderBy: { name: "asc" },
     });
-    res.json({ data: locations });
+    res.json({
+      data: locations.map((l) => ({
+        id: l.id,
+        name: l.name,
+        active: l.active,
+        stripeConnected: !!l.stripeAccountId && !!l.stripeOnboardingComplete,
+        qboConnected: !!l.qboRealmId,
+      })),
+    });
   } catch (err) { next(err); }
 });
 
