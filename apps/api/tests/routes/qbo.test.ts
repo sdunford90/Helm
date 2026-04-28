@@ -138,6 +138,82 @@ describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
     expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledWith(payload);
   });
 
+  it('responds 200 to Intuit before the entity processing finishes', async () => {
+    // Intuit retries on slow deliveries. Make handleQboWebhook hang and
+    // assert the route still returns 200 quickly without awaiting it.
+    let resolveHandler: (() => void) | undefined;
+    const handlerStarted = new Promise<void>((startResolve) => {
+      vi.mocked(handleQboWebhook).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveHandler = resolve;
+            startResolve();
+          }),
+      );
+    });
+
+    const payload = {
+      eventNotifications: [
+        {
+          realmId: 'realm-slow-sync',
+          dataChangeEvent: {
+            entities: [
+              { name: 'Invoice', id: '999', operation: 'Update', lastUpdated: '2026-04-28T12:00:00Z' },
+            ],
+          },
+        },
+      ],
+    };
+
+    const res = await request(app)
+      .post('/api/qbo/webhook')
+      .set('intuit-signature', sign(payload))
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+
+    // Handler was kicked off but is still pending — the response was returned
+    // without awaiting it.
+    await handlerStarted;
+    expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledOnce();
+    expect(resolveHandler).toBeDefined();
+
+    // Let the background processing finish so we don't leak the pending promise.
+    resolveHandler?.();
+  });
+
+  it('still returns 200 to Intuit when background processing throws', async () => {
+    // Errors from the deferred handler must not surface as 5xx — otherwise
+    // Intuit will retry deliveries we already accepted.
+    vi.mocked(handleQboWebhook).mockRejectedValueOnce(new Error('downstream QBO API failure'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const payload = {
+      eventNotifications: [
+        {
+          realmId: 'realm-error',
+          dataChangeEvent: { entities: [] },
+        },
+      ],
+    };
+
+    const res = await request(app)
+      .post('/api/qbo/webhook')
+      .set('intuit-signature', sign(payload))
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+
+    // Wait a tick so the background promise rejection runs and is logged.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledOnce();
+    expect(consoleSpy).toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
+
   it('rejects requests with a missing Intuit-Signature header', async () => {
     const res = await request(app)
       .post('/api/qbo/webhook')
