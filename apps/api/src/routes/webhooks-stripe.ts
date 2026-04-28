@@ -570,6 +570,7 @@ async function handleAccountUpdated(
 
   const account = event.data.object as Stripe.Account;
   const chargesEnabled = account.charges_enabled ?? false;
+  const payoutsEnabled = account.payouts_enabled ?? false;
   const detailsSubmitted = account.details_submitted ?? false;
 
   // Mark onboarding complete when the account can accept charges.
@@ -584,7 +585,9 @@ async function handleAccountUpdated(
     }
   }
 
-  // Record the capability/account update so operators can see onboarding progress.
+  // Record the capability/account update so operators can see onboarding
+  // progress. The platform Health dashboard reads back the most recent
+  // entry per account to populate its capability columns.
   await prisma.auditLog.create({
     data: {
       tenantId,
@@ -595,6 +598,7 @@ async function handleAccountUpdated(
         eventType: event.type,
         eventId: event.id,
         chargesEnabled,
+        payoutsEnabled,
         detailsSubmitted,
         locationId,
       },

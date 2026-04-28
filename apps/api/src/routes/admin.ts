@@ -3,6 +3,7 @@ import { randomUUID, createHmac } from "node:crypto";
 import { requirePlatformAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
+import { stripe } from "../lib/stripe.js";
 
 const router: Router = Router();
 
@@ -992,5 +993,977 @@ router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
     res.status(204).send();
   } catch (err) { next(err); }
 });
+
+// ==========================================================================
+//  PLATFORM HEALTH MONITORING
+//
+//  Cross-tenant infrastructure dashboard. The Health page in the admin
+//  console hits these endpoints every 30s to surface stuck queues, failing
+//  webhooks, expired QBO tokens, and broken Stripe Connect accounts in one
+//  place. Each metric is intentionally summary-only — the failure drilldown
+//  endpoints serve the recent-records lists.
+// ==========================================================================
+
+const HEALTH_24H_MS = 24 * 60 * 60 * 1000;
+
+// Cap the number of jobs we pull from BullMQ when computing 24h stats.
+// `getJobs` walks Redis sorted sets newest-first; once we hit a record
+// older than the 24h window we stop early, so this is a hard ceiling
+// rather than a typical pull. The response includes a `truncated` flag
+// per queue when the cap is hit so the UI can warn that the success
+// rate may undercount on extremely high-volume queues.
+const HEALTH_JOB_SCAN_LIMIT = 5000;
+
+// --------------------------------------------------------------------------
+// GET /api/admin/health/system — queues, jobs, webhooks, API errors (24h)
+// --------------------------------------------------------------------------
+router.get("/health/system", async (_req, res, next) => {
+  try {
+    const since = new Date(Date.now() - HEALTH_24H_MS);
+    const sinceMs = since.getTime();
+
+    // -- Queues: current depth + 24h completed/failed counters per worker.
+    const queueStats = await Promise.all(
+      (Object.entries(queues) as [QueueName, typeof queues[QueueName]][]).map(
+        async ([name, queue]) => {
+          const [counts, isPaused, completed, failed] = await Promise.all([
+            queue.getJobCounts("active", "waiting", "delayed", "failed", "paused", "completed"),
+            queue.isPaused(),
+            queue.getJobs(["completed"], 0, HEALTH_JOB_SCAN_LIMIT - 1, false),
+            queue.getJobs(["failed"], 0, HEALTH_JOB_SCAN_LIMIT - 1, false),
+          ]);
+
+          // Bucket completed/failed jobs into 24 hourly slots so the UI can
+          // render a sparkline. finishedOn is a unix-ms timestamp on Job.
+          const completedRecent = completed.filter(
+            (j) => typeof j.finishedOn === "number" && j.finishedOn >= sinceMs,
+          );
+          const failedRecent = failed.filter(
+            (j) => typeof j.finishedOn === "number" && j.finishedOn >= sinceMs,
+          );
+
+          const sparkline = bucketByHour(
+            failedRecent.map((j) => j.finishedOn as number),
+            sinceMs,
+          );
+
+          const total = completedRecent.length + failedRecent.length;
+          const successRate = total === 0 ? 1 : completedRecent.length / total;
+
+          // If the underlying scan returned at the cap AND every job in
+          // it falls inside the 24h window, we know we may be truncating
+          // older entries from the same hour and should warn the UI.
+          const truncated =
+            (completed.length === HEALTH_JOB_SCAN_LIMIT &&
+              completedRecent.length === completed.length) ||
+            (failed.length === HEALTH_JOB_SCAN_LIMIT &&
+              failedRecent.length === failed.length);
+
+          return {
+            name,
+            isPaused,
+            counts,
+            jobs24h: {
+              completed: completedRecent.length,
+              failed: failedRecent.length,
+              successRate,
+              failedSparkline: sparkline,
+              truncated,
+            },
+          };
+        },
+      ),
+    );
+
+    // -- Webhook deliveries (last 24h)
+    //
+    // ProcessedWebhook stores the Stripe event.type in `status`, so we can
+    // partition delivered events into Connect-related (account.*, capability.*,
+    // payout.*) and Payments-related (everything else: payment_intent.*,
+    // charge.*, invoice.*, checkout.*, customer.subscription.*, etc.).
+    //
+    // We pair that with audit-log rows containing FAILED to compute a real
+    // payments-webhook delivery success rate — those audit entries are how
+    // payment_intent.payment_failed and similar events are recorded.
+    const [stripeWebhooksAll, paymentFailures, qboWebhooksAll] = await Promise.all([
+      prisma.processedWebhook.findMany({
+        where: { processedAt: { gte: since } },
+        select: { processedAt: true, status: true },
+      }),
+      prisma.auditLog.findMany({
+        where: {
+          createdAt: { gte: since },
+          recordType: "Payment",
+          action: { contains: "FAILED" },
+        },
+        select: { createdAt: true },
+      }),
+      prisma.qboWebhookDelivery.findMany({
+        where: { receivedAt: { gte: since } },
+        select: { receivedAt: true, status: true },
+      }),
+    ]);
+
+    const isConnectEvent = (status: string): boolean =>
+      status.startsWith("account.") ||
+      status.startsWith("capability.") ||
+      status.startsWith("payout.") ||
+      status.startsWith("person.") ||
+      status.startsWith("external_account.") ||
+      status.startsWith("topup.") ||
+      status.startsWith("transfer.");
+
+    const stripeConnectDeliveries = stripeWebhooksAll.filter((r) => isConnectEvent(r.status));
+    const stripePaymentDeliveries = stripeWebhooksAll.filter((r) => !isConnectEvent(r.status));
+
+    const paymentDelivered = stripePaymentDeliveries.length;
+    const paymentFailedCount = paymentFailures.length;
+    const paymentTotal = paymentDelivered + paymentFailedCount;
+
+    const stripePayments = {
+      total: paymentTotal,
+      delivered: paymentDelivered,
+      failed: paymentFailedCount,
+      successRate: paymentTotal === 0 ? 1 : paymentDelivered / paymentTotal,
+      sparkline: bucketByHour(
+        paymentFailures.map((r) => r.createdAt.getTime()),
+        sinceMs,
+      ),
+    };
+
+    const stripeConnectWebhooks = {
+      total: stripeConnectDeliveries.length,
+      delivered: stripeConnectDeliveries.length,
+      failed: 0,
+      successRate: 1,
+      sparkline: bucketByHour(
+        stripeConnectDeliveries.map((r) => r.processedAt.getTime()),
+        sinceMs,
+      ),
+    };
+
+    const qboFailed = qboWebhooksAll.filter((d) => d.status === "FAILED");
+    const qboPending = qboWebhooksAll.filter((d) => d.status === "PENDING");
+    const qboProcessed = qboWebhooksAll.filter((d) => d.status === "PROCESSED");
+    const qboTotal = qboWebhooksAll.length;
+    const qboWebhooks = {
+      total: qboTotal,
+      processed: qboProcessed.length,
+      failed: qboFailed.length,
+      pending: qboPending.length,
+      successRate: qboTotal === 0 ? 1 : qboProcessed.length / qboTotal,
+      sparkline: bucketByHour(
+        qboFailed.map((d) => d.receivedAt.getTime()),
+        sinceMs,
+      ),
+    };
+
+    // -- API errors grouped by tenant (last 24h)
+    // Audit-log actions that contain FAILED are how the rest of the app
+    // records payment failures, sync failures, payout failures, etc.
+    const errorRows = await prisma.auditLog.findMany({
+      where: {
+        createdAt: { gte: since },
+        action: { contains: "FAILED" },
+      },
+      select: { tenantId: true, action: true, createdAt: true },
+    });
+
+    const errorsByTenant = new Map<string, number>();
+    for (const row of errorRows) {
+      errorsByTenant.set(row.tenantId, (errorsByTenant.get(row.tenantId) ?? 0) + 1);
+    }
+    const tenantNames = new Map<string, string>();
+    if (errorsByTenant.size > 0) {
+      const tenantIds = [...errorsByTenant.keys()];
+      const t = await prisma.tenant.findMany({
+        where: { id: { in: tenantIds } },
+        select: { id: true, name: true },
+      });
+      for (const row of t) tenantNames.set(row.id, row.name);
+    }
+    const apiErrors = {
+      total: errorRows.length,
+      sparkline: bucketByHour(
+        errorRows.map((r) => r.createdAt.getTime()),
+        sinceMs,
+      ),
+      byTenant: [...errorsByTenant.entries()]
+        .map(([tenantId, count]) => ({
+          tenantId,
+          tenantName: tenantNames.get(tenantId) ?? tenantId,
+          count,
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    };
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      windowHours: 24,
+      queues: queueStats,
+      webhooks: {
+        stripePayments,
+        stripeConnect: stripeConnectWebhooks,
+        qbo: qboWebhooks,
+      },
+      apiErrors,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/health/system/failures — recent failed records
+//
+// Drilldown for the sparkline links on the System tab. The `type` query
+// selects the failure source: a specific queue's failed jobs, recent
+// failed QBO webhook deliveries, or recent FAILED-action audit log
+// entries (which is how Stripe payment / payout failures are recorded).
+// --------------------------------------------------------------------------
+router.get("/health/system/failures", async (req, res, next) => {
+  try {
+    const type = (req.query.type as string | undefined) ?? "audit-errors";
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+
+    if (type === "queue") {
+      const queueName = req.query.queue as QueueName | undefined;
+      if (!queueName || !(queueName in queues)) {
+        res.status(400).json({ error: "Valid `queue` query param required" });
+        return;
+      }
+      const failed = await queues[queueName].getJobs(["failed"], 0, limit - 1, false);
+      res.json({
+        type,
+        queue: queueName,
+        items: failed.map((job) => ({
+          id: job.id,
+          name: job.name,
+          failedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
+          attemptsMade: job.attemptsMade,
+          failedReason: job.failedReason ?? null,
+          stacktrace: Array.isArray(job.stacktrace) ? job.stacktrace.slice(0, 3) : null,
+          dataPreview: safeJsonPreview(job.data),
+        })),
+      });
+      return;
+    }
+
+    if (type === "qbo-webhooks") {
+      const rows = await prisma.qboWebhookDelivery.findMany({
+        where: { status: "FAILED" },
+        orderBy: { receivedAt: "desc" },
+        take: limit,
+        select: {
+          id: true,
+          realmId: true,
+          tenantId: true,
+          locationId: true,
+          attempts: true,
+          lastError: true,
+          receivedAt: true,
+          processedAt: true,
+        },
+      });
+      const tenantNames = await loadTenantNameMap(rows.map((r) => r.tenantId));
+      res.json({
+        type,
+        items: rows.map((r) => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          tenantName: r.tenantId ? tenantNames.get(r.tenantId) ?? null : null,
+          locationId: r.locationId,
+          realmId: r.realmId,
+          attempts: r.attempts,
+          error: r.lastError,
+          receivedAt: r.receivedAt.toISOString(),
+          processedAt: r.processedAt?.toISOString() ?? null,
+        })),
+      });
+      return;
+    }
+
+    if (type === "qbo-syncs") {
+      const rows = await prisma.qboInventorySyncRef.findMany({
+        where: { lastError: { not: null } },
+        orderBy: { lastErrorAt: "desc" },
+        take: limit,
+        select: {
+          id: true,
+          tenantId: true,
+          locationId: true,
+          sourceType: true,
+          sourceId: true,
+          qboType: true,
+          retryCount: true,
+          lastError: true,
+          lastErrorAt: true,
+          nextRetryAt: true,
+        },
+      });
+      const tenantNames = await loadTenantNameMap(rows.map((r) => r.tenantId));
+      res.json({
+        type,
+        items: rows.map((r) => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          tenantName: tenantNames.get(r.tenantId) ?? null,
+          locationId: r.locationId,
+          sourceType: r.sourceType,
+          sourceId: r.sourceId,
+          qboType: r.qboType,
+          retryCount: r.retryCount,
+          error: r.lastError,
+          erroredAt: r.lastErrorAt?.toISOString() ?? null,
+          nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
+        })),
+      });
+      return;
+    }
+
+    // Default — recent FAILED audit-log entries (payments, payouts, etc.)
+    const tenantId = req.query.tenantId as string | undefined;
+    const since = new Date(Date.now() - HEALTH_24H_MS);
+    const rows = await prisma.auditLog.findMany({
+      where: {
+        createdAt: { gte: since },
+        action: { contains: "FAILED" },
+        ...(tenantId ? { tenantId } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        tenantId: true,
+        recordType: true,
+        recordId: true,
+        action: true,
+        changedFieldsJson: true,
+        createdAt: true,
+      },
+    });
+    const tenantNames = await loadTenantNameMap(rows.map((r) => r.tenantId));
+    res.json({
+      type: "audit-errors",
+      items: rows.map((r) => ({
+        id: r.id,
+        tenantId: r.tenantId,
+        tenantName: tenantNames.get(r.tenantId) ?? null,
+        recordType: r.recordType,
+        recordId: r.recordId,
+        action: r.action,
+        details: r.changedFieldsJson,
+        occurredAt: r.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/health/stripe-connect — cross-tenant Stripe Connect status
+//
+// Lists every connected Stripe account (per location, with tenant-level
+// fallback for legacy single-account marinas). Pulls cached capability
+// data from the most recent STRIPE_ACCOUNT_UPDATED audit log entry for
+// each account, plus the most recent successful Payment as a "last
+// activity" signal (we don't currently persist payout.paid events, so
+// the latest captured payment is the closest readily-available proxy).
+// --------------------------------------------------------------------------
+router.get("/health/stripe-connect", async (_req, res, next) => {
+  try {
+    const [locationRows, tenantRows] = await Promise.all([
+      prisma.location.findMany({
+        where: { stripeAccountId: { not: null } },
+        select: {
+          id: true,
+          name: true,
+          tenantId: true,
+          stripeAccountId: true,
+          stripeOnboardingComplete: true,
+          tenant: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.tenant.findMany({
+        where: { stripeAccountId: { not: null } },
+        select: { id: true, name: true, stripeAccountId: true },
+      }),
+    ]);
+
+    type Account = {
+      scope: "location" | "tenant";
+      id: string;
+      tenantId: string;
+      tenantName: string;
+      locationId: string | null;
+      locationName: string | null;
+      stripeAccountId: string;
+      onboardingComplete: boolean;
+    };
+
+    // Tenants whose stripeAccountId is also referenced by a location are
+    // legacy duplicates — surface only the per-location row to avoid double
+    // counting.
+    const locationAccountIds = new Set(
+      locationRows.map((l) => l.stripeAccountId).filter(Boolean),
+    );
+
+    const accounts: Account[] = [
+      ...locationRows.map(
+        (l): Account => ({
+          scope: "location" as const,
+          id: l.id,
+          tenantId: l.tenantId,
+          tenantName: l.tenant.name,
+          locationId: l.id,
+          locationName: l.name,
+          stripeAccountId: l.stripeAccountId!,
+          onboardingComplete: l.stripeOnboardingComplete,
+        }),
+      ),
+      ...tenantRows
+        .filter((t) => !locationAccountIds.has(t.stripeAccountId!))
+        .map(
+          (t): Account => ({
+            scope: "tenant" as const,
+            id: t.id,
+            tenantId: t.id,
+            tenantName: t.name,
+            locationId: null,
+            locationName: null,
+            stripeAccountId: t.stripeAccountId!,
+            onboardingComplete: false,
+          }),
+        ),
+    ];
+
+    // Capability cache — pull the most recent STRIPE_ACCOUNT_UPDATED audit
+    // log per (tenant + scope) so we can show charges_enabled / details_submitted
+    // without hitting Stripe on every render.
+    const capabilityRows = await prisma.auditLog.findMany({
+      where: {
+        action: "STRIPE_ACCOUNT_UPDATED",
+        tenantId: { in: accounts.map((a) => a.tenantId) },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        tenantId: true,
+        recordType: true,
+        recordId: true,
+        changedFieldsJson: true,
+        createdAt: true,
+      },
+    });
+
+    const capabilityByKey = new Map<
+      string,
+      {
+        chargesEnabled: boolean;
+        payoutsEnabled: boolean;
+        detailsSubmitted: boolean;
+        refreshedAt: Date;
+      }
+    >();
+    for (const row of capabilityRows) {
+      const key = capabilityKey(row.recordType, row.recordId);
+      if (capabilityByKey.has(key)) continue;
+      const j = (row.changedFieldsJson ?? {}) as Record<string, unknown>;
+      capabilityByKey.set(key, {
+        chargesEnabled: j.chargesEnabled === true,
+        // Older audit-log rows (pre-Health) didn't capture payoutsEnabled.
+        // Treat them as "unknown" by falling back to chargesEnabled — payouts
+        // generally trail charges, so this only over-reports on a small
+        // number of legacy rows until the next webhook fires.
+        payoutsEnabled:
+          typeof j.payoutsEnabled === "boolean"
+            ? j.payoutsEnabled
+            : j.chargesEnabled === true,
+        detailsSubmitted: j.detailsSubmitted === true,
+        refreshedAt: row.createdAt,
+      });
+    }
+
+    // Last successful payment per account-scope, as the "last activity"
+    // signal. Group via JS so we run a single query.
+    const completedPayments = await prisma.payment.findMany({
+      where: {
+        tenantId: { in: accounts.map((a) => a.tenantId) },
+        status: "COMPLETED",
+      },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+      select: {
+        id: true,
+        tenantId: true,
+        amountCents: true,
+        createdAt: true,
+        invoice: { select: { locationId: true } },
+      },
+    });
+
+    const lastPaymentByKey = new Map<
+      string,
+      { id: string; amountCents: number; createdAt: Date }
+    >();
+    for (const p of completedPayments) {
+      const locId = p.invoice?.locationId ?? null;
+      const key = `${p.tenantId}:${locId ?? "tenant"}`;
+      if (lastPaymentByKey.has(key)) continue;
+      lastPaymentByKey.set(key, {
+        id: p.id,
+        amountCents: p.amountCents,
+        createdAt: p.createdAt,
+      });
+    }
+
+    const items = accounts.map((a) => {
+      const capKey = capabilityKey(
+        a.scope === "location" ? "Location" : "Tenant",
+        a.locationId ?? a.tenantId,
+      );
+      const cap = capabilityByKey.get(capKey);
+      const lastPayKey = `${a.tenantId}:${a.locationId ?? "tenant"}`;
+      const lastPayment = lastPaymentByKey.get(lastPayKey);
+
+      // Missing requirements are anything we can flag from cached data.
+      const missingRequirements: string[] = [];
+      // Tenant-scope accounts don't have a per-record onboarding flag in
+      // our schema (only Location.stripeOnboardingComplete exists), so
+      // suppress this marker for tenant rows to avoid a permanently
+      // misleading "onboarding_incomplete" tag once charges are live.
+      if (a.scope === "location" && !a.onboardingComplete) {
+        missingRequirements.push("onboarding_incomplete");
+      }
+      if (cap && !cap.chargesEnabled) missingRequirements.push("charges_disabled");
+      if (cap && !cap.payoutsEnabled) missingRequirements.push("payouts_disabled");
+      if (cap && !cap.detailsSubmitted) missingRequirements.push("details_pending");
+
+      // Status: green only when both charges AND payouts are live (the
+      // account can actually accept money and disburse it). Amber when the
+      // account is technically onboarded but we have no fresh capability
+      // data, or charges work but payouts don't. Red otherwise.
+      const fullyLive = cap?.chargesEnabled && cap.payoutsEnabled;
+      const partiallyLive = cap?.chargesEnabled && !cap.payoutsEnabled;
+      const onboardedNoCap =
+        !cap && (a.scope === "tenant" || a.onboardingComplete);
+      const status: "ok" | "warning" | "broken" = fullyLive
+        ? "ok"
+        : partiallyLive || onboardedNoCap
+          ? "warning"
+          : "broken";
+
+      return {
+        scope: a.scope,
+        id: a.id,
+        tenantId: a.tenantId,
+        tenantName: a.tenantName,
+        locationId: a.locationId,
+        locationName: a.locationName,
+        stripeAccountId: a.stripeAccountId,
+        onboardingComplete: a.onboardingComplete,
+        chargesEnabled: cap?.chargesEnabled ?? null,
+        payoutsEnabled: cap?.payoutsEnabled ?? null,
+        detailsSubmitted: cap?.detailsSubmitted ?? null,
+        capabilityRefreshedAt: cap?.refreshedAt.toISOString() ?? null,
+        missingRequirements,
+        status,
+        lastSuccessfulActivity: lastPayment
+          ? {
+              type: "payment",
+              paymentId: lastPayment.id,
+              amountCents: lastPayment.amountCents,
+              at: lastPayment.createdAt.toISOString(),
+            }
+          : null,
+      };
+    });
+
+    items.sort((a, b) => {
+      const order = { broken: 0, warning: 1, ok: 2 } as const;
+      if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+      return a.tenantName.localeCompare(b.tenantName);
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      total: items.length,
+      brokenCount: items.filter((i) => i.status === "broken").length,
+      warningCount: items.filter((i) => i.status === "warning").length,
+      items,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/health/stripe-connect/refresh
+//
+// Pull the latest capability state from Stripe for one connected account
+// and persist it as a STRIPE_ACCOUNT_UPDATED audit log entry (the same
+// shape the webhook handler writes), so subsequent GETs see fresh data.
+// --------------------------------------------------------------------------
+router.post("/health/stripe-connect/refresh", async (req, res, next) => {
+  try {
+    const { stripeAccountId, scope, recordId, tenantId } = req.body ?? {};
+    if (!stripeAccountId || !scope || !recordId || !tenantId) {
+      res.status(400).json({
+        error: "stripeAccountId, scope ('location'|'tenant'), recordId and tenantId are required",
+      });
+      return;
+    }
+    if (!stripe) {
+      res.status(503).json({ error: "Stripe is not configured on this environment" });
+      return;
+    }
+
+    let chargesEnabled = false;
+    let payoutsEnabled = false;
+    let detailsSubmitted = false;
+    try {
+      // v1 accounts.retrieve returns the standard Account shape with
+      // capabilities; v2-only accounts may need v2.core.accounts.retrieve.
+      // Try v1 first and fall through on type mismatch.
+      const account = (await stripe.accounts.retrieve(stripeAccountId)) as {
+        charges_enabled?: boolean;
+        payouts_enabled?: boolean;
+        details_submitted?: boolean;
+      };
+      chargesEnabled = account.charges_enabled === true;
+      payoutsEnabled = account.payouts_enabled === true;
+      detailsSubmitted = account.details_submitted === true;
+    } catch (err) {
+      // Fall back to v2 endpoint — Stripe SDK casts this off the typed surface.
+      try {
+        const v2Accounts = (stripe as unknown as {
+          v2?: {
+            core?: {
+              accounts?: {
+                retrieve: (id: string) => Promise<{
+                  configuration?: {
+                    merchant?: { capabilities?: Record<string, { status?: string }> };
+                  };
+                  identity?: { business_details?: { registered_name?: string } };
+                  requirements?: { currently_due?: string[]; eventually_due?: string[] };
+                }>;
+              };
+            };
+          };
+        }).v2?.core?.accounts;
+        if (!v2Accounts) throw err;
+        const v2Account = await v2Accounts.retrieve(stripeAccountId);
+        const caps = v2Account.configuration?.merchant?.capabilities ?? {};
+        chargesEnabled = caps.card_payments?.status === "active";
+        payoutsEnabled = caps.transfers?.status === "active";
+        detailsSubmitted =
+          (v2Account.requirements?.currently_due ?? []).length === 0;
+      } catch (innerErr) {
+        const message = innerErr instanceof Error ? innerErr.message : String(innerErr);
+        res.status(502).json({ error: `Stripe lookup failed: ${message}` });
+        return;
+      }
+    }
+
+    if (scope === "location") {
+      // Mirror the webhook handler: flip onboarding flag when charges enabled.
+      if (chargesEnabled) {
+        await prisma.location.updateMany({
+          where: { id: recordId, tenantId },
+          data: { stripeOnboardingComplete: true },
+        });
+      }
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        recordType: scope === "location" ? "Location" : "Tenant",
+        recordId,
+        action: "STRIPE_ACCOUNT_UPDATED",
+        changedFieldsJson: {
+          eventType: "manual.refresh",
+          chargesEnabled,
+          payoutsEnabled,
+          detailsSubmitted,
+          source: "platform-admin-health",
+        },
+      },
+    });
+
+    res.json({ stripeAccountId, chargesEnabled, payoutsEnabled, detailsSubmitted });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/health/quickbooks — cross-tenant QBO connection health
+//
+// Per-location and per-tenant QBO connections, with token expiry, last
+// successful sync (the most recent of qboLastSyncAt / qboLastVendorPullAt
+// / qboLastBillPullAt), the most recent sync error, and the count of
+// failed sync refs awaiting retry.
+// --------------------------------------------------------------------------
+router.get("/health/quickbooks", async (req, res, next) => {
+  try {
+    const reconnectOnly = req.query.reconnect === "true";
+
+    const [locationRows, tenantRows] = await Promise.all([
+      prisma.location.findMany({
+        where: { qboRealmId: { not: null } },
+        select: {
+          id: true,
+          name: true,
+          tenantId: true,
+          qboRealmId: true,
+          qboCompanyName: true,
+          qboTokenExpiresAt: true,
+          qboConnectedAt: true,
+          qboLastVendorPullAt: true,
+          qboLastBillPullAt: true,
+          tenant: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.tenant.findMany({
+        where: { qboRealmId: { not: null } },
+        select: {
+          id: true,
+          name: true,
+          qboRealmId: true,
+          qboTokenExpiresAt: true,
+          qboConnectedAt: true,
+          qboLastVendorPullAt: true,
+          qboLastBillPullAt: true,
+        },
+      }),
+    ]);
+
+    const locationRealmIds = new Set(
+      locationRows.map((l) => l.qboRealmId).filter(Boolean),
+    );
+
+    type Connection = {
+      scope: "location" | "tenant";
+      id: string;
+      tenantId: string;
+      tenantName: string;
+      locationId: string | null;
+      locationName: string | null;
+      realmId: string;
+      companyName: string | null;
+      tokenExpiresAt: Date | null;
+      connectedAt: Date | null;
+      lastVendorPullAt: Date | null;
+      lastBillPullAt: Date | null;
+    };
+
+    const connections: Connection[] = [
+      ...locationRows.map(
+        (l): Connection => ({
+          scope: "location" as const,
+          id: l.id,
+          tenantId: l.tenantId,
+          tenantName: l.tenant.name,
+          locationId: l.id,
+          locationName: l.name,
+          realmId: l.qboRealmId!,
+          companyName: l.qboCompanyName ?? null,
+          tokenExpiresAt: l.qboTokenExpiresAt,
+          connectedAt: l.qboConnectedAt,
+          lastVendorPullAt: l.qboLastVendorPullAt,
+          lastBillPullAt: l.qboLastBillPullAt,
+        }),
+      ),
+      ...tenantRows
+        .filter((t) => !locationRealmIds.has(t.qboRealmId!))
+        .map(
+          (t): Connection => ({
+            scope: "tenant" as const,
+            id: t.id,
+            tenantId: t.id,
+            tenantName: t.name,
+            locationId: null,
+            locationName: null,
+            realmId: t.qboRealmId!,
+            companyName: null,
+            tokenExpiresAt: t.qboTokenExpiresAt,
+            connectedAt: t.qboConnectedAt,
+            lastVendorPullAt: t.qboLastVendorPullAt,
+            lastBillPullAt: t.qboLastBillPullAt,
+          }),
+        ),
+    ];
+
+    // Recent sync errors and pending retries per (tenant, location).
+    const syncErrorRows = await prisma.qboInventorySyncRef.findMany({
+      where: {
+        tenantId: { in: connections.map((c) => c.tenantId) },
+        lastError: { not: null },
+      },
+      orderBy: { lastErrorAt: "desc" },
+      select: {
+        tenantId: true,
+        locationId: true,
+        lastError: true,
+        lastErrorAt: true,
+      },
+    });
+
+    const errorsByKey = new Map<
+      string,
+      { count: number; lastError: string | null; lastErrorAt: Date | null }
+    >();
+    for (const row of syncErrorRows) {
+      const key = `${row.tenantId}:${row.locationId ?? "tenant"}`;
+      const cur = errorsByKey.get(key);
+      if (cur) {
+        cur.count += 1;
+      } else {
+        errorsByKey.set(key, {
+          count: 1,
+          lastError: row.lastError,
+          lastErrorAt: row.lastErrorAt,
+        });
+      }
+    }
+
+    // Pending webhook deliveries — failed deliveries are functionally
+    // "awaiting retry" until an operator replays them.
+    const pendingWebhooks = await prisma.qboWebhookDelivery.groupBy({
+      by: ["tenantId", "locationId"],
+      where: {
+        tenantId: { in: connections.map((c) => c.tenantId) },
+        status: { in: ["FAILED", "PENDING"] },
+      },
+      _count: { _all: true },
+    });
+    const pendingWebhooksByKey = new Map<string, number>();
+    for (const row of pendingWebhooks) {
+      if (!row.tenantId) continue;
+      const key = `${row.tenantId}:${row.locationId ?? "tenant"}`;
+      pendingWebhooksByKey.set(key, (pendingWebhooksByKey.get(key) ?? 0) + row._count._all);
+    }
+
+    const now = Date.now();
+    const items = connections
+      .map((c) => {
+        // qboLastSyncAt isn't a real Prisma field on Tenant — the existing
+        // qbo-sync code only writes vendor/bill pull timestamps. Use those
+        // as the canonical "last successful sync" signal.
+        const lastSync = mostRecent(c.lastVendorPullAt, c.lastBillPullAt);
+        const errKey = `${c.tenantId}:${c.locationId ?? "tenant"}`;
+        const err = errorsByKey.get(errKey);
+        const pendingRetries =
+          (errorsByKey.get(errKey)?.count ?? 0) +
+          (pendingWebhooksByKey.get(errKey) ?? 0);
+
+        const tokenExpiresInMs = c.tokenExpiresAt
+          ? c.tokenExpiresAt.getTime() - now
+          : null;
+        const reconnectRequired =
+          !c.tokenExpiresAt || (tokenExpiresInMs !== null && tokenExpiresInMs <= 0);
+        const expiringSoon =
+          !reconnectRequired &&
+          tokenExpiresInMs !== null &&
+          tokenExpiresInMs < 7 * 24 * 60 * 60 * 1000;
+
+        const status: "ok" | "warning" | "broken" = reconnectRequired
+          ? "broken"
+          : err || expiringSoon
+            ? "warning"
+            : "ok";
+
+        return {
+          scope: c.scope,
+          id: c.id,
+          tenantId: c.tenantId,
+          tenantName: c.tenantName,
+          locationId: c.locationId,
+          locationName: c.locationName,
+          realmId: c.realmId,
+          companyName: c.companyName,
+          tokenExpiresAt: c.tokenExpiresAt?.toISOString() ?? null,
+          tokenExpiresInDays:
+            tokenExpiresInMs !== null
+              ? Math.round(tokenExpiresInMs / (24 * 60 * 60 * 1000))
+              : null,
+          connectedAt: c.connectedAt?.toISOString() ?? null,
+          lastSuccessfulSyncAt: lastSync?.toISOString() ?? null,
+          lastSyncError: err?.lastError ?? null,
+          lastSyncErrorAt: err?.lastErrorAt?.toISOString() ?? null,
+          pendingRetryCount: pendingRetries,
+          reconnectRequired,
+          status,
+        };
+      })
+      .filter((row) => (reconnectOnly ? row.reconnectRequired : true))
+      .sort((a, b) => {
+        const order = { broken: 0, warning: 1, ok: 2 } as const;
+        if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+        return a.tenantName.localeCompare(b.tenantName);
+      });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      total: items.length,
+      brokenCount: items.filter((i) => i.status === "broken").length,
+      warningCount: items.filter((i) => i.status === "warning").length,
+      items,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// Health helpers
+// --------------------------------------------------------------------------
+
+function bucketByHour(timestamps: number[], sinceMs: number): number[] {
+  // Always 24 buckets — index 0 = oldest hour, index 23 = current hour.
+  const buckets = new Array(24).fill(0);
+  for (const t of timestamps) {
+    const idx = Math.min(23, Math.max(0, Math.floor((t - sinceMs) / (60 * 60 * 1000))));
+    buckets[idx] += 1;
+  }
+  return buckets;
+}
+
+function capabilityKey(recordType: string, recordId: string): string {
+  return `${recordType}:${recordId}`;
+}
+
+async function loadTenantNameMap(
+  ids: Array<string | null>,
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  if (unique.length === 0) return new Map();
+  const rows = await prisma.tenant.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, name: true },
+  });
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+function mostRecent(...dates: Array<Date | null | undefined>): Date | null {
+  let max: Date | null = null;
+  for (const d of dates) {
+    if (!d) continue;
+    if (!max || d > max) max = d;
+  }
+  return max;
+}
+
+function safeJsonPreview(value: unknown): unknown {
+  try {
+    const json = JSON.stringify(value);
+    if (json.length <= 500) return value;
+    return `${json.slice(0, 500)}…`;
+  } catch {
+    return null;
+  }
+}
 
 export default router;

@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { path: '/tenants', label: 'Tenants', icon: '⛵' },
   { path: '/billing', label: 'Billing', icon: '$' },
   { path: '/analytics', label: 'Analytics', icon: '◈' },
+  { path: '/health', label: 'Health', icon: '♥' },
   { path: '/support', label: 'Support', icon: '✉' },
   { path: '/settings', label: 'Platform Settings', icon: '⚙' },
 ];

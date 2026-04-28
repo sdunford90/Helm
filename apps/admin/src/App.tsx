@@ -6,6 +6,7 @@ import Tenants from './pages/Tenants';
 import TenantDetail from './pages/TenantDetail';
 import Billing from './pages/Billing';
 import Analytics from './pages/Analytics';
+import Health from './pages/Health';
 import Support from './pages/Support';
 import PlatformSettings from './pages/PlatformSettings';
 
@@ -18,6 +19,7 @@ const App: React.FC = () => {
         <Route path="/tenants/:id" element={<TenantDetail />} />
         <Route path="/billing" element={<Billing />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/health" element={<Health />} />
         <Route path="/support" element={<Support />} />
         <Route path="/settings" element={<PlatformSettings />} />
       </Route>
