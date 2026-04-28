@@ -392,6 +392,17 @@ export default function Settings() {
     setSearchParams(sp, { replace: true });
   };
 
+  // Normalize legacy ?tab=integrations URLs to ?tab=locations on first
+  // render so refreshes/bookmarks pick up the new path cleanly.
+  React.useEffect(() => {
+    if (tabFromUrl === 'integrations') {
+      const sp = new URLSearchParams(searchParams);
+      sp.set('tab', 'locations');
+      setSearchParams(sp, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
