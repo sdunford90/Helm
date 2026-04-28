@@ -10,6 +10,7 @@ import {
   findFailedInventorySyncRefs,
   type PoBillLineInput,
 } from "../services/qbo-sync.js";
+import { applyCategoryDefaultsToProductData } from "../services/product-defaults.js";
 
 const router: Router = Router();
 
@@ -184,7 +185,11 @@ const CreateProductSchema = z.object({
   name: z.string().min(1),
   sku: z.string().min(1),
   barcode: z.string().optional().nullable(),
-  category: z.string().min(1),
+  // Legacy free-text category — kept for backwards-compat.
+  category: z.string().optional().nullable(),
+  // New: links to ProductCategory whose defaults flow into the per-product
+  // GL/tax fields when those are left blank.
+  productCategoryId: z.string().uuid().optional().nullable(),
   costCents: z.number().int().min(0),
   priceCents: z.number().int().min(0),
   taxClass: z.string().optional().nullable(),
@@ -279,6 +284,7 @@ function shapeProduct(p: ProductRow) {
     sku: p.sku ?? "",
     barcode: p.barcode,
     category: p.category ?? "",
+    productCategoryId: p.productCategoryId ?? null,
     costCents: p.costCents ?? 0,
     priceCents: p.priceCents,
     taxClass: p.taxClass,
@@ -424,25 +430,35 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
+    // Resolve category defaults into the per-product fields so QBO sync,
+    // reports, and tax engine all see consistent values.
+    const resolved = await applyCategoryDefaultsToProductData(tenantId, {
+      productCategoryId: body.productCategoryId ?? null,
+      revenueGlAccountId: body.revenueGlAccountId ?? null,
+      cogsGlAccountId: body.cogsGlAccountId ?? null,
+      inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+      taxClass: body.taxClass ?? null,
+    });
     let product = await prisma.product.create({
       data: {
         tenantId,
         name: body.name,
         sku: body.sku,
         barcode: body.barcode ?? null,
-        category: body.category,
+        category: body.category ?? null,
+        productCategoryId: resolved.productCategoryId,
         costCents: body.costCents,
         priceCents: body.priceCents,
-        taxClass: body.taxClass ?? null,
+        taxClass: resolved.taxClass,
         reorderPoint: body.reorderPoint,
         trackInventory: body.trackInventory,
         qoh: 0,
-        cogsGlAccountId: body.cogsGlAccountId ?? null,
-        revenueGlAccountId: body.revenueGlAccountId ?? null,
-        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+        cogsGlAccountId: resolved.cogsGlAccountId,
+        revenueGlAccountId: resolved.revenueGlAccountId,
+        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
         locationId: body.locationId ?? null,
         active: true,
-      },
+      } as any,
     });
     // Best-effort QBO sync — local create always succeeds even if QBO is offline
     if (product.trackInventory) {
@@ -496,6 +512,7 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.sku !== undefined) data.sku = body.sku;
     if (body.barcode !== undefined) data.barcode = body.barcode;
     if (body.category !== undefined) data.category = body.category;
+    if (body.productCategoryId !== undefined) data.productCategoryId = body.productCategoryId;
     if (body.costCents !== undefined) data.costCents = body.costCents;
     if (body.priceCents !== undefined) data.priceCents = body.priceCents;
     if (body.taxClass !== undefined) data.taxClass = body.taxClass;
@@ -505,6 +522,31 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.revenueGlAccountId !== undefined) data.revenueGlAccountId = body.revenueGlAccountId;
     if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = body.inventoryAssetGlAccountId;
     if (body.locationId !== undefined) data.locationId = body.locationId;
+
+    // When the caller is changing the category, fall back to its defaults for
+    // any GL/tax fields not explicitly provided in the same request.
+    const effectiveCategoryId =
+      body.productCategoryId !== undefined ? body.productCategoryId : existing.productCategoryId;
+    if (effectiveCategoryId) {
+      const resolved = await applyCategoryDefaultsToProductData(existing.tenantId, {
+        productCategoryId: effectiveCategoryId,
+        revenueGlAccountId:
+          body.revenueGlAccountId !== undefined ? body.revenueGlAccountId : undefined,
+        cogsGlAccountId:
+          body.cogsGlAccountId !== undefined ? body.cogsGlAccountId : undefined,
+        inventoryAssetGlAccountId:
+          body.inventoryAssetGlAccountId !== undefined
+            ? body.inventoryAssetGlAccountId
+            : undefined,
+        taxClass: body.taxClass !== undefined ? body.taxClass : undefined,
+      });
+      // Only copy through fields the caller explicitly touched; leave the
+      // others untouched on the existing row.
+      if (body.revenueGlAccountId !== undefined) data.revenueGlAccountId = resolved.revenueGlAccountId;
+      if (body.cogsGlAccountId !== undefined) data.cogsGlAccountId = resolved.cogsGlAccountId;
+      if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = resolved.inventoryAssetGlAccountId;
+      if (body.taxClass !== undefined) data.taxClass = resolved.taxClass;
+    }
 
     let product = await prisma.product.update({
       where: { id: existing.id },
@@ -584,6 +626,164 @@ router.delete("/products/:id", async (req: Request, res: Response, next: NextFun
       data: { active: false },
     });
     res.json({ message: "Product deactivated", id: existing.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Product Categories ──────────────────────────────────────────────────────
+// Categories own default GL accounts (revenue/COGS/inventory asset) and a
+// default tax category + taxable flag. Products can link to a category and
+// inherit those defaults; per-product fields override.
+
+const CategorySchema = z.object({
+  name: z.string().min(1).max(120),
+  defaultRevenueGlAccountId: z.string().uuid().optional().nullable(),
+  defaultCogsGlAccountId: z.string().uuid().optional().nullable(),
+  defaultInventoryAssetGlAccountId: z.string().uuid().optional().nullable(),
+  defaultTaxCategory: z.string().optional().nullable(),
+  taxable: z.boolean().default(true),
+  active: z.boolean().default(true),
+});
+
+const UpdateCategorySchema = CategorySchema.partial();
+
+router.get("/categories", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const includeInactive = req.query.includeInactive === "true";
+    const rows = await prisma.productCategory.findMany({
+      where: includeInactive ? {} : { active: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ categories: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/categories", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const body = CategorySchema.parse(req.body);
+    const created = await prisma.productCategory.create({
+      data: {
+        tenantId,
+        name: body.name,
+        defaultRevenueGlAccountId: body.defaultRevenueGlAccountId ?? null,
+        defaultCogsGlAccountId: body.defaultCogsGlAccountId ?? null,
+        defaultInventoryAssetGlAccountId: body.defaultInventoryAssetGlAccountId ?? null,
+        defaultTaxCategory: body.defaultTaxCategory ?? null,
+        taxable: body.taxable,
+        active: body.active,
+      },
+    });
+    res.status(201).json(created);
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      return res.status(409).json({ error: "A category with that name already exists" });
+    }
+    next(err);
+  }
+});
+
+router.put("/categories/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = UpdateCategorySchema.parse(req.body);
+    const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: "Category not found" });
+
+    const data: any = {};
+    if (body.name !== undefined) data.name = body.name;
+    if (body.defaultRevenueGlAccountId !== undefined) data.defaultRevenueGlAccountId = body.defaultRevenueGlAccountId;
+    if (body.defaultCogsGlAccountId !== undefined) data.defaultCogsGlAccountId = body.defaultCogsGlAccountId;
+    if (body.defaultInventoryAssetGlAccountId !== undefined) data.defaultInventoryAssetGlAccountId = body.defaultInventoryAssetGlAccountId;
+    if (body.defaultTaxCategory !== undefined) data.defaultTaxCategory = body.defaultTaxCategory;
+    if (body.taxable !== undefined) data.taxable = body.taxable;
+    if (body.active !== undefined) data.active = body.active;
+    data.updatedAt = new Date();
+
+    const updated = await prisma.productCategory.update({
+      where: { id: existing.id },
+      data,
+    });
+    res.json(updated);
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      return res.status(409).json({ error: "A category with that name already exists" });
+    }
+    next(err);
+  }
+});
+
+router.delete("/categories/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: "Category not found" });
+    // Soft-delete: products keep their FK (ON DELETE SET NULL is the schema
+    // default, but we don't want to lose data linkage on accidental clicks).
+    const updated = await prisma.productCategory.update({
+      where: { id: existing.id },
+      data: { active: false, updatedAt: new Date() },
+    });
+    res.json({ message: "Category deactivated", id: updated.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GL Accounts (Chart of Accounts dropdown source) ─────────────────────────
+// Lightweight reader so the UI can render <select> dropdowns instead of
+// asking users to type raw account numbers. Filterable by type so the GL
+// pickers in the category modal & product form only show plausible options.
+
+router.get("/gl-accounts", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // GlAccount is not in TENANT_SCOPED_MODELS, so filter explicitly to avoid
+    // cross-tenant chart-of-accounts exposure.
+    const tenantId = getTenantId(req);
+    const typeQ = typeof req.query.type === "string" ? req.query.type : "";
+    const types = typeQ ? typeQ.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const rows = await prisma.glAccount.findMany({
+      where: {
+        tenantId,
+        active: true,
+        ...(types.length ? { type: { in: types as any } } : {}),
+      },
+      orderBy: [{ type: "asc" }, { accountNumber: "asc" }],
+      select: {
+        id: true,
+        accountNumber: true,
+        name: true,
+        type: true,
+        subType: true,
+      },
+    });
+    res.json({ accounts: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Tax Categories (distinct list for the dropdown) ─────────────────────────
+// The tax engine keys off TaxRate.category strings (e.g. "general", "food",
+// "fuel"). Surface the distinct set already configured for this tenant so
+// the categories UI can offer real values instead of free-text guesses.
+
+router.get("/tax-categories", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // TaxRate is not in TENANT_SCOPED_MODELS — filter explicitly.
+    const tenantId = getTenantId(req);
+    const rates = await prisma.taxRate.findMany({
+      where: { tenantId },
+      select: { category: true },
+      distinct: ["category"],
+      orderBy: { category: "asc" },
+    });
+    const seen = new Set<string>(["general"]);
+    for (const r of rates) {
+      if (r.category) seen.add(r.category);
+    }
+    res.json({ categories: Array.from(seen).sort() });
   } catch (err) {
     next(err);
   }

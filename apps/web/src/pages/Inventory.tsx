@@ -11,10 +11,27 @@ import {
 
 interface Product {
   id: string; sku: string; barcode: string; name: string; category: string;
+  productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string; qoh: number;
-  reorderPoint: number; glRevenue: string; glCogs: string; trackInventory: boolean; active: boolean;
+  reorderPoint: number;
+  glRevenue: string; glCogs: string; glInventoryAsset: string;
+  trackInventory: boolean; active: boolean;
   qboItemId: string | null; qboItemSyncedAt: string | null;
   qboItemSyncError: string | null; qboItemSyncErrorAt: string | null;
+}
+
+interface ApiProductCategory {
+  id: string; name: string;
+  defaultRevenueGlAccountId: string | null;
+  defaultCogsGlAccountId: string | null;
+  defaultInventoryAssetGlAccountId: string | null;
+  defaultTaxCategory: string | null;
+  taxable: boolean;
+  active: boolean;
+}
+
+interface ApiGlAccount {
+  id: string; accountNumber: string; name: string; type: string; subType: string | null;
 }
 
 interface PurchaseOrder {
@@ -35,8 +52,11 @@ interface Adjustment {
 
 interface ApiProduct {
   id: string; sku: string; barcode: string | null; name: string; category: string;
+  productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string | null; qoh: number;
-  reorderPoint: number; cogsGlAccountId: string | null; revenueGlAccountId: string | null;
+  reorderPoint: number;
+  cogsGlAccountId: string | null; revenueGlAccountId: string | null;
+  inventoryAssetGlAccountId: string | null;
   trackInventory: boolean; active: boolean;
   qboItemId?: string | null; qboItemSyncedAt?: string | null;
   qboItemSyncError?: string | null; qboItemSyncErrorAt?: string | null;
@@ -64,9 +84,14 @@ interface ApiPurchaseOrder {
 function toProduct(p: ApiProduct): Product {
   return {
     id: p.id, sku: p.sku, barcode: p.barcode ?? '', name: p.name,
-    category: p.category, costCents: p.costCents, priceCents: p.priceCents,
+    category: p.category ?? '',
+    productCategoryId: p.productCategoryId ?? null,
+    costCents: p.costCents, priceCents: p.priceCents,
     taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
-    glRevenue: p.revenueGlAccountId ?? '4500', glCogs: p.cogsGlAccountId ?? '5200',
+    // GL fields hold the FK to GlAccount (UUID), not raw account numbers.
+    glRevenue: p.revenueGlAccountId ?? '',
+    glCogs: p.cogsGlAccountId ?? '',
+    glInventoryAsset: p.inventoryAssetGlAccountId ?? '',
     trackInventory: p.trackInventory, active: p.active,
     qboItemId: p.qboItemId ?? null, qboItemSyncedAt: p.qboItemSyncedAt ?? null,
     qboItemSyncError: p.qboItemSyncError ?? null, qboItemSyncErrorAt: p.qboItemSyncErrorAt ?? null,
@@ -178,21 +203,103 @@ const st: Record<string, React.CSSProperties> = {
 
 function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
   const isEdit = !!product;
-  const [form, setForm] = useState({
+
+  // Load reference data the dropdowns depend on. These endpoints are cheap
+  // (active categories, COA filtered by type) so we always fetch fresh.
+  const { data: categoriesData } = useApi<{ categories: ApiProductCategory[] }>(
+    'get', '/api/inventory/categories', { immediate: true },
+  );
+  const { data: revenueAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
+    'get', '/api/inventory/gl-accounts?type=REVENUE', { immediate: true },
+  );
+  const { data: cogsAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
+    'get', '/api/inventory/gl-accounts?type=EXPENSE,COGS', { immediate: true },
+  );
+  const { data: assetAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
+    'get', '/api/inventory/gl-accounts?type=ASSET', { immediate: true },
+  );
+  const { data: taxCategoriesData } = useApi<{ categories: string[] }>(
+    'get', '/api/inventory/tax-categories', { immediate: true },
+  );
+
+  const categoryList = categoriesData?.categories ?? [];
+  const revenueAccts = revenueAccountsData?.accounts ?? [];
+  const cogsAccts = cogsAccountsData?.accounts ?? [];
+  const assetAccts = assetAccountsData?.accounts ?? [];
+  const taxCats = taxCategoriesData?.categories ?? ['general'];
+
+  // Default new products to the first active category if one exists.
+  const initialCategoryId =
+    product?.productCategoryId ?? categoryList[0]?.id ?? null;
+
+  const [form, setForm] = useState<{
+    sku: string;
+    barcode: string;
+    name: string;
+    productCategoryId: string | null;
+    legacyCategory: string;
+    costCents: string;
+    priceCents: string;
+    taxClass: string;
+    qoh: string;
+    reorderPoint: string;
+    glRevenue: string;
+    glCogs: string;
+    glInventoryAsset: string;
+  }>({
     sku: product?.sku ?? '',
     barcode: product?.barcode ?? '',
     name: product?.name ?? '',
-    category: product?.category ?? 'Provisions',
+    productCategoryId: initialCategoryId,
+    legacyCategory: product?.category ?? '',
     costCents: product ? String(product.costCents / 100) : '',
     priceCents: product ? String(product.priceCents / 100) : '',
-    taxClass: product?.taxClass ?? 'Standard',
+    taxClass: product?.taxClass ?? '',
     qoh: product ? String(product.qoh) : '',
     reorderPoint: product ? String(product.reorderPoint) : '',
-    glRevenue: product?.glRevenue ?? '4500',
-    glCogs: product?.glCogs ?? '5200',
+    glRevenue: product?.glRevenue ?? '',
+    glCogs: product?.glCogs ?? '',
+    glInventoryAsset: product?.glInventoryAsset ?? '',
   });
-  const f = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [field]: e.target.value }));
-  const categories = ['Fuel', 'Provisions', 'Bait & Tackle', 'Marine Supplies', 'Apparel', 'Boat Parts'];
+
+  // When the categories list lands after the initial render, retro-fit the
+  // default category id so the rest of the form can react to it.
+  React.useEffect(() => {
+    if (!form.productCategoryId && categoryList[0]) {
+      setForm((p) => ({ ...p, productCategoryId: categoryList[0].id }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryList.length]);
+
+  // Override toggle: when off, the per-product GL/tax fields stay null so the
+  // category defaults flow through. When on, the user edits the per-product
+  // fields directly. For existing products we infer the initial state from
+  // whether any per-product GL field is populated.
+  const initialOverride =
+    isEdit &&
+    !!(product?.glRevenue || product?.glCogs || product?.glInventoryAsset || (product?.taxClass && product.taxClass !== 'Standard'));
+  const [override, setOverride] = useState(initialOverride);
+
+  const selectedCategory = categoryList.find((c) => c.id === form.productCategoryId) ?? null;
+
+  const setField = <K extends keyof typeof form>(field: K, value: (typeof form)[K]) =>
+    setForm((p) => ({ ...p, [field]: value }));
+
+  const labelFor = (a: ApiGlAccount) => `${a.accountNumber} — ${a.name}`;
+  const findAccount = (list: ApiGlAccount[], id: string | null) =>
+    id ? list.find((a) => a.id === id) ?? null : null;
+
+  // Effective values shown when the override toggle is OFF. These mirror the
+  // server-side resolveEffectiveValues helper: per-product wins, else category.
+  const effectiveRevenueId = override ? form.glRevenue : (form.glRevenue || selectedCategory?.defaultRevenueGlAccountId || '');
+  const effectiveCogsId = override ? form.glCogs : (form.glCogs || selectedCategory?.defaultCogsGlAccountId || '');
+  const effectiveAssetId = override ? form.glInventoryAsset : (form.glInventoryAsset || selectedCategory?.defaultInventoryAssetGlAccountId || '');
+  const effectiveTaxLabel = !selectedCategory
+    ? (form.taxClass || 'general')
+    : !selectedCategory.taxable
+    ? 'Tax Exempt (from category)'
+    : (form.taxClass || selectedCategory.defaultTaxCategory || 'general');
+
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
@@ -202,33 +309,91 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
         </div>
         <div style={st.modalBody}>
           <div style={st.row2}>
-            <div style={st.field}><label style={st.label}>SKU *</label><input style={st.input} value={form.sku} onChange={f('sku')} placeholder="e.g. ICE-10LB" /></div>
-            <div style={st.field}><label style={st.label}>Barcode</label><input style={st.input} value={form.barcode} onChange={f('barcode')} placeholder="UPC / EAN" /></div>
+            <div style={st.field}><label style={st.label}>SKU *</label><input style={st.input} value={form.sku} onChange={(e) => setField('sku', e.target.value)} placeholder="e.g. ICE-10LB" /></div>
+            <div style={st.field}><label style={st.label}>Barcode</label><input style={st.input} value={form.barcode} onChange={(e) => setField('barcode', e.target.value)} placeholder="UPC / EAN" /></div>
           </div>
-          <div style={st.field}><label style={st.label}>Product Name *</label><input style={st.input} value={form.name} onChange={f('name')} placeholder="e.g. Bag of Ice (10lb)" /></div>
-          <div style={st.row2}>
-            <div style={st.field}><label style={st.label}>Category</label>
-              <select style={st.input} value={form.category} onChange={f('category')}>
-                {categories.map((c) => <option key={c}>{c}</option>)}
+          <div style={st.field}><label style={st.label}>Product Name *</label><input style={st.input} value={form.name} onChange={(e) => setField('name', e.target.value)} placeholder="e.g. Bag of Ice (10lb)" /></div>
+
+          <div style={st.field}>
+            <label style={st.label}>Category *</label>
+            {categoryList.length === 0 ? (
+              <div style={{ padding: '10px', background: '#FEF3C7', color: '#92400E', borderRadius: '6px', fontSize: '13px' }}>
+                No product categories yet. Create one in Settings → Categories to set GL & tax defaults.
+              </div>
+            ) : (
+              <select
+                style={st.input}
+                value={form.productCategoryId ?? ''}
+                onChange={(e) => setField('productCategoryId', e.target.value || null)}
+              >
+                <option value="">— None —</option>
+                {categoryList.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
               </select>
-            </div>
-            <div style={st.field}><label style={st.label}>Tax Class</label>
-              <select style={st.input} value={form.taxClass} onChange={f('taxClass')}>
-                <option>Standard</option><option>Exempt</option>
-              </select>
-            </div>
+            )}
+          </div>
+
+          <div style={st.row2}>
+            <div style={st.field}><label style={st.label}>Cost ($)</label><input style={st.input} type="number" step="0.01" value={form.costCents} onChange={(e) => setField('costCents', e.target.value)} placeholder="0.00" /></div>
+            <div style={st.field}><label style={st.label}>Price ($)</label><input style={st.input} type="number" step="0.01" value={form.priceCents} onChange={(e) => setField('priceCents', e.target.value)} placeholder="0.00" /></div>
           </div>
           <div style={st.row2}>
-            <div style={st.field}><label style={st.label}>Cost ($)</label><input style={st.input} type="number" step="0.01" value={form.costCents} onChange={f('costCents')} placeholder="0.00" /></div>
-            <div style={st.field}><label style={st.label}>Price ($)</label><input style={st.input} type="number" step="0.01" value={form.priceCents} onChange={f('priceCents')} placeholder="0.00" /></div>
+            <div style={st.field}><label style={st.label}>Qty on Hand</label><input style={st.input} type="number" value={form.qoh} onChange={(e) => setField('qoh', e.target.value)} /></div>
+            <div style={st.field}><label style={st.label}>Reorder Point</label><input style={st.input} type="number" value={form.reorderPoint} onChange={(e) => setField('reorderPoint', e.target.value)} /></div>
           </div>
-          <div style={st.row2}>
-            <div style={st.field}><label style={st.label}>Qty on Hand</label><input style={st.input} type="number" value={form.qoh} onChange={f('qoh')} /></div>
-            <div style={st.field}><label style={st.label}>Reorder Point</label><input style={st.input} type="number" value={form.reorderPoint} onChange={f('reorderPoint')} /></div>
-          </div>
-          <div style={st.row2}>
-            <div style={st.field}><label style={st.label}>GL Revenue Acct</label><input style={st.input} value={form.glRevenue} onChange={f('glRevenue')} placeholder="e.g. 4500" /></div>
-            <div style={st.field}><label style={st.label}>GL COGS Acct</label><input style={st.input} value={form.glCogs} onChange={f('glCogs')} placeholder="e.g. 5200" /></div>
+
+          {/* Accounting + tax block — defaults from category, override per-product */}
+          <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, color: '#0A2342', cursor: 'pointer', marginBottom: '12px' }}>
+              <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+              Override category defaults (GL accounts &amp; tax)
+            </label>
+
+            {!override ? (
+              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', display: 'grid', gap: '6px' }}>
+                <div><strong>Revenue:</strong> {findAccount(revenueAccts, effectiveRevenueId) ? labelFor(findAccount(revenueAccts, effectiveRevenueId)!) : '—'}</div>
+                <div><strong>COGS:</strong> {findAccount(cogsAccts, effectiveCogsId) ? labelFor(findAccount(cogsAccts, effectiveCogsId)!) : '—'}</div>
+                <div><strong>Inventory Asset:</strong> {findAccount(assetAccts, effectiveAssetId) ? labelFor(findAccount(assetAccts, effectiveAssetId)!) : '—'}</div>
+                <div><strong>Tax:</strong> {effectiveTaxLabel}</div>
+              </div>
+            ) : (
+              <>
+                <div style={st.row2}>
+                  <div style={st.field}>
+                    <label style={st.label}>GL Revenue Account</label>
+                    <select style={st.input} value={form.glRevenue} onChange={(e) => setField('glRevenue', e.target.value)}>
+                      <option value="">— Use category default —</option>
+                      {revenueAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
+                    </select>
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>GL COGS Account</label>
+                    <select style={st.input} value={form.glCogs} onChange={(e) => setField('glCogs', e.target.value)}>
+                      <option value="">— Use category default —</option>
+                      {cogsAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div style={st.row2}>
+                  <div style={st.field}>
+                    <label style={st.label}>GL Inventory Asset Account</label>
+                    <select style={st.input} value={form.glInventoryAsset} onChange={(e) => setField('glInventoryAsset', e.target.value)}>
+                      <option value="">— Use category default —</option>
+                      {assetAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
+                    </select>
+                  </div>
+                  <div style={st.field}>
+                    <label style={st.label}>Tax Category</label>
+                    <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
+                      <option value="">— Use category default —</option>
+                      {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                      <option value="Tax Exempt">Tax Exempt</option>
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
         <div style={st.modalFooter}>
@@ -236,12 +401,20 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
           <button style={st.saveBtn} onClick={() => {
             onSave({
               id: product?.id ?? String(Date.now()),
-              sku: form.sku, barcode: form.barcode, name: form.name, category: form.category,
+              sku: form.sku, barcode: form.barcode, name: form.name,
+              category: form.legacyCategory,
+              productCategoryId: form.productCategoryId,
               costCents: Math.round(parseFloat(form.costCents || '0') * 100),
               priceCents: Math.round(parseFloat(form.priceCents || '0') * 100),
-              taxClass: form.taxClass, qoh: parseInt(form.qoh || '0'),
+              // When override is off we send blanks so the server applies
+              // category defaults and avoids stamping stale values.
+              taxClass: override ? form.taxClass : '',
+              qoh: parseInt(form.qoh || '0'),
               reorderPoint: parseInt(form.reorderPoint || '0'),
-              glRevenue: form.glRevenue, glCogs: form.glCogs, trackInventory: true, active: true,
+              glRevenue: override ? form.glRevenue : '',
+              glCogs: override ? form.glCogs : '',
+              glInventoryAsset: override ? form.glInventoryAsset : '',
+              trackInventory: true, active: true,
               qboItemId: product?.qboItemId ?? null,
               qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
               qboItemSyncError: product?.qboItemSyncError ?? null,
@@ -453,10 +626,17 @@ export default function Inventory() {
   const handleSaveProduct = async (p: Product) => {
     try {
       const payload = {
-        name: p.name, sku: p.sku, barcode: p.barcode || null, category: p.category,
-        costCents: p.costCents, priceCents: p.priceCents, taxClass: p.taxClass,
+        name: p.name, sku: p.sku, barcode: p.barcode || null,
+        category: p.category || null,
+        productCategoryId: p.productCategoryId || null,
+        costCents: p.costCents, priceCents: p.priceCents,
+        // Empty strings here mean "fall back to category default" — send null
+        // so the server's applyCategoryDefaultsToProductData fills them in.
+        taxClass: p.taxClass || null,
         reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
-        revenueGlAccountId: p.glRevenue || null, cogsGlAccountId: p.glCogs || null,
+        revenueGlAccountId: p.glRevenue || null,
+        cogsGlAccountId: p.glCogs || null,
+        inventoryAssetGlAccountId: p.glInventoryAsset || null,
       };
       if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
         await fetch(`/api/inventory/products/${p.id}`, {

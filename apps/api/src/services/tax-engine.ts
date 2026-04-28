@@ -76,7 +76,10 @@ export async function checkTaxExempt(
 export async function calculateTax(params: {
   tenantId: string;
   locationId?: string | null;
-  customerId: string;
+  // customerId is optional: anonymous POS sales still owe tax based on the
+  // location's jurisdiction stack. When absent we simply skip the customer
+  // exempt-check below.
+  customerId?: string | null;
   asOfDate?: Date;
   lineItems: TaxLineItem[];
 }): Promise<TaxResult>;
@@ -93,7 +96,7 @@ export async function calculateTax(
     | {
         tenantId: string;
         locationId?: string | null;
-        customerId: string;
+        customerId?: string | null;
         asOfDate?: Date;
         lineItems: TaxLineItem[];
       }
@@ -103,7 +106,7 @@ export async function calculateTax(
 ): Promise<TaxResult> {
   let tenantId: string;
   let locationId: string | null | undefined;
-  let resolvedCustomerId: string;
+  let resolvedCustomerId: string | null | undefined;
   let resolvedLineItems: TaxLineItem[];
   let asOfDate: Date;
 
@@ -123,8 +126,12 @@ export async function calculateTax(
 
   if (!resolvedLineItems.length) return DEFAULT_TAX_RESULT(resolvedLineItems);
 
-  const isExempt = await checkTaxExempt(resolvedCustomerId, tenantId);
-  if (isExempt) return DEFAULT_TAX_RESULT(resolvedLineItems);
+  // Customer-level exempt status only applies when a customer was supplied.
+  // Anonymous POS sales fall through to the location jurisdiction stack.
+  if (resolvedCustomerId) {
+    const isExempt = await checkTaxExempt(resolvedCustomerId, tenantId);
+    if (isExempt) return DEFAULT_TAX_RESULT(resolvedLineItems);
+  }
 
   // Load jurisdiction stack for the location, ordered by sortOrder
   const locationLinks = locationId

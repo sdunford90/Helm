@@ -31,6 +31,7 @@ const TENANT_SCOPED_MODELS = new Set([
   "PosTransaction",
   "PosLineItem",
   "Product",
+  "ProductCategory",
   "Inventory",
   "Shift",
   "PurchaseOrder",

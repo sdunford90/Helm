@@ -10,9 +10,10 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users, Landmark, Percent, Copy, Info,
+  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
+import CategoriesSettings from '../components/CategoriesSettings';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 
@@ -375,8 +376,8 @@ export default function Settings() {
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax'];
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories'];
   const tabFromUrl = searchParams.get('tab');
   // The Integrations tab was retired — Stripe Connect and QuickBooks are now
   // managed per-Location. Redirect any old deep-links to the Locations tab.
@@ -1399,6 +1400,7 @@ export default function Settings() {
     { key: 'team', label: 'Team', icon: Users },
     { key: 'roles', label: 'Roles', icon: Shield },
     { key: 'tax', label: 'Tax', icon: Landmark },
+    { key: 'categories', label: 'Categories', icon: Tag },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
@@ -3337,6 +3339,8 @@ export default function Settings() {
           </div>
         </>
       )}
+
+      {tab === 'categories' && <CategoriesSettings />}
     </div>
   );
 }

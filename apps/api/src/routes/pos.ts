@@ -10,6 +10,8 @@ import {
   createPaymentIntent as createTerminalPaymentIntent,
   capturePayment,
 } from "../services/stripe-terminal.js";
+import { calculateTax } from "../services/tax-engine.js";
+import { getProductTaxCategory } from "../services/product-defaults.js";
 
 const router: Router = Router();
 
@@ -367,31 +369,95 @@ router.post(
       const productIds = data.lineItems.map((li) => li.productId);
       const products = await prisma.product.findMany({
         where: { id: { in: productIds }, tenantId },
+        include: {
+          productCategory: {
+            select: { defaultTaxCategory: true, taxable: true },
+          },
+        },
       });
 
       const productMap = new Map(products.map((p) => [p.id, p]));
 
-      let subtotalCents = 0;
-      let taxCents = 0;
+      // Resolve location for tax — taken from the open shift, if any.
+      let locationId: string | null = null;
+      if (data.shiftId) {
+        const shift = await prisma.shift.findFirst({
+          where: { id: data.shiftId, tenantId },
+          select: { locationId: true },
+        });
+        locationId = shift?.locationId ?? null;
+      }
 
-      const lineItemsData = data.lineItems.map((li) => {
+      // Build tax engine input. Per-line tax category resolves via:
+      //   product.taxClass override → category.defaultTaxCategory → "general"
+      // A product (or its category) marked tax-exempt yields a null
+      // taxCategory and gets skipped by the engine.
+      const lineCalcs = data.lineItems.map((li) => {
         const product = productMap.get(li.productId);
         const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
         const lineSubtotal = unitPrice * li.quantity - li.discountCents;
-        // Use client-supplied taxCents (computed from real jurisdiction rates) when present
-        const lineTax = li.taxCents !== undefined ? li.taxCents : 0;
-        const lineTotal = lineSubtotal + lineTax;
 
-        subtotalCents += lineSubtotal;
-        taxCents += lineTax;
+        // Inline category resolution (matches getProductTaxCategory rules)
+        let taxCategory: string | null = "general";
+        let taxable = true;
+        if (product?.taxClass === "Tax Exempt") {
+          taxCategory = null;
+          taxable = false;
+        } else if (product?.productCategory && !product.productCategory.taxable) {
+          taxCategory = null;
+          taxable = false;
+        } else {
+          taxCategory =
+            (product?.taxClass && product.taxClass !== "Standard"
+              ? product.taxClass
+              : null) ??
+            product?.productCategory?.defaultTaxCategory ??
+            "general";
+        }
 
+        return { li, unitPrice, lineSubtotal, taxCategory, taxable };
+      });
+
+      // Server-side tax calc — never trust client-supplied taxCents.
+      // Run regardless of whether a customer was attached so anonymous POS
+      // sales still collect tax based on the location's jurisdiction stack.
+      // calculateTax internally short-circuits to 0 when the (optional)
+      // customer is tax-exempt or when no jurisdictions are configured.
+      let taxCents = 0;
+      const taxByIndex: number[] = lineCalcs.map(() => 0);
+      const taxableLines = lineCalcs
+        .map((c, idx) => ({ ...c, idx }))
+        .filter((c) => c.taxable && c.taxCategory && c.lineSubtotal > 0);
+
+      if (taxableLines.length) {
+        const taxResult = await calculateTax({
+          tenantId,
+          locationId,
+          customerId: data.customerId ?? null,
+          lineItems: taxableLines.map((c) => ({
+            description: productMap.get(c.li.productId)?.name ?? "",
+            amountCents: c.lineSubtotal,
+            taxCategory: c.taxCategory!,
+          })),
+        });
+        taxResult.items.forEach((item, i) => {
+          const targetIdx = taxableLines[i].idx;
+          taxByIndex[targetIdx] = item.taxCents;
+        });
+        taxCents = taxResult.totalTaxCents;
+      }
+
+      let subtotalCents = 0;
+      const lineItemsData = lineCalcs.map((c, idx) => {
+        const lineTax = taxByIndex[idx];
+        subtotalCents += c.lineSubtotal;
         return {
-          productId: li.productId,
-          quantity: li.quantity,
-          unitPriceCents: unitPrice,
-          discountCents: li.discountCents,
+          productId: c.li.productId,
+          quantity: c.li.quantity,
+          unitPriceCents: c.unitPrice,
+          discountCents: c.li.discountCents,
           taxCents: lineTax,
-          extendedCents: lineTotal,
+          extendedCents: c.lineSubtotal + lineTax,
         };
       });
 

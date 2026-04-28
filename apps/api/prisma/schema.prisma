@@ -998,6 +998,9 @@ model GlAccount {
   productsInventoryAsset Product[]         @relation(name: "ProductInventoryAssetGlAccount")
   productsRevenue        Product[]         @relation(name: "ProductRevenueGlAccount")
   rentalProducts         RentalProduct[]   @relation(name: "RentalProductGlAccount")
+  productCategoriesRevenue        ProductCategory[] @relation(name: "ProductCategoryRevenueGlAccount")
+  productCategoriesCogs           ProductCategory[] @relation(name: "ProductCategoryCogsGlAccount")
+  productCategoriesInventoryAsset ProductCategory[] @relation(name: "ProductCategoryInventoryAssetGlAccount")
 
   @@index([tenantId])
   @@map("gl_accounts")
@@ -1473,7 +1476,10 @@ model Product {
   sku                       String?
   barcode                   String?
   departmentId              String?
+  // Legacy free-text category — superseded by productCategoryId. Kept for
+  // backwards-compat; UI no longer writes to it for new products.
   category                  String?
+  productCategoryId         String?
   costCents                 Int?
   priceCents                Int
   taxClass                  String?
@@ -1483,7 +1489,10 @@ model Product {
   qoh                       Int     @default(0)
   active                    Boolean @default(true)
   glAccountId               String?
-  // GL accounts required to mirror this Product as a QBO Inventory item
+  // GL accounts required to mirror this Product as a QBO Inventory item.
+  // When productCategoryId is set and the per-product field is null at write
+  // time, the API copies the category default into the per-product column so
+  // downstream readers (QBO sync, reports) keep using the same field.
   cogsGlAccountId           String?
   inventoryAssetGlAccountId String?
   revenueGlAccountId        String?
@@ -1501,6 +1510,7 @@ model Product {
   cogsGlAccount           GlAccount?            @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
   inventoryAssetGlAccount GlAccount?            @relation(name: "ProductInventoryAssetGlAccount", fields: [inventoryAssetGlAccountId], references: [id])
   revenueGlAccount        GlAccount?            @relation(name: "ProductRevenueGlAccount", fields: [revenueGlAccountId], references: [id])
+  productCategory         ProductCategory?      @relation(fields: [productCategoryId], references: [id])
   location                Location?             @relation(fields: [locationId], references: [id])
   inventory               Inventory[]
   posLineItems            PosLineItem[]
@@ -1510,7 +1520,35 @@ model Product {
 
   @@index([tenantId])
   @@index([locationId])
+  @@index([productCategoryId])
   @@map("products")
+}
+
+model ProductCategory {
+  id                               String  @id @default(uuid())
+  tenantId                         String
+  name                             String
+  defaultRevenueGlAccountId        String?
+  defaultCogsGlAccountId           String?
+  defaultInventoryAssetGlAccountId String?
+  // Aligns with TaxRate.category (e.g. "general", "food", "fuel"). Used by
+  // the tax engine to look up the right rate for the customer's location.
+  defaultTaxCategory               String?
+  // When false, products in this category are exempt from sales tax even if
+  // the location has rates configured (tax engine still respects this flag).
+  taxable                          Boolean @default(true)
+  active                           Boolean @default(true)
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @default(now()) @updatedAt
+
+  defaultRevenueGlAccount        GlAccount? @relation(name: "ProductCategoryRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
+  defaultCogsGlAccount           GlAccount? @relation(name: "ProductCategoryCogsGlAccount", fields: [defaultCogsGlAccountId], references: [id])
+  defaultInventoryAssetGlAccount GlAccount? @relation(name: "ProductCategoryInventoryAssetGlAccount", fields: [defaultInventoryAssetGlAccountId], references: [id])
+  products                       Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("product_categories")
 }
 
 model Inventory {
