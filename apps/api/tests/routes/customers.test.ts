@@ -680,3 +680,70 @@ describe('POST /api/customers/:id/payments/:paymentId/refund', () => {
     );
   });
 });
+
+describe('GET /api/customers/:id/payment-history', () => {
+  it('annotates each payment with its refundCount so the UI can mark expandable rows', async () => {
+    // The history endpoint runs a single groupBy across the page of
+    // payments rather than fetching every refund up front; the per-row
+    // refundCount lets the UI lazy-load the actual rows on expand.
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: 'cust-1' });
+    mockPrisma.payment.findMany.mockResolvedValue([
+      buildPayment({ id: 'pay-a', amountCents: 100000, refundedCents: 30000 }),
+      buildPayment({ id: 'pay-b', amountCents: 50000, refundedCents: 0 }),
+    ]);
+    mockPrisma.payment.count.mockResolvedValue(2);
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+    mockPrisma.paymentRefund.groupBy.mockResolvedValue([
+      { paymentId: 'pay-a', _count: { _all: 2 } },
+    ]);
+
+    const res = await request(app).get('/api/customers/cust-1/payment-history');
+
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.data.map((p: any) => [p.id, p]));
+    expect(byId['pay-a'].refundCount).toBe(2);
+    // Payments with no refunds should still report 0 (not undefined) so
+    // the UI never has to coerce missing values.
+    expect(byId['pay-b'].refundCount).toBe(0);
+  });
+});
+
+describe('GET /api/customers/:id/payments/:paymentId/refunds', () => {
+  it('returns the refund history for a payment scoped to the customer', async () => {
+    // Tenant + customer scope is enforced via the payment lookup; this
+    // verifies that a positive lookup hits paymentRefund.findMany with
+    // the correct filter and returns the rows newest-first.
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: 'cust-1' });
+    mockPrisma.payment.findFirst.mockResolvedValue(
+      buildPayment({ id: 'pay-x', customerId: 'cust-1' }),
+    );
+    mockPrisma.paymentRefund.findMany.mockResolvedValue([
+      {
+        id: 'r1',
+        paymentId: 'pay-x',
+        amountCents: 5000,
+        reason: 'fee dispute',
+        userId: 'u1',
+        userName: 'admin@test.com',
+        stripeRefundId: null,
+        isFullRefund: false,
+        source: 'customer-payment-history',
+        createdAt: new Date('2026-04-21T00:00:00Z'),
+      },
+    ]);
+
+    const res = await request(app).get(
+      '/api/customers/cust-1/payments/pay-x/refunds',
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0]).toMatchObject({ id: 'r1', amountCents: 5000 });
+    expect(mockPrisma.paymentRefund.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ paymentId: 'pay-x' }),
+        orderBy: expect.objectContaining({ createdAt: 'asc' }),
+      }),
+    );
+  });
+});

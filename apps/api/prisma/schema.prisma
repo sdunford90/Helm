@@ -863,12 +863,46 @@ model Payment {
   qboPaymentId    String?
   createdAt       DateTime      @default(now())
 
-  customer   Customer    @relation(fields: [customerId], references: [id])
-  invoice    Invoice?    @relation(fields: [invoiceId], references: [id])
+  customer   Customer        @relation(fields: [customerId], references: [id])
+  invoice    Invoice?        @relation(fields: [invoiceId], references: [id])
   achReturns AchReturn[]
+  refunds    PaymentRefund[]
 
   @@index([tenantId])
   @@map("payments")
+}
+
+// Per-refund history row for partial/full refunds against a Payment.
+//
+// `Payment.refundedCents` is a running total used for fast remaining-balance
+// checks; this table is the underlying ledger so the UI can show every refund
+// (date, amount, reason, who issued it). Each row is created inside the same
+// transaction that bumps `refundedCents`, and is deleted by the rollback
+// path if the external Stripe refund fails after the DB reservation.
+//
+// `stripeRefundId` is populated best-effort after a successful Stripe call
+// for stripe-backed payments; it remains null for offline methods.
+//
+// `isFullRefund` reflects whether *this* refund exhausted the remaining
+// balance (i.e. it was the one that flipped the payment to REFUNDED).
+model PaymentRefund {
+  id             String   @id @default(uuid())
+  tenantId       String
+  paymentId      String
+  amountCents    Int
+  reason         String?
+  userId         String?
+  userName       String?
+  stripeRefundId String?
+  isFullRefund   Boolean  @default(false)
+  source         String?
+  createdAt      DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@index([tenantId])
+  @@index([paymentId, createdAt])
+  @@map("payment_refunds")
 }
 
 model ProcessedWebhook {

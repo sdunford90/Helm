@@ -24,6 +24,13 @@ export async function rollbackReservedRefund(args: {
   paymentAmountCents: number;
   refundAmountCents: number;
   invoiceId: string | null;
+  /**
+   * Optional id of the `PaymentRefund` history row that was inserted in
+   * Phase 1 alongside the `refundedCents` reservation. When provided, the
+   * row is deleted in the same rollback transaction so the per-refund
+   * history reflects only refunds that actually completed externally.
+   */
+  paymentRefundId?: string | null;
 }): Promise<void> {
   const {
     paymentId,
@@ -32,9 +39,18 @@ export async function rollbackReservedRefund(args: {
     paymentAmountCents,
     refundAmountCents,
     invoiceId,
+    paymentRefundId = null,
   } = args;
 
   await prisma.$transaction(async (tx) => {
+    // Drop the per-refund history row first so we don't leave a dangling
+    // entry pointing at a refund that never actually went through.
+    // deleteMany is safe even if the id is missing or already gone.
+    if (paymentRefundId) {
+      await tx.paymentRefund.deleteMany({
+        where: { id: paymentRefundId, tenantId },
+      });
+    }
     // Atomically subtract our reserved amount from the payment ledger.
     // Any concurrent refund that committed between our reservation and
     // our rollback remains intact because we're using a SQL-level

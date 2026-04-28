@@ -13,6 +13,7 @@ export const mockPrisma = {
   invoice: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), count: vi.fn().mockResolvedValue(0), aggregate: vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 } }), groupBy: vi.fn().mockResolvedValue([]) },
   invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { taxCents: 0 } }), deleteMany: vi.fn() },
   payment: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }), findFirst: vi.fn(), findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), count: vi.fn().mockResolvedValue(0), aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 }, _count: { id: 0 } }), groupBy: vi.fn().mockResolvedValue([]) },
+  paymentRefund: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn().mockImplementation(({ data }: any) => Promise.resolve({ id: data.id ?? 'refund-row-1', ...data, createdAt: new Date() })), update: vi.fn(), deleteMany: vi.fn().mockResolvedValue({ count: 0 }), groupBy: vi.fn().mockResolvedValue([]) },
   boat: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   waitlistEntry: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   dockWalk: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },

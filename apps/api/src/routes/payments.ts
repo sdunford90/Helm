@@ -459,6 +459,46 @@ router.post(
   },
 );
 
+// ─── GET /:id/refunds — Per-payment refund history ─────────────────────────
+//
+// Lists every refund recorded against a payment, oldest first, so any UI
+// (the invoice payment list, an admin tool, etc.) can show the per-refund
+// breakdown without going through the customer-scoped route.
+
+router.get(
+  "/:id/refunds",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const payment = await prisma.payment.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true },
+      });
+      if (!payment) throw appError("Payment not found", 404, "NOT_FOUND");
+
+      const refunds = await prisma.paymentRefund.findMany({
+        where: { tenantId, paymentId: payment.id },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          amountCents: true,
+          reason: true,
+          userId: true,
+          userName: true,
+          stripeRefundId: true,
+          isFullRefund: true,
+          source: true,
+          createdAt: true,
+        },
+      });
+
+      res.json({ data: refunds });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── POST /:id/refund — Refund payment ──────────────────────────────────────
 
 router.post(
@@ -526,7 +566,7 @@ router.post(
       // transaction so the ledger never diverges from the processor.
       // Concurrent refund attempts that lose the optimistic race fail
       // with REFUND_CONFLICT before any external charge is issued.
-      const updated = await prisma.$transaction(async (tx) => {
+      const { updated, refundRow } = await prisma.$transaction(async (tx) => {
         const updateResult = await tx.payment.updateMany({
           where: { id: payment.id, refundedCents: payment.refundedCents },
           data: {
@@ -542,6 +582,23 @@ router.post(
             "REFUND_CONFLICT",
           );
         }
+
+        // Per-refund history row, written inside the same transaction as
+        // the running-total bump so the ledger and the audit-style history
+        // stay in sync. The rollback path deletes this row if Stripe later
+        // fails so we never persist a refund that didn't actually happen.
+        const refund = await tx.paymentRefund.create({
+          data: {
+            tenantId,
+            paymentId: payment.id,
+            amountCents: refundAmount,
+            reason: reason ?? null,
+            userId: req.userId ?? null,
+            userName: req.userRecord?.email ?? null,
+            isFullRefund,
+            source: "payment-detail",
+          },
+        });
 
         await postRefund(
           {
@@ -565,7 +622,12 @@ router.post(
           });
         }
 
-        return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+        return {
+          updated: await tx.payment.findUniqueOrThrow({
+            where: { id: payment.id },
+          }),
+          refundRow: refund,
+        };
       });
 
       // Phase 2: external Stripe refund. We've already locked the slot in
@@ -581,7 +643,7 @@ router.post(
 
         if (tenant?.stripeAccountId) {
           try {
-            await requireStripe().refunds.create(
+            const stripeRefund = await requireStripe().refunds.create(
               {
                 payment_intent: payment.stripePaymentId,
                 amount: refundAmount,
@@ -592,6 +654,22 @@ router.post(
                 idempotencyKey: `refund-${payment.id}-${payment.refundedCents}-${refundAmount}`,
               },
             );
+            // Best-effort: tag the history row with the Stripe refund id so
+            // operators can cross-reference. Failure here is non-fatal —
+            // the refund itself succeeded.
+            if (stripeRefund?.id) {
+              try {
+                await prisma.paymentRefund.update({
+                  where: { id: refundRow.id },
+                  data: { stripeRefundId: stripeRefund.id },
+                });
+              } catch (tagErr) {
+                console.warn(
+                  `[payments] Could not persist stripeRefundId on refund ${refundRow.id}:`,
+                  tagErr,
+                );
+              }
+            }
           } catch (stripeErr) {
             // Compensating rollback: undo Phase 1 using atomic
             // decrements so a concurrent successful refund (which
@@ -606,6 +684,7 @@ router.post(
                 paymentAmountCents: payment.amountCents,
                 refundAmountCents: refundAmount,
                 invoiceId: payment.invoice?.id ?? null,
+                paymentRefundId: refundRow?.id ?? null,
               });
             } catch (rollbackErr) {
               console.error(

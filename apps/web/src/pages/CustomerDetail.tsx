@@ -266,6 +266,21 @@ interface ApiPaymentHistoryEntry {
   stripePaymentId: string | null;
   invoice: { id: string; invoiceNumber: string; totalCents: number; balanceCents: number; status: string } | null;
   recordedBy: { userId: string | null; userName: string | null };
+  refundCount: number;
+}
+
+// One row from /api/customers/:id/payments/:paymentId/refunds — represents
+// a single partial or full refund issued against a payment.
+interface ApiPaymentRefund {
+  id: string;
+  amountCents: number;
+  reason: string | null;
+  userId: string | null;
+  userName: string | null;
+  stripeRefundId: string | null;
+  isFullRefund: boolean;
+  source: string | null;
+  createdAt: string;
 }
 
 interface ApiPaymentHistoryResponse {
@@ -996,6 +1011,71 @@ export default function CustomerDetailPage() {
   const [refundError, setRefundError] = useState<string | null>(null);
   const [refundBusy, setRefundBusy] = useState(false);
 
+  // Per-payment refund history is loaded lazily when the operator expands a
+  // row, so the initial Payment History fetch stays cheap. We cache the
+  // loaded refunds keyed by paymentId; an entry is `null` while loading and
+  // an array once the response arrives. Errors live in their own map so the
+  // expanded row can show a retry message without losing the row state.
+  const [expandedPaymentIds, setExpandedPaymentIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [refundsByPaymentId, setRefundsByPaymentId] = useState<
+    Record<string, ApiPaymentRefund[] | null>
+  >({});
+  const [refundsErrorById, setRefundsErrorById] = useState<
+    Record<string, string>
+  >({});
+
+  // Triggers the refunds fetch for a given payment, populating the cache.
+  // Idempotent: re-calling is safe and re-runs the request (used by the
+  // "retry" button on error).
+  async function loadRefundsFor(paymentId: string) {
+    setRefundsByPaymentId((prev) => ({ ...prev, [paymentId]: null }));
+    setRefundsErrorById((prev) => {
+      const next = { ...prev };
+      delete next[paymentId];
+      return next;
+    });
+    try {
+      const token = await getToken();
+      const resp = await api.get<{ data: ApiPaymentRefund[] }>(
+        `/api/customers/${id}/payments/${paymentId}/refunds`,
+        token,
+      );
+      setRefundsByPaymentId((prev) => ({
+        ...prev,
+        [paymentId]: resp.data ?? [],
+      }));
+    } catch (err) {
+      setRefundsErrorById((prev) => ({
+        ...prev,
+        [paymentId]: err instanceof Error ? err.message : 'Could not load refunds',
+      }));
+      setRefundsByPaymentId((prev) => {
+        const next = { ...prev };
+        delete next[paymentId];
+        return next;
+      });
+    }
+  }
+
+  function togglePaymentExpanded(payment: ApiPaymentHistoryEntry) {
+    setExpandedPaymentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(payment.id)) {
+        next.delete(payment.id);
+      } else {
+        next.add(payment.id);
+        // Lazy-load on first expand. If we already have data cached, skip
+        // the network call and just show what we have.
+        if (refundsByPaymentId[payment.id] === undefined) {
+          void loadRefundsFor(payment.id);
+        }
+      }
+      return next;
+    });
+  }
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1502,9 +1582,23 @@ export default function CustomerDetailPage() {
         { amountCents: cents, reason: refundReason.trim() || undefined },
         token,
       );
+      const justRefundedId = refundTarget.id;
       setRefundTarget(null);
       setRefundAmount('');
       setRefundReason('');
+      // Invalidate the refund-history cache for this payment so when the
+      // operator opens (or already has open) the expanded view, the new
+      // refund row appears instead of the stale list.
+      setRefundsByPaymentId((prev) => {
+        const next = { ...prev };
+        delete next[justRefundedId];
+        return next;
+      });
+      // If the row is currently expanded, refetch immediately so the just-
+      // issued refund appears without requiring a manual collapse/expand.
+      if (expandedPaymentIds.has(justRefundedId)) {
+        void loadRefundsFor(justRefundedId);
+      }
       await refetchPaymentHistory();
     } catch (err) {
       setRefundError(err instanceof Error ? err.message : 'Refund failed.');
@@ -1613,6 +1707,7 @@ export default function CustomerDetailPage() {
                 <table style={s.table}>
                   <thead>
                     <tr>
+                      <th style={{ ...s.th, width: '32px', padding: '8px 4px' }} aria-label="Expand row" />
                       <th style={s.th}>Date</th>
                       <th style={s.th}>Amount</th>
                       <th style={s.th}>Method</th>
@@ -1640,75 +1735,211 @@ export default function CustomerDetailPage() {
                         !!p.stripePaymentId &&
                         remainingRefundable > 0 &&
                         (p.status === 'COMPLETED' || p.status === 'PARTIALLY_REFUNDED');
+                      const hasRefunds = (p.refundCount ?? 0) > 0;
+                      const isExpanded = expandedPaymentIds.has(p.id);
+                      const refundsForRow = refundsByPaymentId[p.id];
+                      const refundsErrorForRow = refundsErrorById[p.id];
                       return (
-                        <tr key={p.id}>
-                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600 }}>{fmtCents(p.amountCents)}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>
-                            <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
-                            {p.status === 'PARTIALLY_REFUNDED' && (
-                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
-                                {fmtCents(p.refundedCents ?? 0)} of {fmtCents(p.amountCents)} refunded
-                                {remainingRefundable > 0 && (
-                                  <> · {fmtCents(remainingRefundable)} remaining</>
+                        <React.Fragment key={p.id}>
+                          <tr>
+                            <td style={{ ...s.td, backgroundColor: rowBg, padding: '8px 4px', textAlign: 'center' }}>
+                              {hasRefunds ? (
+                                <button
+                                  type="button"
+                                  onClick={() => togglePaymentExpanded(p)}
+                                  aria-expanded={isExpanded}
+                                  aria-label={
+                                    isExpanded
+                                      ? `Hide ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                      : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                  }
+                                  title={
+                                    isExpanded
+                                      ? 'Hide refund history'
+                                      : `Show ${p.refundCount} refund${p.refundCount === 1 ? '' : 's'}`
+                                  }
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: '2px 6px',
+                                    cursor: 'pointer',
+                                    color: '#0F2E4D',
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                    lineHeight: 1,
+                                  }}
+                                >
+                                  {isExpanded ? '▾' : '▸'}
+                                </button>
+                              ) : (
+                                <span style={{ color: '#CBD5E1' }}>·</span>
+                              )}
+                            </td>
+                            <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
+                            <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600 }}>{fmtCents(p.amountCents)}</td>
+                            <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
+                            <td style={{ ...s.td, backgroundColor: rowBg }}>
+                              <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
+                              {p.status === 'PARTIALLY_REFUNDED' && (
+                                <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                  {fmtCents(p.refundedCents ?? 0)} of {fmtCents(p.amountCents)} refunded
+                                  {remainingRefundable > 0 && (
+                                    <> · {fmtCents(remainingRefundable)} remaining</>
+                                  )}
+                                </div>
+                              )}
+                              {p.status === 'REFUNDED' && (p.refundedCents ?? 0) > 0 && (
+                                <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                                  {fmtCents(p.refundedCents ?? 0)} refunded
+                                </div>
+                              )}
+                            </td>
+                            <td style={{ ...s.td, backgroundColor: rowBg }}>
+                              {p.invoice ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigate(`/billing/invoices/${p.invoice!.id}`)}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: 0,
+                                    color: '#0066CC',
+                                    textDecoration: 'underline',
+                                    cursor: 'pointer',
+                                    fontFamily: 'inherit',
+                                    fontSize: 'inherit',
+                                  }}
+                                >
+                                  {p.invoice.invoiceNumber}
+                                </button>
+                              ) : (
+                                <span style={{ color: '#94A3B8' }}>—</span>
+                              )}
+                            </td>
+                            <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
+                              {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                            </td>
+                            <td style={{ ...s.td, backgroundColor: rowBg }}>
+                              {canRefund ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openRefundDialog(p)}
+                                  style={{
+                                    padding: '4px 10px',
+                                    border: '1px solid #B91C1C',
+                                    borderRadius: '6px',
+                                    backgroundColor: '#FFFFFF',
+                                    color: '#B91C1C',
+                                    fontSize: '12px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Refund
+                                </button>
+                              ) : (
+                                <span style={{ color: '#94A3B8' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                          {isExpanded && hasRefunds && (
+                            <tr>
+                              <td
+                                colSpan={8}
+                                style={{
+                                  backgroundColor: '#F1F5F9',
+                                  borderBottom: '1px solid #E2E8F0',
+                                  padding: '12px 24px 16px 56px',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    color: '#0F2E4D',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.05em',
+                                    marginBottom: '8px',
+                                  }}
+                                >
+                                  Refund history
+                                </div>
+                                {refundsErrorForRow ? (
+                                  <div style={{ fontSize: '13px', color: '#B91C1C' }}>
+                                    {refundsErrorForRow}{' '}
+                                    <button
+                                      type="button"
+                                      onClick={() => loadRefundsFor(p.id)}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        padding: 0,
+                                        color: '#0066CC',
+                                        textDecoration: 'underline',
+                                        cursor: 'pointer',
+                                        fontSize: '13px',
+                                      }}
+                                    >
+                                      Retry
+                                    </button>
+                                  </div>
+                                ) : refundsForRow === undefined || refundsForRow === null ? (
+                                  <div style={{ fontSize: '13px', color: '#64748B' }}>
+                                    Loading refunds…
+                                  </div>
+                                ) : refundsForRow.length === 0 ? (
+                                  <div style={{ fontSize: '13px', color: '#64748B' }}>
+                                    No individual refund records found.
+                                  </div>
+                                ) : (
+                                  <table
+                                    style={{
+                                      width: '100%',
+                                      borderCollapse: 'collapse',
+                                      fontSize: '12px',
+                                    }}
+                                  >
+                                    <thead>
+                                      <tr>
+                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Date</th>
+                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Amount</th>
+                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Type</th>
+                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Issued by</th>
+                                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Reason</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {refundsForRow.map((r) => (
+                                        <tr key={r.id} style={{ borderTop: '1px solid #E2E8F0' }}>
+                                          <td style={{ padding: '6px 8px', color: '#334155' }}>
+                                            {fmtDate(r.createdAt)}
+                                          </td>
+                                          <td style={{ padding: '6px 8px', ...s.mono, fontWeight: 600 }}>
+                                            {fmtCents(r.amountCents)}
+                                          </td>
+                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                            {r.isFullRefund ? 'Full' : 'Partial'}
+                                            {r.source === 'BACKFILL' && (
+                                              <span style={{ marginLeft: '6px', color: '#94A3B8', fontStyle: 'italic' }}>
+                                                (legacy)
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                            {r.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                                          </td>
+                                          <td style={{ padding: '6px 8px', color: '#475569' }}>
+                                            {r.reason ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
                                 )}
-                              </div>
-                            )}
-                            {p.status === 'REFUNDED' && (p.refundedCents ?? 0) > 0 && (
-                              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
-                                {fmtCents(p.refundedCents ?? 0)} refunded
-                              </div>
-                            )}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>
-                            {p.invoice ? (
-                              <button
-                                type="button"
-                                onClick={() => navigate(`/billing/invoices/${p.invoice!.id}`)}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  padding: 0,
-                                  color: '#0066CC',
-                                  textDecoration: 'underline',
-                                  cursor: 'pointer',
-                                  fontFamily: 'inherit',
-                                  fontSize: 'inherit',
-                                }}
-                              >
-                                {p.invoice.invoiceNumber}
-                              </button>
-                            ) : (
-                              <span style={{ color: '#94A3B8' }}>—</span>
-                            )}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
-                            {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
-                          </td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>
-                            {canRefund ? (
-                              <button
-                                type="button"
-                                onClick={() => openRefundDialog(p)}
-                                style={{
-                                  padding: '4px 10px',
-                                  border: '1px solid #B91C1C',
-                                  borderRadius: '6px',
-                                  backgroundColor: '#FFFFFF',
-                                  color: '#B91C1C',
-                                  fontSize: '12px',
-                                  fontWeight: 600,
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                Refund
-                              </button>
-                            ) : (
-                              <span style={{ color: '#94A3B8' }}>—</span>
-                            )}
-                          </td>
-                        </tr>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -2602,6 +2833,45 @@ export default function CustomerDetailPage() {
                 boxSizing: 'border-box',
               }}
             />
+
+            {(() => {
+              // Heads-up warning when an operator is about to issue a single
+              // partial refund that's a large fraction of the original
+              // payment but isn't exhausting it. Triggered at >50% of the
+              // original amount; the full-balance case is silent because
+              // that's a normal "refund the whole thing" flow. The threshold
+              // is intentionally generous — we only want to nudge for the
+              // genuinely surprising cases (e.g. operator typed an extra zero).
+              const dollars = Number.parseFloat(refundAmount.trim());
+              if (!Number.isFinite(dollars) || dollars <= 0) return null;
+              const cents = Math.round(dollars * 100);
+              const remaining = Math.max(
+                0,
+                refundTarget.amountCents - (refundTarget.refundedCents ?? 0),
+              );
+              const isFullRefund = cents === remaining;
+              const fractionOfOriginal = cents / Math.max(1, refundTarget.amountCents);
+              if (isFullRefund || fractionOfOriginal <= 0.5) return null;
+              const pct = Math.round(fractionOfOriginal * 100);
+              return (
+                <div
+                  style={{
+                    backgroundColor: '#FEF3C7',
+                    border: '1px solid #F59E0B',
+                    color: '#92400E',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    marginBottom: '12px',
+                  }}
+                  role="alert"
+                >
+                  Heads up: this partial refund is {pct}% of the original
+                  payment ({fmtCents(refundTarget.amountCents)}). Double-check
+                  the amount before issuing.
+                </div>
+              );
+            })()}
 
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#0F2E4D', marginBottom: '6px' }}>
               Reason (optional)

@@ -708,3 +708,146 @@ describe('POST /api/payments', () => {
     expect(res.body).toHaveProperty('code', 'INVOICE_VOID');
   });
 });
+
+describe('Payment refund history', () => {
+  it('writes a PaymentRefund row inside the same transaction as the ledger bump', async () => {
+    // The history row and the running-total bump must commit together —
+    // otherwise an operator could see a refund in the history that the
+    // ledger doesn't reflect (or vice versa). We verify by asserting the
+    // create call shape after a successful (Stripe-skipped) refund.
+    const payment = buildPayment({
+      id: 'pay-hist-1',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: null,
+      invoice: { id: 'inv-h1', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+      ...payment,
+      refundedCents: 25000,
+      status: 'PARTIALLY_REFUNDED',
+    });
+    mockPrisma.paymentRefund.create.mockResolvedValue({
+      id: 'pr-1',
+      paymentId: 'pay-hist-1',
+      amountCents: 25000,
+    });
+    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/payments/pay-hist-1/refund')
+      .send({ amountCents: 25000, reason: 'overcharge' });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.paymentRefund.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          paymentId: 'pay-hist-1',
+          amountCents: 25000,
+          reason: 'overcharge',
+          isFullRefund: false,
+        }),
+      }),
+    );
+  });
+
+  it('deletes the PaymentRefund row when Stripe rollback fires', async () => {
+    // If the external processor call fails after the in-DB reservation,
+    // the per-refund history row must also be removed so the audit-style
+    // history doesn't claim a refund happened that never reached Stripe.
+    const payment = buildPayment({
+      id: 'pay-hist-rb',
+      amountCents: 100000,
+      refundedCents: 0,
+      status: 'COMPLETED',
+      stripePaymentId: 'pi_hist_rb',
+      invoice: { id: 'inv-hrb', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+    });
+
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.payment.findUniqueOrThrow
+      .mockResolvedValueOnce({
+        ...payment,
+        refundedCents: 30000,
+        status: 'PARTIALLY_REFUNDED',
+      })
+      .mockResolvedValueOnce({ refundedCents: 0, status: 'PARTIALLY_REFUNDED' });
+    mockPrisma.invoice.findUniqueOrThrow.mockResolvedValue({
+      balanceCents: 0,
+      status: 'PAID',
+    });
+    mockPrisma.paymentRefund.create.mockResolvedValue({ id: 'pr-rb-1' });
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_x' });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const stripe = requireStripe();
+    (stripe.refunds.create as any).mockRejectedValueOnce(new Error('stripe down'));
+
+    const res = await request(app)
+      .post('/api/payments/pay-hist-rb/refund')
+      .send({ amountCents: 30000 });
+
+    expect(res.status).toBe(500);
+    expect(mockPrisma.paymentRefund.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'pr-rb-1' }),
+      }),
+    );
+  });
+
+  it('GET /api/payments/:id/refunds returns the per-refund history in chronological order', async () => {
+    const payment = buildPayment({ id: 'pay-list', refundedCents: 50000 });
+    mockPrisma.payment.findFirst.mockResolvedValue(payment);
+    // Mock returns rows in the order Prisma would after ORDER BY createdAt
+    // ASC — oldest first. The route doesn't re-sort; we just verify the
+    // serialized response preserves that order so the UI sub-table reads
+    // top-to-bottom in the same direction the refunds happened.
+    const rows = [
+      {
+        id: 'r1',
+        paymentId: 'pay-list',
+        amountCents: 20000,
+        reason: 'first partial',
+        userId: 'u1',
+        userName: 'admin@test.com',
+        stripeRefundId: 're_1',
+        isFullRefund: false,
+        source: 'payment-detail',
+        createdAt: new Date('2026-04-19T00:00:00Z'),
+      },
+      {
+        id: 'r2',
+        paymentId: 'pay-list',
+        amountCents: 30000,
+        reason: 'second partial',
+        userId: 'u1',
+        userName: 'admin@test.com',
+        stripeRefundId: 're_2',
+        isFullRefund: false,
+        source: 'payment-detail',
+        createdAt: new Date('2026-04-20T00:00:00Z'),
+      },
+    ];
+    mockPrisma.paymentRefund.findMany.mockResolvedValue(rows);
+
+    const res = await request(app).get('/api/payments/pay-list/refunds');
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0]).toMatchObject({ id: 'r1', amountCents: 20000 });
+    expect(res.body.data[1]).toMatchObject({ id: 'r2', amountCents: 30000 });
+    expect(mockPrisma.paymentRefund.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ paymentId: 'pay-list' }),
+        orderBy: expect.objectContaining({ createdAt: 'asc' }),
+      }),
+    );
+  });
+});
