@@ -1125,7 +1125,11 @@ export default function DockWalkRunner() {
       ? 'Issue'
       : 'Not filed';
 
-  const canSave = isSaveable(draft) && !draft.saving && !isCompleted;
+  // NB: keep the primary CTA mounted while a save is in flight (the label
+  // flips to "Saving…" inside the button) so the action bar doesn't flicker
+  // between primary and skip variants. inFlightRef in handleSave already
+  // makes a re-tap a no-op.
+  const canSave = isSaveable(draft) && !isCompleted;
   const atLast = currentIndex >= data.slips.length - 1;
 
   return (
