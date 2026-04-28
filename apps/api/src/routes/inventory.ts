@@ -772,15 +772,38 @@ router.delete("/categories/:id", async (req: Request, res: Response, next: NextF
 // asking users to type raw account numbers. Filterable by type so the GL
 // pickers in the category modal & product form only show plausible options.
 
+// Allowed values mirror the Prisma `GLAccountType` enum. Kept in lockstep
+// here so we can reject unknown values with a clean 400 instead of letting
+// them reach the DB and surface as opaque enum cast errors.
+const VALID_GL_ACCOUNT_TYPES: readonly GLAccountType[] = [
+  "ASSET",
+  "LIABILITY",
+  "EQUITY",
+  "REVENUE",
+  "EXPENSE",
+];
+
 router.get("/gl-accounts", async (req: Request, res: Response, next: NextFunction) => {
   try {
     // GlAccount is not in TENANT_SCOPED_MODELS, so filter explicitly to avoid
     // cross-tenant chart-of-accounts exposure.
     const tenantId = getTenantId(req);
     const typeQ = typeof req.query.type === "string" ? req.query.type : "";
-    const types = typeQ
-      ? (typeQ.split(",").map((s) => s.trim()).filter(Boolean) as GLAccountType[])
+    const requested = typeQ
+      ? typeQ.split(",").map((s) => s.trim()).filter(Boolean)
       : [];
+    const invalid = requested.filter(
+      (t) => !VALID_GL_ACCOUNT_TYPES.includes(t as GLAccountType),
+    );
+    if (invalid.length > 0) {
+      return res.status(400).json({
+        error: "Invalid GL account type",
+        code: "INVALID_GL_ACCOUNT_TYPE",
+        invalid,
+        allowed: VALID_GL_ACCOUNT_TYPES,
+      });
+    }
+    const types = requested as GLAccountType[];
     const rows = await prisma.glAccount.findMany({
       where: {
         tenantId,
@@ -804,8 +827,18 @@ router.get("/gl-accounts", async (req: Request, res: Response, next: NextFunctio
 
 // ─── Tax Categories (distinct list for the dropdown) ─────────────────────────
 // The tax engine keys off TaxRate.category strings (e.g. "general", "food",
-// "fuel"). Surface the distinct set already configured for this tenant so
-// the categories UI can offer real values instead of free-text guesses.
+// "fuel"). Surface the distinct set already configured for this tenant PLUS
+// a few sensible marina-domain defaults so brand-new tenants without any
+// TaxRates still see useful options in the categories UI dropdown.
+
+const DEFAULT_TAX_CATEGORIES = [
+  "general",
+  "food",
+  "fuel",
+  "services",
+  "lodging",
+  "exempt",
+] as const;
 
 router.get("/tax-categories", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -817,7 +850,7 @@ router.get("/tax-categories", async (req: Request, res: Response, next: NextFunc
       distinct: ["category"],
       orderBy: { category: "asc" },
     });
-    const seen = new Set<string>(["general"]);
+    const seen = new Set<string>(DEFAULT_TAX_CATEGORIES);
     for (const r of rates) {
       if (r.category) seen.add(r.category);
     }

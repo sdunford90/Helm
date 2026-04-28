@@ -149,15 +149,28 @@ describe('GET /api/inventory/gl-accounts', () => {
 
   it('supports comma-separated type filter and stays tenant-scoped', async () => {
     mockPrisma.glAccount.findMany.mockResolvedValue([]);
-    await request(app).get('/api/inventory/gl-accounts?type=EXPENSE,COGS');
+    await request(app).get('/api/inventory/gl-accounts?type=EXPENSE,ASSET');
     expect(mockPrisma.glAccount.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           tenantId: expect.any(String),
-          type: { in: ['EXPENSE', 'COGS'] },
+          type: { in: ['EXPENSE', 'ASSET'] },
         }),
       }),
     );
+  });
+
+  it('returns 400 for unknown GL account types instead of leaking enum errors', async () => {
+    // Anything outside the Prisma GLAccountType enum should be rejected
+    // up front so callers get a clean 400 with the allow-list rather than
+    // a stack trace from Postgres / Prisma.
+    const res = await request(app).get('/api/inventory/gl-accounts?type=COGS,REVENUE');
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      code: 'INVALID_GL_ACCOUNT_TYPE',
+      invalid: ['COGS'],
+    });
+    expect(mockPrisma.glAccount.findMany).not.toHaveBeenCalled();
   });
 });
 
