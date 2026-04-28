@@ -887,6 +887,15 @@ export default function CustomerDetailPage() {
   const [pmActionId, setPmActionId] = useState<string | null>(null);
   const [pmError, setPmError] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState<'card' | 'bank' | null>(null);
+  // Refund-from-history dialog state. We track the payment row being refunded,
+  // a free-form amount input (defaults to the full payment), an optional
+  // reason, and any error from the API call. `refundBusy` blocks double-clicks
+  // while the request is in flight.
+  const [refundTarget, setRefundTarget] = useState<ApiPaymentHistoryEntry | null>(null);
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundReason, setRefundReason] = useState('');
+  const [refundError, setRefundError] = useState<string | null>(null);
+  const [refundBusy, setRefundBusy] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -1345,6 +1354,57 @@ export default function CustomerDetailPage() {
     }
   }
 
+  /* ── Refund a payment from history ─── */
+  function openRefundDialog(payment: ApiPaymentHistoryEntry) {
+    setRefundTarget(payment);
+    setRefundAmount((payment.amountCents / 100).toFixed(2));
+    setRefundReason('');
+    setRefundError(null);
+  }
+
+  function closeRefundDialog() {
+    if (refundBusy) return;
+    setRefundTarget(null);
+    setRefundAmount('');
+    setRefundReason('');
+    setRefundError(null);
+  }
+
+  async function submitRefund() {
+    if (!refundTarget) return;
+    setRefundError(null);
+
+    const trimmed = refundAmount.trim();
+    const dollars = Number.parseFloat(trimmed);
+    if (!Number.isFinite(dollars) || dollars <= 0) {
+      setRefundError('Enter a refund amount greater than $0.');
+      return;
+    }
+    const cents = Math.round(dollars * 100);
+    if (cents > refundTarget.amountCents) {
+      setRefundError('Refund amount cannot exceed the original payment.');
+      return;
+    }
+
+    setRefundBusy(true);
+    try {
+      const token = await getToken();
+      await api.post(
+        `/api/customers/${id}/payments/${refundTarget.id}/refund`,
+        { amountCents: cents, reason: refundReason.trim() || undefined },
+        token,
+      );
+      setRefundTarget(null);
+      setRefundAmount('');
+      setRefundReason('');
+      await refetchPaymentHistory();
+    } catch (err) {
+      setRefundError(err instanceof Error ? err.message : 'Refund failed.');
+    } finally {
+      setRefundBusy(false);
+    }
+  }
+
   async function removeMethod(pmId: string, label: string) {
     if (!window.confirm(`Remove this saved ${label}? The customer will need to re-enter it next time.`)) return;
     setPmError(null);
@@ -1451,12 +1511,21 @@ export default function CustomerDetailPage() {
                       <th style={s.th}>Status</th>
                       <th style={s.th}>Invoice</th>
                       <th style={s.th}>Recorded by</th>
+                      <th style={s.th}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {history.map((p, idx) => {
                       const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
                       const sb = paymentStatusColors[p.status] || { bg: '#F2F4F6', color: '#64748B' };
+                      // Refund is only meaningful for Stripe-backed completed
+                      // payments. Fully-refunded and failed rows expose no
+                      // action; partially-refunded rows match the existing
+                      // /api/payments/:id/refund handler which permits
+                      // additional partial refunds up to the original amount.
+                      const canRefund =
+                        !!p.stripePaymentId &&
+                        (p.status === 'COMPLETED' || p.status === 'PARTIALLY_REFUNDED');
                       return (
                         <tr key={p.id}>
                           <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
@@ -1489,6 +1558,28 @@ export default function CustomerDetailPage() {
                           </td>
                           <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
                             {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            {canRefund ? (
+                              <button
+                                type="button"
+                                onClick={() => openRefundDialog(p)}
+                                style={{
+                                  padding: '4px 10px',
+                                  border: '1px solid #B91C1C',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#FFFFFF',
+                                  color: '#B91C1C',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Refund
+                              </button>
+                            ) : (
+                              <span style={{ color: '#94A3B8' }}>—</span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -2112,6 +2203,141 @@ export default function CustomerDetailPage() {
           boat={newContractBoat}
           onClose={() => setNewContractBoat(null)}
         />
+      )}
+
+      {refundTarget && (
+        <div
+          onClick={closeRefundDialog}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 46, 77, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '8px',
+              padding: '24px',
+              width: '420px',
+              maxWidth: '90vw',
+              boxShadow: '0 12px 32px rgba(15, 46, 77, 0.25)',
+            }}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F2E4D', marginBottom: '4px' }}>
+              Refund payment
+            </div>
+            <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
+              Original payment of {fmtCents(refundTarget.amountCents)}{' '}
+              {refundTarget.invoice ? `for invoice ${refundTarget.invoice.invoiceNumber}` : ''}
+              .
+            </div>
+
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#0F2E4D', marginBottom: '6px' }}>
+              Refund amount (USD)
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={(refundTarget.amountCents / 100).toFixed(2)}
+              value={refundAmount}
+              onChange={(e) => setRefundAmount(e.target.value)}
+              disabled={refundBusy}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                border: '1px solid #CBD5E1',
+                borderRadius: '6px',
+                fontSize: '14px',
+                fontFamily: 'inherit',
+                marginBottom: '12px',
+                boxSizing: 'border-box',
+              }}
+            />
+
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#0F2E4D', marginBottom: '6px' }}>
+              Reason (optional)
+            </label>
+            <textarea
+              value={refundReason}
+              onChange={(e) => setRefundReason(e.target.value)}
+              disabled={refundBusy}
+              rows={3}
+              maxLength={500}
+              placeholder="Recorded in the audit log alongside who issued the refund."
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                border: '1px solid #CBD5E1',
+                borderRadius: '6px',
+                fontSize: '14px',
+                fontFamily: 'inherit',
+                marginBottom: '12px',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+              }}
+            />
+
+            {refundError && (
+              <div
+                style={{
+                  backgroundColor: '#FEF2F2',
+                  border: '1px solid #FECACA',
+                  color: '#B91C1C',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  marginBottom: '12px',
+                }}
+              >
+                {refundError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={closeRefundDialog}
+                disabled={refundBusy}
+                style={{
+                  padding: '8px 14px',
+                  border: '1px solid #CBD5E1',
+                  borderRadius: '6px',
+                  backgroundColor: '#FFFFFF',
+                  color: '#0F2E4D',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: refundBusy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitRefund}
+                disabled={refundBusy}
+                style={{
+                  padding: '8px 14px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  backgroundColor: '#B91C1C',
+                  color: '#FFFFFF',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: refundBusy ? 'wait' : 'pointer',
+                }}
+              >
+                {refundBusy ? 'Refunding…' : 'Issue refund'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

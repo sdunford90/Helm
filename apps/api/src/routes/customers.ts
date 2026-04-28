@@ -5,6 +5,8 @@ import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
+import { postRefund } from "../services/gl-posting.js";
+import { voidQboPayment } from "../services/qbo-sync.js";
 import type Stripe from "stripe";
 
 const router: Router = Router();
@@ -988,6 +990,205 @@ router.get(
         data,
         pagination: { skip, take, total },
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /:id/payments/:paymentId/refund — Refund a payment from history ──
+//
+// Lets staff issue a full or partial refund directly from the customer's
+// Payment History without navigating to the underlying invoice. Mirrors the
+// existing /api/payments/:id/refund handler but routes the Stripe refund
+// through the per-location Stripe Connect account (derived from the
+// payment's invoice's location, with a customer-level fallback for legacy
+// payments that have no invoice attached).
+
+const RefundPaymentFromHistorySchema = z.object({
+  amountCents: z.number().int().positive().optional(),
+  reason: z.string().max(500).optional(),
+});
+
+router.post(
+  "/:id/payments/:paymentId/refund",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const paymentId = req.params.paymentId;
+
+      const { amountCents: requestedAmount, reason } =
+        RefundPaymentFromHistorySchema.parse(req.body);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) {
+        throw appError("Customer not found", 404, "NOT_FOUND");
+      }
+
+      const payment = await prisma.payment.findFirst({
+        where: { id: paymentId, tenantId, customerId },
+        include: {
+          invoice: {
+            select: {
+              id: true,
+              balanceCents: true,
+              totalCents: true,
+              status: true,
+              location: {
+                select: {
+                  stripeAccountId: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!payment) {
+        throw appError("Payment not found", 404, "NOT_FOUND");
+      }
+
+      if (payment.status === "REFUNDED") {
+        throw appError(
+          "Payment is already fully refunded",
+          400,
+          "ALREADY_REFUNDED",
+        );
+      }
+
+      if (payment.status === "FAILED") {
+        throw appError(
+          "Cannot refund a failed payment",
+          400,
+          "PAYMENT_FAILED",
+        );
+      }
+
+      const refundAmount = requestedAmount ?? payment.amountCents;
+
+      if (refundAmount > payment.amountCents) {
+        throw appError(
+          "Refund amount exceeds payment amount",
+          400,
+          "EXCESS_REFUND",
+        );
+      }
+
+      // Process Stripe refund if applicable. Resolve the Stripe Connect
+      // account the same way payments are routed: prefer the payment's
+      // invoice's location, fall back to the customer-derived account
+      // (most-recent invoice's location, then tenant) for legacy payments.
+      if (payment.stripePaymentId) {
+        let stripeAccountId: string | null =
+          payment.invoice?.location?.stripeAccountId ?? null;
+
+        if (!stripeAccountId) {
+          const fallback = await getStripeAccountForCustomer(
+            customerId,
+            tenantId,
+          );
+          stripeAccountId = fallback.stripeAccountId;
+        }
+
+        if (!stripeAccountId) {
+          throw appError(
+            "Stripe is not configured for this payment's location",
+            400,
+            "STRIPE_NOT_CONFIGURED",
+          );
+        }
+
+        await requireStripe().refunds.create(
+          {
+            payment_intent: payment.stripePaymentId,
+            amount: refundAmount,
+            reason: "requested_by_customer",
+          },
+          {
+            stripeAccount: stripeAccountId,
+            idempotencyKey: `refund-${payment.id}-${refundAmount}`,
+          },
+        );
+      }
+
+      const isFullRefund = refundAmount === payment.amountCents;
+
+      const updated = await prisma.$transaction(async (tx) => {
+        // Reverse GL entries
+        await postRefund(
+          {
+            id: payment.id,
+            tenantId,
+            amountCents: payment.amountCents,
+            method: payment.method,
+          },
+          refundAmount,
+          tx,
+        );
+
+        // Update payment status
+        const pay = await tx.payment.update({
+          where: { id: payment.id },
+          data: {
+            status: isFullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED",
+          },
+        });
+
+        // Reinstate invoice balance if applicable
+        if (payment.invoice) {
+          const newBalance = payment.invoice.balanceCents + refundAmount;
+          await tx.invoice.update({
+            where: { id: payment.invoice.id },
+            data: {
+              balanceCents: newBalance,
+              status: newBalance > 0 ? "ISSUED" : payment.invoice.status,
+            },
+          });
+        }
+
+        return pay;
+      });
+
+      // Audit log records who issued the refund.
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Payment",
+          recordId: payment.id,
+          action: "REFUNDED",
+          changedFieldsJson: {
+            refundAmount,
+            isFullRefund,
+            reason,
+            previousStatus: payment.status,
+            newStatus: updated.status,
+            issuedFrom: "customer-payment-history",
+            customerId,
+          },
+        },
+      });
+
+      // Best-effort QBO void on full refund — keeps QBO's payment + COGS
+      // state consistent. Partial refunds are not pushed (QBO models a
+      // partial as a separate Refund Receipt which is out of scope).
+      if (isFullRefund) {
+        try {
+          await voidQboPayment(payment.id, tenantId);
+        } catch (err) {
+          console.warn(
+            `[customers] QBO void propagation failed for ${payment.id}:`,
+            err,
+          );
+        }
+      }
+
+      res.json(updated);
     } catch (err) {
       next(err);
     }
