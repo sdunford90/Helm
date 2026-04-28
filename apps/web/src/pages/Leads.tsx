@@ -353,16 +353,12 @@ export default function Leads() {
   const [sourceFilter, setSourceFilter] = useState<'All' | SourceEnum>('All');
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  // When set, the source field in the create panel is locked to this value.
-  // We only lock for the dedicated quick-add buttons (walk-in / phone), so a
-  // user clicking "Log walk-in" can't accidentally save it as a website lead.
+  // Locks the source field on the create panel (quick-add walk-in / phone).
   const [lockedNewSource, setLockedNewSource] = useState<SourceEnum | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
   const [localLeads, setLocalLeads] = useState<Lead[]>([]);
 
-  // API calls — leads list re-fetches whenever sourceFilter changes so the
-  // server-side `?source=` filter actually applies (avoids client-only
-  // filtering, which would be wrong once results are paginated/limited).
+  // Leads list re-fetches when sourceFilter changes so server-side `?source=` applies.
   const [apiLeadsResp, setApiLeadsResp] = useState<{ data: Lead[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const refetchLeads = useCallback(async () => {
@@ -382,16 +378,12 @@ export default function Leads() {
     void refetchLeads();
   }, [refetchLeads]);
   const { data: stats, execute: refetchStats } = useApi<LeadStatsResponse>('get', '/api/leads/stats', { immediate: true });
-  // Note: lead creation is done via direct `api.post` in the onSave handler
-  // below so we can sanitize the payload (UI title-case stage -> API enum,
-  // strip empty UUIDs and invalid boatLength) and surface failures via alert
-  // instead of useApi swallowing errors silently.
+  // Lead creation uses direct api.post (see onSave) to sanitize the payload
+  // and surface errors instead of useApi swallowing them.
 
-  // PUT path needs the lead id baked in (route is `/api/leads/:id`), so we
-  // call api.put directly rather than going through useApi which captures a
-  // static path. `stage` is intentionally stripped — pipeline transitions
-  // must go through `persistStageChange` so the API's transition rules
-  // (one-step advance, lostReason gating, audit log, conversion side-effects)
+  // PUT /api/leads/:id needs the id baked in (api.put used directly). `stage`
+  // is stripped here — transitions must go through persistStageChange so the
+  // API's pipeline rules (one-step, lostReason, audit, conversion)
   // are honored.
   const persistUpdate = async (lead: Lead): Promise<void> => {
     if (!lead.id) return;
@@ -441,9 +433,7 @@ export default function Leads() {
 
   const leads = localLeads;
 
-  // Source filter is applied server-side via `?source=` (refetchLeads runs on
-  // sourceFilter change). Stage and free-text search remain client-side
-  // because the kanban needs all stages visible at once.
+  // Source filter is server-side; stage + search stay client-side so the kanban shows all stages.
   const filtered = leads.filter((l) => {
     if (stageFilter !== 'All' && l.stage !== stageFilter) return false;
     if (search) {
@@ -456,9 +446,7 @@ export default function Leads() {
 
   const leadsByStage = (stage: Stage) => filtered.filter((l) => l.stage === stage);
 
-  /** Open the detail panel pre-populated for a quick-add walk-in / phone-call.
-   * Pass `lock: true` for the dedicated walk-in / phone buttons so the source
-   * field is non-editable; the generic "Add Lead" button leaves it unlocked. */
+  /** Open the create panel. `lock: true` makes the source non-editable. */
   const startQuickAdd = (source: SourceEnum, opts?: { lock?: boolean }) => {
     setLockedNewSource(opts?.lock ? source : null);
     setSelectedLead({
@@ -630,9 +618,7 @@ export default function Leads() {
                     >
                       {b.conversionRate.toFixed(1)}%
                     </div>
-                    {/* Conversion bar — width = won / (won+lost). Grey track
-                        when nothing is closed yet so users still see the
-                        affordance. */}
+                    {/* Conversion bar — width = won / (won+lost). */}
                     <div
                       style={{
                         marginTop: 6,
@@ -816,13 +802,8 @@ export default function Leads() {
               return;
             }
 
-            // New lead path. The API's CreateLeadSchema is strict (Zod):
-            // - stage is the API enum (NEW/CONTACTED/...), not UI title-case
-            // - assignedTo / locationId must be UUIDs if present
-            // - boatLength must be > 0 if present
-            // We build a sanitized payload here and post it directly so we
-            // can surface any validation/network failure to the user instead
-            // of the optimistic-only insert silently swallowing it.
+            // Sanitize for CreateLeadSchema: map stage to API enum, drop
+            // non-UUID assignedTo, drop non-positive boatLength.
             const sourceForCreate = lockedNewSource ?? (updated.source as SourceEnum);
             const isUuid = (v: unknown) =>
               typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
@@ -842,8 +823,7 @@ export default function Leads() {
             }
             if (isUuid(updated.assignedTo)) payload.assignedTo = updated.assignedTo;
 
-            // Optimistic insert with a temporary id so the kanban updates
-            // immediately; refetch will replace it with the server row.
+            // Optimistic insert; refetch replaces with the server row.
             const tempId = `tmp-${Date.now()}`;
             const optimistic = { ...updated, source: sourceForCreate, id: tempId } as Lead;
             setLocalLeads((prev) => [optimistic, ...prev]);
@@ -856,8 +836,7 @@ export default function Leads() {
               await refetchLeads();
               refetchStats();
             } catch (err) {
-              // Roll back the optimistic row and show the real failure so
-              // users don't think a walk-in was saved when it wasn't.
+              // Roll back optimistic row + surface the real failure.
               setLocalLeads((prev) => prev.filter((l) => l.id !== tempId));
               const msg = err instanceof Error ? err.message : 'Unknown error';
               window.alert(`Could not save lead: ${msg}`);
@@ -866,7 +845,7 @@ export default function Leads() {
           onStageChange={async (newStage) => {
             const stage = newStage as Stage;
             if (!selectedLead.id) return;
-            // The /:id/stage endpoint requires lostReason when transitioning to Lost.
+            // /:id/stage requires lostReason when transitioning to Lost.
             let lostReason: string | undefined;
             if (stage === 'Lost') {
               const r = window.prompt('Why is this lead lost?');

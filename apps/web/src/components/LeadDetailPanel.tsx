@@ -168,9 +168,7 @@ interface LeadDetailPanelProps {
   onClose: () => void;
   onStageChange: (stage: string) => void;
   onSave?: (lead: Lead) => void;
-  /** When set on a new-lead create flow, the Source field is locked to this
-   * enum value so quick-add buttons (Log walk-in / Log phone call) can't be
-   * accidentally re-tagged as something else before submit. */
+  /** When set on a new-lead create flow, the Source field is locked to this enum value. */
   lockSource?: string | null;
 }
 
@@ -641,8 +639,7 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
                     <span style={s.fieldValue}>{lead.slipType || '—'}</span>
                   )}
                 </div>
-                {/* Source — locked when launched from a quick-add button so
-                    "Log walk-in" / "Log phone call" can't be re-tagged. */}
+                {/* Source — locked for quick-add walk-in / phone create flows. */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Source</span>
                   {isEditing && !(isNew && lockSource) ? (
@@ -664,11 +661,8 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
                     </span>
                   )}
                 </div>
-                {/* Source Detail — free-form context (e.g. "took the call",
-                    referrer name, social handle).  Only shown for sources
-                    where a human-entered detail is meaningful (walk-in,
-                    phone, referral, other); web/social leads carry
-                    structured utm/url fields instead. */}
+                {/* Source Detail — free-form context. Only shown for sources where
+                    a human-entered detail is meaningful (walk-in, phone, referral, other). */}
                 {(() => {
                   const effectiveSource = isNew && lockSource
                     ? lockSource
@@ -747,14 +741,8 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
               </div>
             </div>
 
-            {/* Source/UTM details block removed: it previously rendered a
-                hardcoded mock (Slip Inquiry Form / /marina/slips / google /
-                spring_promo) unrelated to the persisted lead. The real
-                Source + Source Detail are now shown in the field grid above
-                using the LeadSource enum and `sourceDetail` column. When a
-                future task wires sourceFormId / sourceUrl / utmSource /
-                utmCampaign through to shared-types, this section can be
-                re-added with real values. */}
+            {/* Source/UTM block removed (was hardcoded mock data). Real Source +
+                Source Detail are shown in the field grid above. */}
 
             {/* Activity Timeline */}
             <div style={s.section}>
