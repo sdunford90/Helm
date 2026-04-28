@@ -1,0 +1,29 @@
+End-to-end smoke each integration in live mode (test mode for Stripe, QBO sandbox, Resend with the production sending domain). Specifically:
+
+A full Stripe Connect payment, including the webhook actually being received.
+A QBO OAuth round-trip and one webhook delivery (we just hardened that path — worth proving it).
+One outbound Resend email landing in inbox, not spam (DKIM/SPF on the sending domain).
+R2 bucket policy. Confirm uploads go to the right bucket, are not world-readable unless intended, and that signed URLs are used for private documents (insurance certs, etc.).
+
+Database backups. Confirm Replit/your provider is taking automated snapshots and you know how to restore one.
+
+Error monitoring. Sentry (or similar) on both API and web, otherwise you're flying blind during the test period.
+
+Tenant + permission correctness
+A deliberate tenant-isolation pass. Sign in as Tenant A, try to GET/POST/PUT every list endpoint with a Tenant B id and confirm 403/404. We just added per-location restrictions too — same exercise: a restricted user trying to read another location.
+
+Audit log spot-check — invite a user, change a role, run a payment, sync QBO; make sure each lands in the audit log with the right actor.
+
+Operational readiness
+Production seed / first-marina onboarding. Today you have a dev tenant. What's the path for the first real marina from "we just signed up" to "we have locations, slips, and one customer"? Walk it once.
+
+Rate limiting on public endpoints (auth, signup, webhooks). Webhooks especially — Intuit and Stripe will hit you a lot.
+
+Pagination caps. Make sure no list endpoint will happily return 50,000 rows if take is omitted or huge.
+
+Health check endpoint for the deployment health probe.
+
+UX rough edges that will frustrate testers
+Toast/error feedback when a save fails (we cancelled #77, but you'll want it before testers see silent failures).
+Empty states on every list ("No boats yet", "No invoices yet" with a CTA).
+Loading skeletons on the slow pages (Dashboard, Customer detail).

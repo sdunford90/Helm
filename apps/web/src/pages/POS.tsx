@@ -939,10 +939,10 @@ function printReceipt({
 }
 
 function ReceiptSettings() {
-  const [cfg, setCfg] = useState<ReceiptConfig>(() => ({
-    businessName: '', address: '', phone: '', email: '', website: '', returnPolicy: '',
-    ...getReceiptConfig(),
-  }));
+  const [cfg, setCfg] = useState<ReceiptConfig>(() => {
+    const defaults: ReceiptConfig = { businessName: '', address: '', phone: '', email: '', website: '', returnPolicy: '' };
+    return { ...defaults, ...getReceiptConfig() };
+  });
   const [saved, setSaved] = useState(false);
 
   const handleSave = () => {
@@ -1240,6 +1240,7 @@ export default function POS() {
           category: 'General',
           price: li.unitPriceCents / 100,
           taxRate: 0,
+          taxClass: null,
           inStock: 999,
           reorderPoint: 0,
         },
@@ -1293,7 +1294,8 @@ export default function POS() {
     if (!recalledTxnData) return;
     setRefundLoading(true);
     try {
-      await apiCall('POST', `/api/pos/transactions/${recalledTxnData.id}/refund`, {});
+      const token = await getToken();
+      await api.post(`/pos/transactions/${recalledTxnData.id}/refund`, {}, token);
       setRefundDone(true);
       await refreshTransactions();
     } catch (err: any) {
