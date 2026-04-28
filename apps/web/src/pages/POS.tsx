@@ -200,23 +200,24 @@ function OpenShiftModal({ onClose, onOpen, loading }: { onClose: () => void; onO
 
 /* ── Close Shift Modal ─────────────────────────────────── */
 
-function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }: {
+function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, submitError }: {
   onClose: () => void;
   onConfirm: (closingCash: number, notes: string) => void;
   floatAmt: number;
   runningTotal: number;
   loading?: boolean;
+  submitError?: string;
 }) {
   const [closingCash, setClosingCash] = useState((floatAmt + runningTotal).toFixed(2));
   const [notes, setNotes] = useState('');
   const expected = floatAmt + runningTotal;
   const variance = (parseFloat(closingCash) || 0) - expected;
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={() => { if (!loading) onClose(); }}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Close Shift</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={onClose} disabled={loading}><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
           <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px', marginBottom: '20px' }}>
@@ -235,9 +236,10 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
             <label style={st.label}>Notes (optional)</label>
             <input style={st.input} placeholder="e.g. $5 short, recount confirmed" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
+          {submitError && <div style={{ fontSize: '13px', color: '#DC2626', marginTop: '4px' }}>{submitError}</div>}
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={loading}>Cancel</button>
           <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(parseFloat(closingCash) || 0, notes)}>{loading ? 'Closing...' : 'Close Shift'}</button>
         </div>
       </div>
@@ -1145,6 +1147,7 @@ export default function POS() {
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
   const [closingShift, setClosingShift] = useState(false);
+  const [closeShiftError, setCloseShiftError] = useState('');
   const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[] } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
@@ -1198,9 +1201,10 @@ export default function POS() {
   const handleCloseShift = async (closingCash: number, notes: string) => {
     if (!shiftId) return;
     setClosingShift(true);
+    setCloseShiftError('');
     try {
       const token = await getToken();
-      await api.post(`/pos/shifts/${shiftId}/close`, { closingCashCents: Math.round(closingCash * 100), notes: notes || undefined }, token);
+      await api.post(`/api/pos/shifts/${shiftId}/close`, { closingCashCents: Math.round(closingCash * 100), notes: notes || undefined }, token);
       setShiftOpen(false);
       setShiftId(null);
       setShiftCashier('');
@@ -1209,7 +1213,7 @@ export default function POS() {
       setShowCloseShiftModal(false);
       await fetchShifts();
     } catch (err) {
-      console.error('Failed to close shift:', err);
+      setCloseShiftError((err as Error).message ?? 'Failed to close shift. Please try again.');
     } finally {
       setClosingShift(false);
     }
@@ -1295,7 +1299,7 @@ export default function POS() {
     setRefundLoading(true);
     try {
       const token = await getToken();
-      await api.post(`/pos/transactions/${recalledTxnData.id}/refund`, {}, token);
+      await api.post(`/api/pos/transactions/${recalledTxnData.id}/refund`, {}, token);
       setRefundDone(true);
       await refreshTransactions();
     } catch (err: any) {
@@ -1370,7 +1374,7 @@ export default function POS() {
             <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${shiftFloat.toFixed(2)}</div></div>
             <div><div style={st.shiftLabel}>Running Total</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
           </div>
-          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => setShowCloseShiftModal(true)}>Close Shift</button>
+          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => { setCloseShiftError(''); setShowCloseShiftModal(true); }}>Close Shift</button>
         </div>
       ) : (
         <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center' }}>
@@ -1790,11 +1794,12 @@ export default function POS() {
       )}
       {showCloseShiftModal && (
         <CloseShiftModal
-          onClose={() => setShowCloseShiftModal(false)}
+          onClose={() => { setShowCloseShiftModal(false); setCloseShiftError(''); }}
           onConfirm={handleCloseShift}
           floatAmt={shiftFloat}
           runningTotal={runningTotal - total}
           loading={closingShift}
+          submitError={closeShiftError}
         />
       )}
       {paymentModal && paymentModal.method === 'Card' && stripeReady && (
