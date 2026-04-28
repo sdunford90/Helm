@@ -14,6 +14,7 @@ import { isCardExpired } from '../components/PaymentModal';
 import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
 import { api, ApiClientError } from '../lib/api';
+import { cacheThumbUrls, getCachedThumbUrl, invalidateThumbUrl } from '../lib/thumbUrlCache';
 
 /* ── Document upload policy (mirrors apps/api/src/lib/file-validation.ts) ── */
 const DOCUMENT_ALLOWED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.txt', '.csv'] as const;
@@ -889,13 +890,31 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boatId]);
 
-  // Resolve presigned download URLs for every missing thumbnail in a single
-  // batch call. R2 objects are private, so we can't hand the storage key to
-  // the browser directly — we sign short-lived GET URLs on demand. One round
-  // trip per render beats N sequential per-photo requests.
+  // Resolve presigned download URLs for every missing thumbnail. R2 objects
+  // are private, so we can't hand the storage key to the browser directly —
+  // we sign short-lived GET URLs on demand. URLs are cached in module memory
+  // (see thumbUrlCache) for ~1 hour so re-renders and navigating away and
+  // back to this customer reuse the existing URLs without hitting the API.
+  // Anything still missing or close to expiring is signed in a single batch
+  // call (one round trip beats N sequential per-photo requests).
   useEffect(() => {
     let cancelled = false;
-    const missing = photos.filter((p) => !thumbUrls[p.id]);
+    // First pass: hydrate any thumbs we can serve straight from the cache,
+    // and collect the rest as the "missing" set we still need to sign.
+    const fromCache: Record<string, string> = {};
+    const missing: ApiBoatPhoto[] = [];
+    for (const p of photos) {
+      if (thumbUrls[p.id]) continue;
+      const cached = getCachedThumbUrl(p.storageKey);
+      if (cached) {
+        fromCache[p.id] = cached;
+      } else {
+        missing.push(p);
+      }
+    }
+    if (Object.keys(fromCache).length > 0) {
+      setThumbUrls((prev) => ({ ...prev, ...fromCache }));
+    }
     if (missing.length === 0) return;
     (async () => {
       const token = await getToken();
@@ -908,11 +927,17 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
       for (let i = 0; i < missing.length; i += BATCH_SIZE) {
         const chunk = missing.slice(i, i + BATCH_SIZE);
         try {
-          const { urls } = await api.post<{ urls: Record<string, string> }>(
+          const { urls, expiresIn } = await api.post<{
+            urls: Record<string, string>;
+            expiresIn?: number;
+          }>(
             '/api/storage/presign-download-batch',
             { keys: chunk.map((p) => p.storageKey) },
             token,
           );
+          // Stash the freshly-signed URLs so future renders/navigations
+          // can reuse them instead of re-signing.
+          cacheThumbUrls(urls ?? {}, expiresIn ?? 3600);
           for (const p of chunk) {
             const url = urls[p.storageKey];
             if (url) merged[p.id] = url;
@@ -1058,6 +1083,9 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
       // Server-side handler best-effort cleans up the R2 object, so the
       // client doesn't need to follow up with an extra storage delete.
       await api.delete(`/api/boats/${boatId}/photos/${photo.id}`, token);
+      // Drop the cached URL too so a future upload that somehow reuses the
+      // same storage key doesn't serve a stale signed URL.
+      invalidateThumbUrl(photo.storageKey);
       setThumbUrls((prev) => {
         const { [photo.id]: _removed, ...rest } = prev;
         return rest;

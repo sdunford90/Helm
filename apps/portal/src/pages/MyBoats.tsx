@@ -3,6 +3,7 @@ import { Ship, CheckCircle, AlertTriangle, Edit, Anchor, Camera, Plus, Trash2, L
 import { useAuth } from '@clerk/clerk-react';
 import type { CSSProperties } from 'react';
 import { usePortalApi, formatDate } from '../lib/api';
+import { cacheThumbUrls, getCachedThumbUrl, invalidateThumbUrl } from '../lib/thumbUrlCache';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
@@ -117,11 +118,30 @@ function BoatPhotos({ boatId }: { boatId: string }) {
   }, [boatId]);
 
   // Resolve presigned download URLs so the <img> tags can load private R2
-  // objects. One batched request per render beats N sequential per-photo
-  // calls — boats with lots of photos used to fade in one at a time.
+  // objects. URLs are cached in module memory (see thumbUrlCache) and live
+  // for ~1 hour, so re-rendering this component or navigating back to the
+  // boats page reuses the existing URLs and skips the network entirely.
+  // Only photos whose URL is missing or close to expiring trigger a presign
+  // call. One batched request per render beats N sequential per-photo calls
+  // — boats with lots of photos used to fade in one at a time.
   useEffect(() => {
     let cancelled = false;
-    const missing = photos.filter((p) => !thumbUrls[p.id]);
+    // First pass: hydrate any thumbs we can serve straight from the cache,
+    // and collect the rest as the "missing" set we still need to sign.
+    const fromCache: Record<string, string> = {};
+    const missing: ApiBoatPhoto[] = [];
+    for (const p of photos) {
+      if (thumbUrls[p.id]) continue;
+      const cached = getCachedThumbUrl(p.storageKey);
+      if (cached) {
+        fromCache[p.id] = cached;
+      } else {
+        missing.push(p);
+      }
+    }
+    if (Object.keys(fromCache).length > 0) {
+      setThumbUrls((prev) => ({ ...prev, ...fromCache }));
+    }
     if (missing.length === 0) return;
     (async () => {
       const token = await getToken();
@@ -143,7 +163,13 @@ function BoatPhotos({ boatId }: { boatId: string }) {
             body: JSON.stringify({ keys: chunk.map((p) => p.storageKey) }),
           });
           if (!res.ok) continue;
-          const body = (await res.json()) as { urls: Record<string, string> };
+          const body = (await res.json()) as {
+            urls: Record<string, string>;
+            expiresIn?: number;
+          };
+          // Stash the freshly-signed URLs so future renders/navigations
+          // can reuse them instead of re-signing.
+          cacheThumbUrls(body.urls ?? {}, body.expiresIn ?? 3600);
           for (const p of chunk) {
             const url = body.urls?.[p.storageKey];
             if (url) merged[p.id] = url;
@@ -281,6 +307,9 @@ function BoatPhotos({ boatId }: { boatId: string }) {
         headers: authHeaders,
       });
       if (!res.ok) throw new Error('Delete failed');
+      // Drop the cached URL too so a future upload that somehow reuses the
+      // same storage key doesn't serve a stale signed URL.
+      invalidateThumbUrl(photo.storageKey);
       setThumbUrls((prev) => {
         const { [photo.id]: _removed, ...rest } = prev;
         return rest;
