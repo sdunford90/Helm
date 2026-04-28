@@ -84,6 +84,39 @@ describe('POST /api/inventory/categories', () => {
     );
   });
 
+  it('reactivates a soft-deleted category instead of returning 409 on name reuse', async () => {
+    // Simulates: user soft-deletes "Bait" then creates a new "Bait" in the
+    // UI. The route must find the inactive row and flip active back to
+    // true with the new defaults — never call create (which would 409 on
+    // the (tenantId, name) unique index).
+    const inactive = buildCategory({ id: 'cat-inactive', name: 'Bait', active: false });
+    mockPrisma.glAccount.findMany.mockResolvedValue([
+      { id: '11111111-1111-1111-1111-111111111111' },
+    ] as any);
+    mockPrisma.productCategory.findFirst.mockResolvedValue(inactive);
+    const reactivated = { ...inactive, active: true, defaultTaxCategory: 'food', taxable: true };
+    mockPrisma.productCategory.update.mockResolvedValue(reactivated);
+
+    const res = await request(app)
+      .post('/api/inventory/categories')
+      .send({
+        name: 'Bait',
+        defaultRevenueGlAccountId: '11111111-1111-1111-1111-111111111111',
+        defaultTaxCategory: 'food',
+        taxable: true,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe('cat-inactive');
+    expect(res.body.active).toBe(true);
+    expect(mockPrisma.productCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'cat-inactive' },
+        data: expect.objectContaining({ active: true, defaultTaxCategory: 'food', taxable: true }),
+      }),
+    );
+    expect(mockPrisma.productCategory.create).not.toHaveBeenCalled();
+  });
+
   it('rejects category create when a default GL ID belongs to another tenant', async () => {
     // glAccount.findMany returns nothing for the requested IDs (simulating
     // a cross-tenant lookup), so the route must 400 with INVALID_GL_ACCOUNT_ID

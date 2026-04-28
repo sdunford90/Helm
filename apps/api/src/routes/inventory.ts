@@ -275,13 +275,9 @@ function getTenantId(req: Request): string {
   return (req as any).tenantId ?? (req as any).userRecord?.tenant_id ?? "default";
 }
 
-/**
- * Verify that every supplied GL account ID actually belongs to this tenant.
- * GlAccount is not in TENANT_SCOPED_MODELS, so a malicious or buggy caller
- * could otherwise persist a cross-tenant FK by sending another tenant's
- * account UUID. We reject up-front with a 400 listing the offending IDs so
- * misconfigured UIs surface the problem instead of silently writing the FK.
- */
+// Returns GL account IDs in `ids` that do not belong to `tenantId`.
+// GlAccount is not tenant-scoped via Prisma middleware, so callers must
+// invoke this before persisting GL FKs to block cross-tenant writes.
 async function findInvalidGlAccountIds(
   tenantId: string,
   ids: Array<string | null | undefined>,
@@ -768,6 +764,30 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
         code: "INVALID_GL_ACCOUNT_ID",
         invalid: invalidGl,
       });
+    }
+    // The (tenantId, name) uniqueness constraint covers both active and
+    // inactive rows, so a soft-deleted category previously named "Bait"
+    // would otherwise block ever creating "Bait" again. Detect that case
+    // and reactivate the existing row with the new defaults instead of
+    // returning 409 — keeps the user-facing UX intuitive without losing
+    // historical product→category linkage.
+    const existing = await prisma.productCategory.findFirst({
+      where: { tenantId, name: body.name },
+    });
+    if (existing && !existing.active) {
+      const reactivated = await prisma.productCategory.update({
+        where: { id: existing.id },
+        data: {
+          active: true,
+          defaultRevenueGlAccountId: body.defaultRevenueGlAccountId ?? null,
+          defaultCogsGlAccountId: body.defaultCogsGlAccountId ?? null,
+          defaultInventoryAssetGlAccountId: body.defaultInventoryAssetGlAccountId ?? null,
+          defaultTaxCategory: body.defaultTaxCategory ?? null,
+          taxable: body.taxable,
+          updatedAt: new Date(),
+        },
+      });
+      return res.status(200).json(reactivated);
     }
     const created = await prisma.productCategory.create({
       data: {

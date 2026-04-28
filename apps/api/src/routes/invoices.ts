@@ -406,13 +406,8 @@ router.post(
       // computed below from unitPrice × qty.
       const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
 
-      // Resolve the invoice's location BEFORE calling the tax engine so
-      // calculateTax can pull the right jurisdiction stack. Precedence:
-      //   1. Caller-supplied data.locationId (explicit override — used by
-      //      ad-hoc / non-contract invoices that still need real tax).
-      //   2. First CONTRACT line item → slip → location (legacy behavior
-      //      so existing slip-billing flows keep working without changes).
-      //   3. null → engine returns zero tax (same fallback as before).
+      // Resolve location for tax: caller-supplied → first CONTRACT line's
+      // slip location → null (engine returns zero tax).
       let locationId: string | null = data.locationId ?? null;
       if (!locationId) {
         const contractLineItem = data.lineItems.find(
