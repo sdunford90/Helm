@@ -1236,6 +1236,109 @@ function WaitlistReport() {
   );
 }
 
+/* ── Autopay Card Expirations ────────────────────────────── */
+type AutopayBucket = 'Expired' | '0-30 days' | '31-60 days' | '61-90 days' | '>90 days' | 'No card on file' | 'Stripe error';
+interface AutopayRow {
+  customerId: string;
+  customerName: string;
+  email: string | null;
+  phone: string | null;
+  location: string | null;
+  cardBrand: string | null;
+  last4: string | null;
+  expMonth: number | null;
+  expYear: number | null;
+  daysUntilExpiry: number | null;
+  bucket: AutopayBucket;
+  status: string;
+}
+interface AutopayData {
+  summary: { expired: number; days30: number; days60: number; days90: number; over90: number; noCard: number; stripeError: number; total: number; };
+  rows: AutopayRow[];
+  stripeConfigured: boolean;
+}
+
+const autopayFilters: FilterDef<AutopayRow>[] = [
+  { key: 'customerName', label: 'Customer', type: 'text', getValue: (r) => r.customerName },
+  { key: 'bucket', label: 'Status', type: 'select', getValue: (r) => r.bucket },
+  { key: 'location', label: 'Location', type: 'select', getValue: (r) => r.location ?? '—' },
+  { key: 'cardBrand', label: 'Card Brand', type: 'select', getValue: (r) => r.cardBrand ?? '—' },
+];
+
+function bucketTone(b: AutopayBucket): 'red' | 'yellow' | 'green' {
+  if (b === 'Expired' || b === 'No card on file' || b === 'Stripe error' || b === '0-30 days') return 'red';
+  if (b === '31-60 days' || b === '61-90 days') return 'yellow';
+  return 'green';
+}
+
+const autopayCols: ColDef<AutopayRow>[] = [
+  { key: 'customerName', label: 'Customer', render: (r) => <CustomerLink name={r.customerName} id={r.customerId} /> },
+  { key: 'email', label: 'Email', render: (r) => r.email ?? '—' },
+  { key: 'phone', label: 'Phone', render: (r) => r.phone ?? '—' },
+  { key: 'location', label: 'Location', render: (r) => r.location ?? '—' },
+  { key: 'card', label: 'Card', render: (r) => {
+      if (!r.cardBrand && !r.last4) return '—';
+      const brand = r.cardBrand ? r.cardBrand.charAt(0).toUpperCase() + r.cardBrand.slice(1) : 'Card';
+      return r.last4 ? `${brand} ····${r.last4}` : brand;
+    } },
+  { key: 'expiry', label: 'Expires', align: 'right', render: (r) => r.expMonth && r.expYear ? `${String(r.expMonth).padStart(2, '0')}/${r.expYear}` : '—' },
+  { key: 'daysUntilExpiry', label: 'Days Until Expiry', align: 'right', render: (r) => r.daysUntilExpiry === null ? '—' : r.daysUntilExpiry },
+  { key: 'bucket', label: 'Status', render: (r) => <span style={s.badge(bucketTone(r.bucket))}>{r.bucket}</span> },
+];
+
+function AutopayCardExpirationsReport() {
+  const { data, loading } = useReportData<AutopayData>('autopay-card-expirations');
+  const [showAll, setShowAll] = useState(false);
+  const sum = data?.summary ?? { expired: 0, days30: 0, days60: 0, days90: 0, over90: 0, noCard: 0, stripeError: 0, total: 0 };
+  const allRows = data?.rows ?? [];
+  const flagged = allRows.filter((r) => r.bucket !== '>90 days');
+  const rows = showAll ? allRows : flagged;
+  const stripeWarning = data && data.stripeConfigured === false;
+  return (
+    <>
+      <KPIs items={[
+        { l: 'Expired', v: loading ? '…' : String(sum.expired) },
+        { l: '0–30 Days', v: loading ? '…' : String(sum.days30) },
+        { l: '31–60 Days', v: loading ? '…' : String(sum.days60) },
+        { l: '61–90 Days', v: loading ? '…' : String(sum.days90) },
+        { l: 'No Card', v: loading ? '…' : String(sum.noCard) },
+      ]} />
+      {stripeWarning && (
+        <div style={{ padding: '12px 16px', marginBottom: '16px', borderRadius: '8px', background: '#FEF3C7', border: '1px solid #FCD34D', color: '#92400E', fontSize: '13px' }}>
+          Stripe is not configured for this tenant — no autopay data is available.
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', color: '#0A2342', cursor: 'pointer' }}
+        >
+          {showAll ? 'Show flagged only (≤ 90 days)' : 'Show all autopay customers'}
+        </button>
+        {!showAll && sum.over90 > 0 && (
+          <span style={{ fontSize: '12px', color: '#94A3B8' }}>
+            Hiding {sum.over90} card{sum.over90 === 1 ? '' : 's'} expiring in &gt; 90 days
+          </span>
+        )}
+        {sum.stripeError > 0 && (
+          <span style={{ fontSize: '12px', color: '#DC2626' }}>
+            {sum.stripeError} customer{sum.stripeError === 1 ? '' : 's'} could not be reached in Stripe
+          </span>
+        )}
+      </div>
+      <ConfigurableTable
+        storageKey="autopay-card-expirations"
+        title="Autopay Customers"
+        allCols={autopayCols}
+        defaultColKeys={['customerName', 'email', 'phone', 'location', 'card', 'expiry', 'daysUntilExpiry', 'bucket']}
+        filterDefs={autopayFilters}
+        rows={rows}
+        loading={loading}
+      />
+    </>
+  );
+}
+
 /* ── Report metadata ────────────────────────────────────── */
 const reportMeta: Record<string, { title: string; subtitle: string; component: () => JSX.Element }> = {
   revenue: { title: 'Revenue Summary', subtitle: 'Payment collections & invoicing', component: RevenueSummary },
@@ -1250,6 +1353,7 @@ const reportMeta: Record<string, { title: string; subtitle: string; component: (
   customer_activity: { title: 'Customer Activity', subtitle: 'Customer status breakdown', component: CustomerActivityReport },
   leads: { title: 'Lead Conversion', subtitle: 'Pipeline & source analytics', component: LeadConversionReport },
   waitlist: { title: 'Waitlist Analytics', subtitle: 'Waitlist queue by type & status', component: WaitlistReport },
+  autopay_card_expirations: { title: 'Autopay Card Expirations', subtitle: 'Default cards expiring in the next 30/60/90 days', component: AutopayCardExpirationsReport },
   rental_util: { title: 'Rental Utilization', subtitle: 'Booking & revenue by product', component: RentalUtilReport },
   pos_sales: { title: 'POS Sales Summary', subtitle: 'Point-of-sale transactions', component: POSSalesReport },
   inventory: { title: 'Inventory Valuation', subtitle: 'Tracked product stock & value', component: InventoryReport },

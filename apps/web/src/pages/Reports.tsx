@@ -29,6 +29,7 @@ import {
   Package,
   Filter,
   Pencil,
+  CreditCard,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ const reportCards: ReportCard[] = [
   { id: 'customer_activity', title: 'Customer Activity', description: 'Customer engagement, transaction history, and account status.', icon: Users, lastGenerated: '2026-03-24', category: 'customer' },
   { id: 'leads', title: 'Lead Conversion', description: 'Lead sources, conversion rates, and sales pipeline analysis.', icon: Target, lastGenerated: '2026-03-18', category: 'customer' },
   { id: 'waitlist', title: 'Waitlist Analytics', description: 'Waitlist volume, average wait time, and conversion to tenants.', icon: ClipboardList, lastGenerated: null, category: 'customer' },
+  { id: 'autopay_card_expirations', title: 'Autopay Card Expirations', description: 'Autopay-enabled customers whose default card is expired or expires in the next 30/60/90 days.', icon: CreditCard, lastGenerated: null, category: 'customer' },
   // Rentals & POS
   { id: 'rent_roll', title: 'Rent Roll', description: 'Active slip leases, monthly charges, and occupancy details across all docks.', icon: FileText, lastGenerated: '2026-03-25', category: 'rentals_pos' },
   { id: 'rental_util', title: 'Rental Utilization', description: 'Boat rental bookings, utilization rates, and revenue per asset.', icon: ShoppingCart, lastGenerated: '2026-03-22', category: 'rentals_pos' },

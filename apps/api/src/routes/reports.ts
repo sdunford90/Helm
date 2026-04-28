@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues } from "../lib/queue.js";
-import { isValidScheduleFormat } from "../services/report-data.js";
+import { isValidScheduleFormat, buildAutopayCardExpirations } from "../services/report-data.js";
 
 const router: Router = Router();
 
@@ -1052,6 +1052,7 @@ const REPORT_ID_MAP: Record<string, string> = {
   pos_sales: "pos-sales",
   inventory: "inventory",
   maintenance: "dock-walk-summary",
+  autopay_card_expirations: "autopay-card-expirations",
 };
 
 router.post(
@@ -1087,6 +1088,37 @@ router.post(
     }
   },
 );
+
+// ─── GET /reports/autopay-card-expirations ───────────────────────────────────
+//
+// Returns the list of autopay-enabled customers whose default card is
+// expiring soon (or already expired / missing). Heavy lifting lives in
+// services/report-data.buildAutopayCardExpirations so the same dataset can
+// be served live and exported by the scheduled-report worker.
+
+router.get("/autopay-card-expirations", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const requested = (req.query.locationId as string | undefined)?.trim() || undefined;
+    const allowed = req.allowedLocationIds; // null = bypass (unrestricted)
+
+    let allowedLocationIds: string[] | null;
+    if (requested) {
+      if (allowed !== null && allowed !== undefined && !allowed.includes(requested)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      allowedLocationIds = [requested];
+    } else if (allowed !== null && allowed !== undefined) {
+      allowedLocationIds = allowed;
+    } else {
+      allowedLocationIds = null;
+    }
+
+    const data = await buildAutopayCardExpirations(tenantId, { allowedLocationIds });
+    res.json(data);
+  } catch (err) { next(err); }
+});
 
 // ─── GET /reports/revenue-trend ──────────────────────────────────────────────
 
