@@ -889,29 +889,40 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boatId]);
 
-  // Resolve a presigned download URL per photo so <img src> can load it.
-  // R2 objects are private, so we can't hand the storage key to the browser
-  // directly — we sign a short-lived GET URL on demand.
+  // Resolve presigned download URLs for every missing thumbnail in a single
+  // batch call. R2 objects are private, so we can't hand the storage key to
+  // the browser directly — we sign short-lived GET URLs on demand. One round
+  // trip per render beats N sequential per-photo requests.
   useEffect(() => {
     let cancelled = false;
     const missing = photos.filter((p) => !thumbUrls[p.id]);
     if (missing.length === 0) return;
     (async () => {
       const token = await getToken();
-      const next: Record<string, string> = {};
-      for (const p of missing) {
+      // The server batch endpoint signs up to 100 keys per request. Chunk
+      // here so a boat with more photos than that still loads — without
+      // chunking the whole batch would be rejected and no thumbs would
+      // appear.
+      const BATCH_SIZE = 100;
+      const merged: Record<string, string> = {};
+      for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+        const chunk = missing.slice(i, i + BATCH_SIZE);
         try {
-          const { url } = await api.get<{ url: string }>(
-            `/api/storage/presign-download/${encodeURIComponent(p.storageKey)}`,
+          const { urls } = await api.post<{ urls: Record<string, string> }>(
+            '/api/storage/presign-download-batch',
+            { keys: chunk.map((p) => p.storageKey) },
             token,
           );
-          next[p.id] = url;
+          for (const p of chunk) {
+            const url = urls[p.storageKey];
+            if (url) merged[p.id] = url;
+          }
         } catch {
-          /* leave thumb missing — UI shows a fallback */
+          /* skip this chunk — UI shows a fallback for any thumb that's missing */
         }
       }
-      if (!cancelled && Object.keys(next).length > 0) {
-        setThumbUrls((prev) => ({ ...prev, ...next }));
+      if (!cancelled && Object.keys(merged).length > 0) {
+        setThumbUrls((prev) => ({ ...prev, ...merged }));
       }
     })();
     return () => {

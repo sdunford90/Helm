@@ -189,6 +189,60 @@ router.get(
 );
 
 // --------------------------------------------------------------------------
+// POST /presign-download-batch — Get presigned download URLs for many keys
+//
+// Returns one signed URL per requested key in a single round-trip. This is
+// the workhorse for grids that need to render a lot of private R2 objects
+// (e.g. boat photo thumbnails) without making N sequential calls. Keys that
+// fail tenant scoping or signing are reported individually so a single bad
+// key never poisons the whole batch.
+// --------------------------------------------------------------------------
+
+const PresignDownloadBatchSchema = z.object({
+  keys: z.array(z.string().min(1)).min(1).max(100),
+});
+
+router.post(
+  "/presign-download-batch",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { keys } = PresignDownloadBatchSchema.parse(req.body);
+
+      // Dedupe so callers passing the same key twice only sign it once.
+      const uniqueKeys = Array.from(new Set(keys));
+
+      const urls: Record<string, string> = {};
+      const errors: Record<string, { code: string; error: string }> = {};
+
+      await Promise.all(
+        uniqueKeys.map(async (key) => {
+          if (!key.startsWith(`${tenantId}/`)) {
+            errors[key] = {
+              code: "FORBIDDEN",
+              error: "Access denied to this file",
+            };
+            return;
+          }
+          try {
+            urls[key] = await getPresignedDownloadUrl(key);
+          } catch (err) {
+            errors[key] = {
+              code: "SIGN_FAILED",
+              error: err instanceof Error ? err.message : "Failed to sign URL",
+            };
+          }
+        }),
+      );
+
+      res.json({ urls, errors, expiresIn: 3600 });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
 // DELETE /:key(*) — Delete a file
 // --------------------------------------------------------------------------
 

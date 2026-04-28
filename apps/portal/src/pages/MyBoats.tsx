@@ -116,29 +116,44 @@ function BoatPhotos({ boatId }: { boatId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boatId]);
 
-  // Resolve presigned download URLs so the <img> tags can load private R2 objects.
+  // Resolve presigned download URLs so the <img> tags can load private R2
+  // objects. One batched request per render beats N sequential per-photo
+  // calls — boats with lots of photos used to fade in one at a time.
   useEffect(() => {
     let cancelled = false;
     const missing = photos.filter((p) => !thumbUrls[p.id]);
     if (missing.length === 0) return;
     (async () => {
       const token = await getToken();
-      const next: Record<string, string> = {};
-      for (const p of missing) {
+      // The server batch endpoint signs up to 100 keys per request. Chunk
+      // here so a boat with more photos than that still loads — without
+      // chunking the whole batch would be rejected and no thumbs would
+      // appear.
+      const BATCH_SIZE = 100;
+      const merged: Record<string, string> = {};
+      for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+        const chunk = missing.slice(i, i + BATCH_SIZE);
         try {
-          const res = await fetch(`/api/storage/presign-download/${encodeURIComponent(p.storageKey)}`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          const res = await fetch('/api/storage/presign-download-batch', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ keys: chunk.map((p) => p.storageKey) }),
           });
-          if (res.ok) {
-            const body = (await res.json()) as { url: string };
-            next[p.id] = body.url;
+          if (!res.ok) continue;
+          const body = (await res.json()) as { urls: Record<string, string> };
+          for (const p of chunk) {
+            const url = body.urls?.[p.storageKey];
+            if (url) merged[p.id] = url;
           }
         } catch {
-          /* leave missing — UI shows fallback icon */
+          /* skip this chunk — UI shows a fallback for any missing thumb */
         }
       }
-      if (!cancelled && Object.keys(next).length > 0) {
-        setThumbUrls((prev) => ({ ...prev, ...next }));
+      if (!cancelled && Object.keys(merged).length > 0) {
+        setThumbUrls((prev) => ({ ...prev, ...merged }));
       }
     })();
     return () => {
