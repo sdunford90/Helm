@@ -210,7 +210,7 @@ export default function CategoriesSettings() {
     'get', '/api/inventory/gl-accounts?type=REVENUE', { immediate: true },
   );
   const { data: cogsAccountsData } = useApi<{ accounts: GlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=EXPENSE,COGS', { immediate: true },
+    'get', '/api/inventory/gl-accounts?type=EXPENSE', { immediate: true },
   );
   const { data: assetAccountsData } = useApi<{ accounts: GlAccount[] }>(
     'get', '/api/inventory/gl-accounts?type=ASSET', { immediate: true },

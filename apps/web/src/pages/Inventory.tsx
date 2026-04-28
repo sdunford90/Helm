@@ -213,7 +213,7 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
     'get', '/api/inventory/gl-accounts?type=REVENUE', { immediate: true },
   );
   const { data: cogsAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=EXPENSE,COGS', { immediate: true },
+    'get', '/api/inventory/gl-accounts?type=EXPENSE', { immediate: true },
   );
   const { data: assetAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
     'get', '/api/inventory/gl-accounts?type=ASSET', { immediate: true },
