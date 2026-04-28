@@ -529,7 +529,18 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
 
   return (
     <>
-      <div style={s.overlay} onClick={onClose}>
+      <div
+        style={s.overlay}
+        onClick={(e) => {
+          // Backdrop dismiss — only when viewing an existing lead. While
+          // editing or filling out a new walk-in / phone-call form, ignore
+          // backdrop clicks so an accidental click outside the panel can't
+          // wipe in-progress input. Use the X / Cancel buttons instead.
+          if (e.target !== e.currentTarget) return;
+          if (isEditing || isNew) return;
+          onClose();
+        }}
+      >
         <div style={s.panel} className="helm-detail-panel" onClick={(e) => e.stopPropagation()}>
           {/* Header */}
           <div style={s.header}>
