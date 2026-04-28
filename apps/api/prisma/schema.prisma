@@ -935,6 +935,7 @@ model GlAccount {
   products               Product[]       @relation(name: "ProductGlAccount")
   productsCogs           Product[]       @relation(name: "ProductCogsGlAccount")
   productsInventoryAsset Product[]       @relation(name: "ProductInventoryAssetGlAccount")
+  productsRevenue        Product[]       @relation(name: "ProductRevenueGlAccount")
   rentalProducts         RentalProduct[] @relation(name: "RentalProductGlAccount")
 
   @@index([tenantId])
@@ -1411,15 +1412,20 @@ model Product {
   sku            String?
   barcode        String?
   departmentId   String?
+  category       String?
   costCents      Int?
   priceCents     Int
   taxClass       String?
   trackInventory Boolean @default(false)
   reorderQty     Int?
+  reorderPoint   Int     @default(0)
+  qoh            Int     @default(0)
+  active         Boolean @default(true)
   glAccountId    String?
   // GL accounts required to mirror this Product as a QBO Inventory item
   cogsGlAccountId           String?
   inventoryAssetGlAccountId String?
+  revenueGlAccountId        String?
 
   // QuickBooks Online sync state (populated by qbo-sync.syncInventoryItem)
   qboItemId          String?
@@ -1427,12 +1433,19 @@ model Product {
   qboItemSyncError   String?
   qboItemSyncErrorAt DateTime?
 
-  glAccount               GlAccount?    @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
-  cogsGlAccount           GlAccount?    @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
-  inventoryAssetGlAccount GlAccount?    @relation(name: "ProductInventoryAssetGlAccount", fields: [inventoryAssetGlAccountId], references: [id])
-  location                Location?     @relation(fields: [locationId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt @default(now())
+
+  glAccount               GlAccount?            @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
+  cogsGlAccount           GlAccount?            @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
+  inventoryAssetGlAccount GlAccount?            @relation(name: "ProductInventoryAssetGlAccount", fields: [inventoryAssetGlAccountId], references: [id])
+  revenueGlAccount        GlAccount?            @relation(name: "ProductRevenueGlAccount", fields: [revenueGlAccountId], references: [id])
+  location                Location?             @relation(fields: [locationId], references: [id])
   inventory               Inventory[]
   posLineItems            PosLineItem[]
+  adjustments             InventoryAdjustment[]
+  poLineItems             PoLineItem[]
+  countItems              InventoryCountItem[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -1459,11 +1472,14 @@ model PurchaseOrder {
   tenantId     String
   locationId   String?
   vendorId     String?
+  vendorName   String?
   poNumber     String?
   status       String
   expectedDate DateTime?
+  notes        String?
   totalCents   Int
   createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt @default(now())
 
   // QuickBooks Online Bill sync state (populated when PO is received)
   qboBillId          String?
@@ -1471,12 +1487,92 @@ model PurchaseOrder {
   qboBillSyncError   String?
   qboBillSyncErrorAt DateTime?
 
-  vendor   Vendor?   @relation(fields: [vendorId], references: [id])
-  location Location? @relation(fields: [locationId], references: [id])
+  vendor    Vendor?      @relation(fields: [vendorId], references: [id])
+  location  Location?    @relation(fields: [locationId], references: [id])
+  lineItems PoLineItem[]
 
   @@index([tenantId])
   @@index([locationId])
   @@map("purchase_orders")
+}
+
+model PoLineItem {
+  id              String  @id @default(uuid())
+  tenantId        String
+  purchaseOrderId String
+  productId       String
+  productName     String
+  quantity        Int
+  unitCostCents   Int
+  receivedQty     Int     @default(0)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@index([tenantId])
+  @@index([purchaseOrderId])
+  @@map("po_line_items")
+}
+
+model InventoryAdjustment {
+  id              String   @id @default(uuid())
+  tenantId        String
+  productId       String
+  productName     String
+  quantityChange  Int
+  quantityBefore  Int
+  quantityAfter   Int
+  reason          String
+  notes           String?
+  staffName       String?
+  countSessionId  String?
+  createdAt       DateTime @default(now())
+
+  // QuickBooks Online journal entry sync state
+  qboJournalEntryId String?
+  qboSyncedAt       DateTime?
+  qboSyncError      String?
+  qboSyncErrorAt    DateTime?
+
+  product      Product                @relation(fields: [productId], references: [id])
+  countSession InventoryCountSession? @relation(fields: [countSessionId], references: [id])
+
+  @@index([tenantId])
+  @@index([productId])
+  @@index([countSessionId])
+  @@map("inventory_adjustments")
+}
+
+model InventoryCountSession {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  startedBy   String
+  status      String    @default("in_progress")
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  items       InventoryCountItem[]
+  adjustments InventoryAdjustment[]
+
+  @@index([tenantId])
+  @@map("inventory_count_sessions")
+}
+
+model InventoryCountItem {
+  id             String @id @default(uuid())
+  countSessionId String
+  productId      String
+  productName    String
+  expectedQty    Int
+  actualQty      Int
+  variance       Int
+
+  countSession InventoryCountSession @relation(fields: [countSessionId], references: [id], onDelete: Cascade)
+  product      Product               @relation(fields: [productId], references: [id])
+
+  @@index([countSessionId])
+  @@map("inventory_count_items")
 }
 
 // Vendor / supplier — minimal record so a QBO Bill can reference a payee.

@@ -50,6 +50,9 @@ const TENANT_SCOPED_MODELS = new Set([
   "AuditLog",
   "Vendor",
   "QboInventorySyncRef",
+  "PoLineItem",
+  "InventoryAdjustment",
+  "InventoryCountSession",
 ]);
 
 // --------------------------------------------------------------------------

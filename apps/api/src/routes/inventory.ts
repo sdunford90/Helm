@@ -7,8 +7,6 @@ import {
   syncReceivingBill,
   syncVendor,
   postInventoryAdjustmentJournal,
-  getBulkProductSyncStatus,
-  getProductSyncStatus,
   findFailedInventorySyncRefs,
   type PoBillLineInput,
 } from "../services/qbo-sync.js";
@@ -23,8 +21,12 @@ router.use(...clerkAuth());
 // sync failure is captured into product/PO/adjustment.qbo*SyncError so the UI
 // can show retryable errors and the user can re-trigger a push.
 
-async function tryPushProductToQbo(product: InventoryProduct): Promise<void> {
-  if (!product.trackInventory) return;
+type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirstOrThrow>>;
+type PurchaseOrderRow = Awaited<ReturnType<typeof prisma.purchaseOrder.findFirstOrThrow>>;
+type AdjustmentRow = Awaited<ReturnType<typeof prisma.inventoryAdjustment.findFirstOrThrow>>;
+
+async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
+  if (!product.trackInventory) return product;
   try {
     const result = await syncInventoryItem(
       {
@@ -33,7 +35,7 @@ async function tryPushProductToQbo(product: InventoryProduct): Promise<void> {
         sku: product.sku,
         description: null,
         priceCents: product.priceCents,
-        costCents: product.costCents,
+        costCents: product.costCents ?? 0,
         qoh: product.qoh,
         incomeGlAccountId: product.revenueGlAccountId,
         inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
@@ -42,21 +44,31 @@ async function tryPushProductToQbo(product: InventoryProduct): Promise<void> {
       product.tenantId,
       product.locationId,
     );
-    product.qboItemId = result.qboItemId;
-    product.qboItemSyncedAt = new Date().toISOString();
-    product.qboItemSyncError = null;
-    product.qboItemSyncErrorAt = null;
+    return await prisma.product.update({
+      where: { id: product.id },
+      data: {
+        qboItemId: result.qboItemId,
+        qboItemSyncedAt: new Date(),
+        qboItemSyncError: null,
+        qboItemSyncErrorAt: null,
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    product.qboItemSyncError = msg.slice(0, 1000);
-    product.qboItemSyncErrorAt = new Date().toISOString();
     console.warn(`[inventory] QBO item sync failed for ${product.id}: ${msg}`);
+    return await prisma.product.update({
+      where: { id: product.id },
+      data: {
+        qboItemSyncError: msg.slice(0, 1000),
+        qboItemSyncErrorAt: new Date(),
+      },
+    });
   }
 }
 
 async function tryPushAdjustmentJournal(
-  adjustment: InventoryAdjustment,
-  product: InventoryProduct,
+  adjustment: AdjustmentRow,
+  product: ProductRow,
 ): Promise<void> {
   // Skip reasons accounted for elsewhere (received → Bill, sold → auto-COGS)
   if (adjustment.reason === "received" || adjustment.reason === "sold") return;
@@ -68,7 +80,7 @@ async function tryPushAdjustmentJournal(
         productName: product.name,
         reason: adjustment.reason,
         quantityChange: adjustment.quantityChange,
-        unitCostCents: product.costCents,
+        unitCostCents: product.costCents ?? 0,
         inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
         cogsGlAccountId: product.cogsGlAccountId,
         notes: adjustment.notes,
@@ -76,27 +88,41 @@ async function tryPushAdjustmentJournal(
       product.tenantId,
       product.locationId,
     );
-    if (result.qboJournalEntryId) {
-      adjustment.qboJournalEntryId = result.qboJournalEntryId;
-      adjustment.qboSyncedAt = new Date().toISOString();
-    }
-    adjustment.qboSyncError = null;
-    adjustment.qboSyncErrorAt = null;
+    await prisma.inventoryAdjustment.update({
+      where: { id: adjustment.id },
+      data: {
+        qboJournalEntryId: result.qboJournalEntryId,
+        qboSyncedAt: result.qboJournalEntryId ? new Date() : null,
+        qboSyncError: null,
+        qboSyncErrorAt: null,
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    adjustment.qboSyncError = msg.slice(0, 1000);
-    adjustment.qboSyncErrorAt = new Date().toISOString();
     console.warn(`[inventory] QBO adjustment sync failed for ${adjustment.id}: ${msg}`);
+    await prisma.inventoryAdjustment.update({
+      where: { id: adjustment.id },
+      data: {
+        qboSyncError: msg.slice(0, 1000),
+        qboSyncErrorAt: new Date(),
+      },
+    });
   }
 }
 
 async function tryPushReceivingBill(
-  po: PurchaseOrder,
+  po: PurchaseOrderRow,
   receivedLines: Array<{ productId: string; productName: string; receivedQty: number; unitCostCents: number }>,
 ): Promise<void> {
   if (!po.vendorId) {
-    po.qboBillSyncError = "Purchase order has no linked vendor — set a Vendor before receiving to enable QBO Bill sync";
-    po.qboBillSyncErrorAt = new Date().toISOString();
+    await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        qboBillSyncError:
+          "Purchase order has no linked vendor — set a Vendor before receiving to enable QBO Bill sync",
+        qboBillSyncErrorAt: new Date(),
+      },
+    });
     return;
   }
   if (!receivedLines.length) return;
@@ -110,9 +136,9 @@ async function tryPushReceivingBill(
     const result = await syncReceivingBill(
       {
         purchaseOrderId: po.id,
-        poNumber: po.poNumber,
+        poNumber: po.poNumber ?? po.id,
         vendorId: po.vendorId,
-        expectedDate: po.expectedDate ? new Date(po.expectedDate) : null,
+        expectedDate: po.expectedDate ?? null,
         lines,
         // Force-push on each receive: each batch creates its own Bill
         forcePush: true,
@@ -120,15 +146,25 @@ async function tryPushReceivingBill(
       po.tenantId,
       po.locationId,
     );
-    po.qboBillId = result.qboBillId;
-    po.qboBillSyncedAt = new Date().toISOString();
-    po.qboBillSyncError = null;
-    po.qboBillSyncErrorAt = null;
+    await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        qboBillId: result.qboBillId,
+        qboBillSyncedAt: new Date(),
+        qboBillSyncError: null,
+        qboBillSyncErrorAt: null,
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    po.qboBillSyncError = msg.slice(0, 1000);
-    po.qboBillSyncErrorAt = new Date().toISOString();
     console.warn(`[inventory] QBO bill sync failed for ${po.id}: ${msg}`);
+    await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        qboBillSyncError: msg.slice(0, 1000),
+        qboBillSyncErrorAt: new Date(),
+      },
+    });
   }
 }
 
@@ -229,115 +265,98 @@ const GenerateLabelsSchema = z.object({
   labelQty: z.number().int().positive().default(1),
 });
 
-// ─── In-memory inventory store ────────────────────────────────────────────────
-
-interface InventoryProduct {
-  id: string;
-  tenantId: string;
-  name: string;
-  sku: string;
-  barcode: string | null;
-  category: string;
-  costCents: number;
-  priceCents: number;
-  taxClass: string | null;
-  reorderPoint: number;
-  trackInventory: boolean;
-  qoh: number;
-  cogsGlAccountId: string | null;
-  revenueGlAccountId: string | null;
-  inventoryAssetGlAccountId: string | null;
-  locationId: string | null;
-  qboItemId: string | null;
-  qboItemSyncedAt: string | null;
-  qboItemSyncError: string | null;
-  qboItemSyncErrorAt: string | null;
-  active: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface InventoryAdjustment {
-  id: string;
-  tenantId: string;
-  productId: string;
-  productName: string;
-  quantityChange: number;
-  quantityBefore: number;
-  quantityAfter: number;
-  reason: string;
-  notes: string | null;
-  staffName: string | null;
-  createdAt: string;
-  qboJournalEntryId: string | null;
-  qboSyncedAt: string | null;
-  qboSyncError: string | null;
-  qboSyncErrorAt: string | null;
-}
-
-interface CountSession {
-  id: string;
-  tenantId: string;
-  name: string;
-  startedBy: string;
-  status: "in_progress" | "completed";
-  items: CountItem[];
-  createdAt: string;
-  completedAt: string | null;
-}
-
-interface CountItem {
-  id: string;
-  productId: string;
-  productName: string;
-  expectedQty: number;
-  actualQty: number;
-  variance: number;
-}
-
-interface POLineItem {
-  id: string;
-  productId: string;
-  productName: string;
-  quantity: number;
-  unitCostCents: number;
-  receivedQty: number;
-}
-
-interface PurchaseOrder {
-  id: string;
-  tenantId: string;
-  poNumber: string;
-  vendor: string;
-  vendorId: string | null;
-  locationId: string | null;
-  status: "draft" | "submitted" | "partial" | "received" | "cancelled";
-  expectedDate: string | null;
-  notes: string | null;
-  lineItems: POLineItem[];
-  totalCostCents: number;
-  createdAt: string;
-  updatedAt: string;
-  qboBillId: string | null;
-  qboBillSyncedAt: string | null;
-  qboBillSyncError: string | null;
-  qboBillSyncErrorAt: string | null;
-}
-
-let nextProductId = 100;
-let nextAdjId = 100;
-let nextCountId = 100;
-let nextPOId = 100;
-let nextPOLineId = 100;
-let nextCountItemId = 100;
-
-const products: InventoryProduct[] = [];
-const adjustments: InventoryAdjustment[] = [];
-const countSessions: CountSession[] = [];
-const purchaseOrders: PurchaseOrder[] = [];
-
 function getTenantId(req: Request): string {
-  return (req as any).tenantId ?? "default";
+  return (req as any).tenantId ?? (req as any).userRecord?.tenant_id ?? "default";
+}
+
+// Shape products for API responses — keeps the front-end fields stable
+// (priceCents/costCents always numbers, etc.)
+function shapeProduct(p: ProductRow) {
+  return {
+    id: p.id,
+    tenantId: p.tenantId,
+    name: p.name,
+    sku: p.sku ?? "",
+    barcode: p.barcode,
+    category: p.category ?? "",
+    costCents: p.costCents ?? 0,
+    priceCents: p.priceCents,
+    taxClass: p.taxClass,
+    reorderPoint: p.reorderPoint,
+    trackInventory: p.trackInventory,
+    qoh: p.qoh,
+    cogsGlAccountId: p.cogsGlAccountId,
+    revenueGlAccountId: p.revenueGlAccountId,
+    inventoryAssetGlAccountId: p.inventoryAssetGlAccountId,
+    locationId: p.locationId,
+    qboItemId: p.qboItemId,
+    qboItemSyncedAt: p.qboItemSyncedAt ? p.qboItemSyncedAt.toISOString() : null,
+    qboItemSyncError: p.qboItemSyncError,
+    qboItemSyncErrorAt: p.qboItemSyncErrorAt ? p.qboItemSyncErrorAt.toISOString() : null,
+    active: p.active,
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
+  };
+}
+
+function shapeAdjustment(a: AdjustmentRow) {
+  return {
+    id: a.id,
+    tenantId: a.tenantId,
+    productId: a.productId,
+    productName: a.productName,
+    quantityChange: a.quantityChange,
+    quantityBefore: a.quantityBefore,
+    quantityAfter: a.quantityAfter,
+    reason: a.reason,
+    notes: a.notes,
+    staffName: a.staffName,
+    createdAt: a.createdAt.toISOString(),
+    qboJournalEntryId: a.qboJournalEntryId,
+    qboSyncedAt: a.qboSyncedAt ? a.qboSyncedAt.toISOString() : null,
+    qboSyncError: a.qboSyncError,
+    qboSyncErrorAt: a.qboSyncErrorAt ? a.qboSyncErrorAt.toISOString() : null,
+  };
+}
+
+type PoWithLines = PurchaseOrderRow & {
+  lineItems: Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitCostCents: number;
+    receivedQty: number;
+  }>;
+};
+
+function shapePo(po: PoWithLines) {
+  return {
+    id: po.id,
+    tenantId: po.tenantId,
+    poNumber: po.poNumber ?? "",
+    vendor: po.vendorName ?? "",
+    vendorId: po.vendorId,
+    locationId: po.locationId,
+    status: po.status,
+    expectedDate: po.expectedDate ? po.expectedDate.toISOString() : null,
+    notes: po.notes,
+    lineItems: po.lineItems.map((li) => ({
+      id: li.id,
+      productId: li.productId,
+      productName: li.productName,
+      quantity: li.quantity,
+      unitCostCents: li.unitCostCents,
+      receivedQty: li.receivedQty,
+    })),
+    totalCostCents: po.totalCents,
+    createdAt: po.createdAt.toISOString(),
+    updatedAt: po.updatedAt.toISOString(),
+    qboBillId: po.qboBillId,
+    qboBillSyncedAt: po.qboBillSyncedAt ? po.qboBillSyncedAt.toISOString() : null,
+    qboBillSyncError: po.qboBillSyncError,
+    qboBillSyncErrorAt: po.qboBillSyncErrorAt ? po.qboBillSyncErrorAt.toISOString() : null,
+  };
 }
 
 // ─── Products ─────────────────────────────────────────────────────────────────
@@ -345,37 +364,56 @@ function getTenantId(req: Request): string {
 // GET /products
 router.get("/products", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const query = ListProductsQuerySchema.parse(req.query);
-    let results = products.filter((p) => p.tenantId === tenantId && p.active);
 
-    if (query.category) {
-      results = results.filter((p) => p.category === query.category);
-    }
+    const where: any = { active: true };
+    if (query.category) where.category = query.category;
     if (query.search) {
-      const s = query.search.toLowerCase();
-      results = results.filter(
-        (p) =>
-          p.name.toLowerCase().includes(s) ||
-          p.sku.toLowerCase().includes(s) ||
-          (p.barcode && p.barcode.includes(s))
-      );
+      where.OR = [
+        { name: { contains: query.search, mode: "insensitive" } },
+        { sku: { contains: query.search, mode: "insensitive" } },
+        { barcode: { contains: query.search } },
+      ];
     }
+
+    // Low-stock filter is applied in JS because reorderPoint comparison is
+    // not directly expressible against another column in Prisma.
     if (query.lowStockOnly) {
-      results = results.filter((p) => p.trackInventory && p.qoh <= p.reorderPoint);
+      const all = await prisma.product.findMany({ where });
+      const filtered = all.filter((p) => p.trackInventory && p.qoh <= p.reorderPoint);
+      const sorted = filtered.sort((a, b) => {
+        const av = (a as any)[query.sortBy] ?? "";
+        const bv = (b as any)[query.sortBy] ?? "";
+        if (av < bv) return query.sortOrder === "asc" ? -1 : 1;
+        if (av > bv) return query.sortOrder === "asc" ? 1 : -1;
+        return 0;
+      });
+      const total = sorted.length;
+      const paged = sorted.slice(query.skip, query.skip + query.take);
+      return res.json({
+        data: paged.map(shapeProduct),
+        total,
+        skip: query.skip,
+        take: query.take,
+      });
     }
 
-    const total = results.length;
-    results.sort((a: any, b: any) => {
-      const av = a[query.sortBy] ?? "";
-      const bv = b[query.sortBy] ?? "";
-      if (av < bv) return query.sortOrder === "asc" ? -1 : 1;
-      if (av > bv) return query.sortOrder === "asc" ? 1 : -1;
-      return 0;
-    });
-    results = results.slice(query.skip, query.skip + query.take);
+    const [results, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        orderBy: { [query.sortBy]: query.sortOrder },
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.product.count({ where }),
+    ]);
 
-    res.json({ data: results, total, skip: query.skip, take: query.take });
+    res.json({
+      data: results.map(shapeProduct),
+      total,
+      skip: query.skip,
+      take: query.take,
+    });
   } catch (err) {
     next(err);
   }
@@ -386,38 +424,31 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
-    const now = new Date().toISOString();
-    const product: InventoryProduct = {
-      id: `inv-prod-${nextProductId++}`,
-      tenantId,
-      name: body.name,
-      sku: body.sku,
-      barcode: body.barcode ?? null,
-      category: body.category,
-      costCents: body.costCents,
-      priceCents: body.priceCents,
-      taxClass: body.taxClass ?? null,
-      reorderPoint: body.reorderPoint,
-      trackInventory: body.trackInventory,
-      qoh: 0,
-      cogsGlAccountId: body.cogsGlAccountId ?? null,
-      revenueGlAccountId: body.revenueGlAccountId ?? null,
-      inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
-      locationId: body.locationId ?? null,
-      qboItemId: null,
-      qboItemSyncedAt: null,
-      qboItemSyncError: null,
-      qboItemSyncErrorAt: null,
-      active: true,
-      createdAt: now,
-      updatedAt: now,
-    };
-    products.push(product);
+    let product = await prisma.product.create({
+      data: {
+        tenantId,
+        name: body.name,
+        sku: body.sku,
+        barcode: body.barcode ?? null,
+        category: body.category,
+        costCents: body.costCents,
+        priceCents: body.priceCents,
+        taxClass: body.taxClass ?? null,
+        reorderPoint: body.reorderPoint,
+        trackInventory: body.trackInventory,
+        qoh: 0,
+        cogsGlAccountId: body.cogsGlAccountId ?? null,
+        revenueGlAccountId: body.revenueGlAccountId ?? null,
+        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+        locationId: body.locationId ?? null,
+        active: true,
+      },
+    });
     // Best-effort QBO sync — local create always succeeds even if QBO is offline
     if (product.trackInventory) {
-      await tryPushProductToQbo(product);
+      product = await tryPushProductToQbo(product);
     }
-    res.status(201).json(product);
+    res.status(201).json(shapeProduct(product));
   } catch (err) {
     next(err);
   }
@@ -426,20 +457,28 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
 // GET /products/:id
 router.get("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
+    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    const productAdjustments = adjustments.filter(
-      (a) => a.productId === product.id && a.tenantId === tenantId
-    );
-    const productPOs = purchaseOrders.filter(
-      (po) =>
-        po.tenantId === tenantId &&
-        po.lineItems.some((li) => li.productId === product.id)
-    );
+    const [productAdjustments, productPOs] = await Promise.all([
+      prisma.inventoryAdjustment.findMany({
+        where: { productId: product.id },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.purchaseOrder.findMany({
+        where: {
+          lineItems: { some: { productId: product.id } },
+        },
+        include: { lineItems: true },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
 
-    res.json({ ...product, adjustments: productAdjustments, purchaseOrders: productPOs });
+    res.json({
+      ...shapeProduct(product),
+      adjustments: productAdjustments.map(shapeAdjustment),
+      purchaseOrders: productPOs.map((po) => shapePo(po as PoWithLines)),
+    });
   } catch (err) {
     next(err);
   }
@@ -448,17 +487,34 @@ router.get("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // PUT /products/:id
 router.put("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const body = UpdateProductSchema.parse(req.body);
-    const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
-    if (!product) return res.status(404).json({ error: "Product not found" });
+    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: "Product not found" });
 
-    Object.assign(product, body, { updatedAt: new Date().toISOString() });
+    const data: any = {};
+    if (body.name !== undefined) data.name = body.name;
+    if (body.sku !== undefined) data.sku = body.sku;
+    if (body.barcode !== undefined) data.barcode = body.barcode;
+    if (body.category !== undefined) data.category = body.category;
+    if (body.costCents !== undefined) data.costCents = body.costCents;
+    if (body.priceCents !== undefined) data.priceCents = body.priceCents;
+    if (body.taxClass !== undefined) data.taxClass = body.taxClass;
+    if (body.reorderPoint !== undefined) data.reorderPoint = body.reorderPoint;
+    if (body.trackInventory !== undefined) data.trackInventory = body.trackInventory;
+    if (body.cogsGlAccountId !== undefined) data.cogsGlAccountId = body.cogsGlAccountId;
+    if (body.revenueGlAccountId !== undefined) data.revenueGlAccountId = body.revenueGlAccountId;
+    if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = body.inventoryAssetGlAccountId;
+    if (body.locationId !== undefined) data.locationId = body.locationId;
+
+    let product = await prisma.product.update({
+      where: { id: existing.id },
+      data,
+    });
     // Re-sync to QBO so price/cost/account changes propagate
     if (product.trackInventory) {
-      await tryPushProductToQbo(product);
+      product = await tryPushProductToQbo(product);
     }
-    res.json(product);
+    res.json(shapeProduct(product));
   } catch (err) {
     next(err);
   }
@@ -467,11 +523,12 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // POST /products/:id/qbo-sync — manually trigger a push to QBO
 router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
+    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!product) return res.status(404).json({ error: "Product not found" });
     if (!product.trackInventory) {
-      return res.status(400).json({ error: "Product does not track inventory — only inventory items sync to QBO" });
+      return res
+        .status(400)
+        .json({ error: "Product does not track inventory — only inventory items sync to QBO" });
     }
     try {
       const result = await syncInventoryItem(
@@ -481,7 +538,7 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           sku: product.sku,
           description: null,
           priceCents: product.priceCents,
-          costCents: product.costCents,
+          costCents: product.costCents ?? 0,
           qoh: product.qoh,
           incomeGlAccountId: product.revenueGlAccountId,
           inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
@@ -490,16 +547,26 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
         product.tenantId,
         product.locationId,
       );
-      product.qboItemId = result.qboItemId;
-      product.qboItemSyncedAt = new Date().toISOString();
-      product.qboItemSyncError = null;
-      product.qboItemSyncErrorAt = null;
-      res.json({ success: true, qboItemId: result.qboItemId, product });
+      const updated = await prisma.product.update({
+        where: { id: product.id },
+        data: {
+          qboItemId: result.qboItemId,
+          qboItemSyncedAt: new Date(),
+          qboItemSyncError: null,
+          qboItemSyncErrorAt: null,
+        },
+      });
+      res.json({ success: true, qboItemId: result.qboItemId, product: shapeProduct(updated) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      product.qboItemSyncError = msg.slice(0, 1000);
-      product.qboItemSyncErrorAt = new Date().toISOString();
-      res.status(502).json({ success: false, error: msg, product });
+      const updated = await prisma.product.update({
+        where: { id: product.id },
+        data: {
+          qboItemSyncError: msg.slice(0, 1000),
+          qboItemSyncErrorAt: new Date(),
+        },
+      });
+      res.status(502).json({ success: false, error: msg, product: shapeProduct(updated) });
     }
   } catch (err) {
     next(err);
@@ -509,13 +576,14 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
 // DELETE /products/:id (soft delete)
 router.delete("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
-    if (!product) return res.status(404).json({ error: "Product not found" });
+    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: "Product not found" });
 
-    product.active = false;
-    product.updatedAt = new Date().toISOString();
-    res.json({ message: "Product deactivated", id: product.id });
+    await prisma.product.update({
+      where: { id: existing.id },
+      data: { active: false },
+    });
+    res.json({ message: "Product deactivated", id: existing.id });
   } catch (err) {
     next(err);
   }
@@ -528,40 +596,39 @@ router.post("/adjustments", async (req: Request, res: Response, next: NextFuncti
   try {
     const tenantId = getTenantId(req);
     const body = CreateAdjustmentSchema.parse(req.body);
-    const product = products.find((p) => p.id === body.productId && p.tenantId === tenantId);
+    const product = await prisma.product.findFirst({ where: { id: body.productId } });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     const before = product.qoh;
-    product.qoh += body.quantityChange;
-    const after = product.qoh;
-    product.updatedAt = new Date().toISOString();
+    const after = before + body.quantityChange;
 
-    const adjustment: InventoryAdjustment = {
-      id: `inv-adj-${nextAdjId++}`,
-      tenantId,
-      productId: product.id,
-      productName: product.name,
-      quantityChange: body.quantityChange,
-      quantityBefore: before,
-      quantityAfter: after,
-      reason: body.reason,
-      notes: body.notes ?? null,
-      staffName: body.staffName ?? null,
-      createdAt: new Date().toISOString(),
-      qboJournalEntryId: null,
-      qboSyncedAt: null,
-      qboSyncError: null,
-      qboSyncErrorAt: null,
-    };
-    adjustments.push(adjustment);
+    const updatedProduct = await prisma.product.update({
+      where: { id: product.id },
+      data: { qoh: after },
+    });
+
+    const adjustment = await prisma.inventoryAdjustment.create({
+      data: {
+        tenantId,
+        productId: product.id,
+        productName: product.name,
+        quantityChange: body.quantityChange,
+        quantityBefore: before,
+        quantityAfter: after,
+        reason: body.reason,
+        notes: body.notes ?? null,
+        staffName: body.staffName ?? null,
+      },
+    });
 
     // QBO journal entry for damaged/shrinkage/count/return-to-vendor adjustments.
     // 'received' is handled via the Bill flow and 'sold' via QBO's auto-COGS on
     // Item-referenced invoices, so postInventoryAdjustmentJournal short-circuits
     // on those reasons.
-    await tryPushAdjustmentJournal(adjustment, product);
+    await tryPushAdjustmentJournal(adjustment, updatedProduct);
 
-    res.status(201).json(adjustment);
+    const refreshed = await prisma.inventoryAdjustment.findFirst({ where: { id: adjustment.id } });
+    res.status(201).json(refreshed ? shapeAdjustment(refreshed) : shapeAdjustment(adjustment));
   } catch (err) {
     next(err);
   }
@@ -570,27 +637,28 @@ router.post("/adjustments", async (req: Request, res: Response, next: NextFuncti
 // GET /adjustments
 router.get("/adjustments", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const query = ListAdjustmentsQuerySchema.parse(req.query);
-    let results = adjustments.filter((a) => a.tenantId === tenantId);
 
-    if (query.productId) {
-      results = results.filter((a) => a.productId === query.productId);
-    }
-    if (query.reason) {
-      results = results.filter((a) => a.reason === query.reason);
-    }
-    if (query.dateFrom) {
-      results = results.filter((a) => a.createdAt >= query.dateFrom!);
-    }
-    if (query.dateTo) {
-      results = results.filter((a) => a.createdAt <= query.dateTo!);
+    const where: any = {};
+    if (query.productId) where.productId = query.productId;
+    if (query.reason) where.reason = query.reason;
+    if (query.dateFrom || query.dateTo) {
+      where.createdAt = {};
+      if (query.dateFrom) where.createdAt.gte = new Date(query.dateFrom);
+      if (query.dateTo) where.createdAt.lte = new Date(query.dateTo);
     }
 
-    const total = results.length;
-    results = results.slice(query.skip, query.skip + query.take);
+    const [results, total] = await Promise.all([
+      prisma.inventoryAdjustment.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.inventoryAdjustment.count({ where }),
+    ]);
 
-    res.json({ data: results, total });
+    res.json({ data: results.map(shapeAdjustment), total });
   } catch (err) {
     next(err);
   }
@@ -598,23 +666,42 @@ router.get("/adjustments", async (req: Request, res: Response, next: NextFunctio
 
 // ─── Count Sessions ───────────────────────────────────────────────────────────
 
+function shapeCountSession(s: any) {
+  return {
+    id: s.id,
+    tenantId: s.tenantId,
+    name: s.name,
+    startedBy: s.startedBy,
+    status: s.status,
+    items: (s.items ?? []).map((it: any) => ({
+      id: it.id,
+      productId: it.productId,
+      productName: it.productName,
+      expectedQty: it.expectedQty,
+      actualQty: it.actualQty,
+      variance: it.variance,
+    })),
+    createdAt: s.createdAt instanceof Date ? s.createdAt.toISOString() : s.createdAt,
+    completedAt: s.completedAt
+      ? (s.completedAt instanceof Date ? s.completedAt.toISOString() : s.completedAt)
+      : null,
+  };
+}
+
 // POST /counts
 router.post("/counts", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = getTenantId(req);
     const body = CreateCountSessionSchema.parse(req.body);
-    const session: CountSession = {
-      id: `inv-count-${nextCountId++}`,
-      tenantId,
-      name: body.name ?? `Count ${new Date().toLocaleDateString()}`,
-      startedBy: body.startedBy ?? "Staff",
-      status: "in_progress",
-      items: [],
-      createdAt: new Date().toISOString(),
-      completedAt: null,
-    };
-    countSessions.push(session);
-    res.status(201).json(session);
+    const session = await prisma.inventoryCountSession.create({
+      data: {
+        tenantId,
+        name: body.name ?? `Count ${new Date().toLocaleDateString()}`,
+        startedBy: body.startedBy ?? "Staff",
+        status: "in_progress",
+      },
+    });
+    res.status(201).json(shapeCountSession({ ...session, items: [] }));
   } catch (err) {
     next(err);
   }
@@ -623,27 +710,32 @@ router.post("/counts", async (req: Request, res: Response, next: NextFunction) =
 // POST /counts/:id/items
 router.post("/counts/:id/items", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const session = countSessions.find(
-      (s) => s.id === req.params.id && s.tenantId === tenantId
-    );
+    const session = await prisma.inventoryCountSession.findFirst({ where: { id: req.params.id } });
     if (!session) return res.status(404).json({ error: "Count session not found" });
     if (session.status === "completed")
       return res.status(400).json({ error: "Count session already completed" });
 
     const body = SubmitCountItemSchema.parse(req.body);
-    const product = products.find((p) => p.id === body.productId && p.tenantId === tenantId);
+    const product = await prisma.product.findFirst({ where: { id: body.productId } });
 
-    const item: CountItem = {
-      id: `inv-ci-${nextCountItemId++}`,
-      productId: body.productId,
-      productName: product?.name ?? "Unknown",
-      expectedQty: body.expectedQty,
-      actualQty: body.actualQty,
-      variance: body.actualQty - body.expectedQty,
-    };
-    session.items.push(item);
-    res.status(201).json(item);
+    const item = await prisma.inventoryCountItem.create({
+      data: {
+        countSessionId: session.id,
+        productId: body.productId,
+        productName: product?.name ?? "Unknown",
+        expectedQty: body.expectedQty,
+        actualQty: body.actualQty,
+        variance: body.actualQty - body.expectedQty,
+      },
+    });
+    res.status(201).json({
+      id: item.id,
+      productId: item.productId,
+      productName: item.productName,
+      expectedQty: item.expectedQty,
+      actualQty: item.actualQty,
+      variance: item.variance,
+    });
   } catch (err) {
     next(err);
   }
@@ -652,51 +744,64 @@ router.post("/counts/:id/items", async (req: Request, res: Response, next: NextF
 // PUT /counts/:id/complete
 router.put("/counts/:id/complete", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const session = countSessions.find(
-      (s) => s.id === req.params.id && s.tenantId === tenantId
-    );
+    const session = await prisma.inventoryCountSession.findFirst({
+      where: { id: req.params.id },
+      include: { items: true },
+    });
     if (!session) return res.status(404).json({ error: "Count session not found" });
     if (session.status === "completed")
       return res.status(400).json({ error: "Already completed" });
 
-    const generatedAdjustments: InventoryAdjustment[] = [];
+    const generatedAdjustments: AdjustmentRow[] = [];
 
     for (const item of session.items) {
       if (item.variance !== 0) {
-        const product = products.find((p) => p.id === item.productId && p.tenantId === tenantId);
+        const product = await prisma.product.findFirst({ where: { id: item.productId } });
         if (product) {
           const before = product.qoh;
-          product.qoh = item.actualQty;
-          const adj: InventoryAdjustment = {
-            id: `inv-adj-${nextAdjId++}`,
-            tenantId,
-            productId: product.id,
-            productName: product.name,
-            quantityChange: item.variance,
-            quantityBefore: before,
-            quantityAfter: item.actualQty,
-            reason: "count",
-            notes: `Count session ${session.name} — variance: ${item.variance}`,
-            staffName: session.startedBy,
-            createdAt: new Date().toISOString(),
-            qboJournalEntryId: null,
-            qboSyncedAt: null,
-            qboSyncError: null,
-            qboSyncErrorAt: null,
-          };
-          adjustments.push(adj);
+          const updatedProduct = await prisma.product.update({
+            where: { id: product.id },
+            data: { qoh: item.actualQty },
+          });
+          const adj = await prisma.inventoryAdjustment.create({
+            data: {
+              tenantId: session.tenantId,
+              productId: product.id,
+              productName: product.name,
+              quantityChange: item.variance,
+              quantityBefore: before,
+              quantityAfter: item.actualQty,
+              reason: "count",
+              notes: `Count session ${session.name} — variance: ${item.variance}`,
+              staffName: session.startedBy,
+              countSessionId: session.id,
+            },
+          });
           generatedAdjustments.push(adj);
           // Best-effort QBO journal entry for the count variance
-          await tryPushAdjustmentJournal(adj, product);
+          await tryPushAdjustmentJournal(adj, updatedProduct);
         }
       }
     }
 
-    session.status = "completed";
-    session.completedAt = new Date().toISOString();
+    const completed = await prisma.inventoryCountSession.update({
+      where: { id: session.id },
+      data: { status: "completed", completedAt: new Date() },
+      include: { items: true },
+    });
 
-    res.json({ session, adjustments: generatedAdjustments });
+    // Re-fetch adjustments so the qbo* fields are up to date
+    const refreshedAdjustments =
+      generatedAdjustments.length === 0
+        ? []
+        : await prisma.inventoryAdjustment.findMany({
+            where: { id: { in: generatedAdjustments.map((a) => a.id) } },
+          });
+
+    res.json({
+      session: shapeCountSession(completed),
+      adjustments: refreshedAdjustments.map(shapeAdjustment),
+    });
   } catch (err) {
     next(err);
   }
@@ -705,9 +810,11 @@ router.put("/counts/:id/complete", async (req: Request, res: Response, next: Nex
 // GET /counts
 router.get("/counts", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const results = countSessions.filter((s) => s.tenantId === tenantId);
-    res.json({ data: results, total: results.length });
+    const results = await prisma.inventoryCountSession.findMany({
+      include: { items: true },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ data: results.map(shapeCountSession), total: results.length });
   } catch (err) {
     next(err);
   }
@@ -715,59 +822,65 @@ router.get("/counts", async (req: Request, res: Response, next: NextFunction) =>
 
 // ─── Purchase Orders ──────────────────────────────────────────────────────────
 
+async function nextPoNumber(tenantId: string): Promise<string> {
+  const count = await prisma.purchaseOrder.count({ where: { tenantId } });
+  return `PO-${String(count + 1).padStart(4, "0")}`;
+}
+
 // POST /purchase-orders
 router.post("/purchase-orders", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = getTenantId(req);
     const body = CreatePurchaseOrderSchema.parse(req.body);
-    const now = new Date().toISOString();
 
-    const lineItems: POLineItem[] = body.lineItems.map((li) => {
-      const product = products.find((p) => p.id === li.productId && p.tenantId === tenantId);
-      return {
-        id: `inv-poli-${nextPOLineId++}`,
-        productId: li.productId,
-        productName: product?.name ?? "Unknown",
-        quantity: li.quantity,
-        unitCostCents: li.unitCostCents,
-        receivedQty: 0,
-      };
-    });
-
-    const totalCostCents = lineItems.reduce(
-      (sum, li) => sum + li.quantity * li.unitCostCents,
-      0
-    );
+    // Prefetch product names + validate vendor
+    const productMap = new Map<string, string>();
+    for (const li of body.lineItems) {
+      const product = await prisma.product.findFirst({ where: { id: li.productId } });
+      productMap.set(li.productId, product?.name ?? "Unknown");
+    }
 
     let vendorId: string | null = body.vendorId ?? null;
     let vendorName = body.vendor ?? "";
     if (vendorId) {
-      const v = await prisma.vendor.findFirst({ where: { id: vendorId, tenantId } });
+      const v = await prisma.vendor.findFirst({ where: { id: vendorId } });
       if (!v) return res.status(400).json({ error: "Vendor not found" });
       vendorName = v.name;
     }
 
-    const po: PurchaseOrder = {
-      id: `inv-po-${nextPOId++}`,
-      tenantId,
-      poNumber: `PO-${String(nextPOId).padStart(4, "0")}`,
-      vendor: vendorName,
-      vendorId,
-      locationId: body.locationId ?? null,
-      status: "draft",
-      expectedDate: body.expectedDate ?? null,
-      notes: body.notes ?? null,
-      lineItems,
-      totalCostCents,
-      createdAt: now,
-      updatedAt: now,
-      qboBillId: null,
-      qboBillSyncedAt: null,
-      qboBillSyncError: null,
-      qboBillSyncErrorAt: null,
-    };
-    purchaseOrders.push(po);
-    res.status(201).json(po);
+    const totalCents = body.lineItems.reduce(
+      (sum, li) => sum + li.quantity * li.unitCostCents,
+      0,
+    );
+
+    const poNumber = await nextPoNumber(tenantId);
+
+    const created = await prisma.purchaseOrder.create({
+      data: {
+        tenantId,
+        poNumber,
+        vendorId,
+        vendorName,
+        locationId: body.locationId ?? null,
+        status: "draft",
+        expectedDate: body.expectedDate ? new Date(body.expectedDate) : null,
+        notes: body.notes ?? null,
+        totalCents,
+        lineItems: {
+          create: body.lineItems.map((li) => ({
+            tenantId,
+            productId: li.productId,
+            productName: productMap.get(li.productId) ?? "Unknown",
+            quantity: li.quantity,
+            unitCostCents: li.unitCostCents,
+            receivedQty: 0,
+          })),
+        },
+      },
+      include: { lineItems: true },
+    });
+
+    res.status(201).json(shapePo(created as PoWithLines));
   } catch (err) {
     next(err);
   }
@@ -776,13 +889,19 @@ router.post("/purchase-orders", async (req: Request, res: Response, next: NextFu
 // GET /purchase-orders
 router.get("/purchase-orders", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const status = req.query.status as string | undefined;
-    let results = purchaseOrders.filter((po) => po.tenantId === tenantId);
-    if (status) {
-      results = results.filter((po) => po.status === status);
-    }
-    res.json({ data: results, total: results.length });
+    const where: any = {};
+    if (status) where.status = status;
+
+    const results = await prisma.purchaseOrder.findMany({
+      where,
+      include: { lineItems: true },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({
+      data: results.map((po) => shapePo(po as PoWithLines)),
+      total: results.length,
+    });
   } catch (err) {
     next(err);
   }
@@ -791,12 +910,12 @@ router.get("/purchase-orders", async (req: Request, res: Response, next: NextFun
 // GET /purchase-orders/:id
 router.get("/purchase-orders/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const po = purchaseOrders.find(
-      (p) => p.id === req.params.id && p.tenantId === tenantId
-    );
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id },
+      include: { lineItems: true },
+    });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });
-    res.json(po);
+    res.json(shapePo(po as PoWithLines));
   } catch (err) {
     next(err);
   }
@@ -805,18 +924,18 @@ router.get("/purchase-orders/:id", async (req: Request, res: Response, next: Nex
 // PUT /purchase-orders/:id/receive
 router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const body = ReceivePOSchema.parse(req.body);
-    const po = purchaseOrders.find(
-      (p) => p.id === req.params.id && p.tenantId === tenantId
-    );
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id },
+      include: { lineItems: true },
+    });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });
     if (po.status === "cancelled")
       return res.status(400).json({ error: "Cannot receive cancelled PO" });
     if (po.status === "received")
       return res.status(400).json({ error: "PO already fully received" });
 
-    const receivedAdjustments: InventoryAdjustment[] = [];
+    const receivedAdjustments: AdjustmentRow[] = [];
 
     for (const receiveLine of body.lineItems) {
       const poLine = po.lineItems.find((li) => li.id === receiveLine.lineItemId);
@@ -826,44 +945,53 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
       const qty = Math.min(receiveLine.receivedQty, maxReceivable);
       if (qty <= 0) continue;
 
-      poLine.receivedQty += qty;
+      await prisma.poLineItem.update({
+        where: { id: poLine.id },
+        data: { receivedQty: poLine.receivedQty + qty },
+      });
 
-      const product = products.find((p) => p.id === poLine.productId && p.tenantId === tenantId);
+      const product = await prisma.product.findFirst({ where: { id: poLine.productId } });
       if (product) {
         const before = product.qoh;
-        product.qoh += qty;
-        const adj: InventoryAdjustment = {
-          id: `inv-adj-${nextAdjId++}`,
-          tenantId,
-          productId: product.id,
-          productName: product.name,
-          quantityChange: qty,
-          quantityBefore: before,
-          quantityAfter: product.qoh,
-          reason: "received",
-          notes: `PO ${po.poNumber} — received ${qty} units`,
-          staffName: body.receivedBy ?? null,
-          createdAt: new Date().toISOString(),
-          qboJournalEntryId: null,
-          qboSyncedAt: null,
-          qboSyncError: null,
-          qboSyncErrorAt: null,
-        };
-        adjustments.push(adj);
+        await prisma.product.update({
+          where: { id: product.id },
+          data: { qoh: before + qty },
+        });
+        const adj = await prisma.inventoryAdjustment.create({
+          data: {
+            tenantId: po.tenantId,
+            productId: product.id,
+            productName: product.name,
+            quantityChange: qty,
+            quantityBefore: before,
+            quantityAfter: before + qty,
+            reason: "received",
+            notes: `PO ${po.poNumber ?? po.id} — received ${qty} units`,
+            staffName: body.receivedBy ?? null,
+          },
+        });
         receivedAdjustments.push(adj);
       }
     }
 
-    // Determine PO status
-    const allReceived = po.lineItems.every((li) => li.receivedQty >= li.quantity);
-    const anyReceived = po.lineItems.some((li) => li.receivedQty > 0);
-    po.status = allReceived ? "received" : anyReceived ? "partial" : po.status;
-    po.updatedAt = new Date().toISOString();
+    // Reload line items to determine status
+    const refreshedLines = await prisma.poLineItem.findMany({
+      where: { purchaseOrderId: po.id },
+    });
+    const allReceived = refreshedLines.every((li) => li.receivedQty >= li.quantity);
+    const anyReceived = refreshedLines.some((li) => li.receivedQty > 0);
+    const newStatus = allReceived ? "received" : anyReceived ? "partial" : po.status;
+
+    const updatedPo = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: newStatus },
+      include: { lineItems: true },
+    });
 
     // Best-effort QBO Bill for everything received in this batch
     const billLines = receivedAdjustments
       .map((adj) => {
-        const poLine = po.lineItems.find((li) => li.productId === adj.productId);
+        const poLine = updatedPo.lineItems.find((li) => li.productId === adj.productId);
         return poLine
           ? {
               productId: adj.productId,
@@ -874,9 +1002,17 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
           : null;
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
-    await tryPushReceivingBill(po, billLines);
+    await tryPushReceivingBill(updatedPo, billLines);
 
-    res.json({ purchaseOrder: po, adjustments: receivedAdjustments });
+    const finalPo = await prisma.purchaseOrder.findFirst({
+      where: { id: po.id },
+      include: { lineItems: true },
+    });
+
+    res.json({
+      purchaseOrder: shapePo(finalPo as PoWithLines),
+      adjustments: receivedAdjustments.map(shapeAdjustment),
+    });
   } catch (err) {
     next(err);
   }
@@ -885,17 +1021,20 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
 // PUT /purchase-orders/:id/cancel
 router.put("/purchase-orders/:id/cancel", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const po = purchaseOrders.find(
-      (p) => p.id === req.params.id && p.tenantId === tenantId
-    );
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id },
+      include: { lineItems: true },
+    });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });
     if (po.status === "received")
       return res.status(400).json({ error: "Cannot cancel a fully received PO" });
 
-    po.status = "cancelled";
-    po.updatedAt = new Date().toISOString();
-    res.json(po);
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: "cancelled" },
+      include: { lineItems: true },
+    });
+    res.json(shapePo(updated as PoWithLines));
   } catch (err) {
     next(err);
   }
@@ -906,19 +1045,18 @@ router.put("/purchase-orders/:id/cancel", async (req: Request, res: Response, ne
 // POST /labels — generate ZPL barcode labels
 router.post("/labels", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const body = GenerateLabelsSchema.parse(req.body);
+    const products = await prisma.product.findMany({
+      where: { id: { in: body.productIds } },
+    });
+
     const zplLabels: string[] = [];
-
-    for (const pid of body.productIds) {
-      const product = products.find((p) => p.id === pid && p.tenantId === tenantId);
-      if (!product) continue;
-
-      const barcode = product.barcode || product.sku;
+    for (const product of products) {
+      const barcode = product.barcode || product.sku || product.id;
       const price = (product.priceCents / 100).toFixed(2);
       for (let i = 0; i < body.labelQty; i++) {
         zplLabels.push(
-          `^XA\n^FO50,50^A0N,30,30^FD${product.name}^FS\n^FO50,90^A0N,20,20^FDSKU: ${product.sku}^FS\n^FO50,120^BY2^BCN,80,Y,N,N^FD${barcode}^FS\n^FO50,220^A0N,25,25^FD$${price}^FS\n^XZ`
+          `^XA\n^FO50,50^A0N,30,30^FD${product.name}^FS\n^FO50,90^A0N,20,20^FDSKU: ${product.sku ?? ""}^FS\n^FO50,120^BY2^BCN,80,Y,N,N^FD${barcode}^FS\n^FO50,220^A0N,25,25^FD$${price}^FS\n^XZ`
         );
       }
     }
@@ -934,26 +1072,28 @@ router.post("/labels", async (req: Request, res: Response, next: NextFunction) =
 // GET /valuation — FIFO-based inventory valuation
 router.get("/valuation", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const activeProducts = products.filter((p) => p.tenantId === tenantId && p.active && p.trackInventory);
+    const activeProducts = await prisma.product.findMany({
+      where: { active: true, trackInventory: true },
+    });
 
     let totalCostValue = 0;
     let totalRetailValue = 0;
 
     const items = activeProducts.map((p) => {
-      const costTotal = p.qoh * p.costCents;
+      const cost = p.costCents ?? 0;
+      const costTotal = p.qoh * cost;
       const retailTotal = p.qoh * p.priceCents;
       totalCostValue += costTotal;
       totalRetailValue += retailTotal;
-      const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents) * 100 : 0;
+      const margin = p.priceCents > 0 ? ((p.priceCents - cost) / p.priceCents) * 100 : 0;
 
       return {
         productId: p.id,
         name: p.name,
-        sku: p.sku,
-        category: p.category,
+        sku: p.sku ?? "",
+        category: p.category ?? "",
         qoh: p.qoh,
-        unitCostCents: p.costCents,
+        unitCostCents: cost,
         totalCostCents: costTotal,
         retailPriceCents: p.priceCents,
         totalRetailCents: retailTotal,
@@ -982,16 +1122,16 @@ router.get("/valuation", async (req: Request, res: Response, next: NextFunction)
 // GET /reorder-alerts
 router.get("/reorder-alerts", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const alerts = products.filter(
-      (p) => p.tenantId === tenantId && p.active && p.trackInventory && p.qoh <= p.reorderPoint
-    );
+    const products = await prisma.product.findMany({
+      where: { active: true, trackInventory: true },
+    });
+    const alerts = products.filter((p) => p.qoh <= p.reorderPoint);
     res.json({
       data: alerts.map((p) => ({
         productId: p.id,
         name: p.name,
-        sku: p.sku,
-        category: p.category,
+        sku: p.sku ?? "",
+        category: p.category ?? "",
         qoh: p.qoh,
         reorderPoint: p.reorderPoint,
         deficit: p.reorderPoint - p.qoh,
@@ -1007,9 +1147,8 @@ router.get("/reorder-alerts", async (req: Request, res: Response, next: NextFunc
 
 router.get("/vendors", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
     const vendors = await prisma.vendor.findMany({
-      where: { tenantId, active: true },
+      where: { active: true },
       orderBy: { name: "asc" },
     });
     res.json({ data: vendors, total: vendors.length });
@@ -1057,7 +1196,7 @@ router.put("/vendors/:id", async (req: Request, res: Response, next: NextFunctio
   try {
     const tenantId = getTenantId(req);
     const body = UpdateVendorSchema.parse(req.body);
-    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id, tenantId } });
+    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Vendor not found" });
     const vendor = await prisma.vendor.update({
       where: { id: existing.id },
@@ -1091,8 +1230,7 @@ router.put("/vendors/:id", async (req: Request, res: Response, next: NextFunctio
 
 router.delete("/vendors/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = getTenantId(req);
-    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id, tenantId } });
+    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Vendor not found" });
     await prisma.vendor.update({ where: { id: existing.id }, data: { active: false } });
     res.json({ message: "Vendor deactivated", id: existing.id });
@@ -1139,7 +1277,7 @@ export async function retryFailedQboInventorySyncs(
 
   for (const ref of failedRefs) {
     if (ref.sourceType === "product") {
-      const product = products.find((p) => p.id === ref.sourceId && p.tenantId === tenantId);
+      const product = await prisma.product.findFirst({ where: { id: ref.sourceId, tenantId } });
       if (!product) {
         result.skipped++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
@@ -1151,22 +1289,26 @@ export async function retryFailedQboInventorySyncs(
         continue;
       }
       result.attempted++;
-      await tryPushProductToQbo(product);
-      if (product.qboItemSyncError) {
+      const updated = await tryPushProductToQbo(product);
+      if (updated.qboItemSyncError) {
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: product.qboItemSyncError });
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: updated.qboItemSyncError });
       } else {
         result.succeeded++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       }
     } else if (ref.sourceType === "inventory_adjustment") {
-      const adjustment = adjustments.find((a) => a.id === ref.sourceId && a.tenantId === tenantId);
+      const adjustment = await prisma.inventoryAdjustment.findFirst({
+        where: { id: ref.sourceId, tenantId },
+      });
       if (!adjustment) {
         result.skipped++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment no longer exists locally" });
         continue;
       }
-      const product = products.find((p) => p.id === adjustment.productId && p.tenantId === tenantId);
+      const product = await prisma.product.findFirst({
+        where: { id: adjustment.productId, tenantId },
+      });
       if (!product) {
         result.skipped++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment's product no longer exists locally" });
@@ -1174,15 +1316,21 @@ export async function retryFailedQboInventorySyncs(
       }
       result.attempted++;
       await tryPushAdjustmentJournal(adjustment, product);
-      if (adjustment.qboSyncError) {
+      const refreshed = await prisma.inventoryAdjustment.findFirst({
+        where: { id: adjustment.id, tenantId },
+      });
+      if (refreshed?.qboSyncError) {
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: adjustment.qboSyncError });
+        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: refreshed.qboSyncError });
       } else {
         result.succeeded++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       }
     } else if (ref.sourceType === "purchase_order") {
-      const po = purchaseOrders.find((p) => p.id === ref.sourceId && p.tenantId === tenantId);
+      const po = await prisma.purchaseOrder.findFirst({
+        where: { id: ref.sourceId, tenantId },
+        include: { lineItems: true },
+      });
       if (!po) {
         result.skipped++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Purchase order no longer exists locally" });
@@ -1208,25 +1356,35 @@ export async function retryFailedQboInventorySyncs(
         const billResult = await syncReceivingBill(
           {
             purchaseOrderId: po.id,
-            poNumber: po.poNumber,
+            poNumber: po.poNumber ?? po.id,
             vendorId: po.vendorId,
-            expectedDate: po.expectedDate ? new Date(po.expectedDate) : null,
+            expectedDate: po.expectedDate ?? null,
             lines: billLines,
             forcePush: false,
           },
           po.tenantId,
           po.locationId,
         );
-        po.qboBillId = billResult.qboBillId;
-        po.qboBillSyncedAt = new Date().toISOString();
-        po.qboBillSyncError = null;
-        po.qboBillSyncErrorAt = null;
+        await prisma.purchaseOrder.update({
+          where: { id: po.id },
+          data: {
+            qboBillId: billResult.qboBillId,
+            qboBillSyncedAt: new Date(),
+            qboBillSyncError: null,
+            qboBillSyncErrorAt: null,
+          },
+        });
         result.succeeded++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        po.qboBillSyncError = msg.slice(0, 1000);
-        po.qboBillSyncErrorAt = new Date().toISOString();
+        await prisma.purchaseOrder.update({
+          where: { id: po.id },
+          data: {
+            qboBillSyncError: msg.slice(0, 1000),
+            qboBillSyncErrorAt: new Date(),
+          },
+        });
         result.failed++;
         result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
       }
