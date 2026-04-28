@@ -579,6 +579,30 @@ export default function DockWalkRunner() {
   // can't both observe row.item === null and issue two POSTs (the schema has
   // no unique (dockWalkId, slipId) constraint so we'd silently duplicate).
   const inFlightRef = useRef<Set<string>>(new Set());
+  // Each storage key gets at most one on-error thumbnail re-fetch per
+  // page lifetime so a permanently-broken key can't loop us forever.
+  const thumbnailRefreshAttempted = useRef<Set<string>>(new Set());
+
+  /* Re-presign a single storage key when its signed URL has expired
+     (the <img> errors out). No-ops after one attempt per key. */
+  async function refreshThumbnailUrl(key: string) {
+    if (thumbnailRefreshAttempted.current.has(key)) return;
+    thumbnailRefreshAttempted.current.add(key);
+    try {
+      const token = await getToken();
+      const dl = await api.post<PresignDownloadBatchResponse>(
+        '/api/storage/presign-download-batch',
+        { keys: [key] },
+        token,
+      );
+      const fresh = dl.urls?.[key];
+      if (fresh) {
+        setPhotoUrlMap((prev) => ({ ...prev, [key]: fresh }));
+      }
+    } catch {
+      /* leave the broken-image placeholder; next reload will retry */
+    }
+  }
   // Hidden file input — one per render keyed off the current slip so the
   // browser stays happy (we just reset .value after each pick).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1307,7 +1331,12 @@ export default function DockWalkRunner() {
                 return (
                   <div key={key} style={ui.photoTile}>
                     {url ? (
-                      <img src={url} alt="Slip" style={ui.photoImg} />
+                      <img
+                        src={url}
+                        alt="Slip"
+                        style={ui.photoImg}
+                        onError={() => void refreshThumbnailUrl(key)}
+                      />
                     ) : (
                       <div style={ui.photoSpinner}>Loading…</div>
                     )}
