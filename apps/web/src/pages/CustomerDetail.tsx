@@ -1001,6 +1001,11 @@ export default function CustomerDetailPage() {
   const [pmActionId, setPmActionId] = useState<string | null>(null);
   const [pmError, setPmError] = useState<string | null>(null);
   const [setupBusy, setSetupBusy] = useState<'card' | 'bank' | null>(null);
+  const [autopayBusy, setAutopayBusy] = useState(false);
+  // Optimistic flag: when set, overrides the displayed autopay value while
+  // the network request is in flight so the badge flips instantly. Cleared
+  // after the refetch (success) or on error rollback.
+  const [autopayOptimistic, setAutopayOptimistic] = useState<boolean | null>(null);
   // Refund-from-history dialog state. We track the payment row being refunded,
   // a free-form amount input (defaults to the full payment), an optional
   // reason, and any error from the API call. `refundBusy` blocks double-clicks
@@ -1507,11 +1512,6 @@ export default function CustomerDetailPage() {
     }
   }
 
-  const [autopayBusy, setAutopayBusy] = useState(false);
-  // Optimistic flag: when set, overrides the displayed autopay value while
-  // the network request is in flight so the badge flips instantly. Cleared
-  // after the refetch (success) or on error rollback.
-  const [autopayOptimistic, setAutopayOptimistic] = useState<boolean | null>(null);
   async function toggleAutopay() {
     if (!paymentMethods) return;
     const next = !paymentMethods.autopay;
