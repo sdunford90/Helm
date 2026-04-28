@@ -2,10 +2,12 @@ const API_BASE = '';
 
 class ApiClientError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiClientError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -30,9 +32,11 @@ async function request<T>(
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
+    const parsed = error as { error?: string; code?: string };
     throw new ApiClientError(
-      (error as { error?: string }).error || `Request failed with status ${res.status}`,
-      res.status
+      parsed.error || `Request failed with status ${res.status}`,
+      res.status,
+      parsed.code,
     );
   }
 

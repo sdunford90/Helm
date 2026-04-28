@@ -11,8 +11,105 @@ import CustomerForm, { type CustomerFormPayload } from '../components/CustomerFo
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
 import { isCardExpired } from '../components/PaymentModal';
+import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
+
+/* ── Document upload policy (mirrors apps/api/src/lib/file-validation.ts) ── */
+const DOCUMENT_ALLOWED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.txt', '.csv'] as const;
+const DOCUMENT_ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'text/plain',
+  'text/csv',
+] as const;
+const DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
+const DOCUMENT_HELPER_TEXT = 'Allowed: PDF, PNG, JPG, TXT, or CSV — up to 20 MB.';
+const DOCUMENT_ACCEPT_ATTR = [
+  ...DOCUMENT_ALLOWED_EXTENSIONS,
+  ...DOCUMENT_ALLOWED_MIME_TYPES,
+].join(',');
+
+const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
+  EXTENSION_FORBIDDEN:
+    "That file type isn't supported. Please upload a PDF, PNG, JPG, TXT, or CSV.",
+  CONTENT_TYPE_FORBIDDEN:
+    "That file type isn't supported. Please upload a PDF, PNG, JPG, TXT, or CSV.",
+  CATEGORY_UNKNOWN: 'Unsupported upload category.',
+  SIZE_EXCEEDED: 'File is too large. Documents must be 20 MB or smaller.',
+  MAGIC_MISMATCH:
+    "The file's contents didn't match its extension. Please re-export it as a real PDF, PNG, or JPG and try again.",
+  QUOTA_EXCEEDED:
+    'Your storage quota is full. Delete some old documents to free up space, then try again.',
+  AV_INFECTED:
+    'That file was rejected by the antivirus scanner and was not uploaded.',
+  AV_REQUIRED_BUT_SKIPPED:
+    'Antivirus scanning is temporarily unavailable. Please try again in a few minutes.',
+  FORBIDDEN: "You don't have permission to upload to this location.",
+  INVALID_STORAGE_KEY: 'The upload could not be linked to this customer. Please try again.',
+};
+
+function describeUploadError(err: unknown): { title: string; message: string } {
+  if (err instanceof ApiClientError) {
+    const friendly = err.code ? UPLOAD_ERROR_MESSAGES[err.code] : undefined;
+    if (friendly) {
+      return { title: 'Upload failed', message: friendly };
+    }
+    return {
+      title: 'Upload failed',
+      message: `${err.message} (status ${err.status}${err.code ? `, ${err.code}` : ''})`,
+    };
+  }
+  if (err instanceof Error) {
+    return { title: 'Upload failed', message: err.message };
+  }
+  return { title: 'Upload failed', message: 'An unexpected error occurred.' };
+}
+
+function getFileExtension(filename: string): string {
+  const i = filename.lastIndexOf('.');
+  return i < 0 ? '' : filename.slice(i).toLowerCase();
+}
+
+function preValidateDocument(file: File): { ok: true } | { ok: false; title: string; message: string } {
+  const ext = getFileExtension(file.name);
+  if (!ext || !DOCUMENT_ALLOWED_EXTENSIONS.includes(ext as (typeof DOCUMENT_ALLOWED_EXTENSIONS)[number])) {
+    return {
+      ok: false,
+      title: 'Unsupported file type',
+      message: `${ext || 'Files without an extension'} can't be uploaded. Please choose a PDF, PNG, JPG, TXT, or CSV.`,
+    };
+  }
+  // Browser-supplied MIME may be empty (e.g. .csv on some platforms); only
+  // reject when present and not in the allowlist.
+  if (
+    file.type &&
+    !DOCUMENT_ALLOWED_MIME_TYPES.includes(file.type.toLowerCase() as (typeof DOCUMENT_ALLOWED_MIME_TYPES)[number])
+  ) {
+    return {
+      ok: false,
+      title: 'Unsupported file type',
+      message: `Files of type "${file.type}" can't be uploaded. Please choose a PDF, PNG, JPG, TXT, or CSV.`,
+    };
+  }
+  if (file.size > DOCUMENT_MAX_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    return {
+      ok: false,
+      title: 'File too large',
+      message: `That file is ${mb} MB. Documents must be 20 MB or smaller.`,
+    };
+  }
+  if (file.size === 0) {
+    return {
+      ok: false,
+      title: 'Empty file',
+      message: 'That file is empty. Please choose a different file.',
+    };
+  }
+  return { ok: true };
+}
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
@@ -902,6 +999,7 @@ export default function CustomerDetailPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const toast = useToast();
 
   // If we just returned from a Stripe Checkout setup session, refresh the
   // saved-cards list so the new method appears immediately. Done in an effect
@@ -1994,8 +2092,18 @@ export default function CustomerDetailPage() {
 
   /* ── Documents Tab ─── */
   async function uploadDocument(file: File) {
+    // Pre-validate in the browser so unsupported files never hit the API.
+    const pre = preValidateDocument(file);
+    if (!pre.ok) {
+      setUploadError(pre.message);
+      toast.error(pre.title, pre.message);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     setUploading(true);
     setUploadError(null);
+    let presignKey: string | null = null;
     try {
       const token = await getToken();
       const contentType = file.type || 'application/octet-stream';
@@ -2006,6 +2114,7 @@ export default function CustomerDetailPage() {
         { category: 'documents', filename: file.name, contentType },
         token,
       );
+      presignKey = presign.key;
 
       // 2. PUT the file directly to R2 using the presigned URL.
       const put = await fetch(presign.url, {
@@ -2013,7 +2122,13 @@ export default function CustomerDetailPage() {
         body: file,
         headers: { 'Content-Type': contentType },
       });
-      if (!put.ok) throw new Error('Upload to storage failed');
+      if (!put.ok) {
+        throw new ApiClientError(
+          `Upload to storage failed (status ${put.status})`,
+          put.status,
+          'STORAGE_PUT_FAILED',
+        );
+      }
 
       // 3. Verify magic bytes server-side. If the file is rejected, clean up
       // the orphan in R2 so it doesn't count against the tenant's quota.
@@ -2044,8 +2159,23 @@ export default function CustomerDetailPage() {
       );
 
       await refetchDocuments();
+      setUploadError(null);
+      toast.success('Document uploaded', `${file.name} was uploaded successfully.`);
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+      // Log enough detail that future "nothing happened" reports are debuggable.
+      const status =
+        err instanceof ApiClientError ? err.status : undefined;
+      console.error('[document upload failed]', {
+        storageKey: presignKey,
+        filename: file.name,
+        sizeBytes: file.size,
+        contentType: file.type || 'application/octet-stream',
+        httpStatus: status,
+        error: err,
+      });
+      const { title, message } = describeUploadError(err);
+      setUploadError(message);
+      toast.error(title, message);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -2090,11 +2220,24 @@ export default function CustomerDetailPage() {
   const renderDocuments = () => {
     const docs = documentsData ?? [];
 
+    const triggerFilePicker = () => {
+      // Reset value first so re-selecting the same file still fires `onChange`.
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+        fileInputRef.current.click();
+      }
+    };
+
+    const spinnerStyle = (
+      <style>{'@keyframes helmDocSpin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }'}</style>
+    );
+
     const uploadButton = (
       <button
         type="button"
-        onClick={() => fileInputRef.current?.click()}
+        onClick={triggerFilePicker}
         disabled={uploading}
+        aria-busy={uploading}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: '6px',
           padding: '8px 20px', fontSize: '14px', fontWeight: 600,
@@ -2103,15 +2246,39 @@ export default function CustomerDetailPage() {
           cursor: uploading ? 'wait' : 'pointer',
         }}
       >
-        <Plus size={16} />
+        {uploading ? (
+          <Loader
+            size={16}
+            style={{ animation: 'helmDocSpin 0.8s linear infinite' }}
+          />
+        ) : (
+          <Plus size={16} />
+        )}
         {uploading ? 'Uploading…' : 'Upload Document'}
       </button>
     );
 
+    const helperText = (
+      <div
+        style={{
+          fontSize: '12px',
+          color: '#64748B',
+          marginTop: '8px',
+          lineHeight: 1.4,
+        }}
+      >
+        {DOCUMENT_HELPER_TEXT}
+      </div>
+    );
+
+    // Always-mounted hidden input — rendered once at the bottom of the tab so
+    // the file picker works in both empty and populated states, even before
+    // documentsData has loaded.
     const hiddenInput = (
       <input
         ref={fileInputRef}
         type="file"
+        accept={DOCUMENT_ACCEPT_ATTR}
         style={{ display: 'none' }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -2122,33 +2289,43 @@ export default function CustomerDetailPage() {
 
     if (docs.length === 0) {
       return (
-        <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
-          <FileText size={32} style={{ color: '#2E4A6B', marginBottom: '16px' }} />
-          <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px' }}>
-            No documents uploaded
-          </h3>
-          <p style={{ fontSize: '15px', color: '#64748B', margin: '0 0 24px' }}>
-            Upload insurance certificates, registration papers, or other documents.
-          </p>
-          {uploadError && (
-            <div style={{ color: '#B71C1C', fontSize: '14px', marginBottom: '16px' }}>{uploadError}</div>
-          )}
-          {uploadButton}
+        <>
+          {spinnerStyle}
+          <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
+            <FileText size={32} style={{ color: '#2E4A6B', marginBottom: '16px' }} />
+            <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px' }}>
+              No documents uploaded
+            </h3>
+            <p style={{ fontSize: '15px', color: '#64748B', margin: '0 0 24px' }}>
+              Upload insurance certificates, registration papers, or other documents.
+            </p>
+            {uploadError && (
+              <div role="alert" style={{ color: '#B71C1C', fontSize: '14px', marginBottom: '16px' }}>{uploadError}</div>
+            )}
+            <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center' }}>
+              {uploadButton}
+              {helperText}
+            </div>
+          </div>
           {hiddenInput}
-        </div>
+        </>
       );
     }
 
     return (
       <div style={s.card}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #E2E8F0' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', margin: 0 }}>
+        {spinnerStyle}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '16px 20px', borderBottom: '1px solid #E2E8F0', gap: '16px' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', margin: 0, alignSelf: 'center' }}>
             Documents ({docs.length})
           </h3>
-          {uploadButton}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            {uploadButton}
+            {helperText}
+          </div>
         </div>
         {uploadError && (
-          <div style={{ color: '#B71C1C', fontSize: '14px', padding: '12px 20px', borderBottom: '1px solid #E2E8F0' }}>{uploadError}</div>
+          <div role="alert" style={{ color: '#B71C1C', fontSize: '14px', padding: '12px 20px', borderBottom: '1px solid #E2E8F0' }}>{uploadError}</div>
         )}
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
           <thead>
