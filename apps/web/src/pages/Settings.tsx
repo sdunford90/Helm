@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
@@ -370,7 +371,19 @@ export default function Settings() {
   const { getToken } = useAuth();
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
-  const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax'>('profile');
+  const [searchParams, setSearchParams] = useSearchParams();
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'integrations', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax'];
+  const tabFromUrl = searchParams.get('tab') as SettingsTab | null;
+  const initialTab: SettingsTab = tabFromUrl && VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'profile';
+  const [tab, setTabState] = useState<SettingsTab>(initialTab);
+  const setTab = (next: SettingsTab) => {
+    setTabState(next);
+    const sp = new URLSearchParams(searchParams);
+    sp.set('tab', next);
+    if (next !== 'locations') sp.delete('locationId');
+    setSearchParams(sp, { replace: true });
+  };
 
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
@@ -703,10 +716,16 @@ export default function Settings() {
   }, []);
 
   React.useEffect(() => {
-    if (tab === 'locations' && marinaLocations.length > 0 && !selectedLocationId) {
+    if (tab !== 'locations' || marinaLocations.length === 0) return;
+    const requested = searchParams.get('locationId');
+    if (requested && marinaLocations.some((l) => l.id === requested) && selectedLocationId !== requested) {
+      setSelectedLocationId(requested);
+      return;
+    }
+    if (!selectedLocationId) {
       setSelectedLocationId(marinaLocations[0].id);
     }
-  }, [tab, marinaLocations, selectedLocationId]);
+  }, [tab, marinaLocations, selectedLocationId, searchParams]);
 
   React.useEffect(() => {
     if (selectedLocationId) fetchLocationDetail(selectedLocationId);

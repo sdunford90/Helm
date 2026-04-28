@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link as RouterLink } from 'react-router-dom';
 import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
@@ -248,10 +248,11 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading }
 /* ── Card-Not-Present inner form (must be inside Elements) ── */
 
 function CnpForm({
-  total, onBack, onComplete, apiCall,
+  total, onBack, onComplete, apiCall, locationId,
 }: {
   total: number; onBack: () => void; onComplete: (method: string) => void;
   apiCall: (method: string, path: string, body?: unknown) => Promise<any>;
+  locationId: string | null;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -268,7 +269,11 @@ function CnpForm({
       const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
       if (pmErr) throw new Error(pmErr.message ?? 'Card error');
       const chargeAmountCents = Math.round(total * 100);
-      await apiCall('POST', '/api/pos/payments/cnp', { amountCents: chargeAmountCents, paymentMethodId: paymentMethod!.id });
+      await apiCall('POST', '/api/pos/payments/cnp', {
+        amountCents: chargeAmountCents,
+        paymentMethodId: paymentMethod!.id,
+        ...(locationId ? { locationId } : {}),
+      });
       onComplete('Card Not Present');
     } catch (err: any) {
       setCnpError((err as Error).message ?? 'Payment failed');
@@ -320,9 +325,10 @@ interface StripeReader { id: string; label: string; status: string; device_type:
 type CardStatus = 'loading' | 'readers' | 'connecting' | 'collecting' | 'processing' | 'terminal_done' | 'terminal_error' | 'cnp' | 'cnp_done';
 
 function CardPaymentModal({
-  total, amountCents, cartItems, onClose, onComplete, getToken,
+  total, amountCents, cartItems, onClose, onComplete, getToken, locationId,
 }: {
   total: number; amountCents: number; cartItems: CartItem[]; onClose: () => void; onComplete: (method: string) => void; getToken: () => Promise<string | null>;
+  locationId: string | null;
 }) {
   const [status, setStatus] = useState<CardStatus>('loading');
   const [readers, setReaders] = useState<StripeReader[]>([]);
@@ -346,7 +352,11 @@ function CardPaymentModal({
     setErrorMsg('');
     rawReadersRef.current.clear();
     try {
-      const { secret } = await apiCall('POST', '/api/pos/terminal/connection-token');
+      const { secret } = await apiCall(
+        'POST',
+        '/api/pos/terminal/connection-token',
+        locationId ? { locationId } : undefined,
+      );
       const StripeTerminal = await loadStripeTerminal();
       if (!StripeTerminal) throw new Error('Stripe Terminal SDK failed to load');
       const terminal = StripeTerminal.create({
@@ -360,7 +370,10 @@ function CardPaymentModal({
       sdkReaders.forEach((r: any) => rawReadersRef.current.set(r.id, r));
 
       // Also pull the backend list (registered readers), merge so neither is missed
-      const { data: backendList } = await apiCall('GET', '/api/pos/terminal/readers').catch(() => ({ data: [] }));
+      const readersPath = locationId
+        ? `/api/pos/terminal/readers?locationId=${encodeURIComponent(locationId)}`
+        : '/api/pos/terminal/readers';
+      const { data: backendList } = await apiCall('GET', readersPath).catch(() => ({ data: [] }));
       const backendReaders: any[] = backendList ?? [];
       // Backend readers that weren't found by SDK discovery won't have a raw ref; skip them for connect
       backendReaders.forEach((r: any) => { if (!rawReadersRef.current.has(r.id)) rawReadersRef.current.set(r.id, null); });
@@ -391,14 +404,22 @@ function CardPaymentModal({
       const { error: ce } = await (terminalRef.current as any).connectReader(rawReader);
       if (ce) { setErrorMsg((ce as any).message ?? 'Connect failed'); setStatus('terminal_error'); return; }
       setStatus('collecting');
-      const { clientSecret } = await apiCall('POST', '/api/pos/terminal/payment-intents', { amountCents, tipEnabled: false });
+      const { clientSecret } = await apiCall('POST', '/api/pos/terminal/payment-intents', {
+        amountCents,
+        tipEnabled: false,
+        ...(locationId ? { locationId } : {}),
+      });
       const { paymentIntent, error: colErr } = await (terminalRef.current as any).collectPaymentMethod(clientSecret as string);
       if (colErr) { setErrorMsg((colErr as any).message ?? 'Card collection cancelled'); setStatus('terminal_error'); return; }
       setStatus('processing');
       const { paymentIntent: processed, error: procErr } = await (terminalRef.current as any).processPayment(paymentIntent);
       if (procErr) { setErrorMsg((procErr as any).message ?? 'Payment processing failed'); setStatus('terminal_error'); return; }
       const piId: string = (processed as any).id;
-      await apiCall('POST', `/api/pos/terminal/payment-intents/${piId}/capture`);
+      await apiCall(
+        'POST',
+        `/api/pos/terminal/payment-intents/${piId}/capture`,
+        locationId ? { locationId } : undefined,
+      );
       setStatus('terminal_done');
       setTimeout(() => { onComplete('Card (Terminal)'); onClose(); }, 1800);
     } catch (err: any) {
@@ -545,6 +566,7 @@ function CardPaymentModal({
                 onBack={() => setStatus('readers')}
                 onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
                 apiCall={apiCall}
+                locationId={locationId}
               />
             </Elements>
           )}
@@ -1008,10 +1030,87 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
 
 /* ── Main Component ─────────────────────────────────────── */
 
+type StripeStatus = 'unknown' | 'checking' | 'ready' | 'not_configured' | 'error';
+
 export default function POS() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
-  const { currentLocationId } = useModules();
+  const { currentLocationId, locations } = useModules();
+
+  // ── Stripe configuration check for the current location ──────────────────
+  // Proactively probe GET /api/pos/terminal/readers (which surfaces
+  // STRIPE_NOT_CONFIGURED) so we can block card-based POS payments at the
+  // counter rather than failing mid-flow after the reader handshake.
+  const [stripeStatus, setStripeStatus] = useState<StripeStatus>('unknown');
+  const [stripeStatusError, setStripeStatusError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentLocationId) {
+      // No explicit location — backend will fall back to tenant Stripe account
+      // and only know whether it's configured at request time. Probe the same
+      // endpoint without a locationId so a misconfigured single-location
+      // tenant is also caught up-front.
+      setStripeStatus('checking');
+      setStripeStatusError(null);
+    } else {
+      setStripeStatus('checking');
+      setStripeStatusError(null);
+    }
+
+    (async () => {
+      try {
+        const token = await getToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const qs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+        const res = await fetch(`/api/pos/terminal/readers${qs}`, { headers, credentials: 'include' });
+        if (cancelled) return;
+        if (res.ok) {
+          setStripeStatus('ready');
+          setStripeStatusError(null);
+          return;
+        }
+        const body = await res.json().catch(() => ({} as { error?: string }));
+        if (res.status === 400 && (body as { error?: string }).error === 'STRIPE_NOT_CONFIGURED') {
+          setStripeStatus('not_configured');
+          setStripeStatusError(null);
+        } else {
+          setStripeStatus('error');
+          setStripeStatusError((body as { error?: string }).error ?? `Reader check failed (${res.status})`);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setStripeStatus('error');
+        setStripeStatusError((err as Error).message ?? 'Reader check failed');
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [currentLocationId, getToken]);
+
+  // Strict gating: card payments only allowed when we have positively
+  // confirmed Stripe is configured. Anything else (still checking, missing
+  // configuration, network error) blocks the Card button so we never let
+  // staff begin a card flow before the proactive check resolves.
+  const stripeReady = stripeStatus === 'ready';
+  const stripeChecking = stripeStatus === 'checking' || stripeStatus === 'unknown';
+  const stripeBlocked = stripeStatus === 'not_configured';
+  const cardDisabled = !stripeReady;
+  const cardDisabledReason = stripeBlocked
+    ? 'Stripe is not connected for this location.'
+    : stripeChecking
+      ? 'Checking Stripe setup…'
+      : stripeStatus === 'error'
+        ? 'Could not verify Stripe setup. Refresh to retry.'
+        : undefined;
+  const currentLocationName = useMemo(() => {
+    if (!currentLocationId) return null;
+    return locations.find((l) => l.id === currentLocationId)?.name ?? null;
+  }, [currentLocationId, locations]);
+  const stripeSettingsHref = currentLocationId
+    ? `/settings?tab=locations&locationId=${encodeURIComponent(currentLocationId)}`
+    : '/settings?tab=locations';
 
   // Jurisdiction rates for the current location: { category -> combined rate % }
   const [locationTaxRates, setLocationTaxRates] = useState<Record<string, number>>({});
@@ -1292,6 +1391,81 @@ export default function POS() {
       {tab === 'sale' && (
         <div style={st.saleLayout}>
           <div>
+            {stripeBlocked && (
+              <div
+                role="alert"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '12px',
+                  padding: '14px 18px',
+                  background: '#FEF2F2',
+                  border: '1px solid #FCA5A5',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  color: '#7F1D1D',
+                }}
+              >
+                <AlertTriangle size={20} style={{ color: '#DC2626', flexShrink: 0, marginTop: '1px' }} />
+                <div style={{ flex: 1, fontSize: '13px', lineHeight: '1.5' }}>
+                  <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
+                    Card payments are unavailable
+                  </div>
+                  <div>
+                    Stripe isn't connected for{' '}
+                    <strong>{currentLocationName ?? 'this location'}</strong>{' '}
+                    yet, so card transactions can't be started here.{' '}
+                    <RouterLink
+                      to={stripeSettingsHref}
+                      style={{ color: '#0A2342', fontWeight: 600, textDecoration: 'underline' }}
+                    >
+                      Connect Stripe in location settings
+                    </RouterLink>
+                    {' '}to enable card and terminal payments. Cash sales remain available.
+                  </div>
+                </div>
+              </div>
+            )}
+            {stripeChecking && (
+              <div
+                role="status"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  background: '#F1F5F9',
+                  border: '1px solid #CBD5E1',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  color: '#334155',
+                  fontSize: '13px',
+                }}
+              >
+                <Loader size={14} style={{ color: '#64748B' }} />
+                <div>Checking Stripe setup for this location… card payments will be available once verified.</div>
+              </div>
+            )}
+            {stripeStatus === 'error' && stripeStatusError && (
+              <div
+                role="alert"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  background: '#FFF7ED',
+                  border: '1px solid #FED7AA',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  color: '#9A3412',
+                  fontSize: '13px',
+                }}
+              >
+                <AlertTriangle size={16} style={{ color: '#EA580C', flexShrink: 0, marginTop: '1px' }} />
+                <div>Couldn't verify Stripe Terminal status: {stripeStatusError}. Card payments may not work.</div>
+              </div>
+            )}
             {recalledTxn && <RecallBanner txnNumber={recalledTxn} onClear={clearRecall} />}
 
             {/* ── Recalled transaction: read-only detail view ── */}
@@ -1488,7 +1662,27 @@ export default function POS() {
                   <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
                   <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
                   <div style={st.payBtns}>
-                    <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card', cartSnapshot: cart })}><CreditCard size={16} /> Card</button>
+                    <button
+                      style={{
+                        ...st.payBtn,
+                        ...st.payBtnPrimary,
+                        opacity: cardDisabled ? 0.5 : 1,
+                        cursor: cardDisabled ? 'not-allowed' : 'pointer',
+                      }}
+                      disabled={cardDisabled}
+                      title={cardDisabledReason}
+                      onClick={() => {
+                        // Belt-and-braces: refuse to open the modal unless we
+                        // have positively confirmed Stripe is configured. This
+                        // closes the race where the button could be clicked
+                        // between render and the disabled state taking effect.
+                        if (!stripeReady) return;
+                        if (total > 0) setPaymentModal({ method: 'Card', cartSnapshot: cart });
+                      }}
+                    >
+                      <CreditCard size={16} />
+                      {stripeChecking ? ' Checking…' : ' Card'}
+                    </button>
                     <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
                     {achEnabled && (
                       <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
@@ -1601,7 +1795,7 @@ export default function POS() {
           loading={closingShift}
         />
       )}
-      {paymentModal && paymentModal.method === 'Card' && (
+      {paymentModal && paymentModal.method === 'Card' && stripeReady && (
         <CardPaymentModal
           total={total}
           amountCents={Math.round(total * 100)}
@@ -1609,6 +1803,7 @@ export default function POS() {
           onClose={() => setPaymentModal(null)}
           onComplete={(method) => { handlePaymentComplete(method); }}
           getToken={getToken}
+          locationId={currentLocationId}
         />
       )}
       {paymentModal && paymentModal.method !== 'Card' && (
