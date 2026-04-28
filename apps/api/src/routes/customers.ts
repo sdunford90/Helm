@@ -11,6 +11,24 @@ import type Stripe from "stripe";
 
 const router: Router = Router();
 
+// Mirrors the `isCardExpired` helper used in the staff and portal UIs:
+// a card is expired once the current month has passed its (exp_month,
+// exp_year). Bank accounts and PMs missing expiry data are treated as
+// not-expired so we only block on data we're confident is stale.
+function isStripeCardExpired(
+  pm: Stripe.PaymentMethod,
+  now: Date = new Date(),
+): boolean {
+  const exp_month = pm.card?.exp_month ?? null;
+  const exp_year = pm.card?.exp_year ?? null;
+  if (!exp_month || !exp_year) return false;
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (exp_year < currentYear) return true;
+  if (exp_year === currentYear && exp_month < currentMonth) return true;
+  return false;
+}
+
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
 const CustomerStatusEnum = z.enum([
@@ -1581,12 +1599,16 @@ router.put(
       // Block "turn ON" when there's no card on file. Staff still need a real
       // payment method before autopay can run, and silently letting them flip
       // the flag would leave the customer's next invoice open with no charge.
+      // Also block when the default payment method is an expired card —
+      // Stripe would decline the next off-session charge and produce a
+      // confusing failure for the customer. The UI also disables the toggle
+      // in that state; this is the server-side belt to the UI suspenders.
       // The "turn OFF" path is always allowed so staff can disable autopay
       // even if the customer's last card was just removed.
       if (autopay && customer.stripeCustomerId) {
         const stripe = requireStripe();
         const stripeOpts = { stripeAccount: account.stripeAccountId };
-        const [cards, banks] = await Promise.all([
+        const [cards, banks, stripeCustomer] = await Promise.all([
           stripe.paymentMethods.list(
             { customer: customer.stripeCustomerId, type: "card" },
             stripeOpts,
@@ -1595,11 +1617,29 @@ router.put(
             { customer: customer.stripeCustomerId, type: "us_bank_account" },
             stripeOpts,
           ),
+          stripe.customers.retrieve(customer.stripeCustomerId, {}, stripeOpts),
         ]);
         if (cards.data.length === 0 && banks.data.length === 0) {
           res.status(400).json({
             error: "Add a card or bank account before enabling autopay.",
             code: "NO_PAYMENT_METHOD",
+          });
+          return;
+        }
+        const sc = stripeCustomer as Stripe.Customer;
+        const defaultPmId =
+          (typeof sc.invoice_settings?.default_payment_method === "string"
+            ? sc.invoice_settings.default_payment_method
+            : null) ??
+          (typeof sc.default_source === "string" ? sc.default_source : null);
+        const defaultCard = defaultPmId
+          ? cards.data.find((c) => c.id === defaultPmId)
+          : null;
+        if (defaultCard && isStripeCardExpired(defaultCard)) {
+          res.status(400).json({
+            error:
+              "The default card on file is expired. Pick a different default payment method or add a new card before enabling autopay.",
+            code: "DEFAULT_CARD_EXPIRED",
           });
           return;
         }

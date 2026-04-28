@@ -295,6 +295,129 @@ describe('PUT /api/customers/:id/autopay', () => {
     expect(stripe.customers.update).not.toHaveBeenCalled();
   });
 
+  it('refuses to enable autopay when the default card on file is expired', async () => {
+    // Customer has a card on file, but the one Stripe uses as the default
+    // for invoice charges has already expired. The next off-session attempt
+    // would be declined, so the route must reject the toggle with a clear
+    // DEFAULT_CARD_EXPIRED code instead of writing metadata.autopay=true.
+    mockPrisma.customer.findFirst.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: 'cus_test',
+      email: 'jane@example.com',
+      firstName: 'Jane',
+      lastName: 'Doe',
+    } as any);
+    mockTenantWithStripe();
+
+    // Pick a year safely in the past so this case stays expired regardless
+    // of when the test is run.
+    const expiredCard = {
+      id: 'pm_card_expired',
+      card: { exp_month: 1, exp_year: 2000, brand: 'visa', last4: '4242' },
+    };
+    stripe.paymentMethods.list
+      .mockResolvedValueOnce({ data: [expiredCard] }) // cards
+      .mockResolvedValueOnce({ data: [] }); // banks
+    stripe.customers.retrieve.mockResolvedValue({
+      id: 'cus_test',
+      invoice_settings: { default_payment_method: 'pm_card_expired' },
+      metadata: { autopay: 'false' },
+    } as any);
+
+    const res = await request(app)
+      .put('/api/customers/cust-1/autopay')
+      .send({ autopay: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'DEFAULT_CARD_EXPIRED' });
+    // Crucially, the metadata write must NOT happen on the rejection path,
+    // otherwise we'd quietly flip the flag and get the very failure mode
+    // this guard exists to prevent.
+    expect(stripe.customers.update).not.toHaveBeenCalled();
+  });
+
+  it('allows enabling autopay when the default card is still valid', async () => {
+    // Mirror image of the previous test: same default-card lookup path but
+    // the card hasn't expired yet, so the route should fall through to the
+    // metadata.autopay=true write. Picks a year far enough out to stay
+    // valid for the lifetime of this codebase.
+    mockPrisma.customer.findFirst.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: 'cus_test',
+      email: 'jane@example.com',
+      firstName: 'Jane',
+      lastName: 'Doe',
+    } as any);
+    mockTenantWithStripe();
+    mockPrisma.auditLog.create.mockResolvedValue({} as any);
+
+    const validCard = {
+      id: 'pm_card_valid',
+      card: { exp_month: 12, exp_year: 2099, brand: 'visa', last4: '4242' },
+    };
+    stripe.paymentMethods.list
+      .mockResolvedValueOnce({ data: [validCard] })
+      .mockResolvedValueOnce({ data: [] });
+    stripe.customers.retrieve.mockResolvedValue({
+      id: 'cus_test',
+      invoice_settings: { default_payment_method: 'pm_card_valid' },
+      metadata: { autopay: 'false' },
+    } as any);
+
+    const res = await request(app)
+      .put('/api/customers/cust-1/autopay')
+      .send({ autopay: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ autopay: true });
+    expect(stripe.customers.update).toHaveBeenCalledWith(
+      'cus_test',
+      { metadata: { autopay: 'true' } },
+      { stripeAccount: 'acct_test' },
+    );
+  });
+
+  it('allows enabling autopay when the default card is expired but a non-card method is the default', async () => {
+    // Bank accounts (us_bank_account) don't have an expiry, so even when an
+    // expired card sits in the wallet the autopay toggle must work as long
+    // as the actual default is the bank. This guards against false positives
+    // from the new check.
+    mockPrisma.customer.findFirst.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: 'cus_test',
+      email: 'jane@example.com',
+      firstName: 'Jane',
+      lastName: 'Doe',
+    } as any);
+    mockTenantWithStripe();
+    mockPrisma.auditLog.create.mockResolvedValue({} as any);
+
+    const expiredCard = {
+      id: 'pm_card_expired',
+      card: { exp_month: 1, exp_year: 2000, brand: 'visa', last4: '4242' },
+    };
+    stripe.paymentMethods.list
+      .mockResolvedValueOnce({ data: [expiredCard] })
+      .mockResolvedValueOnce({ data: [{ id: 'pm_bank_default' }] });
+    stripe.customers.retrieve.mockResolvedValue({
+      id: 'cus_test',
+      invoice_settings: { default_payment_method: 'pm_bank_default' },
+      metadata: { autopay: 'false' },
+    } as any);
+
+    const res = await request(app)
+      .put('/api/customers/cust-1/autopay')
+      .send({ autopay: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ autopay: true });
+    expect(stripe.customers.update).toHaveBeenCalledWith(
+      'cus_test',
+      { metadata: { autopay: 'true' } },
+      { stripeAccount: 'acct_test' },
+    );
+  });
+
   it('always allows disabling autopay, even with no cards on file', async () => {
     mockPrisma.customer.findFirst.mockResolvedValue({
       id: 'cust-1',

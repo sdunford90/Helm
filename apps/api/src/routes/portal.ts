@@ -1,9 +1,27 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import type Stripe from "stripe";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 
 const router: Router = Router();
+
+// Mirrors the `isCardExpired` helper used in the portal UI: a card is
+// expired once the current month has passed its (exp_month, exp_year).
+// Bank accounts and PMs missing expiry data are treated as not-expired.
+function isStripeCardExpired(
+  pm: Stripe.PaymentMethod,
+  now: Date = new Date(),
+): boolean {
+  const exp_month = pm.card?.exp_month ?? null;
+  const exp_year = pm.card?.exp_year ?? null;
+  if (!exp_month || !exp_year) return false;
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (exp_year < currentYear) return true;
+  if (exp_year === currentYear && exp_month < currentMonth) return true;
+  return false;
+}
 
 router.use(...clerkAuth());
 
@@ -750,6 +768,37 @@ router.put(
           data: { stripeCustomerId },
         });
       } else {
+        // Block "turn ON" when the customer's default payment method is an
+        // expired card — Stripe would decline the next off-session charge.
+        // The portal UI also disables the toggle in this state; this is the
+        // server-side belt to the UI suspenders. Disabling autopay is always
+        // allowed so the customer can quiet warnings while fixing the card.
+        if (autopay) {
+          const [cards, stripeCustomer] = await Promise.all([
+            stripe.paymentMethods.list(
+              { customer: stripeCustomerId, type: "card" },
+              stripeOpts,
+            ),
+            stripe.customers.retrieve(stripeCustomerId, {}, stripeOpts),
+          ]);
+          const sc = stripeCustomer as Stripe.Customer;
+          const defaultPmId =
+            (typeof sc.invoice_settings?.default_payment_method === "string"
+              ? sc.invoice_settings.default_payment_method
+              : null) ??
+            (typeof sc.default_source === "string" ? sc.default_source : null);
+          const defaultCard = defaultPmId
+            ? cards.data.find((c) => c.id === defaultPmId)
+            : null;
+          if (defaultCard && isStripeCardExpired(defaultCard)) {
+            res.status(400).json({
+              error:
+                "Your default card is expired. Choose a different default payment method or add a new card before enabling auto-pay.",
+              code: "DEFAULT_CARD_EXPIRED",
+            });
+            return;
+          }
+        }
         await stripe.customers.update(
           stripeCustomerId,
           { metadata: { autopay: String(autopay) } },

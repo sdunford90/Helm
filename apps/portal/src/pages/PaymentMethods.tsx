@@ -88,8 +88,27 @@ export default function PaymentMethods() {
     }
   }, [data]);
 
+  // The default payment method drives every off-session autopay charge,
+  // so an expired default means the next attempt will fail. Compute this
+  // once and reuse it to gate the autopay toggle and the warning banner.
+  const defaultMethod = methods.find((m) => m.isDefault) ?? null;
+  const defaultExpired = defaultMethod ? isCardExpired(defaultMethod) : false;
+  const autopayCandidates = methods.filter(
+    (m) => !m.isDefault && !isCardExpired(m),
+  );
+
   const handleToggleAutopay = async () => {
     const next = !autopay;
+    // Block turning autopay ON when the default card is expired — Stripe
+    // would decline the next charge. Disabling is always allowed so the
+    // customer can quiet the warning while they fix the card.
+    if (next && defaultExpired) {
+      setErrorMsg(
+        'Your default card is expired. Choose a different default payment method or add a new card before turning on auto-pay.',
+      );
+      return;
+    }
+    setErrorMsg(null);
     setAutopay(next);
     try {
       await updateAutopay({ autopay: next });
@@ -232,10 +251,72 @@ export default function PaymentMethods() {
             Automatically pay invoices on their due date using your default payment method.
           </p>
         </div>
-        <button onClick={handleToggleAutopay} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+        <button
+          onClick={handleToggleAutopay}
+          disabled={!autopay && defaultExpired}
+          title={
+            !autopay && defaultExpired
+              ? 'Your default card is expired. Choose a different default before turning on auto-pay.'
+              : autopay
+                ? 'Click to turn auto-pay off'
+                : 'Click to turn auto-pay on'
+          }
+          style={{
+            background: 'none', border: 'none', padding: 0,
+            cursor: !autopay && defaultExpired ? 'not-allowed' : 'pointer',
+            opacity: !autopay && defaultExpired ? 0.5 : 1,
+          }}
+        >
           {autopay ? <ToggleRight size={40} color="#0D9F6E" /> : <ToggleLeft size={40} color="#94A3B8" />}
         </button>
       </div>
+
+      {/* Loud warning when auto-pay is on but the default card is expired */}
+      {autopay && defaultExpired && (
+        <div style={{
+          ...card, marginBottom: 24,
+          background: '#FFEBEE', border: '1px solid #E57373',
+          color: '#B71C1C',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <AlertCircle size={20} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+                Auto-pay is on but your default card is expired
+              </div>
+              <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: autopayCandidates.length > 0 ? 12 : 0 }}>
+                Your next automatic payment will be declined. Pick a different default
+                payment method below, or add a new card above.
+              </div>
+              {autopayCandidates.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {autopayCandidates.map((m) => {
+                    const busy = actionLoading === `default-${m.id}`;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => handleSetDefault(m.id)}
+                        disabled={!!actionLoading}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 6,
+                          padding: '8px 14px', borderRadius: 6,
+                          border: '1px solid #B71C1C', background: '#FFFFFF',
+                          color: '#B71C1C', fontSize: 13, fontWeight: 600,
+                          cursor: actionLoading ? 'wait' : 'pointer',
+                        }}
+                      >
+                        {busy ? <Loader size={14} /> : <Star size={14} />}
+                        Use {m.label} ending in {m.last4}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Payment Methods List */}
       {loading ? (

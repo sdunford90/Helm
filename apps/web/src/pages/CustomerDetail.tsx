@@ -1641,12 +1641,23 @@ export default function CustomerDetailPage() {
                 // server value once refetch completes (or on error rollback).
                 const displayedAutopay = autopayOptimistic ?? paymentMethods.autopay;
                 const hasMethods = paymentMethods.methods.length > 0;
-                const disabled = autopayBusy || (!displayedAutopay && !hasMethods);
+                // If the customer's default payment method is an expired
+                // card, the next off-session charge will fail. Block staff
+                // from turning autopay ON in that state — they must pick a
+                // different default first (or save a new card).
+                const defaultMethod = paymentMethods.methods.find((m) => m.isDefault) ?? null;
+                const defaultExpired = defaultMethod ? isCardExpired(defaultMethod) : false;
+                const disabled =
+                  autopayBusy ||
+                  (!displayedAutopay && !hasMethods) ||
+                  (!displayedAutopay && defaultExpired);
                 const title = !displayedAutopay && !hasMethods
                   ? 'Add a card or bank account before enabling autopay'
-                  : displayedAutopay
-                    ? 'Click to turn autopay off'
-                    : 'Click to turn autopay on';
+                  : !displayedAutopay && defaultExpired
+                    ? 'The default card on file is expired. Pick a different default before enabling autopay.'
+                    : displayedAutopay
+                      ? 'Click to turn autopay off'
+                      : 'Click to turn autopay on';
                 return (
                   <button
                     type="button"
@@ -1766,6 +1777,67 @@ export default function CustomerDetailPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {(() => {
+                // Loud warning when autopay is currently ON but the default
+                // card is expired — the next recurring charge will fail.
+                // Offers one-click "Use this" buttons for every non-expired
+                // saved method so staff can fix it without scrolling.
+                const defaultMethod = paymentMethods.methods.find((m) => m.isDefault) ?? null;
+                const defaultExpired = defaultMethod ? isCardExpired(defaultMethod) : false;
+                if (!paymentMethods.autopay || !defaultExpired) return null;
+                const candidates = paymentMethods.methods.filter(
+                  (m) => !m.isDefault && !isCardExpired(m),
+                );
+                return (
+                  <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: '10px',
+                    padding: '14px', marginBottom: '4px',
+                    backgroundColor: '#FFEBEE', border: '1px solid #E57373',
+                    borderRadius: '6px', color: '#B71C1C', fontSize: '13px',
+                    lineHeight: 1.5,
+                  }}>
+                    <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, marginBottom: '4px' }}>
+                        Autopay is on but the default card is expired
+                      </div>
+                      <div style={{ marginBottom: candidates.length > 0 ? '10px' : 0 }}>
+                        The next automatic charge will be declined. Choose a different
+                        default payment method, or add a new card with “Add card” above.
+                      </div>
+                      {candidates.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {candidates.map((m) => {
+                            const busy = pmActionId === m.id;
+                            return (
+                              <button
+                                key={m.id}
+                                type="button"
+                                disabled={busy || pmActionId !== null}
+                                onClick={() => setDefaultMethod(m.id)}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                  padding: '6px 12px',
+                                  border: '1px solid #B71C1C',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#FFFFFF',
+                                  color: '#B71C1C',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: busy || pmActionId !== null ? 'wait' : 'pointer',
+                                }}
+                              >
+                                {busy ? <Loader size={12} /> : <Star size={12} />}
+                                Use {m.label} •••• {m.last4}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
               {paymentMethods.methods.some((m) => isCardExpired(m)) && (
                 <div style={{
                   display: 'flex', alignItems: 'flex-start', gap: '10px',
