@@ -74,7 +74,7 @@ router.get(
 
       // Dispatch to location-level handler when the state carries a locationId
       if (verifiedLocationId) {
-        await handleCallbackForLocation(code, realmId, tenantId, verifiedLocationId);
+        await handleCallbackForLocation(code, realmId, verifiedLocationId, tenantId);
       } else {
         await handleCallback(code, realmId, tenantId);
       }
