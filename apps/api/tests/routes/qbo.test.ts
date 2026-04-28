@@ -107,10 +107,13 @@ describe('GET /api/qbo/callback — location routing', () => {
 describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
   const VERIFIER = 'test-qbo-verifier-token';
 
-  function sign(payload: unknown): string {
+  // Sign the EXACT bytes Intuit would have signed — i.e. the raw body the
+  // server will receive on the wire, not a re-serialised JSON.stringify of
+  // the parsed object. This mirrors how Intuit signs deliveries.
+  function signRaw(rawBody: string): string {
     return crypto
       .createHmac('sha256', VERIFIER)
-      .update(JSON.stringify(payload))
+      .update(rawBody)
       .digest('base64');
   }
 
@@ -131,18 +134,64 @@ describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
         },
       ],
     };
+    const rawBody = JSON.stringify(payload);
 
     const res = await request(app)
       .post('/api/qbo/webhook')
-      .set('intuit-signature', sign(payload))
-      .send(payload);
+      .set('Content-Type', 'application/json')
+      .set('intuit-signature', signRaw(rawBody))
+      .send(rawBody);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true });
     // Crucially: the request carried no Clerk session and no marina subdomain,
     // and we still reached the handler. This is what Intuit deliveries look like.
+    // Allow the background processing microtask to flush before asserting.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledOnce();
     expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledWith(payload);
+  });
+
+  it('verifies the signature against the RAW body bytes, not a re-serialised JSON.stringify', async () => {
+    // Same logical payload as above, but with extra whitespace and a
+    // different key order than Node's JSON.stringify would produce. Intuit
+    // signs whatever bytes it actually sent — Node's JSON.stringify would
+    // produce different bytes (no whitespace, insertion order) and the
+    // signature would mismatch if we re-serialised.
+    const rawBody = `{
+      "eventNotifications": [
+        {
+          "dataChangeEvent": {
+            "entities": [
+              {
+                "operation": "Update",
+                "name": "Customer",
+                "id": "123",
+                "lastUpdated": "2026-04-28T12:00:00Z"
+              }
+            ]
+          },
+          "realmId": "9341454319936129"
+        }
+      ]
+    }`;
+
+    // Sanity check: this raw body is NOT what JSON.stringify would emit.
+    expect(rawBody).not.toBe(JSON.stringify(JSON.parse(rawBody)));
+
+    const res = await request(app)
+      .post('/api/qbo/webhook')
+      .set('Content-Type', 'application/json')
+      .set('intuit-signature', signRaw(rawBody))
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    // Allow the background processing microtask to flush before asserting.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledOnce();
+    // The handler still receives the parsed payload.
+    expect(vi.mocked(handleQboWebhook)).toHaveBeenCalledWith(JSON.parse(rawBody));
   });
 
   it('responds 200 to Intuit before the entity processing finishes', async () => {
@@ -171,11 +220,13 @@ describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
         },
       ],
     };
+    const rawBody = JSON.stringify(payload);
 
     const res = await request(app)
       .post('/api/qbo/webhook')
-      .set('intuit-signature', sign(payload))
-      .send(payload);
+      .set('Content-Type', 'application/json')
+      .set('intuit-signature', signRaw(rawBody))
+      .send(rawBody);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true });
@@ -204,11 +255,13 @@ describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
         },
       ],
     };
+    const rawBody = JSON.stringify(payload);
 
     const res = await request(app)
       .post('/api/qbo/webhook')
-      .set('intuit-signature', sign(payload))
-      .send(payload);
+      .set('Content-Type', 'application/json')
+      .set('intuit-signature', signRaw(rawBody))
+      .send(rawBody);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true });

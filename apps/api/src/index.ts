@@ -135,6 +135,10 @@ app.use(helmet());
 // express.raw({type:"application/json"}) on each webhook endpoint.
 app.use("/api/webhooks", webhooksStripeRouter);
 app.use("/api/email", emailComplianceRouter);
+// Intuit signs the raw bytes it sends, so the QBO webhook also needs the
+// raw body. Mount before express.json() and before the authenticated
+// /api/qbo router below so it doesn't inherit Clerk auth either.
+app.use("/api/qbo/webhook", qboWebhookRouter);
 
 app.use(express.json());
 
@@ -174,10 +178,9 @@ app.use("/api/audit-log", auditLogRouter);
 app.use("/api/bi", biApiRouter);
 app.use("/api/insurance", insuranceRouter);
 app.use("/api/fuel", fuelRouter);
-// QBO webhook MUST mount before /api/qbo so it doesn't inherit the Clerk
-// auth + role middleware on the qboRouter. Intuit authenticates via the
-// Intuit-Signature HMAC header instead of a user session.
-app.use("/api/qbo/webhook", qboWebhookRouter);
+// /api/qbo/webhook is mounted above (before express.json()) so the raw
+// body is preserved for HMAC verification. The authenticated tenant API
+// lives under /api/qbo here.
 app.use("/api/qbo", qboRouter);
 app.use("/api/storage", storageRouter);
 app.use("/api/inventory", inventoryRouter);
