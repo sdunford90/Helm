@@ -634,6 +634,7 @@ export default function InvoiceDetail() {
         <PaymentModal
           invoiceId={id}
           invoiceNumber={invoice.number}
+          customerId={invoice.customerId}
           customer={invoice.customer}
           balanceDue={balanceDue}
           onClose={() => setShowPayment(false)}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   X,
   CreditCard,
@@ -8,7 +8,9 @@ import {
   CheckCircle,
   AlertCircle,
   Loader2,
+  Building2,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
 import { getStripe } from '../lib/stripe.js';
@@ -22,9 +24,31 @@ import {
 type Step = 'choose' | 'card_on_file_result' | 'new_card' | 'simple_method_result';
 type Status = 'idle' | 'processing' | 'success' | 'error';
 
+interface SavedMethod {
+  id: string;
+  kind: 'card' | 'bank';
+  brand: string;
+  label: string;
+  last4: string;
+  expMonth: number | null;
+  expYear: number | null;
+  expiry: string | null;
+  isDefault: boolean;
+}
+
+interface PaymentMethodsResponse {
+  methods: SavedMethod[];
+  defaultMethodId: string | null;
+  autopay: boolean;
+  stripeConfigured: boolean;
+  locationConnected: boolean;
+  locationName: string | null;
+}
+
 interface PaymentModalProps {
   invoiceId: string;
   invoiceNumber: string;
+  customerId: string;
   customer: string;
   balanceDue: number; // cents
   onClose: () => void;
@@ -66,19 +90,50 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 700,
     color: '#0A2342', borderTop: '1px solid #CCCCCC', paddingTop: '10px', marginTop: '4px',
   },
-  methodList: { display: 'grid', gap: '10px' },
+  sectionLabel: {
+    fontSize: '11px', fontWeight: 700, color: '#2E4A6B', textTransform: 'uppercase',
+    letterSpacing: '0.05em', marginBottom: '8px', marginTop: '4px',
+  },
+  methodList: { display: 'grid', gap: '10px', marginBottom: '20px' },
   methodBtn: {
     display: 'flex', alignItems: 'center', gap: '12px',
-    padding: '16px 20px', borderRadius: '8px', border: '1px solid #CCCCCC',
+    padding: '14px 18px', borderRadius: '8px', border: '1px solid #CCCCCC',
     backgroundColor: '#FFFFFF', cursor: 'pointer', fontSize: '14px', fontWeight: 600,
     color: '#0A2342', textAlign: 'left', transition: 'border-color 0.15s, background-color 0.15s',
     width: '100%',
   },
-  methodBtnPrimary: {
-    backgroundColor: '#0A2342', color: '#FFFFFF', border: 'none',
+  savedMethodBtn: {
+    display: 'flex', alignItems: 'center', gap: '12px',
+    padding: '14px 18px', borderRadius: '8px', border: '1px solid #0A2342',
+    backgroundColor: '#0A2342', cursor: 'pointer', fontSize: '14px', fontWeight: 600,
+    color: '#FFFFFF', textAlign: 'left',
+    width: '100%',
   },
   methodLabel: { flex: 1 },
   methodHint: { fontSize: '12px', fontWeight: 400, opacity: 0.7, marginTop: '2px' },
+  defaultPill: {
+    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '9999px',
+    backgroundColor: '#00D4FF', color: '#0A2342', letterSpacing: '0.04em',
+    textTransform: 'uppercase',
+  },
+  emptyBox: {
+    backgroundColor: '#F7F9FB', border: '1px dashed #CCCCCC', borderRadius: '8px',
+    padding: '20px', marginBottom: '20px', color: '#2E4A6B', fontSize: '13px',
+    lineHeight: 1.5,
+  },
+  emptyTitle: {
+    fontSize: '14px', fontWeight: 700, color: '#0A2342', marginBottom: '6px',
+  },
+  emptyLink: {
+    color: '#0A2342', fontWeight: 600, textDecoration: 'underline',
+  },
+  loadingBox: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+    padding: '20px', color: '#64748B', fontSize: '13px', marginBottom: '20px',
+  },
+  divider: {
+    height: '1px', backgroundColor: '#E2E8F0', margin: '16px 0', border: 'none',
+  },
   footer: {
     display: 'flex', justifyContent: 'flex-end', gap: '12px',
     padding: '20px 32px', borderTop: '1px solid #E2E8F0',
@@ -108,6 +163,7 @@ const s: Record<string, React.CSSProperties> = {
 export default function PaymentModal({
   invoiceId,
   invoiceNumber,
+  customerId,
   customer,
   balanceDue,
   onClose,
@@ -116,8 +172,15 @@ export default function PaymentModal({
   const [step, setStep] = useState<Step>('choose');
   const [status, setStatus] = useState<Status>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [chargingMethodId, setChargingMethodId] = useState<string | null>(null);
+  const [chargedMethodKind, setChargedMethodKind] = useState<'card' | 'bank' | null>(null);
   const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
 
+  const savedMethods = useApi<PaymentMethodsResponse>(
+    'get',
+    `/api/customers/${customerId}/payment-methods`,
+    { immediate: true },
+  );
   const chargeCardOnFile = useApi<{ status: string; requiresAction: boolean }>(
     'post',
     '/api/checkout/charge-card-on-file',
@@ -125,15 +188,41 @@ export default function PaymentModal({
   const createSession = useApi<{ clientSecret: string }>('post', '/api/checkout/invoice-session');
   const recordSimplePayment = useApi('post', '/api/payments');
 
-  const handleCardOnFile = async () => {
+  // Sort saved methods so the default one is shown first.
+  const methods = savedMethods.data?.methods ?? [];
+  const sortedMethods = [...methods].sort((a, b) => {
+    if (a.isDefault && !b.isDefault) return -1;
+    if (!a.isDefault && b.isDefault) return 1;
+    return 0;
+  });
+
+  // Reset transient state when the customer changes (defensive).
+  useEffect(() => {
+    setStep('choose');
+    setStatus('idle');
+    setErrorMessage('');
+    setChargingMethodId(null);
+    setChargedMethodKind(null);
+  }, [customerId, invoiceId]);
+
+  const handleChargeSavedMethod = async (method: SavedMethod) => {
+    setChargingMethodId(method.id);
+    setChargedMethodKind(method.kind);
     setStatus('processing');
-    const result = await chargeCardOnFile.execute({ invoiceId });
+    const result = await chargeCardOnFile.execute({
+      invoiceId,
+      paymentMethodId: method.id,
+    });
     if (result && result.status === 'succeeded') {
       setStatus('success');
       setStep('card_on_file_result');
       onPaid?.();
     } else if (result && result.requiresAction) {
-      setErrorMessage('Card requires 3DS authentication. Use "New card" to complete.');
+      setErrorMessage(
+        method.kind === 'bank'
+          ? 'Bank account requires verification. Use "New card / ACH" to complete.'
+          : 'Card requires 3DS authentication. Use "New card / ACH" to complete.',
+      );
       setStatus('error');
       setStep('card_on_file_result');
     } else {
@@ -141,6 +230,7 @@ export default function PaymentModal({
       setStatus('error');
       setStep('card_on_file_result');
     }
+    setChargingMethodId(null);
   };
 
   const handleNewCard = async () => {
@@ -177,6 +267,21 @@ export default function PaymentModal({
     }
   };
 
+  // Stripe is "ready" when the API confirmed a connected account exists.
+  const stripeReady =
+    !!savedMethods.data?.stripeConfigured && !!savedMethods.data?.locationConnected;
+  // Only block the new-card flow when Stripe is *explicitly* reported as
+  // unconfigured. A transient fetch error or an in-flight load shouldn't
+  // prevent staff from opening the new-card form.
+  const stripeExplicitlyUnconfigured =
+    !!savedMethods.data &&
+    (!savedMethods.data.stripeConfigured || !savedMethods.data.locationConnected);
+  const noStripeMessage = stripeExplicitlyUnconfigured
+    ? `Stripe is not yet connected for ${
+        savedMethods.data?.locationName ?? 'this location'
+      }. Saved cards and new card payments are unavailable until it is set up.`
+    : null;
+
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
@@ -204,52 +309,140 @@ export default function PaymentModal({
           </div>
 
           {step === 'choose' && (
-            <div style={s.methodList}>
-              <button
-                style={{ ...s.methodBtn, ...s.methodBtnPrimary }}
-                onClick={handleCardOnFile}
-                disabled={status === 'processing'}
-              >
-                {status === 'processing' ? <Loader2 size={20} /> : <CreditCard size={20} />}
-                <div style={s.methodLabel}>
-                  Charge card on file
-                  <div style={s.methodHint}>Instant — no form. POS-style.</div>
+            <>
+              {/* Saved methods section */}
+              <div style={s.sectionLabel}>Saved methods on file</div>
+
+              {savedMethods.loading && (
+                <div style={s.loadingBox}>
+                  <Loader2 size={16} /> Loading saved cards…
                 </div>
-              </button>
-              <button
-                style={s.methodBtn}
-                onClick={handleNewCard}
-                disabled={status === 'processing'}
-              >
-                <Plus size={20} />
-                <div style={s.methodLabel}>
-                  New card / ACH
-                  <div style={s.methodHint}>Enter new card or bank details.</div>
+              )}
+
+              {!savedMethods.loading && savedMethods.error && (
+                <div style={s.emptyBox}>
+                  <div style={s.emptyTitle}>Couldn't load saved methods</div>
+                  {savedMethods.error}
                 </div>
-              </button>
-              <button
-                style={s.methodBtn}
-                onClick={() => handleSimpleMethod('CASH')}
-                disabled={status === 'processing'}
-              >
-                <Banknote size={20} />
-                <div style={s.methodLabel}>Cash</div>
-              </button>
-              <button
-                style={s.methodBtn}
-                onClick={() => handleSimpleMethod('CHARGE_TO_SLIP')}
-                disabled={status === 'processing'}
-              >
-                <Anchor size={20} />
-                <div style={s.methodLabel}>Charge to slip</div>
-              </button>
-            </div>
+              )}
+
+              {!savedMethods.loading && !savedMethods.error && noStripeMessage && (
+                <div style={s.emptyBox}>
+                  <div style={s.emptyTitle}>Stripe not connected</div>
+                  {noStripeMessage}
+                </div>
+              )}
+
+              {!savedMethods.loading &&
+                !savedMethods.error &&
+                stripeReady &&
+                sortedMethods.length === 0 && (
+                  <div style={s.emptyBox}>
+                    <div style={s.emptyTitle}>No saved cards or banks</div>
+                    This customer doesn't have any payment methods on file yet.{' '}
+                    <Link
+                      to={`/customers/${customerId}?tab=billing`}
+                      style={s.emptyLink}
+                      onClick={onClose}
+                    >
+                      Add one from their Billing tab
+                    </Link>
+                    , or use a new card below.
+                  </div>
+                )}
+
+              {!savedMethods.loading && stripeReady && sortedMethods.length > 0 && (
+                <div style={s.methodList}>
+                  {sortedMethods.map((m) => {
+                    const isCharging = chargingMethodId === m.id;
+                    const Icon = m.kind === 'bank' ? Building2 : CreditCard;
+                    return (
+                      <button
+                        key={m.id}
+                        style={{
+                          ...s.savedMethodBtn,
+                          opacity: status === 'processing' && !isCharging ? 0.5 : 1,
+                          cursor:
+                            status === 'processing' ? 'not-allowed' : 'pointer',
+                        }}
+                        onClick={() => handleChargeSavedMethod(m)}
+                        disabled={status === 'processing'}
+                      >
+                        {isCharging ? (
+                          <Loader2 size={20} />
+                        ) : (
+                          <Icon size={20} />
+                        )}
+                        <div style={s.methodLabel}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                            }}
+                          >
+                            {m.label} •••• {m.last4}
+                            {m.isDefault && (
+                              <span style={s.defaultPill}>Default</span>
+                            )}
+                          </div>
+                          <div style={s.methodHint}>
+                            {isCharging
+                              ? 'Charging…'
+                              : m.kind === 'bank'
+                                ? 'Charge bank account on file'
+                                : m.expiry
+                                  ? `Expires ${m.expiry} · Charge instantly`
+                                  : 'Charge instantly'}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              <hr style={s.divider} />
+
+              {/* Other methods */}
+              <div style={s.sectionLabel}>Other methods</div>
+              <div style={s.methodList}>
+                <button
+                  style={s.methodBtn}
+                  onClick={handleNewCard}
+                  disabled={status === 'processing' || stripeExplicitlyUnconfigured}
+                >
+                  <Plus size={20} />
+                  <div style={s.methodLabel}>
+                    New card / ACH
+                    <div style={s.methodHint}>Enter new card or bank details.</div>
+                  </div>
+                </button>
+                <button
+                  style={s.methodBtn}
+                  onClick={() => handleSimpleMethod('CASH')}
+                  disabled={status === 'processing'}
+                >
+                  <Banknote size={20} />
+                  <div style={s.methodLabel}>Cash</div>
+                </button>
+                <button
+                  style={s.methodBtn}
+                  onClick={() => handleSimpleMethod('CHARGE_TO_SLIP')}
+                  disabled={status === 'processing'}
+                >
+                  <Anchor size={20} />
+                  <div style={s.methodLabel}>Charge to slip</div>
+                </button>
+              </div>
+            </>
           )}
 
           {step === 'card_on_file_result' && status === 'success' && (
             <div style={s.successBox}>
               <CheckCircle size={24} />
-              Payment of {formatCents(balanceDue)} charged to card on file.
+              Payment of {formatCents(balanceDue)} charged to{' '}
+              {chargedMethodKind === 'bank' ? 'bank account on file' : 'card on file'}.
             </div>
           )}
           {step === 'card_on_file_result' && status === 'error' && (
