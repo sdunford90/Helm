@@ -3,7 +3,9 @@ import {
   ClipboardCheck, Search, Plus, X, AlertTriangle,
   Eye, CheckCircle2, Clock, Camera, Droplets,
 } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ── API types (from server) ─────────────────────────────── */
 
@@ -184,12 +186,14 @@ function StartWalkModal({
   onSave?: (walk: DockWalk) => void;
   teamMembers: TeamMember[];
 }) {
+  const { getToken } = useAuth();
   const dockStaff = teamMembers.filter((m) => m.active);
   const firstStaff = dockStaff[0];
   const [inspector, setInspector] = useState(firstStaff?.id ?? '');
   const [selectedDocks, setSelectedDocks] = useState<string[]>(['A']);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const toggleDock = (d: string) =>
     setSelectedDocks((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
@@ -197,31 +201,33 @@ function StartWalkModal({
   const handleStart = async () => {
     if (!inspector || selectedDocks.length === 0) return;
     setSaving(true);
+    setError(null);
     try {
-      const res = await fetch('/api/dock-walks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inspectorId: inspector, dockId: selectedDocks[0], notes }),
-      });
-      if (res.ok) {
-        const raw: ApiDockWalk = await res.json();
-        const inspName = staffName(teamMembers, raw.inspectorId);
-        const newWalk: DockWalk = {
-          id: raw.id,
-          number: `DW-${raw.id.slice(-6).toUpperCase()}`,
-          date: fmtDate(raw.startedAt),
-          inspector: inspName,
-          docks: raw.dockId ? [raw.dockId] : selectedDocks,
-          slipsChecked: 0,
-          violations: 0,
-          status: 'In Progress',
-          duration: '—',
-        };
-        onSave?.(newWalk);
-      }
+      const token = await getToken();
+      const raw = await api.post<ApiDockWalk>(
+        '/api/dock-walks',
+        { inspectorId: inspector, dockId: selectedDocks[0], notes },
+        token,
+      );
+      const inspName = staffName(teamMembers, raw.inspectorId);
+      const newWalk: DockWalk = {
+        id: raw.id,
+        number: `DW-${raw.id.slice(-6).toUpperCase()}`,
+        date: fmtDate(raw.startedAt),
+        inspector: inspName,
+        docks: raw.dockId ? [raw.dockId] : selectedDocks,
+        slipsChecked: 0,
+        violations: 0,
+        status: 'In Progress',
+        duration: '—',
+      };
+      onSave?.(newWalk);
+      onClose();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not start dock walk';
+      setError(msg);
     } finally {
       setSaving(false);
-      onClose();
     }
   };
 
@@ -258,6 +264,11 @@ function StartWalkModal({
             <textarea style={{ ...st.input, minHeight: '60px', resize: 'vertical' as const }} placeholder="Any pre-walk notes..." value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
         </div>
+        {error && (
+          <div style={{ padding: '0 24px', color: '#B91C1C', fontSize: 13 }}>
+            {error}
+          </div>
+        )}
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
           <button style={st.saveBtn} onClick={handleStart} disabled={saving || selectedDocks.length === 0}>
@@ -277,6 +288,7 @@ function ViolationDetail({ violation, onClose, onResolved }: {
   onClose: () => void;
   onResolved?: (id: string) => void;
 }) {
+  const { getToken } = useAuth();
   const sc = severityColors[violation.severity];
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [resolving, setResolving] = useState(false);
@@ -288,13 +300,17 @@ function ViolationDetail({ violation, onClose, onResolved }: {
     try {
       const walkId = violation.id.split('::')[0];
       const itemId = violation.id.split('::')[1] ?? violation.id;
-      await fetch(`/api/dock-walks/${walkId}/items/${itemId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'OK', notes: resolutionNotes }),
-      });
+      const token = await getToken();
+      await api.put(
+        `/api/dock-walks/${walkId}/items/${itemId}`,
+        { status: 'OK', notes: resolutionNotes },
+        token,
+      );
       setResolved(true);
       onResolved?.(violation.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not resolve violation';
+      window.alert(msg);
     } finally {
       setResolving(false);
     }
