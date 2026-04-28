@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import {
   ArrowLeft, CheckCircle2, AlertTriangle, Anchor,
-  Camera, ChevronLeft, ChevronRight, Trash2, X,
+  Camera, ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { api, ApiClientError } from '../lib/api';
 import { useToast } from '../components/Toast';
@@ -205,12 +205,9 @@ const c = {
   bg: '#F1F5F9',
   surface: '#FFFFFF',
   green: '#16A34A',
-  greenSoft: '#DCFCE7',
   red: '#DC2626',
   redSoft: '#FEE2E2',
   amber: '#D97706',
-  amberSoft: '#FEF3C7',
-  blue: '#0EA5E9',
 };
 
 const ui = {
