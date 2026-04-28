@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useApiFetch } from '../lib/api';
 
 interface ApiTenant {
   id: string;
@@ -52,17 +53,9 @@ function mapTenant(t: ApiTenant): Tenant {
   };
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json() as Promise<T>;
-}
-
 const Tenants: React.FC = () => {
   const navigate = useNavigate();
+  const apiFetch = useApiFetch();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -83,7 +76,7 @@ const Tenants: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiFetch]);
 
   useEffect(() => { fetchTenants(); }, [fetchTenants]);
 

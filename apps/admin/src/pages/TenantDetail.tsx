@@ -1,17 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useApiFetch } from '../lib/api';
 
 const API = '/api/admin';
-
-async function apiFetch(path: string, opts?: RequestInit) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...opts?.headers },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  if (res.status === 204) return null;
-  return res.json();
-}
 
 interface Location {
   id: string;
@@ -257,6 +248,7 @@ const LocationModal: React.FC<{
 const TenantDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const apiFetch = useApiFetch();
 
   const [tenant, setTenant] = useState<TenantData | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -272,25 +264,25 @@ const TenantDetail: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      const data = await apiFetch(`${API}/tenants/${id}`);
+      const data = await apiFetch<TenantData>(`${API}/tenants/${id}`);
       setTenant(data);
     } catch (e: unknown) {
       setError((e as Error).message || 'Failed to load tenant');
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, apiFetch]);
 
   const fetchLocations = useCallback(async () => {
     if (!id) return;
     setLocLoading(true);
     try {
-      const data = await apiFetch(`${API}/tenants/${id}/locations`);
+      const data = await apiFetch<Location[]>(`${API}/tenants/${id}/locations`);
       setLocations(Array.isArray(data) ? data : []);
     } finally {
       setLocLoading(false);
     }
-  }, [id]);
+  }, [id, apiFetch]);
 
   useEffect(() => { fetchTenant(); }, [fetchTenant]);
   useEffect(() => { if (tab === 'locations') fetchLocations(); }, [tab, fetchLocations]);
