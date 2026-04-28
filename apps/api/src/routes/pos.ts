@@ -11,7 +11,7 @@ import {
   capturePayment,
 } from "../services/stripe-terminal.js";
 import { calculateTax } from "../services/tax-engine.js";
-import { getProductTaxCategory } from "../services/product-defaults.js";
+import { resolveProductTaxCategory } from "../services/product-defaults.js";
 
 const router: Router = Router();
 
@@ -397,23 +397,11 @@ router.post(
         const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
         const lineSubtotal = unitPrice * li.quantity - li.discountCents;
 
-        // Inline category resolution (matches getProductTaxCategory rules)
-        let taxCategory: string | null = "general";
-        let taxable = true;
-        if (product?.taxClass === "Tax Exempt") {
-          taxCategory = null;
-          taxable = false;
-        } else if (product?.productCategory && !product.productCategory.taxable) {
-          taxCategory = null;
-          taxable = false;
-        } else {
-          taxCategory =
-            (product?.taxClass && product.taxClass !== "Standard"
-              ? product.taxClass
-              : null) ??
-            product?.productCategory?.defaultTaxCategory ??
-            "general";
-        }
+        // Single-source precedence rule (per-product → category → "general"
+        // with exempt short-circuits) lives in product-defaults.ts.
+        const { taxCategory, taxable } = product
+          ? resolveProductTaxCategory(product)
+          : { taxCategory: "general" as string | null, taxable: true };
 
         return { li, unitPrice, lineSubtotal, taxCategory, taxable };
       });

@@ -138,11 +138,38 @@ export async function applyCategoryDefaultsToProductData<
 }
 
 /**
- * Resolve the effective tax category for a product. Used by POS / invoices
- * to feed a real per-line `taxCategory` into the tax engine.
- *
- * Returns null when the product is explicitly tax-exempt (caller should skip
- * tax for this line entirely).
+ * Synchronous resolver for an already-loaded product. Centralizes the
+ * per-product → category → "general" precedence rule and the two
+ * short-circuit cases (per-product "Tax Exempt", category.taxable=false).
+ * Both the POS batch-loaded path and the invoice/single-product path call
+ * this so the rule lives in exactly one place.
+ */
+export function resolveProductTaxCategory(product: {
+  taxClass?: string | null;
+  productCategory?: {
+    defaultTaxCategory: string | null;
+    taxable: boolean;
+  } | null;
+}): { taxCategory: string | null; taxable: boolean } {
+  if (product.taxClass === "Tax Exempt") {
+    return { taxCategory: null, taxable: false };
+  }
+  if (product.productCategory && !product.productCategory.taxable) {
+    return { taxCategory: null, taxable: false };
+  }
+  const taxCategory =
+    (product.taxClass && product.taxClass !== "Standard"
+      ? product.taxClass
+      : null) ??
+    product.productCategory?.defaultTaxCategory ??
+    DEFAULT_TAX_CATEGORY;
+  return { taxCategory, taxable: true };
+}
+
+/**
+ * Async wrapper that loads a product by id and resolves its effective tax
+ * category. Used by callers that don't already have the product in hand
+ * (e.g. invoice line items referencing a product by id).
  */
 export async function getProductTaxCategory(
   productId: string,
@@ -158,23 +185,6 @@ export async function getProductTaxCategory(
     },
   });
   if (!product) return { taxCategory: DEFAULT_TAX_CATEGORY, taxable: true };
-
-  // Per-product "Tax Exempt" override
-  if (product.taxClass === "Tax Exempt") {
-    return { taxCategory: null, taxable: false };
-  }
-
-  // Category-level non-taxable
-  if (product.productCategory && !product.productCategory.taxable) {
-    return { taxCategory: null, taxable: false };
-  }
-
-  const taxCategory =
-    (product.taxClass && product.taxClass !== "Standard"
-      ? product.taxClass
-      : null) ??
-    product.productCategory?.defaultTaxCategory ??
-    DEFAULT_TAX_CATEGORY;
-
-  return { taxCategory, taxable: true };
+  return resolveProductTaxCategory(product);
 }
+

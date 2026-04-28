@@ -6,6 +6,7 @@ import { calculateTax } from "../services/tax-engine.js";
 import { postInvoice, postVoid } from "../services/gl-posting.js";
 import { voidQboInvoice } from "../services/qbo-sync.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
+import { resolveProductTaxCategory } from "../services/product-defaults.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
 import puppeteer from "puppeteer";
@@ -45,11 +46,76 @@ const LineItemSchema = z.object({
   glAccountId: z.string().uuid().optional().nullable(),
   isDeferred: z.boolean().default(false),
   taxCategory: z.string().optional(),
+  productId: z.string().uuid().optional().nullable(),
   sourceType: z.string().optional().nullable(),
   sourceId: z.string().optional().nullable(),
   deferredStartDate: z.coerce.date().optional(),
   deferredEndDate: z.coerce.date().optional(),
 });
+
+/**
+ * Batch-resolve per-line tax info. When the caller already set `taxCategory`
+ * we trust it (and assume taxable=true); otherwise, if a productId is
+ * attached (or sourceType/sourceId points at a product), we look up the
+ * product and apply the per-product → category → "general" precedence used
+ * by POS. Returns an array aligned 1:1 with the input.
+ *
+ * The tax engine exempts at the customer level only, so per-product /
+ * per-category exempt status is honored here by reporting taxable=false —
+ * callers zero the line's amountCents into calculateTax so the engine
+ * returns 0 tax for that line without affecting the invoice line totals.
+ */
+async function resolveLineItemTaxInfo(
+  tenantId: string,
+  lineItems: Array<{
+    taxCategory?: string;
+    productId?: string | null;
+    sourceType?: string | null;
+    sourceId?: string | null;
+  }>,
+): Promise<Array<{ taxCategory: string | undefined; taxable: boolean }>> {
+  const productIds = new Set<string>();
+  for (const li of lineItems) {
+    if (li.taxCategory) continue;
+    const pid =
+      li.productId ??
+      (li.sourceType?.toUpperCase() === "PRODUCT" ? li.sourceId : null);
+    if (pid) productIds.add(pid);
+  }
+  const productMap = new Map<
+    string,
+    {
+      taxClass: string | null;
+      productCategory: { defaultTaxCategory: string | null; taxable: boolean } | null;
+    }
+  >();
+  if (productIds.size > 0) {
+    const products = await prisma.product.findMany({
+      where: { id: { in: Array.from(productIds) }, tenantId },
+      select: {
+        id: true,
+        taxClass: true,
+        productCategory: {
+          select: { defaultTaxCategory: true, taxable: true },
+        },
+      },
+    });
+    for (const p of products) productMap.set(p.id, p);
+  }
+  return lineItems.map((li) => {
+    if (li.taxCategory) return { taxCategory: li.taxCategory, taxable: true };
+    const pid =
+      li.productId ??
+      (li.sourceType?.toUpperCase() === "PRODUCT" ? li.sourceId : null);
+    const product = pid ? productMap.get(pid) : undefined;
+    if (!product) return { taxCategory: undefined, taxable: true };
+    const resolved = resolveProductTaxCategory(product);
+    return {
+      taxCategory: resolved.taxCategory ?? undefined,
+      taxable: resolved.taxable,
+    };
+  });
+}
 
 const CreateInvoiceSchema = z.object({
   customerId: z.string().uuid(),
@@ -327,14 +393,22 @@ router.post(
         throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
       }
 
-      // Calculate tax for each line item
+      // Resolve effective taxCategory for each line — caller-provided wins,
+      // else inherit from the linked product (per-product → category →
+      // "general"). Lines flagged non-taxable get amountCents=0 fed into the
+      // engine so they yield zero tax without affecting the line totals
+      // computed below from unitPrice × qty.
+      const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
+
       const taxResult = await calculateTax(
         tenantId,
         data.customerId,
-        data.lineItems.map((li) => ({
+        data.lineItems.map((li, idx) => ({
           description: li.description,
-          amountCents: li.unitPriceCents * li.quantity - li.discountCents,
-          taxCategory: li.taxCategory,
+          amountCents: lineTaxInfo[idx].taxable
+            ? li.unitPriceCents * li.quantity - li.discountCents
+            : 0,
+          taxCategory: lineTaxInfo[idx].taxCategory,
         })),
       );
 
@@ -458,14 +532,20 @@ router.put(
       if (data.dueDate) updateData.dueDate = data.dueDate;
 
       if (data.lineItems) {
-        // Recalculate tax
+        // Recalculate tax using product-derived categories (see POST handler).
+        const lineTaxInfo = await resolveLineItemTaxInfo(
+          tenantId,
+          data.lineItems,
+        );
         const taxResult = await calculateTax(
           tenantId,
           existing.customerId,
-          data.lineItems.map((li) => ({
+          data.lineItems.map((li, idx) => ({
             description: li.description,
-            amountCents: li.unitPriceCents * li.quantity - li.discountCents,
-            taxCategory: li.taxCategory,
+            amountCents: lineTaxInfo[idx].taxable
+              ? li.unitPriceCents * li.quantity - li.discountCents
+              : 0,
+            taxCategory: lineTaxInfo[idx].taxCategory,
           })),
         );
 

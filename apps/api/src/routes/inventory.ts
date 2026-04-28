@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -453,12 +454,12 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         reorderPoint: body.reorderPoint,
         trackInventory: body.trackInventory,
         qoh: 0,
-        cogsGlAccountId: resolved.cogsGlAccountId,
-        revenueGlAccountId: resolved.revenueGlAccountId,
-        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
+        cogsGlAccountId: resolved.cogsGlAccountId ?? null,
+        revenueGlAccountId: resolved.revenueGlAccountId ?? null,
+        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId ?? null,
         locationId: body.locationId ?? null,
         active: true,
-      } as any,
+      } satisfies Prisma.ProductUncheckedCreateInput,
     });
     // Best-effort QBO sync — local create always succeeds even if QBO is offline
     if (product.trackInventory) {
@@ -507,7 +508,7 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Product not found" });
 
-    const data: any = {};
+    const data: Prisma.ProductUncheckedUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
     if (body.sku !== undefined) data.sku = body.sku;
     if (body.barcode !== undefined) data.barcode = body.barcode;
@@ -523,29 +524,64 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = body.inventoryAssetGlAccountId;
     if (body.locationId !== undefined) data.locationId = body.locationId;
 
-    // When the caller is changing the category, fall back to its defaults for
-    // any GL/tax fields not explicitly provided in the same request.
+    // When the caller switches to (or arrives in) a category, copy that
+    // category's defaults onto any per-product field that's still blank —
+    // both fields the caller explicitly nulled in this request and fields
+    // that were already null on the existing row. Per-product values that
+    // already exist (and weren't being changed) stay put.
+    const categoryChanged =
+      body.productCategoryId !== undefined &&
+      body.productCategoryId !== existing.productCategoryId;
     const effectiveCategoryId =
       body.productCategoryId !== undefined ? body.productCategoryId : existing.productCategoryId;
+
     if (effectiveCategoryId) {
-      const resolved = await applyCategoryDefaultsToProductData(existing.tenantId, {
+      // Compute "would be after this update" for each per-product field, then
+      // hand the partial to the helper which fills in null fields from the
+      // category defaults. This preserves caller intent (explicit nulls when
+      // the category is changing) while back-filling untouched columns.
+      const after = {
         productCategoryId: effectiveCategoryId,
         revenueGlAccountId:
-          body.revenueGlAccountId !== undefined ? body.revenueGlAccountId : undefined,
+          body.revenueGlAccountId !== undefined
+            ? body.revenueGlAccountId
+            : categoryChanged
+              ? null
+              : existing.revenueGlAccountId,
         cogsGlAccountId:
-          body.cogsGlAccountId !== undefined ? body.cogsGlAccountId : undefined,
+          body.cogsGlAccountId !== undefined
+            ? body.cogsGlAccountId
+            : categoryChanged
+              ? null
+              : existing.cogsGlAccountId,
         inventoryAssetGlAccountId:
           body.inventoryAssetGlAccountId !== undefined
             ? body.inventoryAssetGlAccountId
-            : undefined,
-        taxClass: body.taxClass !== undefined ? body.taxClass : undefined,
-      });
-      // Only copy through fields the caller explicitly touched; leave the
-      // others untouched on the existing row.
-      if (body.revenueGlAccountId !== undefined) data.revenueGlAccountId = resolved.revenueGlAccountId;
-      if (body.cogsGlAccountId !== undefined) data.cogsGlAccountId = resolved.cogsGlAccountId;
-      if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = resolved.inventoryAssetGlAccountId;
-      if (body.taxClass !== undefined) data.taxClass = resolved.taxClass;
+            : categoryChanged
+              ? null
+              : existing.inventoryAssetGlAccountId,
+        taxClass:
+          body.taxClass !== undefined
+            ? body.taxClass
+            : categoryChanged
+              ? null
+              : existing.taxClass,
+      };
+      const resolved = await applyCategoryDefaultsToProductData(existing.tenantId, after);
+      // Write the resolved value back whenever it differs from what's on the
+      // row today — including for fields the caller didn't mention.
+      if (resolved.revenueGlAccountId !== existing.revenueGlAccountId) {
+        data.revenueGlAccountId = resolved.revenueGlAccountId;
+      }
+      if (resolved.cogsGlAccountId !== existing.cogsGlAccountId) {
+        data.cogsGlAccountId = resolved.cogsGlAccountId;
+      }
+      if (resolved.inventoryAssetGlAccountId !== existing.inventoryAssetGlAccountId) {
+        data.inventoryAssetGlAccountId = resolved.inventoryAssetGlAccountId;
+      }
+      if (resolved.taxClass !== existing.taxClass) {
+        data.taxClass = resolved.taxClass;
+      }
     }
 
     let product = await prisma.product.update({
