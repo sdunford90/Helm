@@ -2,10 +2,134 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  syncInventoryItem,
+  syncReceivingBill,
+  syncVendor,
+  postInventoryAdjustmentJournal,
+  getBulkProductSyncStatus,
+  getProductSyncStatus,
+  type PoBillLineInput,
+} from "../services/qbo-sync.js";
 
 const router: Router = Router();
 
 router.use(...clerkAuth());
+
+// ─── QBO sync helpers ─────────────────────────────────────────────────────────
+//
+// All QBO calls below are best-effort: local mutations always succeed, and any
+// sync failure is captured into product/PO/adjustment.qbo*SyncError so the UI
+// can show retryable errors and the user can re-trigger a push.
+
+async function tryPushProductToQbo(product: InventoryProduct): Promise<void> {
+  if (!product.trackInventory) return;
+  try {
+    const result = await syncInventoryItem(
+      {
+        productId: product.id,
+        name: product.name,
+        sku: product.sku,
+        description: null,
+        priceCents: product.priceCents,
+        costCents: product.costCents,
+        qoh: product.qoh,
+        incomeGlAccountId: product.revenueGlAccountId,
+        inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
+        cogsGlAccountId: product.cogsGlAccountId,
+      },
+      product.tenantId,
+      product.locationId,
+    );
+    product.qboItemId = result.qboItemId;
+    product.qboItemSyncedAt = new Date().toISOString();
+    product.qboItemSyncError = null;
+    product.qboItemSyncErrorAt = null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    product.qboItemSyncError = msg.slice(0, 1000);
+    product.qboItemSyncErrorAt = new Date().toISOString();
+    console.warn(`[inventory] QBO item sync failed for ${product.id}: ${msg}`);
+  }
+}
+
+async function tryPushAdjustmentJournal(
+  adjustment: InventoryAdjustment,
+  product: InventoryProduct,
+): Promise<void> {
+  // Skip reasons accounted for elsewhere (received → Bill, sold → auto-COGS)
+  if (adjustment.reason === "received" || adjustment.reason === "sold") return;
+  try {
+    const result = await postInventoryAdjustmentJournal(
+      {
+        adjustmentId: adjustment.id,
+        productId: product.id,
+        productName: product.name,
+        reason: adjustment.reason,
+        quantityChange: adjustment.quantityChange,
+        unitCostCents: product.costCents,
+        inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
+        cogsGlAccountId: product.cogsGlAccountId,
+        notes: adjustment.notes,
+      },
+      product.tenantId,
+      product.locationId,
+    );
+    if (result.qboJournalEntryId) {
+      adjustment.qboJournalEntryId = result.qboJournalEntryId;
+      adjustment.qboSyncedAt = new Date().toISOString();
+    }
+    adjustment.qboSyncError = null;
+    adjustment.qboSyncErrorAt = null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    adjustment.qboSyncError = msg.slice(0, 1000);
+    adjustment.qboSyncErrorAt = new Date().toISOString();
+    console.warn(`[inventory] QBO adjustment sync failed for ${adjustment.id}: ${msg}`);
+  }
+}
+
+async function tryPushReceivingBill(
+  po: PurchaseOrder,
+  receivedLines: Array<{ productId: string; productName: string; receivedQty: number; unitCostCents: number }>,
+): Promise<void> {
+  if (!po.vendorId) {
+    po.qboBillSyncError = "Purchase order has no linked vendor — set a Vendor before receiving to enable QBO Bill sync";
+    po.qboBillSyncErrorAt = new Date().toISOString();
+    return;
+  }
+  if (!receivedLines.length) return;
+  try {
+    const lines: PoBillLineInput[] = receivedLines.map((l) => ({
+      productId: l.productId,
+      productName: l.productName,
+      receivedQty: l.receivedQty,
+      unitCostCents: l.unitCostCents,
+    }));
+    const result = await syncReceivingBill(
+      {
+        purchaseOrderId: po.id,
+        poNumber: po.poNumber,
+        vendorId: po.vendorId,
+        expectedDate: po.expectedDate ? new Date(po.expectedDate) : null,
+        lines,
+        // Force-push on each receive: each batch creates its own Bill
+        forcePush: true,
+      },
+      po.tenantId,
+      po.locationId,
+    );
+    po.qboBillId = result.qboBillId;
+    po.qboBillSyncedAt = new Date().toISOString();
+    po.qboBillSyncError = null;
+    po.qboBillSyncErrorAt = null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    po.qboBillSyncError = msg.slice(0, 1000);
+    po.qboBillSyncErrorAt = new Date().toISOString();
+    console.warn(`[inventory] QBO bill sync failed for ${po.id}: ${msg}`);
+  }
+}
 
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 
@@ -31,9 +155,20 @@ const CreateProductSchema = z.object({
   trackInventory: z.boolean().default(true),
   cogsGlAccountId: z.string().optional().nullable(),
   revenueGlAccountId: z.string().optional().nullable(),
+  inventoryAssetGlAccountId: z.string().optional().nullable(),
+  locationId: z.string().optional().nullable(),
 });
 
 const UpdateProductSchema = CreateProductSchema.partial();
+
+const CreateVendorSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+});
+
+const UpdateVendorSchema = CreateVendorSchema.partial();
 
 const CreateAdjustmentSchema = z.object({
   productId: z.string().min(1),
@@ -64,7 +199,9 @@ const SubmitCountItemSchema = z.object({
 });
 
 const CreatePurchaseOrderSchema = z.object({
-  vendor: z.string().min(1),
+  vendor: z.string().min(1).optional(),
+  vendorId: z.string().min(1).optional(),
+  locationId: z.string().optional().nullable(),
   expectedDate: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
   lineItems: z.array(
@@ -74,7 +211,7 @@ const CreatePurchaseOrderSchema = z.object({
       unitCostCents: z.number().int().min(0),
     })
   ).min(1),
-});
+}).refine((v) => v.vendor || v.vendorId, { message: "vendor or vendorId is required" });
 
 const ReceivePOSchema = z.object({
   lineItems: z.array(
@@ -108,6 +245,12 @@ interface InventoryProduct {
   qoh: number;
   cogsGlAccountId: string | null;
   revenueGlAccountId: string | null;
+  inventoryAssetGlAccountId: string | null;
+  locationId: string | null;
+  qboItemId: string | null;
+  qboItemSyncedAt: string | null;
+  qboItemSyncError: string | null;
+  qboItemSyncErrorAt: string | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -125,6 +268,10 @@ interface InventoryAdjustment {
   notes: string | null;
   staffName: string | null;
   createdAt: string;
+  qboJournalEntryId: string | null;
+  qboSyncedAt: string | null;
+  qboSyncError: string | null;
+  qboSyncErrorAt: string | null;
 }
 
 interface CountSession {
@@ -161,6 +308,8 @@ interface PurchaseOrder {
   tenantId: string;
   poNumber: string;
   vendor: string;
+  vendorId: string | null;
+  locationId: string | null;
   status: "draft" | "submitted" | "partial" | "received" | "cancelled";
   expectedDate: string | null;
   notes: string | null;
@@ -168,6 +317,10 @@ interface PurchaseOrder {
   totalCostCents: number;
   createdAt: string;
   updatedAt: string;
+  qboBillId: string | null;
+  qboBillSyncedAt: string | null;
+  qboBillSyncError: string | null;
+  qboBillSyncErrorAt: string | null;
 }
 
 let nextProductId = 100;
@@ -248,11 +401,21 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
       qoh: 0,
       cogsGlAccountId: body.cogsGlAccountId ?? null,
       revenueGlAccountId: body.revenueGlAccountId ?? null,
+      inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+      locationId: body.locationId ?? null,
+      qboItemId: null,
+      qboItemSyncedAt: null,
+      qboItemSyncError: null,
+      qboItemSyncErrorAt: null,
       active: true,
       createdAt: now,
       updatedAt: now,
     };
     products.push(product);
+    // Best-effort QBO sync — local create always succeeds even if QBO is offline
+    if (product.trackInventory) {
+      await tryPushProductToQbo(product);
+    }
     res.status(201).json(product);
   } catch (err) {
     next(err);
@@ -290,7 +453,53 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     Object.assign(product, body, { updatedAt: new Date().toISOString() });
+    // Re-sync to QBO so price/cost/account changes propagate
+    if (product.trackInventory) {
+      await tryPushProductToQbo(product);
+    }
     res.json(product);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /products/:id/qbo-sync — manually trigger a push to QBO
+router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
+    if (!product) return res.status(404).json({ error: "Product not found" });
+    if (!product.trackInventory) {
+      return res.status(400).json({ error: "Product does not track inventory — only inventory items sync to QBO" });
+    }
+    try {
+      const result = await syncInventoryItem(
+        {
+          productId: product.id,
+          name: product.name,
+          sku: product.sku,
+          description: null,
+          priceCents: product.priceCents,
+          costCents: product.costCents,
+          qoh: product.qoh,
+          incomeGlAccountId: product.revenueGlAccountId,
+          inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
+          cogsGlAccountId: product.cogsGlAccountId,
+        },
+        product.tenantId,
+        product.locationId,
+      );
+      product.qboItemId = result.qboItemId;
+      product.qboItemSyncedAt = new Date().toISOString();
+      product.qboItemSyncError = null;
+      product.qboItemSyncErrorAt = null;
+      res.json({ success: true, qboItemId: result.qboItemId, product });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      product.qboItemSyncError = msg.slice(0, 1000);
+      product.qboItemSyncErrorAt = new Date().toISOString();
+      res.status(502).json({ success: false, error: msg, product });
+    }
   } catch (err) {
     next(err);
   }
@@ -338,14 +547,18 @@ router.post("/adjustments", async (req: Request, res: Response, next: NextFuncti
       notes: body.notes ?? null,
       staffName: body.staffName ?? null,
       createdAt: new Date().toISOString(),
+      qboJournalEntryId: null,
+      qboSyncedAt: null,
+      qboSyncError: null,
+      qboSyncErrorAt: null,
     };
     adjustments.push(adjustment);
 
-    // GL posting stub: would post COGS journal entry for sold/damaged/shrinkage
-    if (["sold", "damaged", "shrinkage"].includes(body.reason) && product.cogsGlAccountId) {
-      // In production: create GL journal entry
-      // debit COGS account, credit inventory asset account
-    }
+    // QBO journal entry for damaged/shrinkage/count/return-to-vendor adjustments.
+    // 'received' is handled via the Bill flow and 'sold' via QBO's auto-COGS on
+    // Item-referenced invoices, so postInventoryAdjustmentJournal short-circuits
+    // on those reasons.
+    await tryPushAdjustmentJournal(adjustment, product);
 
     res.status(201).json(adjustment);
   } catch (err) {
@@ -466,9 +679,15 @@ router.put("/counts/:id/complete", async (req: Request, res: Response, next: Nex
             notes: `Count session ${session.name} — variance: ${item.variance}`,
             staffName: session.startedBy,
             createdAt: new Date().toISOString(),
+            qboJournalEntryId: null,
+            qboSyncedAt: null,
+            qboSyncError: null,
+            qboSyncErrorAt: null,
           };
           adjustments.push(adj);
           generatedAdjustments.push(adj);
+          // Best-effort QBO journal entry for the count variance
+          await tryPushAdjustmentJournal(adj, product);
         }
       }
     }
@@ -519,11 +738,21 @@ router.post("/purchase-orders", async (req: Request, res: Response, next: NextFu
       0
     );
 
+    let vendorId: string | null = body.vendorId ?? null;
+    let vendorName = body.vendor ?? "";
+    if (vendorId) {
+      const v = await prisma.vendor.findFirst({ where: { id: vendorId, tenantId } });
+      if (!v) return res.status(400).json({ error: "Vendor not found" });
+      vendorName = v.name;
+    }
+
     const po: PurchaseOrder = {
       id: `inv-po-${nextPOId++}`,
       tenantId,
       poNumber: `PO-${String(nextPOId).padStart(4, "0")}`,
-      vendor: body.vendor,
+      vendor: vendorName,
+      vendorId,
+      locationId: body.locationId ?? null,
       status: "draft",
       expectedDate: body.expectedDate ?? null,
       notes: body.notes ?? null,
@@ -531,6 +760,10 @@ router.post("/purchase-orders", async (req: Request, res: Response, next: NextFu
       totalCostCents,
       createdAt: now,
       updatedAt: now,
+      qboBillId: null,
+      qboBillSyncedAt: null,
+      qboBillSyncError: null,
+      qboBillSyncErrorAt: null,
     };
     purchaseOrders.push(po);
     res.status(201).json(po);
@@ -610,6 +843,10 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
           notes: `PO ${po.poNumber} — received ${qty} units`,
           staffName: body.receivedBy ?? null,
           createdAt: new Date().toISOString(),
+          qboJournalEntryId: null,
+          qboSyncedAt: null,
+          qboSyncError: null,
+          qboSyncErrorAt: null,
         };
         adjustments.push(adj);
         receivedAdjustments.push(adj);
@@ -621,6 +858,22 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
     const anyReceived = po.lineItems.some((li) => li.receivedQty > 0);
     po.status = allReceived ? "received" : anyReceived ? "partial" : po.status;
     po.updatedAt = new Date().toISOString();
+
+    // Best-effort QBO Bill for everything received in this batch
+    const billLines = receivedAdjustments
+      .map((adj) => {
+        const poLine = po.lineItems.find((li) => li.productId === adj.productId);
+        return poLine
+          ? {
+              productId: adj.productId,
+              productName: adj.productName,
+              receivedQty: adj.quantityChange,
+              unitCostCents: poLine.unitCostCents,
+            }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    await tryPushReceivingBill(po, billLines);
 
     res.json({ purchaseOrder: po, adjustments: receivedAdjustments });
   } catch (err) {
@@ -744,6 +997,104 @@ router.get("/reorder-alerts", async (req: Request, res: Response, next: NextFunc
       })),
       total: alerts.length,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Vendors ──────────────────────────────────────────────────────────────────
+
+router.get("/vendors", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const vendors = await prisma.vendor.findMany({
+      where: { tenantId, active: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ data: vendors, total: vendors.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/vendors", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const body = CreateVendorSchema.parse(req.body);
+    const vendor = await prisma.vendor.create({
+      data: {
+        tenantId,
+        name: body.name,
+        email: body.email ?? null,
+        phone: body.phone ?? null,
+        address: body.address ?? null,
+      },
+    });
+    // Best-effort QBO push
+    try {
+      await syncVendor(
+        {
+          vendorId: vendor.id,
+          name: vendor.name,
+          email: vendor.email,
+          phone: vendor.phone,
+          address: vendor.address,
+        },
+        tenantId,
+      );
+    } catch (err) {
+      console.warn(`[inventory] QBO vendor sync failed for ${vendor.id}:`, err);
+    }
+    const refreshed = await prisma.vendor.findUnique({ where: { id: vendor.id } });
+    res.status(201).json(refreshed);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/vendors/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const body = UpdateVendorSchema.parse(req.body);
+    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id, tenantId } });
+    if (!existing) return res.status(404).json({ error: "Vendor not found" });
+    const vendor = await prisma.vendor.update({
+      where: { id: existing.id },
+      data: {
+        name: body.name ?? existing.name,
+        email: body.email !== undefined ? body.email : existing.email,
+        phone: body.phone !== undefined ? body.phone : existing.phone,
+        address: body.address !== undefined ? body.address : existing.address,
+      },
+    });
+    try {
+      await syncVendor(
+        {
+          vendorId: vendor.id,
+          name: vendor.name,
+          email: vendor.email,
+          phone: vendor.phone,
+          address: vendor.address,
+        },
+        tenantId,
+      );
+    } catch (err) {
+      console.warn(`[inventory] QBO vendor sync failed for ${vendor.id}:`, err);
+    }
+    const refreshed = await prisma.vendor.findUnique({ where: { id: vendor.id } });
+    res.json(refreshed);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/vendors/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const existing = await prisma.vendor.findFirst({ where: { id: req.params.id, tenantId } });
+    if (!existing) return res.status(404).json({ error: "Vendor not found" });
+    await prisma.vendor.update({ where: { id: existing.id }, data: { active: false } });
+    res.json({ message: "Vendor deactivated", id: existing.id });
   } catch (err) {
     next(err);
   }

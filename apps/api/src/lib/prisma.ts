@@ -48,6 +48,8 @@ const TENANT_SCOPED_MODELS = new Set([
   "ConciergeRequest",
   "Contract",
   "AuditLog",
+  "Vendor",
+  "QboInventorySyncRef",
 ]);
 
 // --------------------------------------------------------------------------

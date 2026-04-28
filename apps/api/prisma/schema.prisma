@@ -344,10 +344,12 @@ model Location {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id])
-  dockageRates DockageRate[]
-  serviceFees  ServiceFee[]
-  invoices     Invoice[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  dockageRates   DockageRate[]
+  serviceFees    ServiceFee[]
+  invoices       Invoice[]
+  products       Product[]
+  purchaseOrders PurchaseOrder[]
 
   @@index([tenantId])
   @@map("locations")
@@ -904,10 +906,12 @@ model GlAccount {
   active            Boolean       @default(true)
   description       String?
 
-  entries        GlEntry[]
-  lineItems      InvoiceLineItem[]
-  products       Product[]       @relation(name: "ProductGlAccount")
-  rentalProducts RentalProduct[] @relation(name: "RentalProductGlAccount")
+  entries                GlEntry[]
+  lineItems              InvoiceLineItem[]
+  products               Product[]       @relation(name: "ProductGlAccount")
+  productsCogs           Product[]       @relation(name: "ProductCogsGlAccount")
+  productsInventoryAsset Product[]       @relation(name: "ProductInventoryAssetGlAccount")
+  rentalProducts         RentalProduct[] @relation(name: "RentalProductGlAccount")
 
   @@index([tenantId])
   @@map("gl_accounts")
@@ -1378,6 +1382,7 @@ model Shift {
 model Product {
   id             String  @id @default(uuid())
   tenantId       String
+  locationId     String?
   name           String
   sku            String?
   barcode        String?
@@ -1388,12 +1393,25 @@ model Product {
   trackInventory Boolean @default(false)
   reorderQty     Int?
   glAccountId    String?
+  // GL accounts required to mirror this Product as a QBO Inventory item
+  cogsGlAccountId           String?
+  inventoryAssetGlAccountId String?
 
-  glAccount    GlAccount?  @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
-  inventory    Inventory[]
-  posLineItems PosLineItem[]
+  // QuickBooks Online sync state (populated by qbo-sync.syncInventoryItem)
+  qboItemId          String?
+  qboItemSyncedAt    DateTime?
+  qboItemSyncError   String?
+  qboItemSyncErrorAt DateTime?
+
+  glAccount               GlAccount?    @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
+  cogsGlAccount           GlAccount?    @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
+  inventoryAssetGlAccount GlAccount?    @relation(name: "ProductInventoryAssetGlAccount", fields: [inventoryAssetGlAccountId], references: [id])
+  location                Location?     @relation(fields: [locationId], references: [id])
+  inventory               Inventory[]
+  posLineItems            PosLineItem[]
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("products")
 }
 
@@ -1415,14 +1433,75 @@ model Inventory {
 model PurchaseOrder {
   id           String    @id @default(uuid())
   tenantId     String
+  locationId   String?
   vendorId     String?
+  poNumber     String?
   status       String
   expectedDate DateTime?
   totalCents   Int
   createdAt    DateTime  @default(now())
 
+  // QuickBooks Online Bill sync state (populated when PO is received)
+  qboBillId          String?
+  qboBillSyncedAt    DateTime?
+  qboBillSyncError   String?
+  qboBillSyncErrorAt DateTime?
+
+  vendor   Vendor?   @relation(fields: [vendorId], references: [id])
+  location Location? @relation(fields: [locationId], references: [id])
+
   @@index([tenantId])
+  @@index([locationId])
   @@map("purchase_orders")
+}
+
+// Vendor / supplier — minimal record so a QBO Bill can reference a payee.
+model Vendor {
+  id          String  @id @default(uuid())
+  tenantId    String
+  name        String
+  email       String?
+  phone       String?
+  address     String?
+  active      Boolean @default(true)
+
+  // QuickBooks Online sync state
+  qboVendorId          String?
+  qboVendorSyncedAt    DateTime?
+  qboVendorSyncError   String?
+  qboVendorSyncErrorAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+
+  @@index([tenantId])
+  @@map("vendors")
+}
+
+// Generic sync-ref table for QBO inventory postings that don't have a
+// dedicated underlying Prisma record (e.g. inventory adjustments are still
+// kept in-memory in apps/api/src/routes/inventory.ts). Keyed on
+// (tenantId, sourceType, sourceId) so a single source row can hold one
+// QBO reference per qboType.
+model QboInventorySyncRef {
+  id           String    @id @default(uuid())
+  tenantId     String
+  locationId   String?
+  sourceType   String    // 'product' | 'purchase_order' | 'inventory_adjustment' | 'vendor'
+  sourceId     String
+  qboType      String    // 'Item' | 'Bill' | 'JournalEntry' | 'Vendor'
+  qboId        String?
+  lastSyncedAt DateTime?
+  lastError    String?
+  lastErrorAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([tenantId, sourceType, sourceId])
+  @@index([tenantId])
+  @@map("qbo_inventory_sync_refs")
 }
 
 model DockWalk {

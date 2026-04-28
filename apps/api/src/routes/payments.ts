@@ -5,6 +5,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
+import { voidQboPayment } from "../services/qbo-sync.js";
 import { v4 as uuid } from "uuid";
 
 const router: Router = Router();
@@ -583,6 +584,17 @@ router.post(
           },
         },
       });
+
+      // Best-effort QBO void on full refund — keeps QBO's payment + COGS state
+      // consistent with the local refund. Partial refunds are not pushed here;
+      // QBO models a partial as a separate Refund Receipt which is out of scope.
+      if (isFullRefund) {
+        try {
+          await voidQboPayment(payment.id, tenantId);
+        } catch (err) {
+          console.warn(`[payments] QBO void propagation failed for ${payment.id}:`, err);
+        }
+      }
 
       res.json(updated);
     } catch (err) {

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { getInventorySyncStatus } from "../services/qbo-sync.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
@@ -615,6 +616,18 @@ router.post("/qbo/sync", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MAN
     }
 
     res.json({ syncing: true, startedAt: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/settings/qbo/inventory-status  — summary of inventory sync state
+// --------------------------------------------------------------------------
+router.get("/qbo/inventory-status", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const status = await getInventorySyncStatus(req.tenantId!);
+    res.json(status);
   } catch (err) {
     next(err);
   }

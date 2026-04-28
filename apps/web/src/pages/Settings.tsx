@@ -525,6 +525,18 @@ export default function Settings() {
   // re-link Stripe/QBO under each Location to opt into per-property routing.
   interface QboStatus { connected: boolean; realmId: string | null; lastSync: string | null; }
   const { data: qboStatus } = useApi<QboStatus>('get', '/api/settings/qbo', { immediate: true });
+
+  // Tenant-wide inventory sync status (aggregated across all per-location QBO companies).
+  // Surfaced inside the Locations tab when a location has QBO connected.
+  const { data: qboInventoryStatus, loading: qboInventoryLoading, execute: fetchQboInventoryStatus } = useApi<{
+    itemsSynced: number; itemsWithErrors: number; itemsAwaitingSync: number;
+    billsSynced: number; billsWithErrors: number;
+    adjustmentsSynced: number; adjustmentsWithErrors: number;
+    lastItemSyncAt: string | null; lastBillSyncAt: string | null; lastAdjustmentSyncAt: string | null;
+    recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string }>;
+  }>('get', '/api/settings/qbo/inventory-status', { immediate: true });
+
+  // Stripe integration
   interface StripeStatus { connected: boolean; accountId: string | null; dashboardUrl: string | null; }
   const { data: stripeStatus } = useApi<StripeStatus>('get', '/api/settings/stripe', { immediate: true });
 
@@ -1583,6 +1595,74 @@ export default function Settings() {
                     )}
                   </div>
                 </div>
+
+                {/* Inventory sync to QuickBooks (tenant-wide aggregate, surfaced when this location has QBO connected) */}
+                {locationDetail.qboConnected && (
+                  <div style={{ ...st.card, marginTop: '12px' }}>
+                    <h3 style={st.sectionTitle}><Building2 size={20} /> Inventory Sync to QuickBooks</h3>
+                    <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
+                      Inventory items, receiving bills, and adjustments are pushed to QuickBooks Online automatically. Cost of goods sold posts when synced invoices reference inventory items.
+                    </div>
+                    {qboInventoryLoading ? (
+                      <div style={{ color: '#94A3B8', fontSize: '13px' }}>Loading sync status…</div>
+                    ) : qboInventoryStatus ? (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '16px' }}>
+                          <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                            <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Inventory Items</div>
+                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{qboInventoryStatus.itemsSynced}</div>
+                            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                              synced{qboInventoryStatus.itemsWithErrors > 0 && <span style={{ color: '#DC2626' }}>, {qboInventoryStatus.itemsWithErrors} error{qboInventoryStatus.itemsWithErrors === 1 ? '' : 's'}</span>}
+                            </div>
+                            {qboInventoryStatus.lastItemSyncAt && (
+                              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Last: {new Date(qboInventoryStatus.lastItemSyncAt).toLocaleString()}</div>
+                            )}
+                          </div>
+                          <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                            <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Receiving Bills</div>
+                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{qboInventoryStatus.billsSynced}</div>
+                            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                              posted{qboInventoryStatus.billsWithErrors > 0 && <span style={{ color: '#DC2626' }}>, {qboInventoryStatus.billsWithErrors} error{qboInventoryStatus.billsWithErrors === 1 ? '' : 's'}</span>}
+                            </div>
+                            {qboInventoryStatus.lastBillSyncAt && (
+                              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Last: {new Date(qboInventoryStatus.lastBillSyncAt).toLocaleString()}</div>
+                            )}
+                          </div>
+                          <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                            <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Adjustments</div>
+                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{qboInventoryStatus.adjustmentsSynced}</div>
+                            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                              posted{qboInventoryStatus.adjustmentsWithErrors > 0 && <span style={{ color: '#DC2626' }}>, {qboInventoryStatus.adjustmentsWithErrors} error{qboInventoryStatus.adjustmentsWithErrors === 1 ? '' : 's'}</span>}
+                            </div>
+                            {qboInventoryStatus.lastAdjustmentSyncAt && (
+                              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Last: {new Date(qboInventoryStatus.lastAdjustmentSyncAt).toLocaleString()}</div>
+                            )}
+                          </div>
+                        </div>
+                        {qboInventoryStatus.recentErrors.length > 0 && (
+                          <div style={{ marginTop: '12px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: '#991B1B', marginBottom: '8px' }}>Recent sync errors</div>
+                            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', padding: '12px', maxHeight: '200px', overflowY: 'auto' }}>
+                              {qboInventoryStatus.recentErrors.map((e, i) => (
+                                <div key={i} style={{ fontSize: '12px', color: '#7F1D1D', marginBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 0 : '8px', paddingBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 0 : '8px', borderBottom: i === qboInventoryStatus.recentErrors.length - 1 ? 'none' : '1px solid #FCA5A5' }}>
+                                  <strong>{e.qboType}</strong> {e.sourceType}/{e.sourceId} — {e.error}
+                                  <div style={{ color: '#94A3B8', marginTop: '2px' }}>{new Date(e.at).toLocaleString()}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ marginTop: '12px' }}>
+                          <button style={st.outlineBtn} onClick={() => fetchQboInventoryStatus()}>
+                            <RefreshCw size={14} /> Refresh status
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ color: '#94A3B8', fontSize: '13px' }}>No inventory has been synced yet.</div>
+                    )}
+                  </div>
+                )}
 
                 {/* Stripe per-location */}
                 <div style={{ ...st.integrationCard, marginTop: '12px' }}>

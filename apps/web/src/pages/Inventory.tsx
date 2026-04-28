@@ -4,7 +4,7 @@ import { useToast } from '../components/Toast';
 import {
   Package, Search, Plus, X, Download, Truck,
   AlertTriangle, ClipboardCheck, BarChart3, Edit2,
-  Trash2, Printer, RefreshCw,
+  Trash2, Printer, RefreshCw, Cloud, CloudOff, AlertCircle, CheckCircle2,
 } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -13,6 +13,8 @@ interface Product {
   id: string; sku: string; barcode: string; name: string; category: string;
   costCents: number; priceCents: number; taxClass: string; qoh: number;
   reorderPoint: number; glRevenue: string; glCogs: string; trackInventory: boolean; active: boolean;
+  qboItemId: string | null; qboItemSyncedAt: string | null;
+  qboItemSyncError: string | null; qboItemSyncErrorAt: string | null;
 }
 
 interface PurchaseOrder {
@@ -36,6 +38,8 @@ interface ApiProduct {
   costCents: number; priceCents: number; taxClass: string | null; qoh: number;
   reorderPoint: number; cogsGlAccountId: string | null; revenueGlAccountId: string | null;
   trackInventory: boolean; active: boolean;
+  qboItemId?: string | null; qboItemSyncedAt?: string | null;
+  qboItemSyncError?: string | null; qboItemSyncErrorAt?: string | null;
 }
 
 interface ApiAdjustment {
@@ -64,6 +68,8 @@ function toProduct(p: ApiProduct): Product {
     taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
     glRevenue: p.revenueGlAccountId ?? '4500', glCogs: p.cogsGlAccountId ?? '5200',
     trackInventory: p.trackInventory, active: p.active,
+    qboItemId: p.qboItemId ?? null, qboItemSyncedAt: p.qboItemSyncedAt ?? null,
+    qboItemSyncError: p.qboItemSyncError ?? null, qboItemSyncErrorAt: p.qboItemSyncErrorAt ?? null,
   };
 }
 
@@ -236,6 +242,10 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
               taxClass: form.taxClass, qoh: parseInt(form.qoh || '0'),
               reorderPoint: parseInt(form.reorderPoint || '0'),
               glRevenue: form.glRevenue, glCogs: form.glCogs, trackInventory: true, active: true,
+              qboItemId: product?.qboItemId ?? null,
+              qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
+              qboItemSyncError: product?.qboItemSyncError ?? null,
+              qboItemSyncErrorAt: product?.qboItemSyncErrorAt ?? null,
             });
             onClose();
           }}>{isEdit ? 'Save Changes' : 'Add Product'}</button>
@@ -477,6 +487,25 @@ export default function Inventory() {
     }
   };
 
+  const handleQboSyncProduct = async (p: Product) => {
+    try {
+      const res = await fetch(`/api/inventory/products/${p.id}/qbo-sync`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.success) {
+        setProducts((prev) => prev.map((x) => x.id === p.id ? toProduct(body.product as ApiProduct) : x));
+        toast.success('Synced to QuickBooks', `${p.name} pushed to QBO.`);
+      } else {
+        const errMsg: string = body.error || 'Failed to sync to QuickBooks.';
+        if (body.product) {
+          setProducts((prev) => prev.map((x) => x.id === p.id ? toProduct(body.product as ApiProduct) : x));
+        }
+        toast.error('Sync failed', errMsg);
+      }
+    } catch (err) {
+      toast.error('Sync failed', err instanceof Error ? err.message : 'Network error');
+    }
+  };
+
   const openEdit = (p: Product) => { setEditingProduct(p); setModal('editProduct'); };
 
   const tabItems: { key: Tab; label: string }[] = [
@@ -533,7 +562,7 @@ export default function Inventory() {
             <thead><tr>
               <th style={st.th}>SKU</th><th style={st.th}>Barcode</th><th style={st.th}>Name</th><th style={st.th}>Category</th>
               <th style={st.th}>Cost</th><th style={st.th}>Price</th><th style={st.th}>Margin</th><th style={st.th}>QOH</th>
-              <th style={st.th}>Reorder</th><th style={st.th}>Status</th><th style={st.th}>GL Rev</th><th style={st.th}>Actions</th>
+              <th style={st.th}>Reorder</th><th style={st.th}>Status</th><th style={st.th}>QBO</th><th style={st.th}>Actions</th>
             </tr></thead>
             <tbody>
               {productsLoading ? (
@@ -556,8 +585,27 @@ export default function Inventory() {
                     <td style={{ ...st.td, ...st.mono, fontWeight: 700, color: p.qoh <= p.reorderPoint ? '#856404' : '#0A2342' }}>{p.qoh}</td>
                     <td style={{ ...st.td, ...st.mono }}>{p.reorderPoint}</td>
                     <td style={st.td}><span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span></td>
-                    <td style={{ ...st.td, ...st.mono, fontSize: '11px' }}>{p.glRevenue}</td>
                     <td style={st.td}>
+                      {!p.trackInventory ? (
+                        <span style={{ fontSize: '11px', color: '#94A3B8' }}>—</span>
+                      ) : p.qboItemSyncError ? (
+                        <span title={p.qboItemSyncError} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#9B1C1C' }}>
+                          <AlertCircle size={12} /> Error
+                        </span>
+                      ) : p.qboItemId ? (
+                        <span title={p.qboItemSyncedAt ? `Last synced ${new Date(p.qboItemSyncedAt).toLocaleString()}` : 'Synced'} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#03543F' }}>
+                          <CheckCircle2 size={12} /> Synced
+                        </span>
+                      ) : (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#856404' }}>
+                          <CloudOff size={12} /> Pending
+                        </span>
+                      )}
+                    </td>
+                    <td style={st.td}>
+                      {p.trackInventory && (
+                        <button style={{ background: 'none', border: 'none', color: '#2CA01C', cursor: 'pointer', marginRight: '6px' }} onClick={() => handleQboSyncProduct(p)} title="Sync to QuickBooks"><Cloud size={14} /></button>
+                      )}
                       <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', marginRight: '8px' }} onClick={() => openEdit(p)} title="Edit"><Edit2 size={14} /></button>
                       <button style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }} onClick={() => handleDeleteProduct(p.id)} title="Remove"><Trash2 size={14} /></button>
                     </td>

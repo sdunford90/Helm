@@ -41,6 +41,8 @@ export const mockPrisma = {
   securityDeposit: { findMany: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 }, _count: { id: 0 } }) },
   chargeback: { findMany: vi.fn().mockResolvedValue([]) },
   glAccount: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
+  vendor: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+  qboInventorySyncRef: { findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]), upsert: vi.fn(), update: vi.fn() },
   glEntry: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { debitCents: 0, creditCents: 0 } }), createMany: vi.fn().mockResolvedValue({ count: 0 }) },
   auditLog: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   insuranceRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },

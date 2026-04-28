@@ -4,6 +4,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
 import { postInvoice, postVoid } from "../services/gl-posting.js";
+import { voidQboInvoice } from "../services/qbo-sync.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
@@ -688,6 +689,14 @@ router.post(
           },
         },
       });
+
+      // Best-effort QBO void — mirrors the void in QuickBooks so any
+      // auto-posted COGS for inventory item lines is reversed there too.
+      try {
+        await voidQboInvoice(invoice.id, tenantId);
+      } catch (err) {
+        console.warn(`[invoices] QBO void propagation failed for ${invoice.id}:`, err);
+      }
 
       res.json(updated);
     } catch (err) {
