@@ -19,6 +19,7 @@ import { scanBuffer } from "./clamd-client.js";
 export type FileCategory =
   | "insurance"
   | "photos"
+  | "boats"
   | "contracts"
   | "invoices"
   | "documents"
@@ -42,6 +43,13 @@ const POLICY: Record<FileCategory, CategoryPolicy> = {
     allowedExtensions: [".pdf", ".png", ".jpg", ".jpeg"],
   },
   photos: {
+    maxBytes: 10 * MB,
+    allowedContentTypes: ["image/png", "image/jpeg", "image/webp"],
+    allowedExtensions: [".png", ".jpg", ".jpeg", ".webp"],
+  },
+  // Boat photos = the same image policy as `photos`, but stored under a
+  // separate prefix so the Boats UI can list them independently.
+  boats: {
     maxBytes: 10 * MB,
     allowedContentTypes: ["image/png", "image/jpeg", "image/webp"],
     allowedExtensions: [".png", ".jpg", ".jpeg", ".webp"],

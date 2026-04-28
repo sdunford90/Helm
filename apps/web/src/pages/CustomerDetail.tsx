@@ -1,10 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
-  Download, Trash2, Building2, Star, Loader,
+  Download, Trash2, Building2, Star, Loader, Camera,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
@@ -789,6 +789,374 @@ function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, va
   );
 }
 
+/* ── Boat photos (staff view) ──────────────────────────────────────────── */
+
+const BOAT_PHOTO_ALLOWED_EXT = ['.png', '.jpg', '.jpeg', '.webp'] as const;
+const BOAT_PHOTO_ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp'] as const;
+const BOAT_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const BOAT_PHOTO_ACCEPT_ATTR = [
+  ...BOAT_PHOTO_ALLOWED_EXT,
+  ...BOAT_PHOTO_ALLOWED_MIME,
+].join(',');
+
+function resolveBoatPhotoContentType(file: File): string {
+  // If the browser-provided MIME is an allowed image type, use it.
+  if (
+    file.type &&
+    BOAT_PHOTO_ALLOWED_MIME.includes(file.type.toLowerCase() as (typeof BOAT_PHOTO_ALLOWED_MIME)[number])
+  ) {
+    return file.type.toLowerCase();
+  }
+  // Otherwise (some browsers leave file.type empty for valid images) derive
+  // a real image content type from the filename extension so the presign
+  // endpoint accepts the upload instead of seeing application/octet-stream.
+  const ext = (getFileExtension(file.name) || '').replace(/^\./, '');
+  if (ext === 'png') return 'image/png';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'webp') return 'image/webp';
+  return file.type || 'application/octet-stream';
+}
+
+function preValidateBoatPhoto(
+  file: File,
+): { ok: true } | { ok: false; title: string; message: string } {
+  const ext = getFileExtension(file.name);
+  if (!ext || !BOAT_PHOTO_ALLOWED_EXT.includes(ext as (typeof BOAT_PHOTO_ALLOWED_EXT)[number])) {
+    return {
+      ok: false,
+      title: 'Unsupported image type',
+      message: `${ext || 'Files without an extension'} can't be uploaded. Please choose a PNG, JPG, or WEBP.`,
+    };
+  }
+  if (
+    file.type &&
+    !BOAT_PHOTO_ALLOWED_MIME.includes(file.type.toLowerCase() as (typeof BOAT_PHOTO_ALLOWED_MIME)[number])
+  ) {
+    return {
+      ok: false,
+      title: 'Unsupported image type',
+      message: `Files of type "${file.type}" can't be uploaded. Please choose a PNG, JPG, or WEBP.`,
+    };
+  }
+  if (file.size > BOAT_PHOTO_MAX_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    return {
+      ok: false,
+      title: 'Image too large',
+      message: `That image is ${mb} MB. Boat photos must be 10 MB or smaller.`,
+    };
+  }
+  if (file.size === 0) {
+    return { ok: false, title: 'Empty file', message: 'That file is empty.' };
+  }
+  return { ok: true };
+}
+
+interface ApiBoatPhoto {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  storageKey: string;
+  createdAt: string;
+}
+
+function BoatPhotosSection({ boatId }: { boatId: string }) {
+  const { getToken } = useAuth();
+  const toast = useToast();
+  const [photos, setPhotos] = useState<ApiBoatPhoto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const token = await getToken();
+      const list = await api.get<ApiBoatPhoto[]>(`/api/boats/${boatId}/photos`, token);
+      setPhotos(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load photos');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boatId]);
+
+  // Resolve a presigned download URL per photo so <img src> can load it.
+  // R2 objects are private, so we can't hand the storage key to the browser
+  // directly — we sign a short-lived GET URL on demand.
+  useEffect(() => {
+    let cancelled = false;
+    const missing = photos.filter((p) => !thumbUrls[p.id]);
+    if (missing.length === 0) return;
+    (async () => {
+      const token = await getToken();
+      const next: Record<string, string> = {};
+      for (const p of missing) {
+        try {
+          const { url } = await api.get<{ url: string }>(
+            `/api/storage/presign-download/${encodeURIComponent(p.storageKey)}`,
+            token,
+          );
+          next[p.id] = url;
+        } catch {
+          /* leave thumb missing — UI shows a fallback */
+        }
+      }
+      if (!cancelled && Object.keys(next).length > 0) {
+        setThumbUrls((prev) => ({ ...prev, ...next }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos]);
+
+  async function uploadPhoto(file: File) {
+    const pre = preValidateBoatPhoto(file);
+    if (!pre.ok) {
+      setError(pre.message);
+      toast.error(pre.title, pre.message);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    let presignKey: string | null = null;
+    try {
+      const token = await getToken();
+      const contentType = resolveBoatPhotoContentType(file);
+
+      // 1. Presign — server validates content type/extension here.
+      const presign = await api.post<{ url: string; key: string }>(
+        '/api/storage/presign-upload',
+        { category: 'boats', filename: file.name, contentType },
+        token,
+      );
+      presignKey = presign.key;
+
+      // 2. PUT to R2 directly. Wrap network errors with the same r2Host
+      // diagnostic the Documents/Insurance/Logo/Disputes uploaders use so
+      // CORS regressions are obvious from the browser console.
+      let put: Response;
+      try {
+        put = await fetch(presign.url, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': contentType },
+        });
+      } catch (netErr) {
+        let r2Host = 'unknown';
+        try {
+          r2Host = new URL(presign.url).host;
+        } catch {
+          /* malformed presign URL */
+        }
+        console.error('[boat photo upload network error]', {
+          stage: 'r2-put',
+          r2Host,
+          storageKey: presignKey,
+          filename: file.name,
+          sizeBytes: file.size,
+          contentType,
+          error: netErr,
+        });
+        throw new ApiClientError(
+          UPLOAD_ERROR_MESSAGES.STORAGE_NETWORK_BLOCKED,
+          0,
+          'STORAGE_NETWORK_BLOCKED',
+        );
+      }
+      if (!put.ok) {
+        throw new ApiClientError(
+          `Upload to storage failed (status ${put.status})`,
+          put.status,
+          'STORAGE_PUT_FAILED',
+        );
+      }
+
+      // 3. Magic-byte verify; clean up the orphan if it fails.
+      try {
+        await api.post(
+          '/api/storage/verify-upload',
+          { key: presign.key, contentType },
+          token,
+        );
+      } catch (verifyErr) {
+        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch(() => {
+          /* best effort */
+        });
+        throw verifyErr;
+      }
+
+      // 4. Persist photo metadata. If this fails (e.g. tenant-key check
+      // rejects the upload, DB error, etc.) clean up the R2 object so we
+      // don't leave a verified-but-unreferenced orphan behind.
+      try {
+        await api.post(
+          `/api/boats/${boatId}/photos`,
+          {
+            filename: file.name,
+            contentType,
+            sizeBytes: file.size,
+            storageKey: presign.key,
+          },
+          token,
+        );
+      } catch (persistErr) {
+        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch(() => {
+          /* best effort */
+        });
+        throw persistErr;
+      }
+
+      await refresh();
+      toast.success('Photo uploaded', `${file.name} was added to this boat.`);
+    } catch (err) {
+      const status = err instanceof ApiClientError ? err.status : undefined;
+      console.error('[boat photo upload failed]', {
+        storageKey: presignKey,
+        filename: file.name,
+        sizeBytes: file.size,
+        contentType: resolveBoatPhotoContentType(file),
+        httpStatus: status,
+        error: err,
+      });
+      const { title, message } = describeUploadError(err);
+      setError(message);
+      toast.error(title, message);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function deletePhoto(photo: ApiBoatPhoto) {
+    if (!window.confirm(`Delete "${photo.filename}"?`)) return;
+    setError(null);
+    try {
+      const token = await getToken();
+      // Server-side handler best-effort cleans up the R2 object, so the
+      // client doesn't need to follow up with an extra storage delete.
+      await api.delete(`/api/boats/${boatId}/photos/${photo.id}`, token);
+      setThumbUrls((prev) => {
+        const { [photo.id]: _removed, ...rest } = prev;
+        return rest;
+      });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed');
+    }
+  }
+
+  const triggerPicker = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px 24px', borderTop: '1px solid #E2E8F0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <Camera size={14} /> Photos
+        </div>
+        <button
+          type="button"
+          onClick={triggerPicker}
+          disabled={uploading}
+          aria-busy={uploading}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            padding: '6px 14px', fontSize: '13px', fontWeight: 600,
+            color: '#FFFFFF', background: uploading ? '#94A3B8' : '#0A2342',
+            border: 'none', borderRadius: '6px',
+            cursor: uploading ? 'wait' : 'pointer',
+          }}
+        >
+          {uploading ? <Loader size={14} /> : <Plus size={14} />}
+          {uploading ? 'Uploading…' : 'Add Photo'}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={BOAT_PHOTO_ACCEPT_ATTR}
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void uploadPhoto(f);
+          }}
+        />
+      </div>
+
+      {error && (
+        <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 8, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ color: '#94A3B8', fontSize: '13px' }}>Loading photos…</div>
+      ) : photos.length === 0 ? (
+        <div style={{ color: '#94A3B8', fontSize: '14px', padding: '8px 0' }}>
+          No photos uploaded yet. PNG, JPG, or WEBP up to 10 MB.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
+          {photos.map((p) => {
+            const url = thumbUrls[p.id];
+            return (
+              <div
+                key={p.id}
+                style={{
+                  position: 'relative', borderRadius: '8px', overflow: 'hidden',
+                  border: '1px solid #E2E8F0', background: '#F8FAFC',
+                  aspectRatio: '1 / 1', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                {url ? (
+                  <a href={url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', width: '100%', height: '100%' }}>
+                    <img
+                      src={url}
+                      alt={p.filename}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                  </a>
+                ) : (
+                  <Camera size={28} color="#94A3B8" />
+                )}
+                <button
+                  type="button"
+                  onClick={() => deletePhoto(p)}
+                  title="Delete photo"
+                  aria-label={`Delete ${p.filename}`}
+                  style={{
+                    position: 'absolute', top: '6px', right: '6px',
+                    background: 'rgba(10, 35, 66, 0.85)', color: '#fff',
+                    border: 'none', borderRadius: '50%', width: '24px', height: '24px',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void | Promise<void> }) {
   const [vals, setVals] = useState<Record<string, string>>({
     name: boat.name, type: boat.type, length: String(boat.length), registration: boat.registration,
@@ -1440,6 +1808,8 @@ export default function CustomerDetailPage() {
                 </div>
               )}
             </div>
+            {/* Photos Section */}
+            <BoatPhotosSection boatId={b.id} />
           </div>
         );
       })}

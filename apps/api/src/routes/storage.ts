@@ -27,6 +27,7 @@ router.use(...clerkAuth());
 const FileCategoryEnum = z.enum([
   "insurance",
   "photos",
+  "boats",
   "contracts",
   "invoices",
   "documents",

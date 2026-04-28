@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { deleteFile as deleteFileFromStorage } from "../lib/storage.js";
 import {
   calculateBoatCompliance,
   computeBoatCompliance,
@@ -432,6 +433,112 @@ router.get(
       const compliance = await calculateBoatCompliance(req.params.id, tenantId);
 
       res.json(compliance);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── Boat Photos ────────────────────────────────────────────────────────────
+//
+// Photo bytes live in R2 under `${tenantId}/boats/...`, uploaded directly
+// from the browser via the existing presign flow. These routes only manage
+// the metadata rows that link a stored object back to a boat.
+
+const BOAT_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const BOAT_PHOTO_ALLOWED_MIME = ["image/png", "image/jpeg", "image/webp"] as const;
+
+const CreateBoatPhotoSchema = z.object({
+  filename: z.string().min(1).max(255),
+  contentType: z.enum(BOAT_PHOTO_ALLOWED_MIME),
+  sizeBytes: z.number().int().nonnegative().max(BOAT_PHOTO_MAX_BYTES),
+  storageKey: z.string().min(1).max(512),
+});
+
+router.get(
+  "/:id/photos",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const boat = await prisma.boat.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true },
+      });
+      if (!boat) throw appError("Boat not found", 404, "NOT_FOUND");
+
+      const photos = await prisma.boatPhoto.findMany({
+        where: { boatId: req.params.id, tenantId },
+        orderBy: { createdAt: "desc" },
+      });
+      res.json(photos);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/:id/photos",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = CreateBoatPhotoSchema.parse(req.body);
+
+      // Presigned uploads for boat photos always land under
+      // `${tenantId}/boats/...`. Reject anything outside that prefix so a
+      // client can't attach an object that was signed for a different
+      // category (documents, insurance, etc.).
+      if (!body.storageKey.startsWith(`${tenantId}/boats/`)) {
+        throw appError("Invalid storage key", 400, "INVALID_STORAGE_KEY");
+      }
+
+      const boat = await prisma.boat.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true },
+      });
+      if (!boat) throw appError("Boat not found", 404, "NOT_FOUND");
+
+      const photo = await prisma.boatPhoto.create({
+        data: {
+          tenantId,
+          boatId: req.params.id,
+          filename: body.filename,
+          contentType: body.contentType,
+          sizeBytes: body.sizeBytes,
+          storageKey: body.storageKey,
+          uploadedById: req.userId ?? null,
+        },
+      });
+
+      res.status(201).json(photo);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  "/:id/photos/:photoId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { id: boatId, photoId } = req.params;
+
+      const photo = await prisma.boatPhoto.findFirst({
+        where: { id: photoId, boatId, tenantId },
+      });
+      if (!photo) throw appError("Photo not found", 404, "NOT_FOUND");
+
+      await prisma.boatPhoto.delete({ where: { id: photoId } });
+      // Best-effort R2 cleanup so the object doesn't outlive its metadata
+      // even when the caller skips the client-side cleanup step.
+      await deleteFileFromStorage(photo.storageKey).catch((err) => {
+        console.warn("[boat-photo] R2 cleanup failed", {
+          storageKey: photo.storageKey,
+          error: err instanceof Error ? err.message : err,
+        });
+      });
+      res.json({ success: true });
     } catch (err) {
       next(err);
     }

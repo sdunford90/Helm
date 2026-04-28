@@ -1,7 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import type Stripe from "stripe";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { deleteFile as deleteFileFromStorage } from "../lib/storage.js";
 import { requireStripe } from "../lib/stripe.js";
 
 const router: Router = Router();
@@ -250,6 +252,139 @@ router.get("/boats", async (req: Request, res: Response, next: NextFunction) => 
     next(err);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Boat photos (portal-side) — customers can attach pictures to their own
+// boats. The R2 object is uploaded directly from the browser via the existing
+// /api/storage/presign-upload flow with category="boats"; these endpoints
+// just manage the metadata rows after the upload completes.
+// ---------------------------------------------------------------------------
+
+const PORTAL_BOAT_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const PORTAL_BOAT_PHOTO_ALLOWED_MIME = ["image/png", "image/jpeg", "image/webp"] as const;
+
+const PortalCreateBoatPhotoSchema = z.object({
+  filename: z.string().min(1).max(255),
+  contentType: z.enum(PORTAL_BOAT_PHOTO_ALLOWED_MIME),
+  sizeBytes: z.number().int().nonnegative().max(PORTAL_BOAT_PHOTO_MAX_BYTES),
+  storageKey: z.string().min(1).max(512),
+});
+
+async function findPortalBoat(req: Request, boatId: string) {
+  return prisma.boat.findFirst({
+    where: {
+      id: boatId,
+      tenantId: req.tenantId!,
+      customerId: req.portalCustomerId!,
+    },
+    select: { id: true },
+  });
+}
+
+router.get(
+  "/boats/:boatId/photos",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const boat = await findPortalBoat(req, req.params.boatId);
+      if (!boat) {
+        res.status(404).json({ error: "Boat not found", code: "NOT_FOUND" });
+        return;
+      }
+      const photos = await prisma.boatPhoto.findMany({
+        where: { boatId: boat.id, tenantId: req.tenantId! },
+        orderBy: { createdAt: "desc" },
+      });
+      res.json(photos);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/boats/:boatId/photos",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const boat = await findPortalBoat(req, req.params.boatId);
+      if (!boat) {
+        res.status(404).json({ error: "Boat not found", code: "NOT_FOUND" });
+        return;
+      }
+
+      const parsed = PortalCreateBoatPhotoSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: "Invalid request body",
+          code: "INVALID_BODY",
+          issues: parsed.error.issues,
+        });
+        return;
+      }
+      const { filename, contentType, sizeBytes, storageKey } = parsed.data;
+
+      // Boat photos are uploaded under `${tenantId}/boats/...` via the
+      // presign flow. Reject any other prefix so a client can't smuggle
+      // an object signed for another category onto a boat record.
+      if (!storageKey.startsWith(`${req.tenantId}/boats/`)) {
+        res
+          .status(400)
+          .json({ error: "Invalid storage key", code: "INVALID_STORAGE_KEY" });
+        return;
+      }
+
+      const photo = await prisma.boatPhoto.create({
+        data: {
+          tenantId: req.tenantId!,
+          boatId: boat.id,
+          filename,
+          contentType,
+          sizeBytes,
+          storageKey,
+          uploadedById: req.userId ?? null,
+        },
+      });
+      res.status(201).json(photo);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  "/boats/:boatId/photos/:photoId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const boat = await findPortalBoat(req, req.params.boatId);
+      if (!boat) {
+        res.status(404).json({ error: "Boat not found", code: "NOT_FOUND" });
+        return;
+      }
+      const photo = await prisma.boatPhoto.findFirst({
+        where: {
+          id: req.params.photoId,
+          boatId: boat.id,
+          tenantId: req.tenantId!,
+        },
+      });
+      if (!photo) {
+        res.status(404).json({ error: "Photo not found", code: "NOT_FOUND" });
+        return;
+      }
+      await prisma.boatPhoto.delete({ where: { id: photo.id } });
+      // Best-effort R2 cleanup so the object doesn't outlive its metadata
+      // even when the caller skips the client-side cleanup step.
+      await deleteFileFromStorage(photo.storageKey).catch((err) => {
+        console.warn("[portal-boat-photo] R2 cleanup failed", {
+          storageKey: photo.storageKey,
+          error: err instanceof Error ? err.message : err,
+        });
+      });
+      res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // GET /api/portal/dashboard — roll-up used by the portal home page

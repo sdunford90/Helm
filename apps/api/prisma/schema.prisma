@@ -683,9 +683,28 @@ model Boat {
   safetyRecords    VesselSafetyRecord[]
   insuranceRecords InsuranceRecord[]
   slipContracts    SlipContract[]
+  photos           BoatPhoto[]
 
   @@index([tenantId])
   @@map("boats")
+}
+
+model BoatPhoto {
+  id           String   @id @default(uuid())
+  tenantId     String
+  boatId       String
+  filename     String
+  contentType  String
+  sizeBytes    Int
+  storageKey   String
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  boat Boat @relation(fields: [boatId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([boatId])
+  @@map("boat_photos")
 }
 
 model VesselSafetyRecord {
