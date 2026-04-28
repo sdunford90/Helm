@@ -7,6 +7,7 @@ import {
   achReturnHtml,
   expiryReminderHtml,
   announcementHtml,
+  cardExpiryReminderHtml,
 } from "../lib/email.js";
 import { sendSms } from "../lib/sms.js";
 import { prisma } from "../lib/prisma.js";
@@ -14,6 +15,7 @@ import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
 import { runTenantLifecycleCheck } from "../jobs/tenant-lifecycle.js";
 import { generateRecurringInvoices } from "../services/billing.js";
 import { recognizeDeferred } from "../services/deferred-revenue.js";
+import { runCardExpiryRemindersForAllTenants, runCardExpiryReminders } from "../services/card-expiry-reminders.js";
 import {
   syncCustomer,
   syncInvoice,
@@ -55,12 +57,23 @@ const emailWorker = new Worker(
         subject = data.subject;
         html = announcementHtml(data);
         break;
+      case "card_expiry_reminder":
+        subject =
+          data.window === "7_DAY"
+            ? `Action needed: your saved card expires ${data.expiryLabel}`
+            : `Heads up: your saved card expires ${data.expiryLabel}`;
+        html = cardExpiryReminderHtml(data);
+        break;
       default:
         console.error(`[email-worker] Unknown email type: ${type}`);
         return;
     }
 
-    const messageId = await sendEmail({ to, subject, html }, marinaDomain);
+    const tenantId = job.data.tenantId as string | undefined;
+    const messageId = await sendEmail(
+      { to, subject, html, ...(tenantId ? { tenantId } : {}) },
+      marinaDomain,
+    );
     if (messageId) {
       console.log(`[email-worker] Sent ${type} email to ${to} (${messageId})`);
     }
@@ -325,6 +338,22 @@ const billingWorker = new Worker(
         break;
       }
 
+      case "card-expiry-reminders": {
+        const tenantId = job.data?.tenantId as string | undefined;
+        if (tenantId) {
+          const r = await runCardExpiryReminders(tenantId);
+          console.log(
+            `[billing-worker] card-expiry-reminders for tenant ${tenantId}: scanned=${r.scanned} sent=${r.remindersSent} alreadySent=${r.skippedAlreadySent} noCard=${r.skippedNoCard} expired=${r.skippedExpired} errors=${r.errors}`,
+          );
+        } else {
+          const r = await runCardExpiryRemindersForAllTenants();
+          console.log(
+            `[billing-worker] card-expiry-reminders complete — ${r.totalSent} reminders across ${r.tenants} tenants (${r.totalErrors} errors)`,
+          );
+        }
+        break;
+      }
+
       case "generate-recurring-invoices": {
         // Run for a specific tenant or all active tenants
         const tenantId = job.data?.tenantId as string | undefined;
@@ -552,6 +581,16 @@ async function scheduleRepeatableJobs() {
       {
         repeat: { pattern: "0 4 * * *" },
         jobId: "cron-tenant-lifecycle",
+      },
+    );
+
+    // Daily at 13:00 UTC — proactive card-expiry reminder emails (30/7-day windows)
+    await queues.billing.add(
+      "card-expiry-reminders",
+      {},
+      {
+        repeat: { pattern: "0 13 * * *" },
+        jobId: "cron-card-expiry-reminders",
       },
     );
 

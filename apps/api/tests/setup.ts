@@ -229,6 +229,7 @@ export const mockPrisma = {
   achReturn: { findMany: vi.fn().mockResolvedValue([]) },
   vesselSafetyRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   emailSuppression: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), delete: vi.fn() },
+  cardExpiryReminder: { findUnique: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }), deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
   $transaction: vi.fn().mockImplementation((arg: any) => {
     if (typeof arg === 'function') return arg(mockPrisma);
     if (Array.isArray(arg)) return Promise.all(arg);

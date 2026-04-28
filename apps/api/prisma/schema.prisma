@@ -583,9 +583,47 @@ model Customer {
   communicationPreferences CommunicationPreference[]
   portalMessages           PortalMessage[]
   documents                CustomerDocument[]
+  cardExpiryReminders      CardExpiryReminder[]
 
   @@index([tenantId])
   @@map("customers")
+}
+
+// Idempotency table for the proactive "your saved card is about to expire"
+// emails sent by the daily card-expiry-reminders job. One row per
+// (tenant, payment-method, card-expiry-month, window) stops us from
+// double-sending across reruns of the same daily job.
+//
+// `window` is "30_DAY" or "7_DAY". Including expMonth/expYear in the unique
+// key means that when a customer updates the card to a fresh expiry, the
+// next daily run treats it as a new card and the reminders fire again.
+model CardExpiryReminder {
+  id                    String    @id @default(uuid())
+  tenantId              String
+  customerId            String
+  stripePaymentMethodId String
+  stripeAccountId       String?
+  brand                 String?
+  last4                 String?
+  expMonth              Int
+  expYear               Int
+  window                String
+  // Lifecycle: PENDING (row reserved before enqueue) → SENT (after enqueue
+  // succeeded). The reservation is what makes the sweep at-most-once: a
+  // crashed/concurrent run can never enqueue twice for the same key because
+  // the unique index rejects the second insert. PENDING rows that survive
+  // a crash are picked up on the next run and re-enqueued (they aren't a
+  // proof the email was queued, only that we *tried*).
+  status                String    @default("PENDING")
+  reservedAt            DateTime  @default(now())
+  sentAt                DateTime?
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, stripePaymentMethodId, expMonth, expYear, window], name: "tenant_pm_expiry_window")
+  @@index([tenantId])
+  @@index([customerId])
+  @@map("card_expiry_reminders")
 }
 
 model CustomerDocument {

@@ -253,6 +253,40 @@ export function expiryReminderHtml(params: {
   `);
 }
 
+export function cardExpiryReminderHtml(params: {
+  customerName: string;
+  brand: string;
+  last4: string;
+  expiryLabel: string;
+  window: "30_DAY" | "7_DAY";
+  marinaName: string;
+  portalUrl: string;
+}): string {
+  const isUrgent = params.window === "7_DAY";
+  const headline = isUrgent
+    ? "Your saved card expires in less than 7 days"
+    : "Your saved card expires soon";
+  const bannerColor = isUrgent ? "#d73a49" : "#b45309";
+  return layout(`
+    <h2 style="margin:0 0 8px;color:${bannerColor};">${headline}</h2>
+    <p>Hi ${params.customerName},</p>
+    <p>Your <strong>${params.brand} •••• ${params.last4}</strong> on file with ${params.marinaName} expires
+    <strong>${params.expiryLabel}</strong>. Update your card now to avoid a failed charge or any pause to autopay.</p>
+    <table role="presentation" width="100%" style="margin:16px 0;border-collapse:collapse;">
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;font-weight:600;">Card</td>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">${params.brand} •••• ${params.last4}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;font-weight:600;">Expires</td>
+        <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">${params.expiryLabel}</td>
+      </tr>
+    </table>
+    <p style="text-align:center;">${btn(params.portalUrl, "Update Payment Method")}</p>
+    <p style="font-size:13px;color:#666;">If you've already updated this card, you can ignore this message — we'll detect the new expiry on our next sweep.</p>
+  `);
+}
+
 export function saasInvoicePaymentFailedHtml(params: {
   marinaName: string;
   amountDue: string;

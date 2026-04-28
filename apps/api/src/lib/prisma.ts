@@ -55,6 +55,7 @@ const TENANT_SCOPED_MODELS = new Set([
   "InventoryAdjustment",
   "InventoryCountSession",
   "CustomerDocument",
+  "CardExpiryReminder",
 ]);
 
 // --------------------------------------------------------------------------
