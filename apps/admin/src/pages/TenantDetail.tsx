@@ -45,6 +45,7 @@ interface TenantData {
   createdAt: string;
   connectedServices: { stripe: boolean; quickbooks: boolean };
   subscription: {
+    tierId?: string;
     tierName: string;
     monthlyFeeCents: number;
     achFeeRate: number;
@@ -258,6 +259,177 @@ const LocationModal: React.FC<{
   );
 };
 
+interface TierOption {
+  id: string;
+  name: string;
+  monthlyFeeCents: number;
+}
+
+interface ProrationPreview {
+  creditCents: number;
+  chargeCents: number;
+  prorationCents: number;
+  daysUsed: number;
+  daysRemaining: number;
+  cycleDays: number;
+  fromTierName: string | null;
+  toTierName: string;
+  fromMonthlyFeeCents: number;
+  toMonthlyFeeCents: number;
+}
+
+const PlanChangeModal: React.FC<{
+  tenantId: string;
+  currentTierId?: string;
+  onClose: () => void;
+  onSaved: () => void;
+}> = ({ tenantId, currentTierId, onClose, onSaved }) => {
+  const [tiers, setTiers] = useState<TierOption[]>([]);
+  const apiFetch = useApiFetch();
+  const [toTierId, setToTierId] = useState('');
+  const [preview, setPreview] = useState<ProrationPreview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [previewing, setPreviewing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch(`${API}/billing/tiers`);
+        setTiers(Array.isArray(data) ? data : []);
+      } catch (e: unknown) {
+        setErr((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!toTierId || toTierId === currentTierId) {
+      setPreview(null);
+      return;
+    }
+    setPreviewing(true);
+    setErr('');
+    apiFetch<ProrationPreview>(`${API}/tenants/${tenantId}/plan/preview`, {
+      method: 'POST', body: JSON.stringify({ toTierId }),
+    })
+      .then((p) => setPreview(p))
+      .catch((e: Error) => setErr(e.message))
+      .finally(() => setPreviewing(false));
+  }, [toTierId, tenantId, currentTierId]);
+
+  const submit = async () => {
+    if (!toTierId) { setErr('Pick a new tier'); return; }
+    setSaving(true);
+    try {
+      await apiFetch(`${API}/tenants/${tenantId}/plan/change`, {
+        method: 'POST', body: JSON.stringify({ toTierId }),
+      });
+      onSaved();
+      onClose();
+    } catch (e: unknown) {
+      setErr((e as Error).message);
+      setSaving(false);
+    }
+  };
+
+  const inp: React.CSSProperties = {
+    width: '100%', background: '#0A1929', border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 6, padding: '8px 12px', color: '#FFF', fontSize: 13, boxSizing: 'border-box',
+  };
+  const lbl: React.CSSProperties = { fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 4, display: 'block' };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+    }} onClick={onClose}>
+      <div style={{
+        background: '#0D1B2A', borderRadius: 12, padding: 28, width: 540,
+        border: '1px solid rgba(255,255,255,0.08)',
+      }} onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ margin: '0 0 20px', color: '#FFF', fontSize: 16 }}>Change Plan</h3>
+        {err && <div style={{ color: '#F44336', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+        <label style={lbl}>New Tier *</label>
+        <select
+          style={{ ...inp, cursor: 'pointer' }}
+          value={toTierId}
+          onChange={(e) => setToTierId(e.target.value)}
+          disabled={loading}
+        >
+          <option value="">— Select tier —</option>
+          {tiers.filter((t) => t.id !== currentTierId).map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} — {fmtCents(t.monthlyFeeCents)}/mo
+            </option>
+          ))}
+        </select>
+
+        {previewing && (
+          <div style={{ marginTop: 20, padding: 16, background: '#0A1929', borderRadius: 6, color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>
+            Calculating proration…
+          </div>
+        )}
+
+        {preview && !previewing && (
+          <div style={{ marginTop: 20, padding: 16, background: '#0A1929', borderRadius: 6, border: '1px solid rgba(0,212,255,0.2)' }}>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+              Proration Preview
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+              <span style={{ color: 'rgba(255,255,255,0.6)' }}>From:</span>
+              <span style={{ color: '#FFF', textAlign: 'right' }}>
+                {preview.fromTierName ?? '—'} ({fmtCents(preview.fromMonthlyFeeCents)}/mo)
+              </span>
+              <span style={{ color: 'rgba(255,255,255,0.6)' }}>To:</span>
+              <span style={{ color: '#FFF', textAlign: 'right' }}>
+                {preview.toTierName} ({fmtCents(preview.toMonthlyFeeCents)}/mo)
+              </span>
+              <span style={{ color: 'rgba(255,255,255,0.6)' }}>Cycle:</span>
+              <span style={{ color: '#FFF', textAlign: 'right' }}>
+                day {preview.daysUsed} of {preview.cycleDays} ({preview.daysRemaining} remaining)
+              </span>
+              <span style={{ color: 'rgba(255,255,255,0.6)' }}>Credit (unused old):</span>
+              <span style={{ color: '#4CAF50', textAlign: 'right' }}>−{fmtCents(preview.creditCents)}</span>
+              <span style={{ color: 'rgba(255,255,255,0.6)' }}>Charge (remaining new):</span>
+              <span style={{ color: '#FF9800', textAlign: 'right' }}>+{fmtCents(preview.chargeCents)}</span>
+            </div>
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 12, paddingTop: 12, display: 'flex', justifyContent: 'space-between', fontSize: 14 }}>
+              <span style={{ color: '#FFF', fontWeight: 600 }}>Net proration:</span>
+              <span style={{ color: preview.prorationCents >= 0 ? '#FF9800' : '#4CAF50', fontWeight: 700 }}>
+                {preview.prorationCents >= 0 ? '+' : '−'}{fmtCents(Math.abs(preview.prorationCents))}
+              </span>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5 }}>
+              The proration {preview.prorationCents >= 0 ? 'charge' : 'credit'} will appear on the next monthly invoice as a separate adjustment line.
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+          <button onClick={onClose} style={{
+            padding: '8px 20px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 6, color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 13,
+          }}>Cancel</button>
+          <button
+            onClick={submit}
+            disabled={saving || !toTierId || previewing}
+            style={{
+              padding: '8px 20px', background: '#00D4FF', border: 'none',
+              borderRadius: 6, color: '#0A2342', fontWeight: 700,
+              cursor: saving || !toTierId || previewing ? 'not-allowed' : 'pointer',
+              opacity: saving || !toTierId || previewing ? 0.6 : 1, fontSize: 13,
+            }}
+          >{saving ? 'Saving…' : 'Apply Plan Change'}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const TenantDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -275,6 +447,7 @@ const TenantDetail: React.FC = () => {
   const [pickedTierByLoc, setPickedTierByLoc] = useState<Record<string, string>>({});
   const [billingBusyLocId, setBillingBusyLocId] = useState<string | null>(null);
   const [billingMsg, setBillingMsg] = useState<{ locId: string; kind: 'ok' | 'err'; text: string } | null>(null);
+  const [showPlanModal, setShowPlanModal] = useState(false);
 
   const fetchTenant = useCallback(async () => {
     if (!id) return;
@@ -522,6 +695,15 @@ const TenantDetail: React.FC = () => {
         <div>
           {tenant.subscription ? (
             <>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                <button
+                  onClick={() => setShowPlanModal(true)}
+                  style={{
+                    padding: '8px 18px', background: '#00D4FF', border: 'none', borderRadius: 6,
+                    color: '#0A2342', fontWeight: 700, cursor: 'pointer', fontSize: 13,
+                  }}
+                >Change Plan</button>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
                 {[
                   { label: 'Tier', value: tenant.subscription.tierName },
@@ -544,7 +726,14 @@ const TenantDetail: React.FC = () => {
             </>
           ) : (
             <div style={{ ...card, textAlign: 'center', color: 'rgba(255,255,255,0.4)', padding: 40 }}>
-              No subscription tier assigned to this tenant.
+              <div style={{ marginBottom: 16 }}>No subscription tier assigned to this tenant.</div>
+              <button
+                onClick={() => setShowPlanModal(true)}
+                style={{
+                  padding: '8px 18px', background: '#00D4FF', border: 'none', borderRadius: 6,
+                  color: '#0A2342', fontWeight: 700, cursor: 'pointer', fontSize: 13,
+                }}
+              >Assign Plan</button>
             </div>
           )}
         </div>
@@ -783,6 +972,16 @@ const TenantDetail: React.FC = () => {
           initial={editingLoc}
           onSave={handleSaveLocation}
           onClose={() => { setShowLocModal(false); setEditingLoc(undefined); }}
+        />
+      )}
+
+      {/* Plan Change Modal */}
+      {showPlanModal && id && (
+        <PlanChangeModal
+          tenantId={id}
+          currentTierId={tenant.subscription?.tierId}
+          onClose={() => setShowPlanModal(false)}
+          onSaved={fetchTenant}
         />
       )}
     </div>

@@ -105,6 +105,27 @@ export async function runTenantLifecycleCheck(): Promise<LifecycleResult> {
   });
 
   for (const tenant of expiredGraceTenants) {
+    // Skip auto-lock if any of this tenant's overdue SaaS invoices are
+    // currently in a dunning-pause window. Operators use the Dunning
+    // console to grant short reprieves without losing the past-due flag.
+    const pausedInvoice = await prisma.saasInvoice.findFirst({
+      where: {
+        tenantId: tenant.id,
+        dunningPaused: true,
+        OR: [
+          { pausedUntil: null },
+          { pausedUntil: { gt: now } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (pausedInvoice) {
+      console.log(
+        `[tenant-lifecycle] Skipping lock for tenant ${tenant.id}: dunning paused on invoice ${pausedInvoice.id}`,
+      );
+      continue;
+    }
+
     await prisma.tenant.update({
       where: { id: tenant.id },
       data: {

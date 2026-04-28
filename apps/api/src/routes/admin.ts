@@ -21,6 +21,17 @@ import {
   startCheckoutForLocation,
 } from "../services/saas-billing-service.js";
 
+import {
+  REFUND_REASONS,
+  type RefundReason,
+  applyPlanChange,
+  applyTrialExtensionToGrace,
+  computeCouponDiscount,
+  consumeCouponRedemption,
+  previewPlanChange,
+  saasInvoiceOutstandingCents,
+} from "../services/saas-billing-depth.js";
+import { sendEmail } from "../lib/email.js";
 const router: Router = Router();
 
 // --------------------------------------------------------------------------
@@ -930,9 +941,20 @@ router.get("/billing/invoices", async (req, res, next) => {
       periodStart: inv.periodStart.toISOString(),
       periodEnd: inv.periodEnd.toISOString(),
       amountCents: inv.amountCents,
+      discountCents: inv.discountCents,
+      refundedCents: inv.refundedCents,
+      prorationCents: inv.prorationCents,
+      outstandingCents: saasInvoiceOutstandingCents(inv),
       status: inv.status,
       issuedAt: inv.issuedAt.toISOString(),
+      dueDate: inv.dueDate?.toISOString() ?? null,
       paidAt: inv.paidAt?.toISOString() ?? null,
+      failedAttempts: inv.failedAttempts,
+      lastAttemptAt: inv.lastAttemptAt?.toISOString() ?? null,
+      dunningPaused: inv.dunningPaused,
+      pausedUntil: inv.pausedUntil?.toISOString() ?? null,
+      writeOffAt: inv.writeOffAt?.toISOString() ?? null,
+      writeOffReason: inv.writeOffReason,
     }));
 
     res.json({
@@ -957,31 +979,66 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const dueDate = new Date(now.getFullYear(), now.getMonth(), 15);
 
     const generated = [];
+    let skipped = 0;
+    let prorationLineCount = 0;
 
     for (const tenant of activeTenants) {
       if (!tenant.saasTier) continue;
 
-      // Skip if invoice already exists for this period
       const alreadyExists = await prisma.saasInvoice.findFirst({
         where: {
           tenantId: tenant.id,
           periodStart: { gte: periodStart, lte: periodStart },
         },
       });
-      if (alreadyExists) continue;
+      if (alreadyExists) {
+        skipped++;
+        continue;
+      }
+
+      const baseAmount = tenant.saasTier.monthlyFeeCents;
+      const discount = await computeCouponDiscount(tenant.id, baseAmount);
+
+      // Aggregate any unbilled plan-change proration into THIS invoice
+      // as one line (sum of all pending change deltas). This is the
+      // "appears on the next SaaS invoice" semantic.
+      const pendingChanges = await prisma.saasPlanChange.findMany({
+        where: { tenantId: tenant.id, appliedToInvoiceId: null },
+      });
+      const prorationTotal = pendingChanges.reduce(
+        (sum, c) => sum + c.prorationCents,
+        0,
+      );
 
       const invoice = await prisma.saasInvoice.create({
         data: {
           tenantId: tenant.id,
           periodStart,
           periodEnd,
-          amountCents: tenant.saasTier.monthlyFeeCents,
+          dueDate,
+          amountCents: baseAmount,
+          prorationCents: prorationTotal,
+          discountCents: discount.discountCents,
+          couponRedemptionId: discount.redemptionId,
           status: "issued",
         },
         include: { tenant: { select: { name: true } } },
       });
+
+      if (discount.redemptionId) {
+        await consumeCouponRedemption(discount.redemptionId, invoice.id);
+      }
+
+      if (pendingChanges.length > 0) {
+        await prisma.saasPlanChange.updateMany({
+          where: { id: { in: pendingChanges.map((c) => c.id) } },
+          data: { appliedToInvoiceId: invoice.id },
+        });
+        prorationLineCount += pendingChanges.length;
+      }
 
       generated.push({
         id: invoice.id,
@@ -990,6 +1047,8 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
         periodStart: invoice.periodStart.toISOString(),
         periodEnd: invoice.periodEnd.toISOString(),
         amountCents: invoice.amountCents,
+        discountCents: invoice.discountCents,
+        prorationCents: invoice.prorationCents,
         status: invoice.status,
         issuedAt: invoice.issuedAt.toISOString(),
         paidAt: null,
@@ -998,7 +1057,8 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
 
     res.status(201).json({
       generated: generated.length,
-      skipped: activeTenants.length - generated.length,
+      prorationLines: prorationLineCount,
+      skipped,
       invoices: generated,
     });
   } catch (err) {
@@ -3184,5 +3244,808 @@ function safeJsonPreview(value: unknown): unknown {
     return null;
   }
 }
+
+
+// ==========================================================================
+//  COUPONS & PROMO CODES (SaaS subscriptions)
+// ==========================================================================
+
+const COUPON_TYPES = ["PERCENT", "FIXED", "TRIAL_EXTENSION"] as const;
+const COUPON_DURATIONS = ["ONCE", "REPEATING"] as const;
+
+// GET /api/admin/billing/coupons — list with redemption counts
+router.get("/billing/coupons", async (_req, res, next) => {
+  try {
+    const coupons = await prisma.saasCoupon.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        redemptions: {
+          select: { id: true, tenantId: true, active: true, redeemedAt: true },
+        },
+      },
+    });
+
+    res.json(
+      coupons.map((c) => ({
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        discountType: c.discountType,
+        discountValue: c.discountValue,
+        duration: c.duration,
+        durationCycles: c.durationCycles,
+        maxRedemptions: c.maxRedemptions,
+        active: c.active,
+        notes: c.notes,
+        redemptionCount: c.redemptions.length,
+        activeRedemptions: c.redemptions.filter((r) => r.active).length,
+        createdAt: c.createdAt.toISOString(),
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/coupons — create
+router.post("/billing/coupons", async (req, res, next) => {
+  try {
+    const {
+      code,
+      name,
+      discountType,
+      discountValue,
+      duration = "ONCE",
+      durationCycles,
+      maxRedemptions,
+      notes,
+    } = req.body ?? {};
+
+    if (!code || !name) {
+      res.status(400).json({ error: "code and name are required" });
+      return;
+    }
+    if (!COUPON_TYPES.includes(discountType)) {
+      res.status(400).json({
+        error: `discountType must be one of: ${COUPON_TYPES.join(", ")}`,
+      });
+      return;
+    }
+    if (!COUPON_DURATIONS.includes(duration)) {
+      res.status(400).json({
+        error: `duration must be one of: ${COUPON_DURATIONS.join(", ")}`,
+      });
+      return;
+    }
+    if (typeof discountValue !== "number" || discountValue <= 0) {
+      res.status(400).json({ error: "discountValue must be a positive number" });
+      return;
+    }
+    if (duration === "REPEATING" && (typeof durationCycles !== "number" || durationCycles < 1)) {
+      res.status(400).json({
+        error: "durationCycles is required and must be ≥ 1 for REPEATING",
+      });
+      return;
+    }
+    if (discountType === "PERCENT" && discountValue > 10000) {
+      res.status(400).json({ error: "PERCENT discountValue is bps; max 10000 (100%)" });
+      return;
+    }
+
+    const normalizedCode = String(code).trim().toUpperCase();
+
+    const existing = await prisma.saasCoupon.findUnique({
+      where: { code: normalizedCode },
+    });
+    if (existing) {
+      res.status(409).json({ error: "Coupon code already exists" });
+      return;
+    }
+
+    const coupon = await prisma.saasCoupon.create({
+      data: {
+        code: normalizedCode,
+        name,
+        discountType,
+        discountValue,
+        duration,
+        durationCycles: duration === "REPEATING" ? durationCycles : null,
+        maxRedemptions: maxRedemptions ?? null,
+        notes: notes ?? null,
+      },
+    });
+
+    res.status(201).json(coupon);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/billing/coupons/:id — edit
+router.put("/billing/coupons/:id", async (req, res, next) => {
+  try {
+    const existing = await prisma.saasCoupon.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Coupon not found" });
+      return;
+    }
+
+    const data: Record<string, unknown> = {};
+    const { name, active, notes, maxRedemptions } = req.body ?? {};
+    if (name !== undefined) data.name = name;
+    if (active !== undefined) data.active = !!active;
+    if (notes !== undefined) data.notes = notes;
+    if (maxRedemptions !== undefined) data.maxRedemptions = maxRedemptions;
+
+    const updated = await prisma.saasCoupon.update({
+      where: { id: req.params.id },
+      data,
+    });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/coupons/:id/deactivate
+router.post("/billing/coupons/:id/deactivate", async (req, res, next) => {
+  try {
+    const updated = await prisma.saasCoupon.update({
+      where: { id: req.params.id },
+      data: { active: false },
+    });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/coupons/:id/apply — apply coupon to a tenant
+router.post("/billing/coupons/:id/apply", async (req, res, next) => {
+  try {
+    const { tenantId } = req.body ?? {};
+    if (!tenantId) {
+      res.status(400).json({ error: "tenantId is required" });
+      return;
+    }
+
+    const coupon = await prisma.saasCoupon.findUnique({
+      where: { id: req.params.id },
+      include: { _count: { select: { redemptions: true } } },
+    });
+    if (!coupon || !coupon.active) {
+      res.status(400).json({ error: "Coupon is inactive or not found" });
+      return;
+    }
+
+    if (
+      coupon.maxRedemptions !== null &&
+      coupon.maxRedemptions !== undefined &&
+      coupon._count.redemptions >= coupon.maxRedemptions
+    ) {
+      res.status(400).json({ error: "Coupon has reached max redemptions" });
+      return;
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, gracePeriodStartedAt: true },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    // TRIAL_EXTENSION coupons mutate the tenant's grace period at apply
+    // time. They never appear as a discount on an invoice. We refuse to
+    // create the redemption when the tenant is not in a grace period —
+    // otherwise the operator would "use" the code with zero effect.
+    if (coupon.discountType === "TRIAL_EXTENSION") {
+      const newStart = await applyTrialExtensionToGrace(
+        tenantId,
+        coupon.discountValue,
+      );
+      if (!newStart) {
+        res.status(400).json({
+          error:
+            "Tenant is not currently in a grace period; trial extension cannot be applied.",
+        });
+        return;
+      }
+
+      const redemption = await prisma.saasCouponRedemption.upsert({
+        where: { couponId_tenantId: { couponId: coupon.id, tenantId } },
+        create: {
+          couponId: coupon.id,
+          tenantId,
+          cyclesRemaining: null,
+          active: false,
+          lastAppliedAt: new Date(),
+        },
+        update: {
+          active: false,
+          cyclesRemaining: null,
+          redeemedAt: new Date(),
+          lastAppliedAt: new Date(),
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          recordType: "Tenant",
+          recordId: tenantId,
+          action: "TRIAL_EXTENDED",
+          changedFieldsJson: {
+            couponCode: coupon.code,
+            days: coupon.discountValue,
+            newGracePeriodStartedAt: newStart.toISOString(),
+          },
+        },
+      });
+
+      res.status(201).json({ ...redemption, newGracePeriodStartedAt: newStart });
+      return;
+    }
+
+    const cyclesRemaining =
+      coupon.duration === "REPEATING" ? coupon.durationCycles : null;
+
+    const redemption = await prisma.saasCouponRedemption.upsert({
+      where: { couponId_tenantId: { couponId: coupon.id, tenantId } },
+      create: {
+        couponId: coupon.id,
+        tenantId,
+        cyclesRemaining,
+        active: true,
+      },
+      update: {
+        active: true,
+        cyclesRemaining,
+        redeemedAt: new Date(),
+      },
+    });
+
+    res.status(201).json(redemption);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/billing/coupons/:id/redemptions — see who used a code
+router.get("/billing/coupons/:id/redemptions", async (req, res, next) => {
+  try {
+    const redemptions = await prisma.saasCouponRedemption.findMany({
+      where: { couponId: req.params.id },
+      orderBy: { redeemedAt: "desc" },
+    });
+
+    const tenantIds = [...new Set(redemptions.map((r) => r.tenantId))];
+    const tenants = await prisma.tenant.findMany({
+      where: { id: { in: tenantIds } },
+      select: { id: true, name: true },
+    });
+    const tenantMap = new Map(tenants.map((t) => [t.id, t.name]));
+
+    res.json(
+      redemptions.map((r) => ({
+        id: r.id,
+        tenantId: r.tenantId,
+        tenantName: tenantMap.get(r.tenantId) ?? "—",
+        active: r.active,
+        cyclesRemaining: r.cyclesRemaining,
+        redeemedAt: r.redeemedAt.toISOString(),
+        lastAppliedAt: r.lastAppliedAt?.toISOString() ?? null,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  REFUNDS & CREDIT NOTES (SaaS invoices)
+// ==========================================================================
+
+// POST /api/admin/billing/invoices/:id/refund
+router.post("/billing/invoices/:id/refund", async (req, res, next) => {
+  try {
+    const { amountCents, reason, notes } = req.body ?? {};
+
+    if (typeof amountCents !== "number" || amountCents <= 0) {
+      res.status(400).json({ error: "amountCents must be a positive number" });
+      return;
+    }
+    if (!REFUND_REASONS.includes(reason as RefundReason)) {
+      res.status(400).json({
+        error: `reason must be one of: ${REFUND_REASONS.join(", ")}`,
+      });
+      return;
+    }
+
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    // Refunds may only be issued against an invoice that has been paid.
+    if (invoice.status !== "paid" || !invoice.paidAt) {
+      res.status(400).json({
+        error: "Only paid invoices can be refunded",
+      });
+      return;
+    }
+
+    const alreadyRefunded = invoice.refundedCents;
+    const refundable =
+      invoice.amountCents +
+      invoice.prorationCents -
+      invoice.discountCents -
+      alreadyRefunded;
+    if (amountCents > refundable) {
+      res.status(400).json({
+        error: `Refund exceeds refundable amount of ${refundable} cents`,
+      });
+      return;
+    }
+
+    const userId =
+      ((req as unknown as Record<string, unknown>).userId as string | undefined) ??
+      null;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const refund = await tx.saasInvoiceRefund.create({
+        data: {
+          saasInvoiceId: invoice.id,
+          amountCents,
+          reason,
+          notes: notes ?? null,
+          createdBy: userId,
+        },
+      });
+      const updated = await tx.saasInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          refundedCents: { increment: amountCents },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          tenantId: invoice.tenantId,
+          userId,
+          recordType: "SaasInvoice",
+          recordId: invoice.id,
+          action: "REFUND_ISSUED",
+          changedFieldsJson: { amountCents, reason, refundId: refund.id },
+        },
+      });
+      return { refund, updated };
+    });
+
+    res.status(201).json({
+      refund: result.refund,
+      invoice: {
+        id: result.updated.id,
+        amountCents: result.updated.amountCents,
+        discountCents: result.updated.discountCents,
+        refundedCents: result.updated.refundedCents,
+        outstandingCents: saasInvoiceOutstandingCents(result.updated),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/billing/invoices/:id/refunds
+router.get("/billing/invoices/:id/refunds", async (req, res, next) => {
+  try {
+    const refunds = await prisma.saasInvoiceRefund.findMany({
+      where: { saasInvoiceId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(refunds);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  DUNNING CONSOLE
+// ==========================================================================
+
+// GET /api/admin/billing/dunning — list invoices with failed payments / overdue
+router.get("/billing/dunning", async (_req, res, next) => {
+  try {
+    const now = new Date();
+    const rows = await prisma.saasInvoice.findMany({
+      where: {
+        status: { in: ["past_due", "issued"] },
+        OR: [
+          { failedAttempts: { gt: 0 } },
+          { dueDate: { lt: now } },
+        ],
+        writeOffAt: null,
+      },
+      include: { tenant: { select: { id: true, name: true, gracePeriodStartedAt: true } } },
+      orderBy: [{ failedAttempts: "desc" }, { dueDate: "asc" }],
+    });
+
+    const items = rows
+      .filter((inv) => saasInvoiceOutstandingCents(inv) > 0)
+      .map((inv) => {
+        const due = inv.dueDate ?? inv.issuedAt;
+        const daysOverdue = Math.max(
+          0,
+          Math.floor((now.getTime() - due.getTime()) / (24 * 60 * 60 * 1000)),
+        );
+        // Auto-lock 30 days into grace period; show countdown.
+        const graceStart = inv.tenant.gracePeriodStartedAt;
+        const autoLockAt = graceStart
+          ? new Date(graceStart.getTime() + 30 * 24 * 60 * 60 * 1000)
+          : null;
+        const hoursUntilLock = autoLockAt
+          ? Math.max(
+              0,
+              Math.floor((autoLockAt.getTime() - now.getTime()) / (60 * 60 * 1000)),
+            )
+          : null;
+
+        return {
+          id: inv.id,
+          tenantId: inv.tenantId,
+          tenantName: inv.tenant.name,
+          amountCents: inv.amountCents,
+          discountCents: inv.discountCents,
+          refundedCents: inv.refundedCents,
+          outstandingCents: saasInvoiceOutstandingCents(inv),
+          status: inv.status,
+          dueDate: inv.dueDate?.toISOString() ?? null,
+          daysOverdue,
+          failedAttempts: inv.failedAttempts,
+          lastAttemptAt: inv.lastAttemptAt?.toISOString() ?? null,
+          nextRetryAt: inv.nextRetryAt?.toISOString() ?? null,
+          dunningPaused: inv.dunningPaused,
+          pausedUntil: inv.pausedUntil?.toISOString() ?? null,
+          autoLockAt: autoLockAt?.toISOString() ?? null,
+          hoursUntilLock,
+        };
+      });
+
+    res.json({ items, count: items.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/retry — record a retry attempt
+router.post("/billing/dunning/:invoiceId/retry", async (req, res, next) => {
+  try {
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    // We don't attempt the actual Stripe charge here — Stripe Smart Retries
+    // owns the subscription invoice retry cadence. This endpoint records
+    // an operator-initiated retry intent so it shows up in the audit trail.
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: {
+        failedAttempts: { increment: 1 },
+        lastAttemptAt: new Date(),
+        nextRetryAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_RETRY",
+        changedFieldsJson: { triggeredBy: "platform_admin" },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      failedAttempts: updated.failedAttempts,
+      lastAttemptAt: updated.lastAttemptAt,
+      nextRetryAt: updated.nextRetryAt,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/remind — send reminder email
+router.post("/billing/dunning/:invoiceId/remind", async (req, res, next) => {
+  try {
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+      include: { tenant: { select: { id: true, name: true } } },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    const owners = await prisma.user.findMany({
+      where: { tenantId: invoice.tenantId, role: "MARINA_OWNER", active: true },
+      select: { email: true },
+    });
+    const recipients = owners.map((u) => u.email).filter((e): e is string => !!e);
+
+    if (recipients.length === 0) {
+      res.status(400).json({ error: "No active owner email on file" });
+      return;
+    }
+
+    const outstanding = saasInvoiceOutstandingCents(invoice);
+    const amountStr = `$${(outstanding / 100).toFixed(2)}`;
+
+    let sent = false;
+    try {
+      await sendEmail({
+        to: recipients,
+        subject: `Reminder: payment due on your Helm subscription (${amountStr})`,
+        html: `<p>Hi ${invoice.tenant.name},</p>
+<p>Your Helm subscription payment of <strong>${amountStr}</strong> is past due. Please update your payment method to keep your account active.</p>
+<p><a href="${process.env.APP_URL ?? "https://gethelm.com"}/settings/billing">Update payment method</a></p>`,
+        tags: [{ name: "event", value: "saas_dunning_reminder" }],
+      });
+      sent = true;
+    } catch (err) {
+      console.warn("[dunning] reminder send failed:", err);
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_REMINDER_SENT",
+        changedFieldsJson: { recipients, sent },
+      },
+    });
+
+    res.json({ sent, recipients });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/pause — pause auto-lock
+router.post("/billing/dunning/:invoiceId/pause", async (req, res, next) => {
+  try {
+    const { days = 7 } = req.body ?? {};
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    const pausedUntil = new Date(Date.now() + Number(days) * 24 * 60 * 60 * 1000);
+
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: { dunningPaused: true, pausedUntil },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_PAUSED",
+        changedFieldsJson: { days, pausedUntil: pausedUntil.toISOString() },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      dunningPaused: updated.dunningPaused,
+      pausedUntil: updated.pausedUntil,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/resume — resume auto-lock
+router.post("/billing/dunning/:invoiceId/resume", async (req, res, next) => {
+  try {
+    const updated = await prisma.saasInvoice.update({
+      where: { id: req.params.invoiceId },
+      data: { dunningPaused: false, pausedUntil: null },
+    });
+    await prisma.auditLog.create({
+      data: {
+        tenantId: updated.tenantId,
+        recordType: "SaasInvoice",
+        recordId: updated.id,
+        action: "DUNNING_RESUMED",
+        changedFieldsJson: {},
+      },
+    });
+    res.json({ id: updated.id, dunningPaused: updated.dunningPaused });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/write-off — write off invoice
+router.post("/billing/dunning/:invoiceId/write-off", async (req, res, next) => {
+  try {
+    const { reason } = req.body ?? {};
+    if (!reason || typeof reason !== "string") {
+      res.status(400).json({ error: "reason is required" });
+      return;
+    }
+
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    if (invoice.writeOffAt) {
+      res.status(400).json({ error: "Invoice already written off" });
+      return;
+    }
+
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: {
+        status: "written_off",
+        writeOffAt: new Date(),
+        writeOffReason: reason,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "WRITE_OFF",
+        changedFieldsJson: { reason },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      writeOffAt: updated.writeOffAt,
+      writeOffReason: updated.writeOffReason,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  PLAN CHANGES
+// ==========================================================================
+
+// POST /api/admin/tenants/:id/plan/preview — preview proration
+router.post("/tenants/:id/plan/preview", async (req, res, next) => {
+  try {
+    const { toTierId } = req.body ?? {};
+    if (!toTierId) {
+      res.status(400).json({ error: "toTierId is required" });
+      return;
+    }
+
+    const preview = await previewPlanChange(req.params.id, toTierId);
+    res.json(preview);
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/plan/change — apply plan change with proration
+router.post("/tenants/:id/plan/change", async (req, res, next) => {
+  try {
+    const { toTierId } = req.body ?? {};
+    if (!toTierId) {
+      res.status(400).json({ error: "toTierId is required" });
+      return;
+    }
+
+    const userId =
+      ((req as unknown as Record<string, unknown>).userId as string | undefined) ??
+      null;
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      select: { saasTierId: true },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (tenant.saasTierId === toTierId) {
+      res.status(400).json({ error: "Tenant is already on this tier" });
+      return;
+    }
+
+    const preview = await previewPlanChange(req.params.id, toTierId);
+    const result = await applyPlanChange({
+      tenantId: req.params.id,
+      toTierId,
+      createdBy: userId,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: req.params.id,
+        userId,
+        recordType: "Tenant",
+        recordId: req.params.id,
+        action: "PLAN_CHANGED",
+        changedFieldsJson: {
+          fromTierName: preview.fromTierName,
+          toTierName: preview.toTierName,
+          prorationCents: result.prorationCents,
+        },
+      },
+    });
+
+    res.json({ ...preview, planChangeId: result.planChangeId });
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// GET /api/admin/tenants/:id/plan/changes — history
+router.get("/tenants/:id/plan/changes", async (req, res, next) => {
+  try {
+    const changes = await prisma.saasPlanChange.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const tierIds = [...new Set(changes.flatMap((c) => [c.fromTierId, c.toTierId].filter(Boolean) as string[]))];
+    const tiers = await prisma.saasTier.findMany({
+      where: { id: { in: tierIds } },
+      select: { id: true, name: true },
+    });
+    const tierMap = new Map(tiers.map((t) => [t.id, t.name]));
+
+    res.json(
+      changes.map((c) => ({
+        id: c.id,
+        fromTier: c.fromTierId ? tierMap.get(c.fromTierId) ?? null : null,
+        toTier: tierMap.get(c.toTierId) ?? null,
+        prorationCents: c.prorationCents,
+        effectiveAt: c.effectiveAt.toISOString(),
+        createdAt: c.createdAt.toISOString(),
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

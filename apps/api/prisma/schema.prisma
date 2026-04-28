@@ -2206,19 +2206,115 @@ model ServiceFee {
 // ==========================================================================
 
 model SaasInvoice {
-  id          String    @id @default(uuid())
-  tenantId    String
-  periodStart DateTime
-  periodEnd   DateTime
-  amountCents Int
-  status      String    @default("issued") // draft | issued | paid | past_due
-  issuedAt    DateTime  @default(now())
-  paidAt      DateTime?
+  id                 String    @id @default(uuid())
+  tenantId           String
+  periodStart        DateTime
+  periodEnd          DateTime
+  amountCents        Int // gross monthly fee before discount; final = amountCents + prorationCents - discountCents - refundedCents
+  discountCents      Int       @default(0) // total coupon discount applied
+  refundedCents      Int       @default(0) // total refund(s) applied
+  prorationCents     Int       @default(0) // net plan-change proration baked into this invoice
+  status             String    @default("issued") // draft | issued | paid | past_due | written_off
+  issuedAt           DateTime  @default(now())
+  dueDate            DateTime?
+  paidAt             DateTime?
+  // Per-invoice dunning state
+  failedAttempts     Int       @default(0)
+  lastAttemptAt      DateTime?
+  nextRetryAt        DateTime?
+  dunningPaused      Boolean   @default(false) // when true, lifecycle job will not auto-lock
+  pausedUntil        DateTime?
+  writeOffAt         DateTime?
+  writeOffReason     String?
+  // Optional pointers
+  couponRedemptionId String?
+  planChangeId       String? // marks proration adjustment lines
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant   Tenant              @relation(fields: [tenantId], references: [id])
+  refunds  SaasInvoiceRefund[]
 
   @@index([tenantId])
+  @@index([status])
   @@map("saas_invoices")
+}
+
+// ── Coupons & redemptions ─────────────────────────────────────────────────────
+
+enum SaasCouponDiscountType {
+  PERCENT // discountValue is basis points (1000 = 10%)
+  FIXED // discountValue is cents off the monthly fee
+  TRIAL_EXTENSION // discountValue is days of trial extension
+}
+
+enum SaasCouponDuration {
+  ONCE // applied to one billing cycle
+  REPEATING // applied to N billing cycles (durationCycles)
+}
+
+model SaasCoupon {
+  id             String                 @id @default(uuid())
+  code           String                 @unique
+  name           String
+  discountType   SaasCouponDiscountType
+  discountValue  Int
+  duration       SaasCouponDuration     @default(ONCE)
+  durationCycles Int? // required when duration = REPEATING
+  maxRedemptions Int? // null = unlimited
+  active         Boolean                @default(true)
+  notes          String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  redemptions SaasCouponRedemption[]
+
+  @@map("saas_coupons")
+}
+
+model SaasCouponRedemption {
+  id                   String    @id @default(uuid())
+  couponId             String
+  tenantId             String
+  active               Boolean   @default(true)
+  cyclesRemaining      Int? // counts down each cycle for REPEATING; null for ONCE/TRIAL_EXTENSION
+  redeemedAt           DateTime  @default(now())
+  lastAppliedAt        DateTime?
+  lastAppliedInvoiceId String?
+
+  coupon SaasCoupon @relation(fields: [couponId], references: [id])
+
+  @@unique([couponId, tenantId])
+  @@index([tenantId])
+  @@map("saas_coupon_redemptions")
+}
+
+model SaasInvoiceRefund {
+  id            String   @id @default(uuid())
+  saasInvoiceId String
+  amountCents   Int
+  reason        String // dropdown value (DUPLICATE_CHARGE | SERVICE_OUTAGE | GOODWILL | BILLING_ERROR | CANCELLATION | OTHER)
+  notes         String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  saasInvoice SaasInvoice @relation(fields: [saasInvoiceId], references: [id])
+
+  @@index([saasInvoiceId])
+  @@map("saas_invoice_refunds")
+}
+
+model SaasPlanChange {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  fromTierId         String?
+  toTierId           String
+  prorationCents     Int // signed: positive = charge, negative = credit
+  effectiveAt        DateTime @default(now())
+  appliedToInvoiceId String? // SaasInvoice that includes the proration line
+  createdBy          String?
+  createdAt          DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("saas_plan_changes")
 }
 
 // ==========================================================================
