@@ -450,9 +450,6 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
-    // Tenant-scope every GL account ID we're about to persist as an FK on
-    // the new product row. Stops cross-tenant FK writes if a malicious or
-    // misconfigured client sends another tenant's account UUID.
     const invalidGl = await findInvalidGlAccountIds(tenantId, [
       body.revenueGlAccountId,
       body.cogsGlAccountId,
@@ -465,8 +462,7 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         invalid: invalidGl,
       });
     }
-    // Resolve category defaults into the per-product fields so QBO sync,
-    // reports, and tax engine all see consistent values.
+    // Resolve category defaults into per-product fields for QBO/reporting/tax.
     const resolved = await applyCategoryDefaultsToProductData(tenantId, {
       productCategoryId: body.productCategoryId ?? null,
       revenueGlAccountId: body.revenueGlAccountId ?? null,
@@ -542,8 +538,6 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Product not found" });
 
-    // Tenant-scope every GL account ID the caller is trying to write so a
-    // cross-tenant FK can't be slipped in via PUT.
     const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
       body.revenueGlAccountId,
       body.cogsGlAccountId,
@@ -750,9 +744,6 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
   try {
     const tenantId = getTenantId(req);
     const body = CategorySchema.parse(req.body);
-    // Tenant-scope every default GL ID before they're persisted so the
-    // category can't be created pointing at another tenant's chart of
-    // accounts (which would propagate via product inheritance).
     const invalidGl = await findInvalidGlAccountIds(tenantId, [
       body.defaultRevenueGlAccountId,
       body.defaultCogsGlAccountId,
@@ -765,12 +756,8 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
         invalid: invalidGl,
       });
     }
-    // The (tenantId, name) uniqueness constraint covers both active and
-    // inactive rows, so a soft-deleted category previously named "Bait"
-    // would otherwise block ever creating "Bait" again. Detect that case
-    // and reactivate the existing row with the new defaults instead of
-    // returning 409 — keeps the user-facing UX intuitive without losing
-    // historical product→category linkage.
+    // Reactivate a soft-deleted same-name row instead of 409'ing on the
+    // (tenantId, name) unique index.
     const existing = await prisma.productCategory.findFirst({
       where: { tenantId, name: body.name },
     });
@@ -816,8 +803,6 @@ router.put("/categories/:id", async (req: Request, res: Response, next: NextFunc
     const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Category not found" });
 
-    // Tenant-scope every default GL ID the caller is updating, just like
-    // POST — stops cross-tenant FK rewrites via the edit form.
     const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
       body.defaultRevenueGlAccountId,
       body.defaultCogsGlAccountId,

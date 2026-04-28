@@ -58,11 +58,7 @@ const TransactionLineItemSchema = z.object({
   quantity: z.number().int().positive(),
   unitPriceCents: z.number().int().min(0),
   discountCents: z.number().int().min(0).default(0),
-  // taxCents is intentionally NOT accepted: tax is computed server-side
-  // from the location's jurisdiction stack and the product's effective
-  // tax category. Client-supplied tax cents would be ignored anyway, so
-  // removing the field stops POS clients from sending stale numbers and
-  // mistakenly believing they were honored.
+  // taxCents intentionally omitted — computed server-side via calculateTax.
 });
 
 const CreateTransactionSchema = z.object({
