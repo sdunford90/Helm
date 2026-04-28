@@ -4,6 +4,15 @@ import { requirePlatformAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
 import { stripe } from "../lib/stripe.js";
+import {
+  getCohortsReport,
+  getFunnelReport,
+  getFeatureUsageReport,
+  cohortsToCsv,
+  funnelToCsv,
+  featureUsageToCsv,
+  type AnalyticsRange,
+} from "../services/cross-tenant-analytics.js";
 
 const router: Router = Router();
 
@@ -788,6 +797,106 @@ router.get("/analytics/tenants", async (_req, res, next) => {
       tenants: tenantMetrics,
     });
   } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// Cross-tenant analytics: cohorts, funnel, per-tier feature usage
+// --------------------------------------------------------------------------
+
+class InvalidRangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidRangeError";
+  }
+}
+
+function parseRange(req: { query: Record<string, unknown> }): AnalyticsRange {
+  const now = new Date();
+  // Default window: first day 12 months ago → end of today (UTC).
+  const defaultFrom = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1),
+  );
+  const defaultTo = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999),
+  );
+
+  const fromRaw = typeof req.query.from === "string" ? req.query.from : undefined;
+  const toRaw = typeof req.query.to === "string" ? req.query.to : undefined;
+
+  const from = fromRaw ? new Date(`${fromRaw}T00:00:00Z`) : defaultFrom;
+  const to = toRaw ? new Date(`${toRaw}T23:59:59.999Z`) : defaultTo;
+
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw new InvalidRangeError(
+      "Invalid date range. Use YYYY-MM-DD for `from` and `to`.",
+    );
+  }
+  if (from.getTime() > to.getTime()) {
+    throw new InvalidRangeError(
+      "Invalid date range: `from` must be on or before `to`.",
+    );
+  }
+  return { from, to };
+}
+
+function sendCsv(res: import("express").Response, filename: string, body: string): void {
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(body);
+}
+
+router.get("/analytics/cohorts", async (req, res, next) => {
+  try {
+    const range = parseRange(req);
+    const report = await getCohortsReport(range);
+    if (req.query.format === "csv") {
+      sendCsv(res, "cohorts.csv", cohortsToCsv(report));
+      return;
+    }
+    res.json(report);
+  } catch (err) {
+    if (err instanceof InvalidRangeError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+router.get("/analytics/funnel", async (req, res, next) => {
+  try {
+    const range = parseRange(req);
+    const report = await getFunnelReport(range);
+    if (req.query.format === "csv") {
+      sendCsv(res, "trial-to-paid-funnel.csv", funnelToCsv(report));
+      return;
+    }
+    res.json(report);
+  } catch (err) {
+    if (err instanceof InvalidRangeError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+router.get("/analytics/feature-usage", async (req, res, next) => {
+  try {
+    const range = parseRange(req);
+    const report = await getFeatureUsageReport(range);
+    if (req.query.format === "csv") {
+      sendCsv(res, "feature-usage.csv", featureUsageToCsv(report));
+      return;
+    }
+    res.json(report);
+  } catch (err) {
+    if (err instanceof InvalidRangeError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     next(err);
   }
 });
