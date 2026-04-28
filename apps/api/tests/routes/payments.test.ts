@@ -6,6 +6,24 @@ import { mockPrisma } from '../setup.js';
 import { requireStripe } from '../../src/lib/stripe.js';
 import { reversePostRefund } from '../../src/services/gl-posting.js';
 
+// Mock the QBO sync helpers used by the refund handler so we can assert
+// which branch (void vs refund-receipt) the route picks for each refund
+// scenario, without executing real QBO HTTP calls. We import-actual to
+// preserve the rest of the module's exports for other code paths that
+// may transitively load it during the test app's bootstrap.
+vi.mock('../../src/services/qbo-sync.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    voidQboPayment: vi.fn().mockResolvedValue(undefined),
+    createQboRefundReceipt: vi
+      .fn()
+      .mockResolvedValue({ qboRefundReceiptId: 'RR-mock', skipped: false }),
+  };
+});
+
+import { voidQboPayment, createQboRefundReceipt } from '../../src/services/qbo-sync.js';
+
 let app: Express;
 
 beforeAll(async () => {
@@ -520,6 +538,149 @@ describe('POST /api/payments', () => {
         }),
       }),
     );
+  });
+
+  describe('QBO sync routing — partial vs full refund vs mixed sequence', () => {
+    beforeEach(() => {
+      (voidQboPayment as any).mockClear();
+      (createQboRefundReceipt as any).mockClear();
+    });
+
+    it('vanilla full refund (no prior partials) voids the QBO payment', async () => {
+      const payment = buildPayment({
+        id: 'pay-full',
+        amountCents: 100000,
+        refundedCents: 0,
+        status: 'COMPLETED',
+        stripePaymentId: null,
+        invoice: { id: 'inv-full', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+      });
+      mockPrisma.payment.findFirst.mockResolvedValue(payment);
+      mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+        ...payment,
+        refundedCents: 100000,
+        status: 'REFUNDED',
+      });
+      mockPrisma.invoice.update.mockResolvedValue({});
+      mockPrisma.auditLog.create.mockResolvedValue({});
+
+      const res = await request(app)
+        .post('/api/payments/pay-full/refund')
+        .send({ amountCents: 100000 });
+
+      expect(res.status).toBe(200);
+      expect(voidQboPayment).toHaveBeenCalledTimes(1);
+      expect(voidQboPayment).toHaveBeenCalledWith('pay-full', expect.any(String));
+      expect(createQboRefundReceipt).not.toHaveBeenCalled();
+    });
+
+    it('pure partial refund (not yet fully refunded) pushes a RefundReceipt with the correct prior amount', async () => {
+      const payment = buildPayment({
+        id: 'pay-partial-only',
+        amountCents: 100000,
+        refundedCents: 0,
+        status: 'COMPLETED',
+        stripePaymentId: null,
+        invoice: { id: 'inv-p', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+      });
+      mockPrisma.payment.findFirst.mockResolvedValue(payment);
+      mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+        ...payment,
+        refundedCents: 30000,
+        status: 'PARTIALLY_REFUNDED',
+      });
+      mockPrisma.invoice.update.mockResolvedValue({});
+      mockPrisma.auditLog.create.mockResolvedValue({});
+
+      const res = await request(app)
+        .post('/api/payments/pay-partial-only/refund')
+        .send({ amountCents: 30000 });
+
+      expect(res.status).toBe(200);
+      expect(voidQboPayment).not.toHaveBeenCalled();
+      expect(createQboRefundReceipt).toHaveBeenCalledTimes(1);
+      // (paymentId, refundAmount, priorRefundedCents, tenantId)
+      expect(createQboRefundReceipt).toHaveBeenCalledWith(
+        'pay-partial-only',
+        30000,
+        0,
+        expect.any(String),
+      );
+    });
+
+    it('mixed sequence: final remainder after prior partials still pushes a RefundReceipt (does NOT void)', async () => {
+      // This is the reconciliation-critical case. The payment already has
+      // prior RefundReceipts in QBO ($30 of $100). The final $70 refund
+      // makes it fully refunded — but voiding the QBO payment now would
+      // double-count the prior refunds. Instead we must push a final
+      // RefundReceipt for the $70 remainder so the sum of QBO
+      // RefundReceipts matches Helm's refundedCents ($30 + $70 = $100).
+      const payment = buildPayment({
+        id: 'pay-mixed',
+        amountCents: 100000,
+        refundedCents: 30000,
+        status: 'PARTIALLY_REFUNDED',
+        stripePaymentId: null,
+        invoice: { id: 'inv-mixed', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+      });
+      mockPrisma.payment.findFirst.mockResolvedValue(payment);
+      mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+        ...payment,
+        refundedCents: 100000,
+        status: 'REFUNDED',
+      });
+      mockPrisma.invoice.update.mockResolvedValue({});
+      mockPrisma.auditLog.create.mockResolvedValue({});
+
+      const res = await request(app)
+        .post('/api/payments/pay-mixed/refund')
+        .send({ amountCents: 70000 });
+
+      expect(res.status).toBe(200);
+      // Critical assertion: void must NOT be called when prior partials exist.
+      expect(voidQboPayment).not.toHaveBeenCalled();
+      expect(createQboRefundReceipt).toHaveBeenCalledTimes(1);
+      expect(createQboRefundReceipt).toHaveBeenCalledWith(
+        'pay-mixed',
+        70000,
+        30000,
+        expect.any(String),
+      );
+    });
+
+    it('refund handler swallows QBO push failures so the local refund still succeeds', async () => {
+      (createQboRefundReceipt as any).mockRejectedValueOnce(new Error('qbo offline'));
+
+      const payment = buildPayment({
+        id: 'pay-qbo-fail',
+        amountCents: 100000,
+        refundedCents: 0,
+        status: 'COMPLETED',
+        stripePaymentId: null,
+        invoice: { id: 'inv-x', balanceCents: 0, totalCents: 100000, status: 'PAID' },
+      });
+      mockPrisma.payment.findFirst.mockResolvedValue(payment);
+      mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.payment.findUniqueOrThrow.mockResolvedValue({
+        ...payment,
+        refundedCents: 25000,
+        status: 'PARTIALLY_REFUNDED',
+      });
+      mockPrisma.invoice.update.mockResolvedValue({});
+      mockPrisma.auditLog.create.mockResolvedValue({});
+
+      const res = await request(app)
+        .post('/api/payments/pay-qbo-fail/refund')
+        .send({ amountCents: 25000 });
+
+      // Local refund still succeeds — QBO failure is best-effort and
+      // captured to the sync ref by createQboRefundReceipt itself.
+      expect(res.status).toBe(200);
+      expect(createQboRefundReceipt).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('rejects payment on voided invoice', async () => {

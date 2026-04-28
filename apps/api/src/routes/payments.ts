@@ -6,7 +6,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
 import { rollbackReservedRefund } from "../services/payment-refund.js";
-import { voidQboPayment } from "../services/qbo-sync.js";
+import { voidQboPayment, createQboRefundReceipt } from "../services/qbo-sync.js";
 import { v4 as uuid } from "uuid";
 
 const router: Router = Router();
@@ -637,14 +637,45 @@ router.post(
         },
       });
 
-      // Best-effort QBO void on full refund — keeps QBO's payment + COGS state
-      // consistent with the local refund. Partial refunds are not pushed here;
-      // QBO models a partial as a separate Refund Receipt which is out of scope.
-      if (isFullRefund) {
+      // Best-effort QBO sync. Three cases:
+      //
+      // 1. Vanilla full refund (no prior partials): void the original QBO
+      //    Payment so its books match Helm's REFUNDED status. This keeps
+      //    QBO's COGS reversal in lockstep with the local invoice/payment.
+      //
+      // 2. Pure partial refund (not yet fully refunded): push a
+      //    RefundReceipt for this event so the running sum of
+      //    RefundReceipts in QBO equals Helm's `refundedCents`.
+      //
+      // 3. Final remainder after earlier partials (mixed partial→full
+      //    sequence): also push a RefundReceipt for this remaining
+      //    amount. We MUST NOT void here — the original payment already
+      //    has prior RefundReceipts attached, and voiding the full
+      //    payment on top of them would double-count refunds in QBO.
+      //
+      // Both paths swallow errors: createQboRefundReceipt persists the
+      // failure to qbo_inventory_sync_refs so the Settings UI surfaces it
+      // and the retry sweep can re-attempt the push.
+      const hadPriorPartialRefunds = payment.refundedCents > 0;
+      if (isFullRefund && !hadPriorPartialRefunds) {
         try {
           await voidQboPayment(payment.id, tenantId);
         } catch (err) {
           console.warn(`[payments] QBO void propagation failed for ${payment.id}:`, err);
+        }
+      } else {
+        try {
+          await createQboRefundReceipt(
+            payment.id,
+            refundAmount,
+            payment.refundedCents,
+            tenantId,
+          );
+        } catch (err) {
+          console.warn(
+            `[payments] QBO refund-receipt push failed for ${payment.id}:`,
+            err,
+          );
         }
       }
 

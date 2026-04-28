@@ -150,6 +150,9 @@ let syncInventoryItem: typeof import('../../src/services/qbo-sync.js').syncInven
 let postInventoryAdjustmentJournal: typeof import('../../src/services/qbo-sync.js').postInventoryAdjustmentJournal;
 let voidQboInvoice: typeof import('../../src/services/qbo-sync.js').voidQboInvoice;
 let voidQboPayment: typeof import('../../src/services/qbo-sync.js').voidQboPayment;
+let createQboRefundReceipt: typeof import('../../src/services/qbo-sync.js').createQboRefundReceipt;
+let buildPaymentRefundSyncSourceId: typeof import('../../src/services/qbo-sync.js').buildPaymentRefundSyncSourceId;
+let parsePaymentRefundSyncSourceId: typeof import('../../src/services/qbo-sync.js').parsePaymentRefundSyncSourceId;
 let getInventorySyncStatus: typeof import('../../src/services/qbo-sync.js').getInventorySyncStatus;
 
 beforeEach(async () => {
@@ -158,6 +161,9 @@ beforeEach(async () => {
   postInventoryAdjustmentJournal = mod.postInventoryAdjustmentJournal;
   voidQboInvoice = mod.voidQboInvoice;
   voidQboPayment = mod.voidQboPayment;
+  createQboRefundReceipt = mod.createQboRefundReceipt;
+  buildPaymentRefundSyncSourceId = mod.buildPaymentRefundSyncSourceId;
+  parsePaymentRefundSyncSourceId = mod.parsePaymentRefundSyncSourceId;
   getInventorySyncStatus = mod.getInventorySyncStatus;
 
   // Reset mocks for the inventory-related tables
@@ -327,8 +333,82 @@ describe('void/refund propagation — no-ops when nothing was synced', () => {
   });
 });
 
+describe('createQboRefundReceipt — partial refund → QBO RefundReceipt', () => {
+  it('encodes paymentId, prior, and amount into a unique sourceId', () => {
+    const id = buildPaymentRefundSyncSourceId('pay-1', 0, 500);
+    expect(id).toBe('pay-1:0:500');
+
+    const parsed = parsePaymentRefundSyncSourceId(id);
+    expect(parsed).toEqual({ paymentId: 'pay-1', priorRefundedCents: 0, refundAmountCents: 500 });
+  });
+
+  it('rejects malformed sourceIds so the retry path can skip them safely', () => {
+    expect(parsePaymentRefundSyncSourceId('garbage')).toBeNull();
+    expect(parsePaymentRefundSyncSourceId('pay-1:abc:500')).toBeNull();
+    // Negative refund amount is invalid (refund must be positive cents).
+    expect(parsePaymentRefundSyncSourceId('pay-1:0:-1')).toBeNull();
+    // Zero refund amount is invalid (must be positive).
+    expect(parsePaymentRefundSyncSourceId('pay-1:0:0')).toBeNull();
+  });
+
+  it('is idempotent: returns the existing RefundReceipt id when the sync ref already has one', async () => {
+    mockPrisma.payment.findFirst = vi.fn().mockResolvedValue({
+      id: 'pay-1',
+      tenantId: 'tenant-1',
+      amountCents: 1000,
+      refundedCents: 0,
+      customer: { id: 'cust-1', qboCustomerId: 'QBO-CUST-1' },
+      invoice: { id: 'inv-1', locationId: null },
+    }) as any;
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi.fn().mockResolvedValue({
+      qboId: 'RR-existing',
+      lastSyncedAt: new Date(),
+      lastError: null,
+      lastErrorAt: null,
+    });
+
+    const r = await createQboRefundReceipt('pay-1', 500, 0, 'tenant-1');
+    expect(r).toEqual({ qboRefundReceiptId: 'RR-existing', skipped: true });
+    // Should NOT have called update/upsert: idempotent return short-circuits
+    // before any QBO request or sync-ref write.
+    expect((mockPrisma as any).qboInventorySyncRef.upsert).not.toHaveBeenCalled();
+  });
+
+  it('persists failures to qboInventorySyncRef so the Settings UI surfaces them', async () => {
+    mockPrisma.payment.findFirst = vi.fn().mockResolvedValue({
+      id: 'pay-1',
+      tenantId: 'tenant-1',
+      amountCents: 1000,
+      refundedCents: 0,
+      customer: { id: 'cust-1', qboCustomerId: 'QBO-CUST-1' },
+      // No location → resolveQboContext will fail with "QuickBooks Online is
+      // not connected" since the test setup has no QBO connection configured.
+      invoice: { id: 'inv-1', locationId: 'loc-no-qbo' },
+    }) as any;
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi.fn().mockResolvedValue(null);
+
+    await expect(createQboRefundReceipt('pay-1', 500, 0, 'tenant-1')).rejects.toThrow();
+
+    // Failure was captured to the sync ref (either via update for an existing
+    // row or upsert/create for a new one) so the recent-errors panel will
+    // surface it.
+    const upsertCalls = ((mockPrisma as any).qboInventorySyncRef.upsert as any).mock.calls;
+    const updateCalls = ((mockPrisma as any).qboInventorySyncRef.update as any).mock.calls;
+    expect(upsertCalls.length + updateCalls.length).toBeGreaterThan(0);
+  });
+
+  it('rejects non-positive refund amounts before touching prisma or QBO', async () => {
+    await expect(createQboRefundReceipt('pay-1', 0, 0, 'tenant-1')).rejects.toThrow(
+      /positive integer/,
+    );
+    await expect(createQboRefundReceipt('pay-1', -100, 0, 'tenant-1')).rejects.toThrow(
+      /positive integer/,
+    );
+  });
+});
+
 describe('getInventorySyncStatus — aggregates sync refs into a status summary', () => {
-  it('counts items, bills, and adjustments by qboType and surfaces recent errors', async () => {
+  it('counts items, bills, adjustments, and refund receipts by qboType and surfaces recent errors', async () => {
     const now = new Date();
     (mockPrisma as any).qboInventorySyncRef.findMany = vi.fn().mockResolvedValue([
       { qboType: 'Item', qboId: 'I1', lastSyncedAt: now, lastError: null, lastErrorAt: null, sourceType: 'product', sourceId: 'p1' },
@@ -336,6 +416,11 @@ describe('getInventorySyncStatus — aggregates sync refs into a status summary'
       { qboType: 'Item', qboId: null, lastSyncedAt: null, lastError: 'boom', lastErrorAt: now, sourceType: 'product', sourceId: 'p3' },
       { qboType: 'Bill', qboId: 'B1', lastSyncedAt: now, lastError: null, lastErrorAt: null, sourceType: 'purchase_order', sourceId: 'po1' },
       { qboType: 'JournalEntry', qboId: 'JE1', lastSyncedAt: now, lastError: null, lastErrorAt: null, sourceType: 'inventory_adjustment', sourceId: 'adj1' },
+      // Successful refund-receipt push and a failing one — both should be
+      // accounted for and the failing one should appear in recentErrors so
+      // the Settings UI surfaces it like any other QBO sync failure.
+      { qboType: 'RefundReceipt', qboId: 'RR1', lastSyncedAt: now, lastError: null, lastErrorAt: null, sourceType: 'payment_refund', sourceId: 'pay-a:0:500' },
+      { qboType: 'RefundReceipt', qboId: null, lastSyncedAt: null, lastError: 'qbo down', lastErrorAt: now, sourceType: 'payment_refund', sourceId: 'pay-b:0:1200' },
     ]);
 
     const status = await getInventorySyncStatus('tenant-1');
@@ -343,8 +428,11 @@ describe('getInventorySyncStatus — aggregates sync refs into a status summary'
     expect(status.itemsWithErrors).toBe(1);
     expect(status.billsSynced).toBe(1);
     expect(status.adjustmentsSynced).toBe(1);
-    expect(status.recentErrors).toHaveLength(1);
-    expect(status.recentErrors[0].error).toBe('boom');
+    expect(status.refundReceiptsSynced).toBe(1);
+    expect(status.refundReceiptsWithErrors).toBe(1);
+    expect(status.recentErrors).toHaveLength(2);
+    const refundError = status.recentErrors.find((e) => e.qboType === 'RefundReceipt');
+    expect(refundError?.error).toBe('qbo down');
   });
 });
 

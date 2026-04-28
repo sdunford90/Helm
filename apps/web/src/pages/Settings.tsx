@@ -537,7 +537,11 @@ export default function Settings() {
     itemsSynced: number; itemsWithErrors: number; itemsAwaitingSync: number;
     billsSynced: number; billsWithErrors: number;
     adjustmentsSynced: number; adjustmentsWithErrors: number;
+    // Partial-refund pushes to QBO (RefundReceipt). Optional for backwards
+    // compat with older API responses that pre-date the refund-receipt sync.
+    refundReceiptsSynced?: number; refundReceiptsWithErrors?: number;
     lastItemSyncAt: string | null; lastBillSyncAt: string | null; lastAdjustmentSyncAt: string | null;
+    lastRefundReceiptSyncAt?: string | null;
     recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string; retryCount: number; nextRetryAt: string | null }>;
     nextAutomaticRetryAt: string | null;
     earliestPendingRetryAt: string | null;
@@ -1694,7 +1698,7 @@ export default function Settings() {
                       <div style={{ color: '#94A3B8', fontSize: '13px' }}>Loading sync status…</div>
                     ) : qboInventoryStatus ? (
                       <>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px' }}>
                           <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
                             <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Inventory Items</div>
                             <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{qboInventoryStatus.itemsSynced}</div>
@@ -1725,6 +1729,16 @@ export default function Settings() {
                               <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Last: {new Date(qboInventoryStatus.lastAdjustmentSyncAt).toLocaleString()}</div>
                             )}
                           </div>
+                          <div style={{ padding: '12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                            <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Refund Receipts</div>
+                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{qboInventoryStatus.refundReceiptsSynced ?? 0}</div>
+                            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                              posted{(qboInventoryStatus.refundReceiptsWithErrors ?? 0) > 0 && <span style={{ color: '#DC2626' }}>, {qboInventoryStatus.refundReceiptsWithErrors} error{qboInventoryStatus.refundReceiptsWithErrors === 1 ? '' : 's'}</span>}
+                            </div>
+                            {qboInventoryStatus.lastRefundReceiptSyncAt && (
+                              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Last: {new Date(qboInventoryStatus.lastRefundReceiptSyncAt).toLocaleString()}</div>
+                            )}
+                          </div>
                         </div>
                         {qboInventoryStatus.recentErrors.length > 0 && (
                           <div style={{ marginTop: '12px' }}>
@@ -1747,7 +1761,7 @@ export default function Settings() {
                           <button style={st.outlineBtn} onClick={() => fetchQboInventoryStatus()} disabled={qboInventoryRetrying}>
                             <RefreshCw size={14} /> Refresh status
                           </button>
-                          {(qboInventoryStatus.itemsWithErrors + qboInventoryStatus.billsWithErrors + qboInventoryStatus.adjustmentsWithErrors) > 0 && (
+                          {(qboInventoryStatus.itemsWithErrors + qboInventoryStatus.billsWithErrors + qboInventoryStatus.adjustmentsWithErrors + (qboInventoryStatus.refundReceiptsWithErrors ?? 0)) > 0 && (
                             <button
                               style={{ ...st.addBtn, opacity: qboInventoryRetrying ? 0.7 : 1 }}
                               onClick={handleRetryFailedQboInventory}

@@ -7,7 +7,7 @@ import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 import { postRefund } from "../services/gl-posting.js";
 import { rollbackReservedRefund } from "../services/payment-refund.js";
-import { voidQboPayment } from "../services/qbo-sync.js";
+import { voidQboPayment, createQboRefundReceipt } from "../services/qbo-sync.js";
 import type Stripe from "stripe";
 
 const router: Router = Router();
@@ -1247,15 +1247,37 @@ router.post(
         },
       });
 
-      // Best-effort QBO void on full refund — keeps QBO's payment + COGS
-      // state consistent. Partial refunds are not pushed (QBO models a
-      // partial as a separate Refund Receipt which is out of scope).
-      if (isFullRefund) {
+      // Best-effort QBO sync. Three cases (see payments.ts for the full
+      // rationale):
+      //   1. Vanilla full refund (no prior partials) → void the QBO Payment.
+      //   2. Pure partial refund → push a RefundReceipt for this event.
+      //   3. Final remainder after earlier partials (mixed sequence) →
+      //      also push a RefundReceipt; voiding here would double-count
+      //      against the prior RefundReceipts already in QBO.
+      // Failures are caught: createQboRefundReceipt persists them to
+      // qbo_inventory_sync_refs so the Settings UI surfaces them and the
+      // retry sweep can re-attempt the push.
+      const hadPriorPartialRefunds = payment.refundedCents > 0;
+      if (isFullRefund && !hadPriorPartialRefunds) {
         try {
           await voidQboPayment(payment.id, tenantId);
         } catch (err) {
           console.warn(
             `[customers] QBO void propagation failed for ${payment.id}:`,
+            err,
+          );
+        }
+      } else {
+        try {
+          await createQboRefundReceipt(
+            payment.id,
+            refundAmount,
+            payment.refundedCents,
+            tenantId,
+          );
+        } catch (err) {
+          console.warn(
+            `[customers] QBO refund-receipt push failed for ${payment.id}:`,
             err,
           );
         }

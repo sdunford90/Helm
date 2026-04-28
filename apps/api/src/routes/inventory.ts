@@ -9,6 +9,9 @@ import {
   syncVendor,
   postInventoryAdjustmentJournal,
   findFailedInventorySyncRefs,
+  createQboRefundReceipt,
+  parsePaymentRefundSyncSourceId,
+  PAYMENT_REFUND_SYNC_SOURCE_TYPE,
   type PoBillLineInput,
 } from "../services/qbo-sync.js";
 import { applyCategoryDefaultsToProductData } from "../services/product-defaults.js";
@@ -1810,6 +1813,52 @@ export async function retryFailedQboInventorySyncs(
             phone: vendor.phone,
             address: vendor.address,
           },
+          tenantId,
+        );
+        result.succeeded++;
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.failed++;
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
+      }
+    } else if (ref.sourceType === PAYMENT_REFUND_SYNC_SOURCE_TYPE) {
+      // Partial refunds pushed to QBO as RefundReceipts. The original refund
+      // arguments are encoded in the sync ref's sourceId so the retry can
+      // re-issue the exact same call (and idempotency in
+      // createQboRefundReceipt prevents duplicate receipts in QBO).
+      const parsed = parsePaymentRefundSyncSourceId(ref.sourceId);
+      if (!parsed) {
+        result.skipped++;
+        recordDetail({
+          sourceType: ref.sourceType,
+          sourceId: ref.sourceId,
+          qboType: ref.qboType,
+          status: "skipped",
+          error: "Invalid payment_refund sourceId — cannot decode refund arguments",
+        });
+        continue;
+      }
+      const payment = await prisma.payment.findFirst({
+        where: { id: parsed.paymentId, tenantId },
+      });
+      if (!payment) {
+        result.skipped++;
+        recordDetail({
+          sourceType: ref.sourceType,
+          sourceId: ref.sourceId,
+          qboType: ref.qboType,
+          status: "skipped",
+          error: "Payment no longer exists locally",
+        });
+        continue;
+      }
+      result.attempted++;
+      try {
+        await createQboRefundReceipt(
+          parsed.paymentId,
+          parsed.refundAmountCents,
+          parsed.priorRefundedCents,
           tenantId,
         );
         result.succeeded++;

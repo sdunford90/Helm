@@ -1846,6 +1846,211 @@ export async function voidQboPayment(paymentId: string, tenantId: string): Promi
 }
 
 // ---------------------------------------------------------------------------
+// Partial refund → QBO Refund Receipt
+//
+// Full refunds are mirrored to QBO via voidQboPayment (above). Partial
+// refunds can't void the original payment because that would zero out the
+// full amount in QBO; instead, each partial refund event is mirrored to QBO
+// as its own RefundReceipt, so the sum of RefundReceipts in QBO matches
+// Helm's `refundedCents` ledger for that payment.
+//
+// Concurrency / idempotency: a single payment may be partially refunded
+// multiple times. The sync-ref `sourceId` encodes the unique tuple
+// (paymentId, priorRefundedCents, refundAmountCents) that identifies one
+// individual refund event — the same tuple Stripe uses as its idempotency
+// key (see payments.ts/customers.ts). Re-running this helper for the same
+// tuple short-circuits and returns the previously-pushed RefundReceipt id
+// instead of creating a duplicate in QBO.
+//
+// Failure handling: any QBO error is captured to qbo_inventory_sync_refs
+// with sourceType="payment_refund" and qboType="RefundReceipt", so the
+// existing Settings → QuickBooks recent-errors panel surfaces it the same
+// way other QBO sync failures are shown. The retry sweep + manual "Retry
+// all failures" button can then re-attempt the push (see
+// retryFailedQboInventorySyncs in routes/inventory.ts).
+// ---------------------------------------------------------------------------
+
+export const PAYMENT_REFUND_SYNC_SOURCE_TYPE = "payment_refund";
+export const QBO_REFUND_RECEIPT_TYPE = "RefundReceipt";
+
+export function buildPaymentRefundSyncSourceId(
+  paymentId: string,
+  priorRefundedCents: number,
+  refundAmountCents: number,
+): string {
+  return `${paymentId}:${priorRefundedCents}:${refundAmountCents}`;
+}
+
+/**
+ * Parses a sync-ref sourceId produced by `buildPaymentRefundSyncSourceId`
+ * back into its constituent fields. Returns null when the input doesn't
+ * match the expected `paymentId:priorRefundedCents:refundAmountCents`
+ * shape (e.g. legacy rows or human-edited values). Used by the retry path
+ * so a failed refund push can be re-attempted with the original arguments.
+ */
+export function parsePaymentRefundSyncSourceId(
+  sourceId: string,
+): { paymentId: string; priorRefundedCents: number; refundAmountCents: number } | null {
+  // The paymentId itself never contains ":" (uuid), so splitting from the
+  // right-hand side is unnecessary — a simple split is unambiguous.
+  const parts = sourceId.split(":");
+  if (parts.length !== 3) return null;
+  const [paymentId, priorStr, amountStr] = parts;
+  const priorRefundedCents = Number(priorStr);
+  const refundAmountCents = Number(amountStr);
+  if (
+    !paymentId ||
+    !Number.isInteger(priorRefundedCents) ||
+    priorRefundedCents < 0 ||
+    !Number.isInteger(refundAmountCents) ||
+    refundAmountCents <= 0
+  ) {
+    return null;
+  }
+  return { paymentId, priorRefundedCents, refundAmountCents };
+}
+
+export async function createQboRefundReceipt(
+  paymentId: string,
+  refundAmountCents: number,
+  priorRefundedCents: number,
+  tenantId: string,
+): Promise<{ qboRefundReceiptId: string; skipped: boolean }> {
+  if (!Number.isInteger(refundAmountCents) || refundAmountCents <= 0) {
+    throw new Error("Refund amount must be a positive integer (cents)");
+  }
+  if (!Number.isInteger(priorRefundedCents) || priorRefundedCents < 0) {
+    throw new Error("Prior refunded amount must be a non-negative integer (cents)");
+  }
+
+  const sourceType = PAYMENT_REFUND_SYNC_SOURCE_TYPE;
+  const sourceId = buildPaymentRefundSyncSourceId(
+    paymentId,
+    priorRefundedCents,
+    refundAmountCents,
+  );
+  const qboType = QBO_REFUND_RECEIPT_TYPE;
+
+  let locationId: string | null = null;
+
+  try {
+    const payment = await prisma.payment.findFirst({
+      where: { id: paymentId, tenantId },
+      include: {
+        customer: { select: { id: true, qboCustomerId: true } },
+        invoice: { select: { id: true, locationId: true } },
+      },
+    });
+    if (!payment) {
+      throw new Error(`Payment ${paymentId} not found`);
+    }
+    if (!payment.customer) {
+      throw new Error(`Payment ${paymentId} has no customer`);
+    }
+    locationId = payment.invoice?.locationId ?? null;
+
+    // Idempotency — if we already pushed this exact refund event to QBO
+    // (e.g. a previous attempt succeeded but the caller crashed before
+    // logging success, or the retry sweep is re-running an already-fixed
+    // ref), return the existing receipt id without re-posting.
+    const existingRef = await readSyncRef(tenantId, sourceType, sourceId);
+    if (existingRef?.qboId) {
+      return { qboRefundReceiptId: existingRef.qboId, skipped: true };
+    }
+
+    // Resolve credentials from the linked invoice's location. Standalone
+    // payments (no invoice) fall back to tenant-level credentials, mirroring
+    // syncPayment above. resolveQboContext throws a descriptive error when
+    // the location is set but has no QBO connection — that error is then
+    // captured to the sync ref and surfaced in the Settings UI.
+    const ctx = await resolveQboContext(tenantId, locationId ?? undefined);
+
+    // Ensure the customer is synced to QBO using the same credential
+    // context. If the customer already has a qboCustomerId we skip the
+    // round-trip to avoid an unnecessary update.
+    let qboCustomerId: string | null = payment.customer.qboCustomerId;
+    if (!qboCustomerId) {
+      await syncCustomer(payment.customer.id, tenantId, ctx.locationId);
+      const refreshed = await prisma.customer.findUnique({
+        where: { id: payment.customer.id },
+        select: { qboCustomerId: true },
+      });
+      qboCustomerId = refreshed?.qboCustomerId ?? null;
+    }
+    if (!qboCustomerId) {
+      throw new Error("Customer has no QBO ID after sync attempt");
+    }
+
+    const amount = refundAmountCents / 100;
+    const txnDate = new Date().toISOString().split("T")[0];
+    const description = `Refund of $${amount.toFixed(2)} for payment ${paymentId}`;
+
+    // RefundReceipt mirrors the structure of the SalesReceipt path above
+    // (single SalesItemLineDetail with Amount, no ItemRef) so the same
+    // QBO company config that accepts our standalone-payment receipts
+    // also accepts these refunds.
+    const payload: Record<string, unknown> = {
+      CustomerRef: { value: qboCustomerId },
+      TotalAmt: amount,
+      TxnDate: txnDate,
+      PrivateNote:
+        `Helm partial refund: $${(priorRefundedCents / 100).toFixed(2)} → $${(
+          (priorRefundedCents + refundAmountCents) / 100
+        ).toFixed(2)} of $${(payment.amountCents / 100).toFixed(2)} (payment ${paymentId})`,
+      Line: [
+        {
+          Amount: amount,
+          DetailType: "SalesItemLineDetail",
+          Description: description,
+          SalesItemLineDetail: {
+            Qty: 1,
+            UnitPrice: amount,
+          },
+        },
+      ],
+    };
+
+    const result = await qboRequest(
+      ctx,
+      "POST",
+      "refundreceipt?minorversion=73",
+      payload,
+    );
+    const qboRefundReceiptId = String(result.RefundReceipt.Id);
+
+    await writeSyncRefSuccess(
+      tenantId,
+      sourceType,
+      sourceId,
+      qboType,
+      qboRefundReceiptId,
+      ctx.locationId,
+    );
+
+    await auditLog(tenantId, "QBO_REFUND_RECEIPT_CREATED", {
+      paymentId,
+      refundAmountCents,
+      priorRefundedCents,
+      qboRefundReceiptId,
+      locationId: ctx.locationId ?? null,
+    });
+
+    return { qboRefundReceiptId, skipped: false };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await writeSyncRefFailure(tenantId, sourceType, sourceId, qboType, msg, locationId);
+    await auditLog(tenantId, "QBO_REFUND_RECEIPT_FAILED", {
+      paymentId,
+      refundAmountCents,
+      priorRefundedCents,
+      error: msg,
+      locationId: locationId ?? null,
+    });
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Inventory sync status — feeds the Settings > QBO > Inventory section
 // ---------------------------------------------------------------------------
 
@@ -1857,9 +2062,15 @@ export interface InventorySyncStatus {
   billsWithErrors: number;
   adjustmentsSynced: number;
   adjustmentsWithErrors: number;
+  // Partial-refund pushes mirrored to QBO as RefundReceipts. Tracked here so
+  // the Settings UI can include them in the failure-count summary that drives
+  // the "Retry all failures" button.
+  refundReceiptsSynced: number;
+  refundReceiptsWithErrors: number;
   lastItemSyncAt: Date | null;
   lastBillSyncAt: Date | null;
   lastAdjustmentSyncAt: Date | null;
+  lastRefundReceiptSyncAt: Date | null;
   recentErrors: Array<{
     sourceType: string;
     sourceId: string;
@@ -1905,9 +2116,12 @@ export async function getInventorySyncStatus(tenantId: string): Promise<Inventor
     billsWithErrors: 0,
     adjustmentsSynced: 0,
     adjustmentsWithErrors: 0,
+    refundReceiptsSynced: 0,
+    refundReceiptsWithErrors: 0,
     lastItemSyncAt: null,
     lastBillSyncAt: null,
     lastAdjustmentSyncAt: null,
+    lastRefundReceiptSyncAt: null,
     recentErrors: [],
     nextAutomaticRetryAt: null,
     earliestPendingRetryAt: null,
@@ -1933,6 +2147,15 @@ export async function getInventorySyncStatus(tenantId: string): Promise<Inventor
       if (r.lastError) status.adjustmentsWithErrors++;
       if (r.lastSyncedAt && (!status.lastAdjustmentSyncAt || r.lastSyncedAt > status.lastAdjustmentSyncAt)) {
         status.lastAdjustmentSyncAt = r.lastSyncedAt;
+      }
+    } else if (r.qboType === QBO_REFUND_RECEIPT_TYPE) {
+      if (r.qboId && !r.lastError) status.refundReceiptsSynced++;
+      if (r.lastError) status.refundReceiptsWithErrors++;
+      if (
+        r.lastSyncedAt &&
+        (!status.lastRefundReceiptSyncAt || r.lastSyncedAt > status.lastRefundReceiptSyncAt)
+      ) {
+        status.lastRefundReceiptSyncAt = r.lastSyncedAt;
       }
     }
     if (r.lastError) {
