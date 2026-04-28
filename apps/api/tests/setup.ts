@@ -43,6 +43,109 @@ export const mockPrisma = {
   glAccount: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
   vendor: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
   qboInventorySyncRef: { findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]), upsert: vi.fn(), update: vi.fn(), create: vi.fn() },
+  // Tiny in-memory simulation of the persisted resync-job tables so any test
+  // that hits the inventory-resync endpoints gets a working store without
+  // having to wire up Prisma mocks itself.
+  qboInventoryResyncJob: (() => {
+    const store = new Map<string, any>();
+    let idCounter = 0;
+    const matches = (row: any, where: Record<string, any>) => {
+      for (const [k, v] of Object.entries(where)) {
+        if (v && typeof v === 'object' && !(v instanceof Date)) {
+          if ('lt' in v && !(row[k] instanceof Date && row[k] < v.lt)) return false;
+          if ('not' in v && row[k] === v.not) return false;
+        } else if (row[k] !== v) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return {
+      _store: store,
+      _reset: () => { store.clear(); idCounter = 0; },
+      create: vi.fn(async ({ data }: any) => {
+        const now = new Date();
+        const row = {
+          id: data.id ?? `job-${++idCounter}`,
+          tenantId: data.tenantId,
+          status: data.status ?? 'running',
+          total: data.total ?? 0,
+          processed: data.processed ?? 0,
+          attempted: data.attempted ?? 0,
+          succeeded: data.succeeded ?? 0,
+          failed: data.failed ?? 0,
+          skipped: data.skipped ?? 0,
+          startedAt: data.startedAt ?? now,
+          updatedAt: data.updatedAt ?? now,
+          completedAt: data.completedAt ?? null,
+          error: data.error ?? null,
+        };
+        store.set(row.id, row);
+        return row;
+      }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const row = store.get(where.id);
+        if (!row) throw new Error(`No job ${where.id}`);
+        Object.assign(row, data);
+        if (!data.updatedAt) row.updatedAt = new Date();
+        return row;
+      }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        let count = 0;
+        for (const row of store.values()) {
+          if (matches(row, where)) { Object.assign(row, data); count++; }
+        }
+        return { count };
+      }),
+      findFirst: vi.fn(async ({ where }: any) => {
+        for (const row of store.values()) {
+          if (matches(row, where)) return row;
+        }
+        return null;
+      }),
+      findMany: vi.fn(async () => Array.from(store.values())),
+      deleteMany: vi.fn(async ({ where }: any = {}) => {
+        let count = 0;
+        for (const [id, row] of store) {
+          if (!where || matches(row, where)) { store.delete(id); count++; }
+        }
+        return { count };
+      }),
+    };
+  })(),
+  qboInventoryResyncJobDetail: (() => {
+    const list: any[] = [];
+    let idCounter = 0;
+    return {
+      _store: list,
+      _reset: () => { list.length = 0; idCounter = 0; },
+      create: vi.fn(async ({ data }: any) => {
+        const row = {
+          id: data.id ?? `detail-${++idCounter}`,
+          jobId: data.jobId,
+          sequence: data.sequence,
+          sourceType: data.sourceType,
+          sourceId: data.sourceId,
+          qboType: data.qboType,
+          status: data.status,
+          error: data.error ?? null,
+          createdAt: new Date(),
+        };
+        list.push(row);
+        return row;
+      }),
+      findMany: vi.fn(async ({ where, orderBy }: any) => {
+        const rows = list.filter((d) => d.jobId === where.jobId);
+        if (orderBy?.sequence === 'asc') rows.sort((a, b) => a.sequence - b.sequence);
+        return rows;
+      }),
+      deleteMany: vi.fn(async () => {
+        const count = list.length;
+        list.length = 0;
+        return { count };
+      }),
+    };
+  })(),
   glEntry: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { debitCents: 0, creditCents: 0 } }), createMany: vi.fn().mockResolvedValue({ count: 0 }) },
   auditLog: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   insuranceRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },

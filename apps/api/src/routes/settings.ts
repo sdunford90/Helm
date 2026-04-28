@@ -706,7 +706,7 @@ router.post("/qbo/inventory-resync", ...clerkAuth(), requireRole("MARINA_OWNER",
 // --------------------------------------------------------------------------
 router.get("/qbo/inventory-resync/:jobId", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const job = getQboInventoryResyncJob(req.params.jobId, req.tenantId!);
+    const job = await getQboInventoryResyncJob(req.params.jobId, req.tenantId!);
     if (!job) {
       res.status(404).json({ error: "Resync job not found" });
       return;

@@ -1686,6 +1686,50 @@ model QboInventorySyncRef {
   @@map("qbo_inventory_sync_refs")
 }
 
+// Persisted state for the "Retry all failed QBO inventory syncs" job. The
+// retry walks every failed sync ref one at a time and waits on QuickBooks for
+// each one, which can stretch into minutes. Persisting the snapshot here lets
+// the polling endpoint survive an API restart and lets multiple replicas see
+// consistent progress.
+model QboInventoryResyncJob {
+  id          String                        @id @default(uuid())
+  tenantId    String
+  status      String                        @default("running") // 'running' | 'succeeded' | 'failed'
+  total       Int                           @default(0)
+  processed   Int                           @default(0)
+  attempted   Int                           @default(0)
+  succeeded   Int                           @default(0)
+  failed      Int                           @default(0)
+  skipped     Int                           @default(0)
+  startedAt   DateTime                      @default(now())
+  updatedAt   DateTime                      @default(now()) @updatedAt
+  completedAt DateTime?
+  error       String?
+
+  details QboInventoryResyncJobDetail[]
+
+  @@index([tenantId])
+  @@index([status, updatedAt])
+  @@map("qbo_inventory_resync_jobs")
+}
+
+model QboInventoryResyncJobDetail {
+  id         String   @id @default(uuid())
+  jobId      String
+  sequence   Int
+  sourceType String
+  sourceId   String
+  qboType    String
+  status     String   // 'succeeded' | 'failed' | 'skipped'
+  error      String?
+  createdAt  DateTime @default(now())
+
+  job QboInventoryResyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, sequence])
+  @@map("qbo_inventory_resync_job_details")
+}
+
 model DockWalk {
   id          String         @id @default(uuid())
   tenantId    String

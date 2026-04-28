@@ -15,6 +15,7 @@ import { assertAuthConfigOrExit } from "./middleware/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { redisConnection, queues } from "./lib/queue.js";
 import { startQboInventoryRetrySchedule, stopQboInventoryRetrySchedule } from "./jobs/qbo-inventory-retry.js";
+import { initQboInventoryResyncJobs } from "./services/qbo-inventory-resync-jobs.js";
 
 // Fail fast in production if Clerk keys aren't configured.
 assertAuthConfigOrExit();
@@ -212,6 +213,10 @@ app.use(errorHandler);
 if (!process.env.VITEST) {
   const server = app.listen(PORT, () => {
     console.log(`[helm-api] listening on port ${PORT}`);
+    // Recover any QBO inventory re-sync jobs that were left running by a
+    // crashed predecessor process and start the periodic staleness sweep so
+    // multi-replica deploys self-heal when one replica's runner dies.
+    initQboInventoryResyncJobs();
   });
 
   // Schedule the recurring QBO inventory retry sweep. Lives in the API process
