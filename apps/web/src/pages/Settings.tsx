@@ -539,31 +539,84 @@ export default function Settings() {
     lastItemSyncAt: string | null; lastBillSyncAt: string | null; lastAdjustmentSyncAt: string | null;
     recentErrors: Array<{ sourceType: string; sourceId: string; qboType: string; error: string; at: string }>;
   }>('get', '/api/settings/qbo/inventory-status', { immediate: true });
-  const { execute: retryFailedInventorySyncs, loading: qboInventoryRetrying } = useApi<{
-    attempted: number; succeeded: number; failed: number; skipped: number;
-    details: Array<{ sourceType: string; sourceId: string; qboType: string; status: 'succeeded' | 'failed' | 'skipped'; error?: string }>;
-  }>('post', '/api/settings/qbo/inventory-resync');
+  // Job-based bulk QBO inventory retry. The POST endpoint kicks off a
+  // background job and returns a jobId; we poll the GET endpoint for live
+  // progress so the UI can show "Retrying X of Y — A succeeded, B still
+  // failing" instead of blocking on a single multi-minute HTTP request.
+  interface QboResyncJob {
+    jobId: string;
+    status: 'running' | 'succeeded' | 'failed';
+    total: number;
+    processed: number;
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    error: string | null;
+  }
+  const [qboResyncJob, setQboResyncJob] = useState<QboResyncJob | null>(null);
+  const [qboInventoryRetrying, setQboInventoryRetrying] = useState(false);
   const [qboRetryMsg, setQboRetryMsg] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const qboPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (qboPollRef.current) clearTimeout(qboPollRef.current);
+    };
+  }, []);
+
   const handleRetryFailedQboInventory = async () => {
     setQboRetryMsg(null);
-    const result = await retryFailedInventorySyncs();
-    if (!result) {
+    setQboResyncJob(null);
+    setQboInventoryRetrying(true);
+    let started: QboResyncJob | null = null;
+    try {
+      const token = await getToken();
+      started = await api.post<QboResyncJob>('/api/settings/qbo/inventory-resync', {}, token);
+    } catch {
+      setQboInventoryRetrying(false);
       setQboRetryMsg({ kind: 'error', text: 'Failed to start re-sync. Please try again.' });
       return;
     }
-    if (result.attempted === 0 && result.skipped === 0) {
-      setQboRetryMsg({ kind: 'info', text: 'No failed sync records to retry.' });
-    } else {
-      const parts: string[] = [];
-      parts.push(`${result.succeeded} succeeded`);
-      if (result.failed > 0) parts.push(`${result.failed} still failing`);
-      if (result.skipped > 0) parts.push(`${result.skipped} skipped`);
-      setQboRetryMsg({
-        kind: result.failed > 0 ? 'error' : 'success',
-        text: `Retry complete — ${parts.join(', ')}.`,
-      });
+    if (!started?.jobId) {
+      setQboInventoryRetrying(false);
+      setQboRetryMsg({ kind: 'error', text: 'Failed to start re-sync. Please try again.' });
+      return;
     }
-    await fetchQboInventoryStatus();
+    setQboResyncJob(started);
+
+    const poll = async () => {
+      let snap: QboResyncJob | null = null;
+      try {
+        const token = await getToken();
+        snap = await api.get<QboResyncJob>(`/api/settings/qbo/inventory-resync/${started!.jobId}`, token);
+      } catch {
+        // Network blip — keep polling.
+      }
+      if (snap) {
+        setQboResyncJob(snap);
+        if (snap.status !== 'running') {
+          setQboInventoryRetrying(false);
+          if (snap.status === 'failed') {
+            setQboRetryMsg({ kind: 'error', text: snap.error ? `Re-sync failed — ${snap.error}` : 'Re-sync failed. Please try again.' });
+          } else if (snap.attempted === 0 && snap.skipped === 0) {
+            setQboRetryMsg({ kind: 'info', text: 'No failed sync records to retry.' });
+          } else {
+            const parts: string[] = [`${snap.succeeded} succeeded`];
+            if (snap.failed > 0) parts.push(`${snap.failed} still failing`);
+            if (snap.skipped > 0) parts.push(`${snap.skipped} skipped`);
+            setQboRetryMsg({
+              kind: snap.failed > 0 ? 'error' : 'success',
+              text: `Retry complete — ${parts.join(', ')}.`,
+            });
+          }
+          await fetchQboInventoryStatus();
+          return;
+        }
+      }
+      qboPollRef.current = setTimeout(poll, 1000);
+    };
+    qboPollRef.current = setTimeout(poll, 500);
   };
 
   // Stripe integration
@@ -1683,7 +1736,7 @@ export default function Settings() {
                           </div>
                         )}
                         <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          <button style={st.outlineBtn} onClick={() => fetchQboInventoryStatus()}>
+                          <button style={st.outlineBtn} onClick={() => fetchQboInventoryStatus()} disabled={qboInventoryRetrying}>
                             <RefreshCw size={14} /> Refresh status
                           </button>
                           {(qboInventoryStatus.itemsWithErrors + qboInventoryStatus.billsWithErrors + qboInventoryStatus.adjustmentsWithErrors) > 0 && (
@@ -1695,7 +1748,21 @@ export default function Settings() {
                               <RefreshCw size={14} />{qboInventoryRetrying ? ' Retrying…' : ' Retry all failures'}
                             </button>
                           )}
-                          {qboRetryMsg && (
+                          {qboInventoryRetrying && qboResyncJob && (
+                            <span style={{
+                              fontSize: '13px',
+                              color: '#1E40AF',
+                              backgroundColor: '#DBEAFE',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              fontWeight: 500,
+                            }}>
+                              {qboResyncJob.total > 0
+                                ? `Retried ${qboResyncJob.processed} of ${qboResyncJob.total} — ${qboResyncJob.succeeded} succeeded, ${qboResyncJob.failed} still failing${qboResyncJob.skipped > 0 ? `, ${qboResyncJob.skipped} skipped` : ''}`
+                                : 'Starting re-sync…'}
+                            </span>
+                          )}
+                          {!qboInventoryRetrying && qboRetryMsg && (
                             <span style={{
                               fontSize: '13px',
                               color: qboRetryMsg.kind === 'success' ? '#03543F' : qboRetryMsg.kind === 'error' ? '#7F1D1D' : '#1E40AF',
@@ -1708,6 +1775,16 @@ export default function Settings() {
                             </span>
                           )}
                         </div>
+                        {qboInventoryRetrying && qboResyncJob && qboResyncJob.total > 0 && (
+                          <div style={{ marginTop: '8px', height: '6px', background: '#E2E8F0', borderRadius: '4px', overflow: 'hidden' }}>
+                            <div style={{
+                              height: '100%',
+                              width: `${Math.min(100, Math.round((qboResyncJob.processed / qboResyncJob.total) * 100))}%`,
+                              background: '#3B82F6',
+                              transition: 'width 200ms ease-out',
+                            }} />
+                          </div>
+                        )}
                       </>
                     ) : (
                       <div style={{ color: '#94A3B8', fontSize: '13px' }}>No inventory has been synced yet.</div>

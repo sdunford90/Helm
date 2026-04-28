@@ -1255,6 +1255,16 @@ export interface QboInventoryRetryResult {
   }>;
 }
 
+export type QboInventoryRetryProgress = (snapshot: {
+  total: number;
+  processed: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  lastDetail: QboInventoryRetryResult["details"][number];
+}) => void;
+
 /**
  * Walks every failed QBO inventory sync ref for a tenant and re-attempts the
  * push. Iterates products, inventory adjustments, purchase-order bills, and
@@ -1262,11 +1272,18 @@ export interface QboInventoryRetryResult {
  * continued failure (the underlying try* helpers do that bookkeeping). Records
  * whose local source row is no longer present in memory are reported as
  * "skipped" rather than counted as a failure.
+ *
+ * Optional `onProgress` is invoked after every record (succeeded, failed, or
+ * skipped) with cumulative counts and the most recent detail entry. It powers
+ * the job-based polling endpoint that drives the Settings UI's live progress
+ * counter so long-running retries don't block a single HTTP request.
  */
 export async function retryFailedQboInventorySyncs(
   tenantId: string,
+  onProgress?: QboInventoryRetryProgress,
 ): Promise<QboInventoryRetryResult> {
   const failedRefs = await findFailedInventorySyncRefs(tenantId);
+  const total = failedRefs.length;
   const result: QboInventoryRetryResult = {
     attempted: 0,
     succeeded: 0,
@@ -1275,27 +1292,51 @@ export async function retryFailedQboInventorySyncs(
     details: [],
   };
 
+  const emit = () => {
+    if (!onProgress) return;
+    const lastDetail = result.details[result.details.length - 1]!;
+    try {
+      onProgress({
+        total,
+        processed: result.details.length,
+        attempted: result.attempted,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        skipped: result.skipped,
+        lastDetail,
+      });
+    } catch (err) {
+      // Progress reporters must never break the retry loop.
+      console.warn(`[inventory] retry progress callback threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const recordDetail = (detail: QboInventoryRetryResult["details"][number]) => {
+    result.details.push(detail);
+    emit();
+  };
+
   for (const ref of failedRefs) {
     if (ref.sourceType === "product") {
       const product = await prisma.product.findFirst({ where: { id: ref.sourceId, tenantId } });
       if (!product) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
         continue;
       }
       if (!product.trackInventory) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer tracks inventory" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer tracks inventory" });
         continue;
       }
       result.attempted++;
       const updated = await tryPushProductToQbo(product);
       if (updated.qboItemSyncError) {
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: updated.qboItemSyncError });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: updated.qboItemSyncError });
       } else {
         result.succeeded++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       }
     } else if (ref.sourceType === "inventory_adjustment") {
       const adjustment = await prisma.inventoryAdjustment.findFirst({
@@ -1303,7 +1344,7 @@ export async function retryFailedQboInventorySyncs(
       });
       if (!adjustment) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment no longer exists locally" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment no longer exists locally" });
         continue;
       }
       const product = await prisma.product.findFirst({
@@ -1311,7 +1352,7 @@ export async function retryFailedQboInventorySyncs(
       });
       if (!product) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment's product no longer exists locally" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Adjustment's product no longer exists locally" });
         continue;
       }
       result.attempted++;
@@ -1321,10 +1362,10 @@ export async function retryFailedQboInventorySyncs(
       });
       if (refreshed?.qboSyncError) {
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: refreshed.qboSyncError });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: refreshed.qboSyncError });
       } else {
         result.succeeded++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       }
     } else if (ref.sourceType === "purchase_order") {
       const po = await prisma.purchaseOrder.findFirst({
@@ -1333,7 +1374,7 @@ export async function retryFailedQboInventorySyncs(
       });
       if (!po) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Purchase order no longer exists locally" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Purchase order no longer exists locally" });
         continue;
       }
       const billLines = po.lineItems
@@ -1346,7 +1387,7 @@ export async function retryFailedQboInventorySyncs(
         }));
       if (!billLines.length) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "No received lines to bill" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "No received lines to bill" });
         continue;
       }
       // Don't force-push on retry: if a Bill was already created we must not
@@ -1375,7 +1416,7 @@ export async function retryFailedQboInventorySyncs(
           },
         });
         result.succeeded++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await prisma.purchaseOrder.update({
@@ -1386,13 +1427,13 @@ export async function retryFailedQboInventorySyncs(
           },
         });
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
       }
     } else if (ref.sourceType === "vendor") {
       const vendor = await prisma.vendor.findFirst({ where: { id: ref.sourceId, tenantId } });
       if (!vendor) {
         result.skipped++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Vendor no longer exists" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Vendor no longer exists" });
         continue;
       }
       result.attempted++;
@@ -1408,15 +1449,15 @@ export async function retryFailedQboInventorySyncs(
           tenantId,
         );
         result.succeeded++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "succeeded" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         result.failed++;
-        result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
+        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "failed", error: msg });
       }
     } else {
       result.skipped++;
-      result.details.push({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: `Unsupported sourceType: ${ref.sourceType}` });
+      recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: `Unsupported sourceType: ${ref.sourceType}` });
     }
   }
 

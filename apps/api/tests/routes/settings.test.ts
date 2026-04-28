@@ -101,3 +101,43 @@ describe('PUT /api/settings/marina', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('POST /api/settings/qbo/inventory-resync (job-based)', () => {
+  it('returns 202 with a jobId so the UI can poll progress', async () => {
+    // No failed sync refs → the background job completes near-instantly with
+    // zero work, but the POST still needs to return a jobId for the UI flow.
+    mockPrisma.qboInventorySyncRef.findMany.mockResolvedValue([]);
+
+    const res = await request(app).post('/api/settings/qbo/inventory-resync').send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body).toHaveProperty('jobId');
+    expect(typeof res.body.jobId).toBe('string');
+    expect(res.body).toHaveProperty('status', 'running');
+    expect(res.body).toHaveProperty('processed', 0);
+  });
+
+  it('GET /qbo/inventory-resync/:jobId reports the job snapshot', async () => {
+    mockPrisma.qboInventorySyncRef.findMany.mockResolvedValue([]);
+
+    const start = await request(app).post('/api/settings/qbo/inventory-resync').send({});
+    expect(start.status).toBe(202);
+    const { jobId } = start.body;
+
+    // Give the fire-and-forget runner a tick to flip from "running" to "succeeded".
+    await new Promise((r) => setTimeout(r, 20));
+
+    const poll = await request(app).get(`/api/settings/qbo/inventory-resync/${jobId}`);
+    expect(poll.status).toBe(200);
+    expect(poll.body).toHaveProperty('jobId', jobId);
+    expect(poll.body).toHaveProperty('status', 'succeeded');
+    expect(poll.body).toHaveProperty('processed', 0);
+    expect(poll.body).toHaveProperty('attempted', 0);
+    expect(poll.body).toHaveProperty('details');
+  });
+
+  it('GET returns 404 for unknown job ids', async () => {
+    const res = await request(app).get('/api/settings/qbo/inventory-resync/no-such-job');
+    expect(res.status).toBe(404);
+  });
+});

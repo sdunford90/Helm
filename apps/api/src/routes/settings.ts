@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { getInventorySyncStatus } from "../services/qbo-sync.js";
-import { retryFailedQboInventorySyncs } from "./inventory.js";
+import {
+  startQboInventoryResyncJob,
+  getQboInventoryResyncJob,
+} from "../services/qbo-inventory-resync-jobs.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
@@ -665,17 +668,64 @@ router.get("/qbo/inventory-status", ...clerkAuth(), requireRole("MARINA_OWNER", 
 });
 
 // --------------------------------------------------------------------------
-// POST /api/settings/qbo/inventory-resync — bulk retry failed inventory syncs
+// POST /api/settings/qbo/inventory-resync — start a bulk retry job
 //
 // Iterates every QBO inventory sync ref currently in an error state for the
 // tenant and re-attempts the appropriate push (item, bill, journal, vendor).
-// Per-record error fields are cleared on success and updated on continued
-// failure. Returns counts + a per-record breakdown so the UI can summarize.
+// For tenants with hundreds of failures the retry can take minutes per
+// QuickBooks round-trip, so this endpoint kicks the work off in the
+// background and returns a `jobId` immediately. The Settings UI polls
+// `GET /qbo/inventory-resync/:jobId` to render a live progress counter and
+// pick up the final per-record breakdown when the job finishes.
 // --------------------------------------------------------------------------
 router.post("/qbo/inventory-resync", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const result = await retryFailedQboInventorySyncs(req.tenantId!);
-    res.json(result);
+    const job = await startQboInventoryResyncJob(req.tenantId!);
+    res.status(202).json({
+      jobId: job.jobId,
+      status: job.status,
+      total: job.total,
+      processed: job.processed,
+      attempted: job.attempted,
+      succeeded: job.succeeded,
+      failed: job.failed,
+      skipped: job.skipped,
+      startedAt: job.startedAt,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/settings/qbo/inventory-resync/:jobId — poll resync job progress
+//
+// Returns the current snapshot of a resync job: counts, status (running |
+// succeeded | failed) and, once complete, the per-record details breakdown.
+// 404 if the job id is unknown or no longer cached.
+// --------------------------------------------------------------------------
+router.get("/qbo/inventory-resync/:jobId", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const job = getQboInventoryResyncJob(req.params.jobId, req.tenantId!);
+    if (!job) {
+      res.status(404).json({ error: "Resync job not found" });
+      return;
+    }
+    res.json({
+      jobId: job.jobId,
+      status: job.status,
+      total: job.total,
+      processed: job.processed,
+      attempted: job.attempted,
+      succeeded: job.succeeded,
+      failed: job.failed,
+      skipped: job.skipped,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      completedAt: job.completedAt,
+      error: job.error,
+      details: job.status === "running" ? [] : job.details,
+    });
   } catch (err) {
     next(err);
   }
