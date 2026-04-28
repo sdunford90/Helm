@@ -400,17 +400,35 @@ router.post(
       // computed below from unitPrice × qty.
       const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
 
-      const taxResult = await calculateTax(
+      // Resolve the invoice's location BEFORE calling the tax engine so
+      // calculateTax can pull the right jurisdiction stack. We look at the
+      // first CONTRACT line item → slip → location; non-contract invoices
+      // (e.g. ad-hoc service charges) fall back to null and the engine
+      // returns zero tax — same as before category routing.
+      let locationId: string | null = null;
+      const contractLineItem = data.lineItems.find(
+        (li) => li.sourceType === "CONTRACT" && li.sourceId,
+      );
+      if (contractLineItem?.sourceId) {
+        const contract = await prisma.slipContract.findUnique({
+          where: { id: contractLineItem.sourceId },
+          select: { slip: { select: { locationId: true } } },
+        });
+        locationId = contract?.slip?.locationId ?? null;
+      }
+
+      const taxResult = await calculateTax({
         tenantId,
-        data.customerId,
-        data.lineItems.map((li, idx) => ({
+        locationId,
+        customerId: data.customerId,
+        lineItems: data.lineItems.map((li, idx) => ({
           description: li.description,
           amountCents: lineTaxInfo[idx].taxable
             ? li.unitPriceCents * li.quantity - li.discountCents
             : 0,
           taxCategory: lineTaxInfo[idx].taxCategory,
         })),
-      );
+      });
 
       // Build line items with tax
       let subtotalCents = 0;
@@ -442,19 +460,6 @@ router.post(
 
       const totalCents = subtotalCents + totalTaxCents;
       const invoiceNumber = `INV-${Date.now().toString(36).toUpperCase()}`;
-
-      // Resolve locationId from the first CONTRACT line item → slip → location
-      let locationId: string | null = null;
-      const contractLineItem = data.lineItems.find(
-        (li) => li.sourceType === "CONTRACT" && li.sourceId,
-      );
-      if (contractLineItem?.sourceId) {
-        const contract = await prisma.slipContract.findUnique({
-          where: { id: contractLineItem.sourceId },
-          select: { slip: { select: { locationId: true } } },
-        });
-        locationId = contract?.slip?.locationId ?? null;
-      }
 
       const invoice = await prisma.invoice.create({
         data: {
@@ -537,17 +542,20 @@ router.put(
           tenantId,
           data.lineItems,
         );
-        const taxResult = await calculateTax(
+        // PUT only edits draft invoices; reuse the locationId established at
+        // create time so jurisdiction-stack tax stays consistent across edits.
+        const taxResult = await calculateTax({
           tenantId,
-          existing.customerId,
-          data.lineItems.map((li, idx) => ({
+          locationId: existing.locationId,
+          customerId: existing.customerId,
+          lineItems: data.lineItems.map((li, idx) => ({
             description: li.description,
             amountCents: lineTaxInfo[idx].taxable
               ? li.unitPriceCents * li.quantity - li.discountCents
               : 0,
             taxCategory: lineTaxInfo[idx].taxCategory,
           })),
-        );
+        });
 
         let subtotalCents = 0;
         let totalTaxCents = 0;
