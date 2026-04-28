@@ -95,8 +95,32 @@ async function uploadEvidenceFile(
   const { url, key } = await presign.json();
 
   // 2. PUT to R2.
-  const put = await fetch(url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-  if (!put.ok) throw new Error('Upload to storage failed');
+  // A `TypeError`/"Failed to fetch" here means the request was blocked
+  // before any HTTP response arrived — almost always the bucket's CORS
+  // policy not allowing PUT (or the Content-Type request header) from
+  // this origin. See apps/api/r2-cors.json + apps/api/scripts/README.md.
+  let put: Response;
+  try {
+    put = await fetch(url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+  } catch (netErr) {
+    let r2Host = 'unknown';
+    try {
+      r2Host = new URL(url).host;
+    } catch {
+      /* presign URL was malformed; the host helps diagnose anyway */
+    }
+    console.error('[dispute evidence upload network error]', {
+      stage: 'r2-put',
+      r2Host,
+      storageKey: key,
+      filename: file.name,
+      sizeBytes: file.size,
+      contentType: file.type,
+      error: netErr,
+    });
+    throw new Error("Couldn't reach file storage. This is usually a network or CORS issue — please contact support.");
+  }
+  if (!put.ok) throw new Error(`Upload to storage failed (status ${put.status})`);
 
   // 3. Verify (magic + AV).
   const verify = await fetch('/api/storage/verify-upload', {

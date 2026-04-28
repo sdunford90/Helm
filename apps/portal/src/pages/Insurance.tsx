@@ -143,12 +143,36 @@ export default function Insurance() {
       const { url: presignUrl, key } = (await presignRes.json()) as PresignResponse;
 
       // Step 2: Upload directly to R2/S3
-      const uploadRes = await fetch(presignUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type },
-        body: file,
-      });
-      if (!uploadRes.ok) throw new Error('File upload to storage failed');
+      // A `TypeError`/"Failed to fetch" here means the request was blocked
+      // before any HTTP response arrived — almost always the bucket's CORS
+      // policy not allowing PUT (or the Content-Type request header) from
+      // this origin. See apps/api/r2-cors.json + apps/api/scripts/README.md.
+      let uploadRes: Response;
+      try {
+        uploadRes = await fetch(presignUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type },
+          body: file,
+        });
+      } catch (netErr) {
+        let r2Host = 'unknown';
+        try {
+          r2Host = new URL(presignUrl).host;
+        } catch {
+          /* presign URL was malformed; the host helps diagnose anyway */
+        }
+        console.error('[insurance upload network error]', {
+          stage: 'r2-put',
+          r2Host,
+          storageKey: key,
+          filename: file.name,
+          sizeBytes: file.size,
+          contentType: file.type,
+          error: netErr,
+        });
+        throw new Error("Couldn't reach file storage. This is usually a network or CORS issue — please contact support.");
+      }
+      if (!uploadRes.ok) throw new Error(`File upload to storage failed (status ${uploadRes.status})`);
 
       // Step 3: Record the document in the database
       await createRecord({ documentUrl: key });

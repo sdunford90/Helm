@@ -462,7 +462,35 @@ export default function Settings() {
     try {
       const token = await getToken();
       const presign = await api.post<{ url: string; key: string }>('/storage/presign-upload', { category: 'logo', filename: file.name, contentType: file.type }, token);
-      await fetch(presign.url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+      // PUT the file directly to R2 using the presigned URL.
+      // A `TypeError`/"Failed to fetch" here means the request was blocked
+      // before any HTTP response arrived — almost always the bucket's CORS
+      // policy not allowing PUT (or the Content-Type request header) from
+      // this origin. See apps/api/r2-cors.json + apps/api/scripts/README.md.
+      let put: Response;
+      try {
+        put = await fetch(presign.url, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+      } catch (netErr) {
+        let r2Host = 'unknown';
+        try {
+          r2Host = new URL(presign.url).host;
+        } catch {
+          /* presign URL was malformed; the host helps diagnose anyway */
+        }
+        console.error('[logo upload network error]', {
+          stage: 'r2-put',
+          r2Host,
+          storageKey: presign.key,
+          filename: file.name,
+          sizeBytes: file.size,
+          contentType: file.type,
+          error: netErr,
+        });
+        throw new Error("Couldn't reach file storage. This is usually a network or CORS issue — please contact support.");
+      }
+      if (!put.ok) {
+        throw new Error(`Upload to storage failed (status ${put.status})`);
+      }
       const verify = await api.post<{ ok: boolean; publicUrl?: string }>('/storage/verify-upload', { key: presign.key, contentType: file.type }, token);
       if (verify.ok && verify.publicUrl) {
         setLogoUrl(verify.publicUrl);
@@ -475,7 +503,7 @@ export default function Settings() {
         }
       }
     } catch (err) {
-      setLogoError('Upload failed. Please try again.');
+      setLogoError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
     } finally {
       setLogoUploading(false);
     }
