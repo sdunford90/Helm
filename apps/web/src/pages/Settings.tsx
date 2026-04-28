@@ -60,6 +60,7 @@ interface TeamMember {
   status: 'Active' | 'Invited' | 'Disabled';
   lastLogin: string;
   locations: string[];
+  locationIds: string[];
 }
 
 interface ApiUser {
@@ -70,6 +71,7 @@ interface ApiUser {
   role: string;
   active: boolean;
   createdAt: string;
+  locationIds?: string[];
 }
 
 const ROLE_ENUM_TO_DISPLAY: Record<string, string> = {
@@ -98,6 +100,7 @@ function normalizeApiUser(u: ApiUser): TeamMember {
     status: u.active ? 'Active' : 'Disabled',
     lastLogin: '—',
     locations: [],
+    locationIds: u.locationIds ?? [],
   };
 }
 
@@ -214,12 +217,12 @@ interface ApiKeyEntry {
 interface MarinaLocation { id: string; name: string; active?: boolean; stripeConnected?: boolean; qboConnected?: boolean; }
 
 const TEAM: TeamMember[] = [
-  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', roleEnum: 'MARINA_OWNER', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
-  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', roleEnum: 'MARINA_MANAGER', status: 'Active', lastLogin: '2026-03-25 8:02 AM', locations: ['Main Dock', 'Fuel Dock'] },
-  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Active', lastLogin: '2026-03-24 6:45 PM', locations: ['Main Dock'] },
-  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', roleEnum: 'POS_CASHIER', status: 'Active', lastLogin: '2026-03-24 5:30 PM', locations: ['Main Dock', 'Rental Center'] },
-  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', roleEnum: 'ACCOUNTING', status: 'Active', lastLogin: '2026-03-23 3:15 PM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'] },
-  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'] },
+  { id: '1', name: 'Sarah Dunford', email: 'sarah@bayshoremarina.com', role: 'Marina Owner', roleEnum: 'MARINA_OWNER', status: 'Active', lastLogin: '2026-03-25 9:14 AM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'], locationIds: [] },
+  { id: '2', name: 'Jake Martinez', email: 'jake@bayshoremarina.com', role: 'Marina Manager', roleEnum: 'MARINA_MANAGER', status: 'Active', lastLogin: '2026-03-25 8:02 AM', locations: ['Main Dock', 'Fuel Dock'], locationIds: [] },
+  { id: '3', name: 'Maria Santos', email: 'maria@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Active', lastLogin: '2026-03-24 6:45 PM', locations: ['Main Dock'], locationIds: [] },
+  { id: '4', name: 'Tom Anderson', email: 'tom@bayshoremarina.com', role: 'POS Cashier', roleEnum: 'POS_CASHIER', status: 'Active', lastLogin: '2026-03-24 5:30 PM', locations: ['Main Dock', 'Rental Center'], locationIds: [] },
+  { id: '5', name: 'Lisa Chen', email: 'lisa@bayshoremarina.com', role: 'Accounting', roleEnum: 'ACCOUNTING', status: 'Active', lastLogin: '2026-03-23 3:15 PM', locations: ['Main Dock', 'Fuel Dock', 'Rental Center'], locationIds: [] },
+  { id: '6', name: 'Robert Dockside', email: 'robert@bayshoremarina.com', role: 'Dock Staff', roleEnum: 'DOCK_STAFF', status: 'Invited', lastLogin: '—', locations: ['Fuel Dock'], locationIds: [] },
 ];
 
 const DOCKAGE_RATES_DATA: DockageRate[] = [];
@@ -491,19 +494,20 @@ export default function Settings() {
   // Team edit modal
   const [editingMember, setEditingMember] = React.useState<TeamMember | null>(null);
   const [editingMemberRole, setEditingMemberRole] = React.useState('');
+  const [editingMemberLocationIds, setEditingMemberLocationIds] = React.useState<string[]>([]);
 
   const handleTeamEditSave = async () => {
     if (!editingMember) return;
     const enumRole = ROLE_DISPLAY_TO_ENUM[editingMemberRole] ?? editingMemberRole;
-    const res = await fetch(`/api/settings/team/${editingMember.id}/role`, {
+    const res = await fetch(`/api/settings/team/${editingMember.id}`, {
       method: 'PUT',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: enumRole }),
+      body: JSON.stringify({ role: enumRole, locationIds: editingMemberLocationIds }),
     });
     if (res.ok) {
-      setTeamMembers((prev) => prev.map((m) => m.id === editingMember.id ? { ...m, role: editingMemberRole, roleEnum: enumRole } : m));
-      setSavedMsg('Role updated');
+      setTeamMembers((prev) => prev.map((m) => m.id === editingMember.id ? { ...m, role: editingMemberRole, roleEnum: enumRole, locationIds: editingMemberLocationIds } : m));
+      setSavedMsg('Member updated');
       setTimeout(() => setSavedMsg(null), 2000);
     }
     setEditingMember(null);
@@ -1237,7 +1241,7 @@ export default function Settings() {
     const firstName = nameParts[0] ?? '';
     const lastName = nameParts.slice(1).join(' ') || '—';
     const roleEnum = ROLE_DISPLAY_TO_ENUM[inviteRole] ?? 'DOCK_STAFF';
-    const res = await inviteTeamMember({ email: inviteEmail, firstName, lastName, role: roleEnum });
+    const res = await inviteTeamMember({ email: inviteEmail, firstName, lastName, role: roleEnum, locationIds: inviteLocations });
     if (res) {
       setShowInviteModal(false);
       setSavedMsg(`Invitation sent to ${inviteEmail}`);
@@ -2557,10 +2561,10 @@ export default function Settings() {
                       <label key={loc.id} style={{ ...st.checkbox, fontSize: '14px' }}>
                         <input
                           type="checkbox"
-                          checked={inviteLocations.includes(loc.name)}
+                          checked={inviteLocations.includes(loc.id)}
                           onChange={(e) => {
-                            if (e.target.checked) setInviteLocations([...inviteLocations, loc.name]);
-                            else setInviteLocations(inviteLocations.filter((l) => l !== loc.name));
+                            if (e.target.checked) setInviteLocations([...inviteLocations, loc.id]);
+                            else setInviteLocations(inviteLocations.filter((l) => l !== loc.id));
                           }}
                         />
                         {loc.name}
@@ -2593,6 +2597,27 @@ export default function Settings() {
                   <select style={st.select} value={editingMemberRole} onChange={(e) => setEditingMemberRole(e.target.value)}>
                     {Object.keys(ROLE_DISPLAY_TO_ENUM).map((r) => <option key={r} value={r}>{r}</option>)}
                   </select>
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Location(s)</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                    {marinaLocations.map((loc) => (
+                      <label key={loc.id} style={{ ...st.checkbox, fontSize: '14px' }}>
+                        <input
+                          type="checkbox"
+                          checked={editingMemberLocationIds.includes(loc.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) setEditingMemberLocationIds([...editingMemberLocationIds, loc.id]);
+                            else setEditingMemberLocationIds(editingMemberLocationIds.filter((l) => l !== loc.id));
+                          }}
+                        />
+                        {loc.name}
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748B', marginTop: '6px' }}>
+                    Leave all unchecked for tenant-wide roles (Owner/Admin). Bypass roles ignore this restriction.
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
                   <button style={st.outlineBtn} onClick={() => setEditingMember(null)}>Cancel</button>
@@ -2633,9 +2658,20 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                          {m.locations.map((loc) => (
-                            <span key={loc} style={{ ...st.badge, backgroundColor: '#F1F5F9', color: '#0A2342', fontSize: '11px' }}>{loc}</span>
-                          ))}
+                          {(['MARINA_OWNER', 'TENANT_ADMIN', 'PLATFORM_ADMIN'].includes(m.roleEnum)) ? (
+                            <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342', fontSize: '11px' }}>All locations</span>
+                          ) : m.locationIds.length === 0 ? (
+                            <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E', fontSize: '11px' }}>No locations</span>
+                          ) : (
+                            m.locationIds.map((lid) => {
+                              const loc = marinaLocations.find((l) => l.id === lid);
+                              return (
+                                <span key={lid} style={{ ...st.badge, backgroundColor: '#F1F5F9', color: '#0A2342', fontSize: '11px' }}>
+                                  {loc?.name ?? lid}
+                                </span>
+                              );
+                            })
+                          )}
                         </div>
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
@@ -2643,7 +2679,7 @@ export default function Settings() {
                       </td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '13px', color: m.lastLogin === '—' ? '#94A3B8' : '#0A2342' }}>{m.lastLogin}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
-                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '12px' }} onClick={() => { setEditingMember(m); setEditingMemberRole(m.role); }}>Edit</button>
+                        <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '12px' }} onClick={() => { setEditingMember(m); setEditingMemberRole(m.role); setEditingMemberLocationIds(m.locationIds ?? []); }}>Edit</button>
                         <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleTeamRemove(m)}>Remove</button>
                       </td>
                     </tr>

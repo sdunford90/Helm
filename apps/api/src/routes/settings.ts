@@ -3,7 +3,7 @@ import { getInventorySyncStatus } from "../services/qbo-sync.js";
 import { retryFailedQboInventorySyncs } from "./inventory.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { clerkAuth, requireRole } from "../middleware/auth.js";
+import { clerkAuth, requireRole, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { stripe, requireStripe } from "../lib/stripe.js";
 import { issueOAuthState } from "../lib/oauth-state.js";
 
@@ -74,6 +74,7 @@ const inviteTeamMemberSchema = z.object({
   ]),
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
+  locationIds: z.array(z.string().uuid()).optional(),
 });
 
 const updateRoleSchema = z.object({
@@ -83,7 +84,8 @@ const updateRoleSchema = z.object({
     "DOCK_STAFF",
     "POS_CASHIER",
     "ACCOUNTING",
-  ]),
+  ]).optional(),
+  locationIds: z.array(z.string().uuid()).optional(),
 });
 
 // --------------------------------------------------------------------------
@@ -346,6 +348,10 @@ router.get("/stripe", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGE
     const { locationId } = req.query as { locationId?: string };
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId: req.tenantId! },
         select: { stripeAccountId: true, stripeOnboardingComplete: true },
@@ -397,6 +403,10 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
     const { locationId } = req.body as { locationId?: string };
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId: req.tenantId! },
         select: { id: true, stripeAccountId: true },
@@ -472,6 +482,10 @@ router.post("/stripe/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), a
     }
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId: req.tenantId! },
       });
@@ -504,6 +518,10 @@ router.get("/qbo", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER",
     const { locationId } = req.query as { locationId?: string };
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       // Location-scoped QBO status
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId: req.tenantId! },
@@ -542,6 +560,10 @@ router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (
     const { locationId } = req.body as { locationId?: string };
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
       if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
     }
@@ -579,6 +601,10 @@ router.post("/qbo/disconnect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
     }
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
       if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
       await prisma.location.update({
@@ -603,6 +629,10 @@ router.post("/qbo/sync", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MAN
     const { locationId } = req.body as { locationId?: string };
 
     if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const location = await prisma.location.findFirst({ where: { id: locationId, tenantId: req.tenantId! } });
       if (!location) { res.status(404).json({ error: "Location not found", code: "NOT_FOUND" }); return; }
       if (!location.qboRealmId) { res.status(400).json({ error: "QuickBooks is not connected for this location", code: "QBO_NOT_CONNECTED" }); return; }
@@ -656,6 +686,10 @@ router.post("/qbo/inventory-resync", ...clerkAuth(), requireRole("MARINA_OWNER",
 // --------------------------------------------------------------------------
 router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
+    if (!requireLocationAccess(req, req.params.id)) {
+      res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+      return;
+    }
     const location = await prisma.location.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId! },
       select: {
@@ -702,6 +736,10 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
 // --------------------------------------------------------------------------
 router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
+    if (!requireLocationAccess(req, req.params.id)) {
+      res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+      return;
+    }
     const location = await prisma.location.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId! },
     });
@@ -763,14 +801,36 @@ router.get("/team", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"
         role: true,
         active: true,
         createdAt: true,
+        userLocations: {
+          select: { locationId: true },
+        },
       },
     });
 
-    res.json({ members: users });
+    const members = users.map((u) => {
+      const { userLocations, ...rest } = u as typeof u & {
+        userLocations: { locationId: string }[];
+      };
+      return { ...rest, locationIds: userLocations.map((l) => l.locationId) };
+    });
+
+    res.json({ members });
   } catch (err) {
     next(err);
   }
 });
+
+// --------------------------------------------------------------------------
+// Helper: validate locationIds belong to tenant
+// --------------------------------------------------------------------------
+async function validateLocationIds(tenantId: string, locationIds: string[]): Promise<string[]> {
+  if (locationIds.length === 0) return [];
+  const found = await prisma.location.findMany({
+    where: { id: { in: locationIds }, tenantId },
+    select: { id: true },
+  });
+  return found.map((l) => l.id);
+}
 
 // --------------------------------------------------------------------------
 // POST /api/settings/team/invite
@@ -789,6 +849,13 @@ router.post("/team/invite", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
       return;
     }
 
+    const requestedIds = data.locationIds ?? [];
+    const validIds = await validateLocationIds(req.tenantId!, requestedIds);
+    if (validIds.length !== requestedIds.length) {
+      res.status(400).json({ error: "One or more locationIds are invalid for this tenant", code: "INVALID_LOCATION" });
+      return;
+    }
+
     const user = await prisma.user.create({
       data: {
         tenantId: req.tenantId!,
@@ -800,7 +867,31 @@ router.post("/team/invite", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
       },
     });
 
-    res.status(201).json({ member: user });
+    if (validIds.length > 0) {
+      await prisma.userLocation.createMany({
+        data: validIds.map((locationId) => ({
+          userId: user.id,
+          locationId,
+          tenantId: req.tenantId!,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: req.tenantId!,
+        userId: req.userId ?? null,
+        userName: req.userRecord ? `${req.userRecord.firstName ?? ""} ${req.userRecord.lastName ?? ""}`.trim() || null : null,
+        recordType: "User",
+        recordId: user.id,
+        action: "INVITE",
+        changedFieldsJson: { role: data.role, locationIds: validIds },
+        ipAddress: req.ip ?? null,
+      },
+    });
+
+    res.status(201).json({ member: { ...user, locationIds: validIds } });
   } catch (err) {
     if (err instanceof z.ZodError) {
       res.status(400).json({ error: "Validation failed", details: err.errors });
@@ -811,13 +902,99 @@ router.post("/team/invite", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
 });
 
 // --------------------------------------------------------------------------
-// PUT /api/settings/team/:userId/role
+// PUT /api/settings/team/:userId  — update role and/or locationIds
 // --------------------------------------------------------------------------
-router.put("/team/:userId/role", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
+router.put("/team/:userId", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
     const data = updateRoleSchema.parse(req.body);
 
-    // Prevent changing own role
+    if (req.params.userId === req.userId && data.role !== undefined) {
+      res.status(400).json({ error: "Cannot change your own role", code: "SELF_ROLE_CHANGE" });
+      return;
+    }
+
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.userId, tenantId: req.tenantId! },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: "User not found", code: "NOT_FOUND" });
+      return;
+    }
+
+    const changed: Record<string, unknown> = {};
+
+    if (data.role !== undefined && data.role !== user.role) {
+      await prisma.user.update({
+        where: { id: req.params.userId },
+        data: { role: data.role },
+      });
+      changed.role = { from: user.role, to: data.role };
+    }
+
+    let finalLocationIds: string[] | undefined;
+    if (data.locationIds !== undefined) {
+      const validIds = await validateLocationIds(req.tenantId!, data.locationIds);
+      if (validIds.length !== data.locationIds.length) {
+        res.status(400).json({ error: "One or more locationIds are invalid for this tenant", code: "INVALID_LOCATION" });
+        return;
+      }
+      await prisma.$transaction([
+        prisma.userLocation.deleteMany({ where: { userId: req.params.userId } }),
+        ...(validIds.length > 0
+          ? [prisma.userLocation.createMany({
+              data: validIds.map((locationId) => ({
+                userId: req.params.userId,
+                locationId,
+                tenantId: req.tenantId!,
+              })),
+              skipDuplicates: true,
+            })]
+          : []),
+      ]);
+      finalLocationIds = validIds;
+      changed.locationIds = validIds;
+    }
+
+    if (Object.keys(changed).length > 0) {
+      await prisma.auditLog.create({
+        data: {
+          tenantId: req.tenantId!,
+          userId: req.userId ?? null,
+          userName: req.userRecord ? `${req.userRecord.firstName ?? ""} ${req.userRecord.lastName ?? ""}`.trim() || null : null,
+          recordType: "User",
+          recordId: req.params.userId,
+          action: "UPDATE",
+          changedFieldsJson: changed,
+          ipAddress: req.ip ?? null,
+        },
+      });
+    }
+
+    if (finalLocationIds === undefined) {
+      const links = await prisma.userLocation.findMany({
+        where: { userId: req.params.userId },
+        select: { locationId: true },
+      });
+      finalLocationIds = links.map((l) => l.locationId);
+    }
+
+    const updated = await prisma.user.findUnique({ where: { id: req.params.userId } });
+    res.json({ member: { ...updated, locationIds: finalLocationIds } });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: "Validation failed", details: err.errors });
+      return;
+    }
+    next(err);
+  }
+});
+
+// Backward-compat: PUT /team/:userId/role (role only)
+router.put("/team/:userId/role", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
+  try {
+    const data = z.object({ role: updateRoleSchema.shape.role.unwrap() }).parse(req.body);
+
     if (req.params.userId === req.userId) {
       res.status(400).json({ error: "Cannot change your own role", code: "SELF_ROLE_CHANGE" });
       return;
@@ -835,6 +1012,19 @@ router.put("/team/:userId/role", ...clerkAuth(), requireRole("MARINA_OWNER"), as
     const updated = await prisma.user.update({
       where: { id: req.params.userId },
       data: { role: data.role },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: req.tenantId!,
+        userId: req.userId ?? null,
+        userName: null,
+        recordType: "User",
+        recordId: req.params.userId,
+        action: "UPDATE",
+        changedFieldsJson: { role: { from: user.role, to: data.role } },
+        ipAddress: req.ip ?? null,
+      },
     });
 
     res.json({ member: updated });
@@ -1134,8 +1324,11 @@ router.delete("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_O
 
 router.get("/locations", ...clerkAuth(), async (req, res, next) => {
   try {
+    const where = filterByAllowedLocations(req, { tenantId: req.tenantId! } as Record<string, unknown>, {
+      field: "id",
+    });
     const locations = await prisma.location.findMany({
-      where: { tenantId: req.tenantId! },
+      where,
       select: {
         id: true, name: true, active: true,
         stripeAccountId: true, stripeOnboardingComplete: true,

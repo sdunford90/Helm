@@ -72,7 +72,20 @@ export const mockPrisma = {
     })),
     count: vi.fn().mockResolvedValue(0),
   },
-  user: { findMany: vi.fn().mockResolvedValue([]) },
+  user: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  userLocation: {
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    count: vi.fn().mockResolvedValue(0),
+  },
+  location: {
+    findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    count: vi.fn().mockResolvedValue(0),
+  },
   apiKey: { findUnique: vi.fn() },
   processed_webhooks: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
   inventory: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -81,7 +94,11 @@ export const mockPrisma = {
   achReturn: { findMany: vi.fn().mockResolvedValue([]) },
   vesselSafetyRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   emailSuppression: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), delete: vi.fn() },
-  $transaction: vi.fn().mockImplementation((fn: any) => fn(mockPrisma)),
+  $transaction: vi.fn().mockImplementation((arg: any) => {
+    if (typeof arg === 'function') return arg(mockPrisma);
+    if (Array.isArray(arg)) return Promise.all(arg);
+    return Promise.resolve(arg);
+  }),
 };
 
 // Tests may reference rentalReservation — alias it to reservation so mock data flows through
@@ -103,6 +120,7 @@ vi.mock('../src/middleware/auth.js', () => ({
       _req.userId = 'test-user-id';
       _req.userRole = 'admin';
       _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'admin', email: 'admin@test.com' };
+      _req.allowedLocationIds = null; // bypass — admins see everything
       next();
     },
   ],
@@ -112,8 +130,23 @@ vi.mock('../src/middleware/auth.js', () => ({
     next();
   },
   requirePlatformAdmin: () => [
-    (_req: any, _res: any, next: any) => { next(); },
+    (_req: any, _res: any, next: any) => { _req.allowedLocationIds = null; next(); },
   ],
+  filterByAllowedLocations: (req: any, baseWhere: Record<string, unknown>, opts?: { field?: string; includeNull?: boolean }) => {
+    const allowed = req?.allowedLocationIds;
+    if (allowed === null || allowed === undefined) return baseWhere;
+    const field = opts?.field ?? 'locationId';
+    const cond = opts?.includeNull
+      ? { OR: [{ [field]: { in: allowed } }, { [field]: null }] }
+      : { [field]: { in: allowed } };
+    return { ...baseWhere, ...cond };
+  },
+  requireLocationAccess: (req: any, locationId: string | null | undefined) => {
+    const allowed = req?.allowedLocationIds;
+    if (allowed === null || allowed === undefined) return true;
+    if (!locationId) return false;
+    return allowed.includes(locationId);
+  },
   assertAuthConfigOrExit: () => {},
 }));
 

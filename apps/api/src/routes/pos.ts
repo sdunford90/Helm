@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import {
   createConnectionToken,
@@ -785,8 +785,11 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
+      const where = filterByAllowedLocations(req, { tenantId } as Record<string, unknown>, {
+        includeNull: true,
+      });
       const shifts = await prisma.shift.findMany({
-        where: { tenantId },
+        where,
         orderBy: { openedAt: "desc" },
         include: {
           transactions: {
@@ -837,6 +840,11 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = OpenShiftSchema.parse(req.body);
+
+      if (data.locationId && !requireLocationAccess(req, data.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
 
       // Check for already open shift for this cashier
       const existing = await prisma.shift.findFirst({
@@ -1098,6 +1106,29 @@ async function resolveStripeAccount(
   return tenant?.stripeAccountId ?? null;
 }
 
+// ─── Helper: enforce location access for payment endpoints ──────────────────
+
+async function ensurePaymentLocationAccess(
+  req: Request,
+  opts: { shiftId?: string | null; locationId?: string | null },
+): Promise<{ ok: true } | { ok: false; status: number; body: { error: string; code: string } }> {
+  if (opts.locationId) {
+    if (!requireLocationAccess(req, opts.locationId)) {
+      return { ok: false, status: 403, body: { error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" } };
+    }
+  }
+  if (opts.shiftId) {
+    const shift = await prisma.shift.findFirst({
+      where: { id: opts.shiftId, tenantId: req.tenantId! },
+      select: { locationId: true },
+    });
+    if (shift?.locationId && !requireLocationAccess(req, shift.locationId)) {
+      return { ok: false, status: 403, body: { error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" } };
+    }
+  }
+  return { ok: true };
+}
+
 // ─── POST /terminal/connection-token — Terminal SDK auth ────────────────────
 
 router.post(
@@ -1105,6 +1136,8 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const locationId = (req.query.locationId ?? req.body?.locationId) as string | undefined;
+      const guard = await ensurePaymentLocationAccess(req, { locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
@@ -1125,6 +1158,8 @@ router.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const locationId = req.query.locationId as string | undefined;
+      const guard = await ensurePaymentLocationAccess(req, { locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
@@ -1151,6 +1186,8 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { registrationCode, label, locationId } = RegisterReaderSchema.parse(req.body);
+      const guard = await ensurePaymentLocationAccess(req, { locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
@@ -1171,6 +1208,8 @@ router.delete(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const locationId = req.query.locationId as string | undefined;
+      const guard = await ensurePaymentLocationAccess(req, { locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
@@ -1199,6 +1238,8 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const data = TerminalPaymentSchema.parse(req.body);
+      const guard = await ensurePaymentLocationAccess(req, { shiftId: data.shiftId, locationId: data.locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, {
         shiftId: data.shiftId,
         locationId: data.locationId,
@@ -1244,6 +1285,8 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { amountCents, paymentMethodId, description, shiftId, locationId } = CnpPaymentSchema.parse(req.body);
+      const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
@@ -1281,6 +1324,8 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { tipAmountCents, shiftId, locationId } = CaptureSchema.parse(req.body);
+      const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
       if (!stripeAccountId) {
         res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });

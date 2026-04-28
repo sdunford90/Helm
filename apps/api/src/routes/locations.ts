@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, filterByAllowedLocations, requireLocationAccess } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
 const router: IRouter = Router();
@@ -9,8 +9,12 @@ router.get("/", async (req: Request, res: Response) => {
   const tenantId = req.tenantId;
   if (!tenantId) return res.status(401).json({ error: "Unauthorized" });
 
+  const where = filterByAllowedLocations(req, { tenantId, active: true } as Record<string, unknown>, {
+    field: "id",
+  });
+
   const locations = await prisma.location.findMany({
-    where: { tenantId, active: true },
+    where,
     orderBy: { name: "asc" },
     select: {
       id: true,
@@ -33,6 +37,10 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
   if (!tenantId) return res.status(401).json({ error: "Unauthorized" });
 
   const { id } = req.params;
+  if (!requireLocationAccess(req, id)) {
+    return res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+  }
+
   const { transientEnabled, rentalsEnabled } = req.body as {
     transientEnabled?: boolean;
     rentalsEnabled?: boolean;

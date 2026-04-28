@@ -21,33 +21,61 @@ function dateFilters(req: Request) {
   return { startDate, endDate };
 }
 
+/**
+ * Returns a Prisma locationId filter for a report query.
+ *
+ * - If user is location-restricted, intersect the requested locationId (if any)
+ *   with the user's allowed list. Returns 403-style sentinel if access denied.
+ * - For bypass roles, honors the query param if provided, otherwise no filter.
+ */
+function locationFilter(req: Request): { ok: true; filter: Record<string, unknown> } | { ok: false; status: number; body: { error: string; code: string } } {
+  const requested = (req.query.locationId as string | undefined)?.trim() || undefined;
+  const allowed = req.allowedLocationIds; // null = bypass
+
+  if (requested) {
+    if (allowed !== null && allowed !== undefined && !allowed.includes(requested)) {
+      return { ok: false, status: 403, body: { error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" } };
+    }
+    return { ok: true, filter: { locationId: requested } };
+  }
+
+  if (allowed !== null && allowed !== undefined) {
+    return { ok: true, filter: { OR: [{ locationId: null }, { locationId: { in: allowed } }] } };
+  }
+
+  return { ok: true, filter: {} };
+}
+
 // ─── GET /reports/occupancy ───────────────────────────────────────────────────
 
 router.get("/occupancy", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
+    const lf = locationFilter(req);
+    if (!lf.ok) { res.status(lf.status).json(lf.body); return; }
+    const baseWhere = { tenantId, ...lf.filter };
 
-    const total = await prisma.slip.count({ where: { tenantId } });
-    const occupied = await prisma.slip.count({ where: { tenantId, status: "OCCUPIED" } });
-    const vacant = await prisma.slip.count({ where: { tenantId, status: "VACANT" } });
-    const maintenance = await prisma.slip.count({ where: { tenantId, status: "MAINTENANCE" } });
-    const reserved = await prisma.slip.count({ where: { tenantId, status: "RESERVED" } });
+    const total = await prisma.slip.count({ where: baseWhere });
+    const occupied = await prisma.slip.count({ where: { ...baseWhere, status: "OCCUPIED" } });
+    const vacant = await prisma.slip.count({ where: { ...baseWhere, status: "VACANT" } });
+    const maintenance = await prisma.slip.count({ where: { ...baseWhere, status: "MAINTENANCE" } });
+    const reserved = await prisma.slip.count({ where: { ...baseWhere, status: "RESERVED" } });
 
     const byDock = await prisma.slip.groupBy({
       by: ["dockId"],
-      where: { tenantId },
+      where: baseWhere,
       _count: { id: true },
     });
 
     const occupiedByDock = await prisma.slip.groupBy({
       by: ["dockId"],
-      where: { tenantId, status: "OCCUPIED" },
+      where: { ...baseWhere, status: "OCCUPIED" },
       _count: { id: true },
     });
 
     const maintenanceByDock = await prisma.slip.groupBy({
       by: ["dockId"],
-      where: { tenantId, status: "MAINTENANCE" },
+      where: { ...baseWhere, status: "MAINTENANCE" },
       _count: { id: true },
     });
 
@@ -79,6 +107,9 @@ router.get("/revenue", async (req: Request, res: Response, next: NextFunction) =
   try {
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
+    const lf = locationFilter(req);
+    if (!lf.ok) { res.status(lf.status).json(lf.body); return; }
+    const locFilter = lf.filter;
 
     const payments = await prisma.payment.aggregate({
       where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED" },
@@ -87,7 +118,7 @@ router.get("/revenue", async (req: Request, res: Response, next: NextFunction) =
     });
 
     const invoices = await prisma.invoice.aggregate({
-      where: { tenantId, issuedDate: { gte: startDate, lte: endDate } },
+      where: { tenantId, issuedDate: { gte: startDate, lte: endDate }, ...locFilter },
       _sum: { totalCents: true },
       _count: { id: true },
     });
@@ -265,6 +296,8 @@ router.get("/pos-sales", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
+    const lf = locationFilter(req);
+    if (!lf.ok) { res.status(lf.status).json(lf.body); return; }
 
     const transactions = await prisma.posTransaction.aggregate({
       where: { tenantId, createdAt: { gte: startDate, lte: endDate }, status: "COMPLETED" },
@@ -273,7 +306,7 @@ router.get("/pos-sales", async (req: Request, res: Response, next: NextFunction)
     });
 
     const shifts = await prisma.shift.findMany({
-      where: { tenantId, openedAt: { gte: startDate, lte: endDate } },
+      where: { tenantId, openedAt: { gte: startDate, lte: endDate }, ...lf.filter },
       select: { id: true, cashierId: true, openedAt: true, closedAt: true, tipTotalCents: true },
     });
 
@@ -505,7 +538,9 @@ router.get("/shift-reconciliation", async (req: Request, res: Response, next: Ne
   try {
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
-    const shifts = await prisma.shift.findMany({ where: { tenantId, openedAt: { gte: startDate, lte: endDate } }, orderBy: { openedAt: "desc" } });
+    const lf = locationFilter(req);
+    if (!lf.ok) { res.status(lf.status).json(lf.body); return; }
+    const shifts = await prisma.shift.findMany({ where: { tenantId, openedAt: { gte: startDate, lte: endDate }, ...lf.filter }, orderBy: { openedAt: "desc" } });
     const summary = shifts.map((s) => ({ id: s.id, cashierId: s.cashierId, openedAt: s.openedAt, closedAt: s.closedAt, openingFloatCents: s.openingFloatCents, closingCashCents: s.closingCashCents, tipTotalCents: s.tipTotalCents, status: s.status }));
     res.json({ period: { startDate, endDate }, shiftCount: shifts.length, shifts: summary });
   } catch (err) { next(err); }

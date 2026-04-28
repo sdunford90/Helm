@@ -350,6 +350,7 @@ model Location {
   invoices       Invoice[]
   products       Product[]
   purchaseOrders PurchaseOrder[]
+  userLocations  UserLocation[]
 
   @@index([tenantId])
   @@map("locations")
@@ -385,9 +386,30 @@ model User {
 
   tenant     Tenant      @relation(fields: [tenantId], references: [id])
   customRole CustomRole? @relation(fields: [customRoleId], references: [id])
+  userLocations UserLocation[]
 
   @@index([tenantId])
   @@map("users")
+}
+
+// Restricts which Locations a user may access. Users with bypass roles
+// (PLATFORM_ADMIN, TENANT_ADMIN, MARINA_OWNER) ignore this table entirely
+// and have full-tenant access. All other roles are denied access to any
+// Location not in their UserLocation rows.
+model UserLocation {
+  userId     String
+  locationId String
+  tenantId   String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, locationId])
+  @@index([userId])
+  @@index([locationId])
+  @@index([tenantId])
+  @@map("user_locations")
 }
 
 model CustomRole {

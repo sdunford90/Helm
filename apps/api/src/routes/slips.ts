@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
 const router: Router = Router();
@@ -13,6 +13,7 @@ const ElectricityModeEnum = z.enum(["FLAT_FEE", "METERED"]);
 const CreateSlipSchema = z.object({
   slipNumber: z.string().min(1),
   dockId: z.string().optional().nullable(),
+  locationId: z.string().optional().nullable(),
   lengthFt: z.number().positive(),
   beamFt: z.number().positive().optional().nullable(),
   depthFt: z.number().positive().optional().nullable(),
@@ -27,6 +28,7 @@ const CreateSlipSchema = z.object({
 const UpdateSlipSchema = z.object({
   slipNumber: z.string().min(1).optional(),
   dockId: z.string().optional().nullable(),
+  locationId: z.string().optional().nullable(),
   lengthFt: z.number().positive().optional(),
   beamFt: z.number().positive().optional().nullable(),
   depthFt: z.number().positive().optional().nullable(),
@@ -78,8 +80,11 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
+      const dockMapWhere = filterByAllowedLocations(req, { tenantId } as Record<string, unknown>, {
+        includeNull: true,
+      });
       const slips = await prisma.slip.findMany({
-        where: { tenantId },
+        where: dockMapWhere,
         include: {
           contracts: {
             where: { status: "ACTIVE" },
@@ -186,14 +191,16 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListSlipsQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const baseWhere: Record<string, unknown> = { tenantId };
 
-      if (query.status) where.status = query.status;
-      if (query.dockId) where.dockId = query.dockId;
-      if (query.slipType) where.slipType = query.slipType;
+      if (query.status) baseWhere.status = query.status;
+      if (query.dockId) baseWhere.dockId = query.dockId;
+      if (query.slipType) baseWhere.slipType = query.slipType;
       if (query.transientCapable !== undefined)
-        where.transientCapable = query.transientCapable;
-      if (query.electricityMode) where.electricityMode = query.electricityMode;
+        baseWhere.transientCapable = query.transientCapable;
+      if (query.electricityMode) baseWhere.electricityMode = query.electricityMode;
+
+      const where = filterByAllowedLocations(req, baseWhere, { includeNull: true });
 
       const [slips, total] = await Promise.all([
         prisma.slip.findMany({
@@ -292,6 +299,11 @@ router.get(
         throw appError("Slip not found", 404, "NOT_FOUND");
       }
 
+      if (slip.locationId && !requireLocationAccess(req, slip.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+
       // Separate current vs historical contracts
       const currentContract =
         slip.contracts.find((c) => c.status === "ACTIVE") ?? null;
@@ -314,6 +326,11 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = CreateSlipSchema.parse(req.body);
+
+      if (data.locationId && !requireLocationAccess(req, data.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
 
       // Check for duplicate slip number in tenant
       const existing = await prisma.slip.findFirst({
@@ -366,6 +383,15 @@ router.put(
       });
       if (!existing) {
         throw appError("Slip not found", 404, "NOT_FOUND");
+      }
+
+      if (existing.locationId && !requireLocationAccess(req, existing.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      if (data.locationId && !requireLocationAccess(req, data.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
       }
 
       // If changing slip number, check for duplicates
@@ -433,6 +459,11 @@ router.delete(
       });
       if (!slip) {
         throw appError("Slip not found", 404, "NOT_FOUND");
+      }
+
+      if (slip.locationId && !requireLocationAccess(req, slip.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
       }
 
       if (slip.status !== "VACANT") {

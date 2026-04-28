@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth, requireRole } from "../middleware/auth.js";
+import { clerkAuth, requireRole, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
 const MANAGER_ROLES = ["MARINA_OWNER", "MARINA_MANAGER", "TENANT_ADMIN", "PLATFORM_ADMIN"] as const;
@@ -914,8 +914,11 @@ router.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
+      const where = filterByAllowedLocations(req, { tenantId } as Record<string, unknown>, {
+        includeNull: true,
+      });
       const slots = await (prisma as any).rentalTimeSlot.findMany({
-        where: { tenantId },
+        where,
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       });
       res.json(slots);
@@ -931,6 +934,10 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = CreateTimeSlotSchema.parse(req.body);
+      if (data.locationId && !requireLocationAccess(req, data.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const slot = await (prisma as any).rentalTimeSlot.create({
         data: { tenantId, ...data },
       });
@@ -951,6 +958,14 @@ router.patch(
         where: { id: req.params.id, tenantId },
       });
       if (!existing) { res.status(404).json({ error: "Time slot not found" }); return; }
+      if (existing.locationId && !requireLocationAccess(req, existing.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      if (data.locationId && !requireLocationAccess(req, data.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       const slot = await (prisma as any).rentalTimeSlot.update({
         where: { id: req.params.id },
         data,
@@ -971,6 +986,10 @@ router.delete(
         where: { id: req.params.id, tenantId },
       });
       if (!existing) { res.status(404).json({ error: "Time slot not found" }); return; }
+      if (existing.locationId && !requireLocationAccess(req, existing.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
       await (prisma as any).rentalTimeSlot.delete({ where: { id: req.params.id } });
       res.status(204).send();
     } catch (err) { next(err); }
@@ -1000,6 +1019,16 @@ router.get(
         where.startDt = {};
         if (query.dateFrom) (where.startDt as Record<string, unknown>).gte = new Date(query.dateFrom);
         if (query.dateTo) (where.startDt as Record<string, unknown>).lte = new Date(query.dateTo);
+      }
+
+      // Restrict to reservations whose timeSlot is in allowed locations (or has none)
+      const allowed = req.allowedLocationIds;
+      if (allowed !== null && allowed !== undefined) {
+        where.OR = [
+          { timeSlotId: null },
+          { timeSlot: { is: { locationId: null } } },
+          { timeSlot: { is: { locationId: { in: allowed } } } },
+        ];
       }
 
       const [reservations, total] = await Promise.all([
@@ -1047,11 +1076,18 @@ router.get(
             select: { id: true, firstName: true, lastName: true, email: true, phone: true },
           },
           rentalProduct: true,
+          timeSlot: { select: { locationId: true } },
         },
       });
 
       if (!reservation) {
         throw appError("Reservation not found", 404, "NOT_FOUND");
+      }
+
+      const slotLocId = (reservation as any).timeSlot?.locationId as string | null | undefined;
+      if (slotLocId && !requireLocationAccess(req, slotLocId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
       }
 
       res.json(reservation);
@@ -1121,6 +1157,10 @@ router.post(
         const slot = await (prisma as any).rentalTimeSlot.findFirst({
           where: { id: data.timeSlotId, tenantId },
         });
+        if (slot?.locationId && !requireLocationAccess(req, slot.locationId)) {
+          res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+          return;
+        }
         if (slot) {
           const [sh, sm] = slot.startTime.split(":").map(Number);
           const [eh, em] = slot.endTime.split(":").map(Number);
