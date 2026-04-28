@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useAuth } from '@clerk/clerk-react';
 import { CheckCircle, AlertTriangle, CreditCard, ExternalLink, Loader2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '../lib/format';
@@ -13,9 +14,22 @@ interface Tier {
   stripePriceId: string | null;
 }
 
-interface StatusResponse {
-  tenantStatus: string;
+interface LocationSummary {
+  id: string;
+  name: string;
+  active: boolean;
   saasTierId: string | null;
+  subscriptionStatus: string | null;
+  hasStripeCustomer: boolean;
+  hasSubscription: boolean;
+  gracePeriodStartedAt: string | null;
+}
+
+interface StatusResponse {
+  locationId: string;
+  locationName: string;
+  saasTierId: string | null;
+  subscriptionStatus: string | null;
   gracePeriodStartedAt: string | null;
   subscription: {
     id: string;
@@ -35,6 +49,7 @@ const styles: Record<string, React.CSSProperties> = {
   bannerSuccess: { background: '#E8F5E9', color: '#1B5E20' },
   bannerWarn: { background: '#FFF3CD', color: '#856404' },
   bannerInfo: { background: '#D6E8F4', color: '#0A2342' },
+  bannerError: { background: '#FDE0E0', color: '#922B21' },
   card: { background: '#FFFFFF', border: '1px solid #CCCCCC', borderRadius: 8, padding: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)', marginBottom: 24 },
   cardLabel: { fontSize: 12, fontWeight: 600, color: '#2E4A6B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 },
   cardValue: { fontSize: 22, fontWeight: 700, color: NAVY, lineHeight: 1.2 },
@@ -47,54 +62,171 @@ const styles: Record<string, React.CSSProperties> = {
   tierPrice: { fontSize: 28, fontWeight: 700, color: NAVY, fontFamily: '"JetBrains Mono", monospace' },
   tierPriceUnit: { fontSize: 13, color: '#64748B', fontWeight: 400 },
   tierFeature: { fontSize: 13, color: '#2E4A6B', padding: '6px 0' },
+  locPicker: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 24, flexWrap: 'wrap' },
+  locPickerLabel: { fontSize: 13, color: '#2E4A6B', fontWeight: 600 },
+  locSelect: { padding: '8px 12px', border: '1px solid #CCC', borderRadius: 6, fontSize: 14, color: NAVY, background: '#fff', minWidth: 240 },
 };
 
 export default function SettingsBilling() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const justCompleted = params.get('success') === 'true';
   const canceled = params.get('canceled') === 'true';
+  const initialLocationId = params.get('locationId');
 
-  const status = useApi<StatusResponse>('get', '/api/saas-billing/status', { immediate: true });
+  const { getToken } = useAuth();
+  const locations = useApi<{ locations: LocationSummary[] }>(
+    'get',
+    '/api/saas-billing/locations',
+    { immediate: true },
+  );
   const tiers = useApi<{ tiers: Tier[] }>('get', '/api/saas-billing/tiers', { immediate: true });
-  const checkout = useApi<{ url: string }>('post', '/api/saas-billing/checkout');
-  const portal = useApi<{ url: string }>('post', '/api/saas-billing/portal');
 
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(initialLocationId);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [subscribing, setSubscribing] = useState<string | null>(null);
+  const [managing, setManaging] = useState(false);
 
+  const fetchStatus = useCallback(
+    async (locationId: string) => {
+      setStatusLoading(true);
+      setStatusError(null);
+      try {
+        const token = await getToken();
+        const res = await fetch(
+          `/api/saas-billing/locations/${locationId}/status`,
+          { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        );
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `Failed to load status (${res.status})`);
+        }
+        const data = (await res.json()) as StatusResponse;
+        setStatus(data);
+      } catch (err) {
+        setStatusError(err instanceof Error ? err.message : 'Failed to load subscription');
+        setStatus(null);
+      } finally {
+        setStatusLoading(false);
+      }
+    },
+    [getToken],
+  );
+
+  // Auto-select the first location once we have data, unless one is already pinned via URL.
   useEffect(() => {
-    if (justCompleted) {
-      // Give the webhook a moment to persist stripeSubscriptionId, then refresh.
-      const t = setTimeout(() => status.execute(), 1500);
+    if (selectedLocationId) return;
+    const list = locations.data?.locations ?? [];
+    if (list.length > 0) {
+      setSelectedLocationId(list[0].id);
+    }
+  }, [locations.data, selectedLocationId]);
+
+  // Whenever the selected location changes, refresh its status.
+  useEffect(() => {
+    if (!selectedLocationId) return;
+    void fetchStatus(selectedLocationId);
+  }, [selectedLocationId, fetchStatus]);
+
+  // Persist the selected location in the URL so deep-links work.
+  useEffect(() => {
+    if (!selectedLocationId) return;
+    if (params.get('locationId') !== selectedLocationId) {
+      const next = new URLSearchParams(params);
+      next.set('locationId', selectedLocationId);
+      setParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLocationId]);
+
+  // After Stripe redirects back with success=true, give the webhook a beat
+  // and re-pull the per-location status.
+  useEffect(() => {
+    if (justCompleted && selectedLocationId) {
+      const t = setTimeout(() => fetchStatus(selectedLocationId), 1500);
       return () => clearTimeout(t);
     }
-  }, [justCompleted]);
+  }, [justCompleted, selectedLocationId, fetchStatus]);
+
+  const locationList = useMemo(
+    () => locations.data?.locations ?? [],
+    [locations.data],
+  );
+  const selectedLocation = useMemo(
+    () => locationList.find((l) => l.id === selectedLocationId) ?? null,
+    [locationList, selectedLocationId],
+  );
 
   const handleSubscribe = async (tier: Tier) => {
-    if (!tier.stripePriceId) {
-      alert('This tier has no Stripe price configured — ask the operator to create one.');
+    if (!selectedLocationId) {
+      setActionError('Pick a location first.');
       return;
     }
+    if (!tier.stripePriceId) {
+      setActionError('This tier has no Stripe price configured — ask the operator to create one.');
+      return;
+    }
+    setActionError(null);
     setSubscribing(tier.id);
-    const result = await checkout.execute({ tierId: tier.id });
-    if (result?.url) {
-      window.location.href = result.url;
-    } else {
-      alert(checkout.error ?? 'Could not start checkout');
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `/api/saas-billing/locations/${selectedLocationId}/checkout`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ tierId: tier.id }),
+        },
+      );
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) {
+        throw new Error(body.error ?? 'Could not start checkout');
+      }
+      window.location.href = body.url;
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not start checkout');
       setSubscribing(null);
     }
   };
 
   const handleManage = async () => {
-    const result = await portal.execute({});
-    if (result?.url) {
-      window.location.href = result.url;
-    } else {
-      alert(portal.error ?? 'Could not open billing portal');
+    if (!selectedLocationId) {
+      setActionError('Pick a location first.');
+      return;
+    }
+    setActionError(null);
+    setManaging(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `/api/saas-billing/locations/${selectedLocationId}/portal`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) {
+        throw new Error(body.error ?? 'Could not open billing portal');
+      }
+      window.location.href = body.url;
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not open billing portal');
+      setManaging(false);
     }
   };
 
-  const sub = status.data?.subscription;
-  const activeTier = tiers.data?.tiers.find((t) => t.id === status.data?.saasTierId);
+  const sub = status?.subscription;
+  const activeTier = tiers.data?.tiers.find((t) => t.id === status?.saasTierId);
   const periodEnd = sub?.currentPeriodEnd
     ? new Date(sub.currentPeriodEnd * 1000).toLocaleDateString()
     : null;
@@ -107,7 +239,7 @@ export default function SettingsBilling() {
       {justCompleted && (
         <div style={{ ...styles.banner, ...styles.bannerSuccess }}>
           <CheckCircle size={20} />
-          Subscription activated. Welcome aboard.
+          Subscription activated for {status?.locationName ?? 'this location'}. Welcome aboard.
         </div>
       )}
       {canceled && (
@@ -116,22 +248,58 @@ export default function SettingsBilling() {
           Checkout canceled — nothing was charged.
         </div>
       )}
-      {status.data?.gracePeriodStartedAt && (
+      {status?.gracePeriodStartedAt && (
         <div style={{ ...styles.banner, ...styles.bannerWarn }}>
           <AlertTriangle size={20} />
-          Your most recent subscription payment failed. Stripe will retry automatically, but please update your payment method to avoid interruption.
+          The most recent payment for {status.locationName} failed. Stripe will retry automatically, but please update your payment method to avoid interruption.
+        </div>
+      )}
+      {(actionError || statusError) && (
+        <div style={{ ...styles.banner, ...styles.bannerError }}>
+          <AlertTriangle size={20} />
+          {actionError ?? statusError}
         </div>
       )}
 
-      {status.loading && (
+      {/* Location picker. Each marina (= location) has its own subscription. */}
+      {locationList.length > 1 && (
+        <div style={styles.locPicker}>
+          <span style={styles.locPickerLabel}>Location:</span>
+          <select
+            style={styles.locSelect}
+            value={selectedLocationId ?? ''}
+            onChange={(e) => setSelectedLocationId(e.target.value)}
+          >
+            {locationList.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+                {l.hasSubscription
+                  ? ` — ${l.subscriptionStatus ?? 'active'}`
+                  : ' — not subscribed'}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {(locations.loading || (selectedLocationId && statusLoading)) && (
         <div style={{ padding: 40, textAlign: 'center', color: '#64748B' }}>
           <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
         </div>
       )}
 
-      {!status.loading && sub && activeTier && (
+      {!locations.loading && locationList.length === 0 && (
         <div style={styles.card}>
-          <div style={styles.cardLabel}>Current plan</div>
+          <div style={styles.cardLabel}>No locations</div>
+          <div style={{ fontSize: 14, color: '#2E4A6B', marginTop: 8 }}>
+            You don't have access to any locations yet. Ask your platform admin to add one.
+          </div>
+        </div>
+      )}
+
+      {!statusLoading && selectedLocation && sub && activeTier && (
+        <div style={styles.card}>
+          <div style={styles.cardLabel}>Current plan — {selectedLocation.name}</div>
           <div style={styles.cardValue}>{activeTier.name}</div>
           <div style={{ marginTop: 16 }}>
             <div style={styles.cardRow}>
@@ -148,20 +316,20 @@ export default function SettingsBilling() {
             </div>
           </div>
           <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
-            <button style={styles.primaryBtn} onClick={handleManage} disabled={portal.loading}>
-              <CreditCard size={16} /> Manage billing
+            <button style={styles.primaryBtn} onClick={handleManage} disabled={managing}>
+              <CreditCard size={16} /> {managing ? 'Opening…' : 'Manage billing'}
               <ExternalLink size={14} />
             </button>
           </div>
         </div>
       )}
 
-      {!status.loading && !sub && (
+      {!statusLoading && selectedLocation && !sub && (
         <>
           <div style={styles.card}>
-            <div style={styles.cardLabel}>No active subscription</div>
+            <div style={styles.cardLabel}>No active subscription — {selectedLocation.name}</div>
             <div style={{ fontSize: 14, color: '#2E4A6B', marginTop: 8 }}>
-              Choose a plan below to start. You'll be redirected to Stripe to complete payment.
+              Choose a plan below to start. You'll be redirected to Stripe to complete payment for this location.
             </div>
           </div>
 
@@ -178,9 +346,7 @@ export default function SettingsBilling() {
                     <span style={styles.tierPriceUnit}> / month</span>
                   </div>
                   <div style={{ marginTop: 16 }}>
-                    <div style={styles.tierFeature}>
-                      + {formatCents(t.perLocationFeeCents)} per additional location
-                    </div>
+                    <div style={styles.tierFeature}>Per-location subscription</div>
                     <div style={styles.tierFeature}>{t.storageLimitGb} GB document storage</div>
                   </div>
                   <button

@@ -172,19 +172,20 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
 
   switch (event.type) {
     case "checkout.session.completed": {
-      // Fires when a tenant completes Stripe Checkout for a SaaS subscription.
-      // Record the subscription id and tier on the tenant.
+      // Fires when a marina completes Stripe Checkout for a SaaS subscription.
+      // Record the subscription id and tier on the LOCATION (per-marina billing).
       const session = event.data.object as Stripe.Checkout.Session;
-      const tenantId = session.metadata?.tenantId ?? null;
+      const locationId = session.metadata?.locationId ?? null;
       const tierId = session.metadata?.tierId ?? null;
-      if (tenantId && session.subscription) {
-        await prisma.tenant.update({
-          where: { id: tenantId },
+      if (locationId && session.subscription) {
+        await prisma.location.update({
+          where: { id: locationId },
           data: {
             stripeSubscriptionId:
               typeof session.subscription === "string"
                 ? session.subscription
                 : session.subscription.id,
+            subscriptionStatus: "active",
             ...(tierId ? { saasTierId: tierId } : {}),
           },
         });
@@ -195,11 +196,14 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
     case "customer.subscription.created":
     case "customer.subscription.updated": {
       const sub = event.data.object as Stripe.Subscription;
-      const tenantId = sub.metadata?.tenantId;
-      if (tenantId) {
-        await prisma.tenant.update({
-          where: { id: tenantId },
-          data: { stripeSubscriptionId: sub.id },
+      const locationId = sub.metadata?.locationId;
+      if (locationId) {
+        await prisma.location.update({
+          where: { id: locationId },
+          data: {
+            stripeSubscriptionId: sub.id,
+            subscriptionStatus: sub.status,
+          },
         });
       }
       break;
@@ -207,13 +211,14 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
 
     case "customer.subscription.deleted": {
       const sub = event.data.object as Stripe.Subscription;
-      const tenantId = sub.metadata?.tenantId;
-      if (tenantId) {
-        await prisma.tenant.update({
-          where: { id: tenantId },
+      const locationId = sub.metadata?.locationId;
+      if (locationId) {
+        await prisma.location.update({
+          where: { id: locationId },
           data: {
             stripeSubscriptionId: null,
             saasTierId: null,
+            subscriptionStatus: "canceled",
           },
         });
       }
@@ -222,35 +227,45 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
 
     case "invoice.payment_failed": {
       // Grace policy: log, audit, email — but do NOT auto-lock the tenant.
-      // Operators decide when to suspend. Mark gracePeriodStartedAt to track
-      // aging.
+      // Operators decide when to suspend. Mark gracePeriodStartedAt on the
+      // affected location to track aging.
       const invoice = event.data.object as Stripe.Invoice;
       const customerId =
         typeof invoice.customer === "string"
           ? invoice.customer
           : invoice.customer?.id;
       if (customerId) {
-        const tenant = await prisma.tenant.findFirst({
+        const location = await prisma.location.findFirst({
           where: { stripeCustomerId: customerId },
-          select: { id: true, name: true, gracePeriodStartedAt: true },
+          select: {
+            id: true,
+            name: true,
+            tenantId: true,
+            gracePeriodStartedAt: true,
+            tenant: { select: { name: true } },
+          },
         });
-        if (tenant) {
-          await prisma.tenant.update({
-            where: { id: tenant.id },
-            data: tenant.gracePeriodStartedAt
-              ? {}
-              : { gracePeriodStartedAt: new Date() },
+        if (location) {
+          await prisma.location.update({
+            where: { id: location.id },
+            data: location.gracePeriodStartedAt
+              ? { subscriptionStatus: "past_due" }
+              : {
+                  subscriptionStatus: "past_due",
+                  gracePeriodStartedAt: new Date(),
+                },
           });
           await prisma.auditLog.create({
             data: {
-              tenantId: tenant.id,
-              recordType: "Tenant",
-              recordId: tenant.id,
+              tenantId: location.tenantId,
+              recordType: "Location",
+              recordId: location.id,
               action: "SAAS_INVOICE_PAYMENT_FAILED",
               changedFieldsJson: {
                 invoiceId: invoice.id,
                 amountDue: invoice.amount_due,
                 attemptCount: invoice.attempt_count,
+                locationId: location.id,
               },
             },
           });
@@ -258,7 +273,7 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
           // Email the tenant's MARINA_OWNER(s) so they know to update their
           // card before a retry fails again.
           const owners = await prisma.user.findMany({
-            where: { tenantId: tenant.id, role: "MARINA_OWNER" },
+            where: { tenantId: location.tenantId, role: "MARINA_OWNER" },
             select: { email: true },
           });
           const toAddresses = owners
@@ -270,7 +285,7 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
               to: toAddresses,
               subject: "Action required: payment failed on your Helm subscription",
               html: saasInvoicePaymentFailedHtml({
-                marinaName: tenant.name,
+                marinaName: `${location.tenant.name} — ${location.name}`,
                 amountDue: `$${(invoice.amount_due / 100).toFixed(2)}`,
                 attemptCount: invoice.attempt_count ?? 1,
                 portalUrl: `${appUrl}/settings/billing`,
@@ -284,7 +299,7 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
     }
 
     case "invoice.paid": {
-      // Clear any grace-period flag on the tenant when a subsequent invoice
+      // Clear any grace-period flag on the location when a subsequent invoice
       // clears successfully.
       const invoice = event.data.object as Stripe.Invoice;
       const customerId =
@@ -292,14 +307,17 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
           ? invoice.customer
           : invoice.customer?.id;
       if (customerId) {
-        const tenant = await prisma.tenant.findFirst({
+        const location = await prisma.location.findFirst({
           where: { stripeCustomerId: customerId },
           select: { id: true, gracePeriodStartedAt: true },
         });
-        if (tenant?.gracePeriodStartedAt) {
-          await prisma.tenant.update({
-            where: { id: tenant.id },
-            data: { gracePeriodStartedAt: null },
+        if (location?.gracePeriodStartedAt) {
+          await prisma.location.update({
+            where: { id: location.id },
+            data: {
+              gracePeriodStartedAt: null,
+              subscriptionStatus: "active",
+            },
           });
         }
       }

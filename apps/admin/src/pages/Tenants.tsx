@@ -23,6 +23,13 @@ interface Tenant {
   slips: number;
   created: string;
   adminEmail: string;
+  userCount: number;
+}
+
+interface SaasTier {
+  id: string;
+  name: string;
+  monthlyFeeCents: number;
 }
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
@@ -39,6 +46,26 @@ const card: React.CSSProperties = {
   padding: 20,
 };
 
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  background: '#070E18',
+  border: '1px solid rgba(255,255,255,0.1)',
+  borderRadius: 6,
+  padding: '9px 12px',
+  color: '#FFF',
+  fontSize: 13,
+  outline: 'none',
+  boxSizing: 'border-box',
+};
+
+const labelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: 12,
+  fontWeight: 500,
+  color: 'rgba(255,255,255,0.5)',
+  marginBottom: 6,
+};
+
 function mapTenant(t: ApiTenant): Tenant {
   // The Prisma enum comes back uppercase (e.g. "TRIAL"); the local UI was
   // built around the lowercase variants, so normalize once on the boundary.
@@ -53,7 +80,46 @@ function mapTenant(t: ApiTenant): Tenant {
     slips: 0,
     created: new Date(t.createdAt).toISOString().slice(0, 10),
     adminEmail: '—',
+    userCount: t.userCount,
   };
+}
+
+interface NewTenantForm {
+  name: string;
+  subdomain: string;
+  adminEmail: string;
+  saasTierId: string;
+  locationName: string;
+  locationTimezone: string;
+  locationCity: string;
+  locationState: string;
+}
+
+const EMPTY_NEW_TENANT: NewTenantForm = {
+  name: '',
+  subdomain: '',
+  adminEmail: '',
+  saasTierId: '',
+  locationName: '',
+  locationTimezone: 'America/New_York',
+  locationCity: '',
+  locationState: '',
+};
+
+const SUBDOMAIN_RE = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateNewTenant(form: NewTenantForm): string | null {
+  if (!form.name.trim()) return 'Marina name is required.';
+  if (!form.subdomain.trim()) return 'Subdomain is required.';
+  if (!SUBDOMAIN_RE.test(form.subdomain.trim())) {
+    return 'Subdomain must be lowercase letters, numbers, and hyphens (3+ chars).';
+  }
+  if (!form.adminEmail.trim()) return 'Admin email is required.';
+  if (!EMAIL_RE.test(form.adminEmail.trim())) return 'Admin email is not a valid address.';
+  if (!form.saasTierId) return 'Please select a SaaS tier.';
+  if (!form.locationName.trim()) return 'An initial location name is required.';
+  return null;
 }
 
 const Tenants: React.FC = () => {
@@ -65,8 +131,10 @@ const Tenants: React.FC = () => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showModal, setShowModal] = useState(false);
-  const [newTenant, setNewTenant] = useState({ name: '', subdomain: '', email: '', tier: 'Professional' });
+  const [newTenant, setNewTenant] = useState<NewTenantForm>(EMPTY_NEW_TENANT);
   const [creating, setCreating] = useState(false);
+  const [tiers, setTiers] = useState<SaasTier[]>([]);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const fetchTenants = useCallback(async () => {
     setLoading(true);
@@ -83,7 +151,28 @@ const Tenants: React.FC = () => {
     }
   }, [apiFetch, statusFilter]);
 
-  useEffect(() => { fetchTenants(); }, [fetchTenants]);
+  const fetchTiers = useCallback(async () => {
+    try {
+      const res = await apiFetch<{ tiers: SaasTier[] }>('/api/admin/billing/tiers');
+      setTiers(res.tiers);
+    } catch {
+      setTiers([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTenants();
+    fetchTiers();
+  }, [fetchTenants, fetchTiers]);
+
+  const openModal = () => {
+    setNewTenant({
+      ...EMPTY_NEW_TENANT,
+      saasTierId: tiers[0]?.id ?? '',
+    });
+    setCreateError(null);
+    setShowModal(true);
+  };
 
   const filtered = tenants.filter((t) => {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase()) || t.subdomain.toLowerCase().includes(search.toLowerCase());
@@ -92,18 +181,34 @@ const Tenants: React.FC = () => {
   });
 
   const handleCreateTenant = async () => {
-    if (!newTenant.name || !newTenant.subdomain || !newTenant.email) return;
+    setCreateError(null);
+    const validationError = validateNewTenant(newTenant);
+    if (validationError) {
+      setCreateError(validationError);
+      return;
+    }
     setCreating(true);
     try {
       await apiFetch('/api/admin/tenants', {
         method: 'POST',
-        body: JSON.stringify({ name: newTenant.name, subdomain: newTenant.subdomain, adminEmail: newTenant.email }),
+        body: JSON.stringify({
+          name: newTenant.name.trim(),
+          subdomain: newTenant.subdomain.trim().toLowerCase(),
+          adminEmail: newTenant.adminEmail.trim(),
+          saasTierId: newTenant.saasTierId,
+          initialLocation: {
+            name: newTenant.locationName.trim(),
+            timezone: newTenant.locationTimezone.trim() || 'America/New_York',
+            city: newTenant.locationCity.trim() || undefined,
+            state: newTenant.locationState.trim() || undefined,
+          },
+        }),
       });
       setShowModal(false);
-      setNewTenant({ name: '', subdomain: '', email: '', tier: 'Professional' });
+      setNewTenant(EMPTY_NEW_TENANT);
       await fetchTenants();
-    } catch {
-      // ignore
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create tenant');
     } finally {
       setCreating(false);
     }
@@ -134,7 +239,7 @@ const Tenants: React.FC = () => {
           </select>
         </div>
         <button
-          onClick={() => setShowModal(true)}
+          onClick={openModal}
           style={{ background: '#0A2342', color: '#00D4FF', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
         >
           + Create Tenant
@@ -182,7 +287,7 @@ const Tenants: React.FC = () => {
                     </td>
                     <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.tier}</td>
                     <td style={{ padding: '12px', fontSize: 13, fontWeight: 600, color: t.mrr > 0 ? '#4CAF50' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.mrr > 0 ? `$${t.mrr}/mo` : 'Free'}</td>
-                    <td style={{ padding: '12px', fontSize: 13, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{(t as any).userCount ?? '—'}</td>
+                    <td style={{ padding: '12px', fontSize: 13, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.userCount}</td>
                     <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.created}</td>
                   </tr>
                 );
@@ -198,40 +303,141 @@ const Tenants: React.FC = () => {
       {/* Create Tenant Modal */}
       {showModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#0D1B2A', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 32, width: 440 }}>
-            <h3 style={{ margin: '0 0 24px', fontSize: 18, fontWeight: 700, color: '#FFF' }}>Create New Tenant</h3>
+          <div style={{ background: '#0D1B2A', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 32, width: 520, maxHeight: '90vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 700, color: '#FFF' }}>Create New Tenant</h3>
+            <p style={{ margin: '0 0 24px', fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
+              Each marina is its own billable location. Subscriptions are charged per location.
+            </p>
+
+            {createError && (
+              <div
+                role="alert"
+                style={{
+                  background: 'rgba(244,67,54,0.1)',
+                  border: '1px solid rgba(244,67,54,0.4)',
+                  color: '#FF8A80',
+                  padding: '10px 12px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  marginBottom: 16,
+                }}
+              >
+                {createError}
+              </div>
+            )}
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {[
-                { label: 'Marina Name', key: 'name', placeholder: 'e.g. Sunset Cove Marina' },
-                { label: 'Subdomain', key: 'subdomain', placeholder: 'e.g. sunsetcove' },
-                { label: 'Admin Email', key: 'email', placeholder: 'e.g. admin@marina.com' },
-              ].map((f) => (
-                <div key={f.key}>
-                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>{f.label}</label>
-                  <input
-                    value={(newTenant as any)[f.key]}
-                    onChange={(e) => setNewTenant({ ...newTenant, [f.key]: e.target.value })}
-                    placeholder={f.placeholder}
-                    style={{ width: '100%', background: '#070E18', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '9px 12px', color: '#FFF', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
-                  />
-                </div>
-              ))}
               <div>
-                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>SaaS Tier</label>
+                <label style={labelStyle}>Marina (Tenant) Name</label>
+                <input
+                  value={newTenant.name}
+                  onChange={(e) => setNewTenant({ ...newTenant, name: e.target.value })}
+                  placeholder="e.g. Sunset Cove Marinas"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Subdomain</label>
+                <input
+                  value={newTenant.subdomain}
+                  onChange={(e) => setNewTenant({ ...newTenant, subdomain: e.target.value.toLowerCase() })}
+                  placeholder="e.g. sunsetcove"
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 4 }}>
+                  Will be reachable at <code>{newTenant.subdomain || 'your-subdomain'}.helmhq.com</code>
+                </div>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Admin Email</label>
+                <input
+                  type="email"
+                  value={newTenant.adminEmail}
+                  onChange={(e) => setNewTenant({ ...newTenant, adminEmail: e.target.value })}
+                  placeholder="e.g. owner@marina.com"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>SaaS Tier</label>
                 <select
-                  value={newTenant.tier}
-                  onChange={(e) => setNewTenant({ ...newTenant, tier: e.target.value })}
-                  style={{ width: '100%', background: '#070E18', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '9px 12px', color: '#FFF', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
+                  value={newTenant.saasTierId}
+                  onChange={(e) => setNewTenant({ ...newTenant, saasTierId: e.target.value })}
+                  style={inputStyle}
                 >
-                  <option value="Starter">Starter — $299/mo</option>
-                  <option value="Professional">Professional — $499/mo</option>
-                  <option value="Enterprise">Enterprise — $999/mo</option>
+                  <option value="">— Select a tier —</option>
+                  {tiers.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} — ${(t.monthlyFeeCents / 100).toFixed(0)}/mo
+                    </option>
+                  ))}
                 </select>
               </div>
+
+              <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
+
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>
+                Initial Location
+              </div>
+
+              <div>
+                <label style={labelStyle}>Location Name</label>
+                <input
+                  value={newTenant.locationName}
+                  onChange={(e) => setNewTenant({ ...newTenant, locationName: e.target.value })}
+                  placeholder="e.g. Sunset Cove – Main Harbor"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={labelStyle}>City</label>
+                  <input
+                    value={newTenant.locationCity}
+                    onChange={(e) => setNewTenant({ ...newTenant, locationCity: e.target.value })}
+                    placeholder="e.g. Annapolis"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>State</label>
+                  <input
+                    value={newTenant.locationState}
+                    onChange={(e) => setNewTenant({ ...newTenant, locationState: e.target.value })}
+                    placeholder="MD"
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Timezone</label>
+                <input
+                  value={newTenant.locationTimezone}
+                  onChange={(e) => setNewTenant({ ...newTenant, locationTimezone: e.target.value })}
+                  placeholder="America/New_York"
+                  style={inputStyle}
+                />
+              </div>
             </div>
+
             <div style={{ display: 'flex', gap: 12, marginTop: 28, justifyContent: 'flex-end' }}>
-              <button onClick={() => setShowModal(false)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '9px 20px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={handleCreateTenant} disabled={creating} style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: creating ? 0.7 : 1 }}>
+              <button
+                onClick={() => setShowModal(false)}
+                disabled={creating}
+                style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '9px 20px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateTenant}
+                disabled={creating}
+                style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: creating ? 'not-allowed' : 'pointer', opacity: creating ? 0.7 : 1 }}
+              >
                 {creating ? 'Creating...' : 'Create Tenant'}
               </button>
             </div>

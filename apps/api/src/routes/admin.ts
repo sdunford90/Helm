@@ -14,6 +14,12 @@ import {
   featureUsageToCsv,
   type AnalyticsRange,
 } from "../services/cross-tenant-analytics.js";
+import {
+  BillingError,
+  BillingLocationSelect,
+  openPortalForLocation,
+  startCheckoutForLocation,
+} from "../services/saas-billing-service.js";
 
 const router: Router = Router();
 
@@ -496,6 +502,9 @@ router.get("/tenants/:id", async (req, res, next) => {
         stripe: !!tenant.stripeAccountId,
         quickbooks: !!tenant.qboRealmId,
       },
+      // Subscriptions now live on Location, but for back-compat we still
+      // surface the tenant's legacy default tier here so the existing UI
+      // doesn't break in one shot. The Locations tab is the source of truth.
       subscription: tenant.saasTier
         ? {
             tierId: tenant.saasTier.id,
@@ -526,27 +535,64 @@ router.get("/tenants/:id", async (req, res, next) => {
 // --------------------------------------------------------------------------
 router.post("/tenants", async (req, res, next) => {
   try {
-    const { name, subdomain, adminEmail, saasTierId } = req.body;
+    const {
+      name,
+      subdomain,
+      adminEmail,
+      saasTierId,
+      initialLocation,
+    } = req.body as {
+      name?: string;
+      subdomain?: string;
+      adminEmail?: string;
+      saasTierId?: string | null;
+      initialLocation?: {
+        name?: string;
+        timezone?: string;
+        address?: string;
+        city?: string;
+        state?: string;
+        zip?: string;
+        phone?: string;
+      };
+    };
 
+    // ── Validation ─────────────────────────────────────────────
     if (!name || !subdomain || !adminEmail) {
-      res.status(400).json({ error: "name, subdomain, and adminEmail are required" });
+      res.status(400).json({
+        error: "name, subdomain, and adminEmail are required",
+      });
       return;
     }
 
-    // Validate subdomain format
     if (!/^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(subdomain)) {
-      res.status(400).json({ error: "Invalid subdomain format. Use lowercase alphanumeric and hyphens." });
+      res.status(400).json({
+        error:
+          "Invalid subdomain. Use lowercase letters, numbers, and hyphens (3+ chars).",
+      });
       return;
     }
 
-    // Check uniqueness
+    // Basic email shape check — full RFC validation is overkill here.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+      res.status(400).json({ error: "Invalid admin email address" });
+      return;
+    }
+
+    if (!initialLocation?.name || !initialLocation.name.trim()) {
+      res.status(400).json({
+        error:
+          "An initial location is required. A tenant with no locations cannot be billed or operated.",
+      });
+      return;
+    }
+
     const existing = await prisma.tenant.findUnique({ where: { subdomain } });
     if (existing) {
       res.status(409).json({ error: "Subdomain already taken" });
       return;
     }
 
-    // Validate tier if provided
     if (saasTierId) {
       const tier = await prisma.saasTier.findUnique({ where: { id: saasTierId } });
       if (!tier) {
@@ -555,26 +601,45 @@ router.post("/tenants", async (req, res, next) => {
       }
     }
 
-    const tenant = await prisma.tenant.create({
-      data: {
-        name,
-        subdomain,
-        saasTierId: saasTierId ?? null,
-      },
+    // ── Atomic create: tenant + initial location + initial owner user ──
+    const result = await prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: { name, subdomain },
+      });
+
+      const location = await tx.location.create({
+        data: {
+          tenantId: tenant.id,
+          name: initialLocation.name!.trim(),
+          timezone: initialLocation.timezone?.trim() || "America/New_York",
+          address: initialLocation.address?.trim() || null,
+          city: initialLocation.city?.trim() || null,
+          state: initialLocation.state?.trim() || null,
+          zip: initialLocation.zip?.trim() || null,
+          phone: initialLocation.phone?.trim() || null,
+          // Per the new model, the SaaS tier is attached to the location
+          // (= the marina that gets billed) rather than the tenant.
+          saasTierId: saasTierId ?? null,
+        },
+      });
+
+      await tx.user.create({
+        data: {
+          tenantId: tenant.id,
+          email: adminEmail,
+          role: "MARINA_OWNER",
+          firstName: "Admin",
+          lastName: "(Pending Setup)",
+        },
+      });
+
+      return { tenant, location };
     });
 
-    // Create the initial admin user for this tenant
-    await prisma.user.create({
-      data: {
-        tenantId: tenant.id,
-        email: adminEmail,
-        role: "MARINA_OWNER",
-        firstName: "Admin",
-        lastName: "(Pending Setup)",
-      },
+    res.status(201).json({
+      ...result.tenant,
+      initialLocation: { id: result.location.id, name: result.location.name },
     });
-
-    res.status(201).json(tenant);
   } catch (err) {
     next(err);
   }
@@ -722,6 +787,60 @@ router.post("/tenants/:id/unlock", async (req, res, next) => {
 // ==========================================================================
 //  SAAS BILLING
 // ==========================================================================
+
+// --------------------------------------------------------------------------
+// POST /api/admin/locations/:locationId/billing/checkout
+// Platform admin starts a Stripe Checkout session for a location that does
+// not yet have a subscription. Returns the hosted Checkout URL which the
+// admin can copy and send to the marina owner (or open directly).
+// --------------------------------------------------------------------------
+router.post("/locations/:locationId/billing/checkout", async (req, res, next) => {
+  try {
+    const location = await prisma.location.findUnique({
+      where: { id: req.params.locationId },
+      select: BillingLocationSelect,
+    });
+    if (!location) {
+      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+      return;
+    }
+    const result = await startCheckoutForLocation(location, req.body ?? {});
+    res.json(result);
+  } catch (err) {
+    if (err instanceof BillingError) {
+      res.status(err.status).json({ error: err.message, code: err.code });
+      return;
+    }
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/locations/:locationId/billing/portal
+// Platform admin generates a Stripe Customer Portal link for an existing
+// per-location subscription. Useful for support: admins can hand the link
+// to a marina owner who needs to update payment method or cancel.
+// --------------------------------------------------------------------------
+router.post("/locations/:locationId/billing/portal", async (req, res, next) => {
+  try {
+    const location = await prisma.location.findUnique({
+      where: { id: req.params.locationId },
+      select: BillingLocationSelect,
+    });
+    if (!location) {
+      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+      return;
+    }
+    const result = await openPortalForLocation(location);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof BillingError) {
+      res.status(err.status).json({ error: err.message, code: err.code });
+      return;
+    }
+    next(err);
+  }
+});
 
 // --------------------------------------------------------------------------
 // GET /api/admin/billing/overview — platform revenue summary
@@ -897,8 +1016,8 @@ router.get("/billing/tiers", async (_req, res, next) => {
       orderBy: { monthlyFeeCents: "asc" },
     });
 
-    res.json(
-      tiers.map((t) => ({
+    res.json({
+      tiers: tiers.map((t) => ({
         id: t.id,
         name: t.name,
         monthlyFeeCents: t.monthlyFeeCents,
@@ -908,7 +1027,7 @@ router.get("/billing/tiers", async (_req, res, next) => {
         storageLimitGb: t.storageLimitGb,
         tenantCount: t._count.tenants,
       })),
-    );
+    });
   } catch (err) {
     next(err);
   }
@@ -1998,13 +2117,45 @@ router.post("/tenants/:id/save-play", async (req, res, next) => {
 // ==========================================================================
 
 // GET /api/admin/tenants/:id/locations
+//
+// Returns each location with its per-location SaaS subscription state (tier,
+// Stripe status, current period end). The platform admin's tenant detail
+// page renders this on the Locations tab — subscriptions live here, not
+// on the Tenant.
 router.get("/tenants/:id/locations", async (req, res, next) => {
   try {
     const locations = await prisma.location.findMany({
       where: { tenantId: req.params.id },
       orderBy: { name: "asc" },
+      include: { saasTier: true },
     });
-    res.json(locations);
+    res.json(
+      locations.map((l) => ({
+        id: l.id,
+        tenantId: l.tenantId,
+        name: l.name,
+        address: l.address,
+        city: l.city,
+        state: l.state,
+        zip: l.zip,
+        phone: l.phone,
+        timezone: l.timezone,
+        active: l.active,
+        subscription: {
+          tier: l.saasTier
+            ? {
+                id: l.saasTier.id,
+                name: l.saasTier.name,
+                monthlyFeeCents: l.saasTier.monthlyFeeCents,
+              }
+            : null,
+          status: l.subscriptionStatus,
+          stripeCustomerId: l.stripeCustomerId,
+          stripeSubscriptionId: l.stripeSubscriptionId,
+          gracePeriodStartedAt: l.gracePeriodStartedAt,
+        },
+      })),
+    );
   } catch (err) { next(err); }
 });
 

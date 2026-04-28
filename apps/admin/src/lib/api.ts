@@ -30,8 +30,20 @@ export function useApiFetch(): ApiFetch {
     };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch(path, { ...init, headers });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
     if (res.status === 204) return undefined as T;
-    return res.json() as Promise<T>;
+    // Read once as text so we can both surface server-provided error messages
+    // (e.g. "Subdomain already taken") and still parse JSON on success.
+    const text = await res.text();
+    let body: unknown = null;
+    if (text) {
+      try { body = JSON.parse(text); } catch { body = text; }
+    }
+    if (!res.ok) {
+      const serverMsg = body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : null;
+      throw new Error(serverMsg ?? `API error: ${res.status}`);
+    }
+    return body as T;
   }, [getToken]);
 }

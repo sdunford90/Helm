@@ -15,6 +15,13 @@ interface Location {
   phone: string | null;
   timezone: string;
   active: boolean;
+  subscription?: {
+    tier: { id: string; name: string; monthlyFeeCents: number } | null;
+    status: string | null;
+    stripeCustomerId: string | null;
+    stripeSubscriptionId: string | null;
+    gracePeriodStartedAt: string | null;
+  };
 }
 
 interface TenantUser {
@@ -127,6 +134,12 @@ const fmtDate = (d: string) =>
   d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
 type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users';
+
+interface AdminTier {
+  id: string;
+  name: string;
+  monthlyFeeCents: number;
+}
 
 const BLANK_LOC = {
   name: '', address: '', city: '', state: '', zip: '', phone: '',
@@ -258,6 +271,10 @@ const TenantDetail: React.FC = () => {
   const [tab, setTab] = useState<Tab>('overview');
   const [showLocModal, setShowLocModal] = useState(false);
   const [editingLoc, setEditingLoc] = useState<Location | undefined>();
+  const [tiers, setTiers] = useState<AdminTier[]>([]);
+  const [pickedTierByLoc, setPickedTierByLoc] = useState<Record<string, string>>({});
+  const [billingBusyLocId, setBillingBusyLocId] = useState<string | null>(null);
+  const [billingMsg, setBillingMsg] = useState<{ locId: string; kind: 'ok' | 'err'; text: string } | null>(null);
 
   const fetchTenant = useCallback(async () => {
     if (!id) return;
@@ -284,8 +301,84 @@ const TenantDetail: React.FC = () => {
     }
   }, [id, apiFetch]);
 
+  const fetchTiers = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ tiers?: AdminTier[] } | AdminTier[]>(
+        `${API}/billing/tiers`,
+      );
+      // Endpoint returns { tiers: [...] }; defend against future drift.
+      const list = Array.isArray(data) ? data : data?.tiers ?? [];
+      setTiers(list);
+    } catch {
+      setTiers([]);
+    }
+  }, [apiFetch]);
+
   useEffect(() => { fetchTenant(); }, [fetchTenant]);
-  useEffect(() => { if (tab === 'locations') fetchLocations(); }, [tab, fetchLocations]);
+  useEffect(() => {
+    if (tab === 'locations') {
+      fetchLocations();
+      fetchTiers();
+    }
+  }, [tab, fetchLocations, fetchTiers]);
+
+  const handleStartCheckout = async (loc: Location) => {
+    const tierId = pickedTierByLoc[loc.id];
+    if (!tierId) {
+      setBillingMsg({ locId: loc.id, kind: 'err', text: 'Pick a plan first.' });
+      return;
+    }
+    setBillingBusyLocId(loc.id);
+    setBillingMsg(null);
+    try {
+      const data = await apiFetch<{ url: string | null }>(
+        `${API}/locations/${loc.id}/billing/checkout`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ tierId }),
+        },
+      );
+      if (data?.url) {
+        await navigator.clipboard.writeText(data.url).catch(() => {});
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+        setBillingMsg({
+          locId: loc.id, kind: 'ok',
+          text: 'Checkout opened in a new tab. Link copied to clipboard so you can send it to the marina owner.',
+        });
+      } else {
+        setBillingMsg({ locId: loc.id, kind: 'err', text: 'Stripe did not return a URL.' });
+      }
+    } catch (e: unknown) {
+      setBillingMsg({ locId: loc.id, kind: 'err', text: (e as Error).message || 'Checkout failed.' });
+    } finally {
+      setBillingBusyLocId(null);
+    }
+  };
+
+  const handleOpenPortal = async (loc: Location) => {
+    setBillingBusyLocId(loc.id);
+    setBillingMsg(null);
+    try {
+      const data = await apiFetch<{ url: string }>(
+        `${API}/locations/${loc.id}/billing/portal`,
+        { method: 'POST' },
+      );
+      if (data?.url) {
+        await navigator.clipboard.writeText(data.url).catch(() => {});
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+        setBillingMsg({
+          locId: loc.id, kind: 'ok',
+          text: 'Portal opened in a new tab. Link copied to clipboard.',
+        });
+      } else {
+        setBillingMsg({ locId: loc.id, kind: 'err', text: 'Stripe did not return a URL.' });
+      }
+    } catch (e: unknown) {
+      setBillingMsg({ locId: loc.id, kind: 'err', text: (e as Error).message || 'Portal failed.' });
+    } finally {
+      setBillingBusyLocId(null);
+    }
+  };
 
   const handleSaveLocation = async (form: typeof BLANK_LOC) => {
     if (editingLoc) {
@@ -540,6 +633,103 @@ const TenantDetail: React.FC = () => {
                     ].filter(Boolean).map((line, i) => <div key={i}>{line}</div>)}
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 8 }}>{loc.timezone}</div>
+
+                  {/* Per-location SaaS subscription summary + admin actions */}
+                  <div style={{
+                    marginTop: 12,
+                    paddingTop: 12,
+                    borderTop: '1px solid rgba(255,255,255,0.06)',
+                  }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                      Subscription
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>
+                      <span>Tier</span>
+                      <span style={{ fontWeight: 600, color: '#FFF' }}>
+                        {loc.subscription?.tier
+                          ? `${loc.subscription.tier.name} · ${fmtCents(loc.subscription.tier.monthlyFeeCents)}/mo`
+                          : '— No tier —'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 4 }}>
+                      <span>Status</span>
+                      <span style={{
+                        fontWeight: 600,
+                        color: loc.subscription?.status === 'active' ? '#4CAF50'
+                          : loc.subscription?.status === 'past_due' ? '#FF9800'
+                          : loc.subscription?.status === 'canceled' ? '#F44336'
+                          : 'rgba(255,255,255,0.5)',
+                      }}>
+                        {loc.subscription?.status ?? 'Not subscribed'}
+                      </span>
+                    </div>
+                    {loc.subscription?.gracePeriodStartedAt && (
+                      <div style={{ fontSize: 11, color: '#FF9800', marginTop: 6 }}>
+                        ⚠ In grace period since {new Date(loc.subscription.gracePeriodStartedAt).toLocaleDateString()}
+                      </div>
+                    )}
+
+                    {/* Admin actions: start checkout when no sub, open portal when one exists. */}
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {loc.subscription?.stripeSubscriptionId ? (
+                        <button
+                          onClick={() => handleOpenPortal(loc)}
+                          disabled={billingBusyLocId === loc.id}
+                          style={{
+                            background: 'transparent', border: '1px solid rgba(0,212,255,0.3)',
+                            borderRadius: 6, color: '#00D4FF',
+                            cursor: billingBusyLocId === loc.id ? 'wait' : 'pointer',
+                            padding: '4px 10px', fontSize: 12,
+                            opacity: billingBusyLocId === loc.id ? 0.6 : 1,
+                          }}
+                        >
+                          {billingBusyLocId === loc.id ? 'Opening…' : 'Open Stripe Portal'}
+                        </button>
+                      ) : (
+                        <>
+                          <select
+                            value={pickedTierByLoc[loc.id] ?? ''}
+                            onChange={(e) =>
+                              setPickedTierByLoc((p) => ({ ...p, [loc.id]: e.target.value }))
+                            }
+                            style={{
+                              background: '#0A2342', color: '#FFF',
+                              border: '1px solid rgba(255,255,255,0.15)',
+                              borderRadius: 6, padding: '4px 8px', fontSize: 12,
+                            }}
+                          >
+                            <option value="">Pick plan…</option>
+                            {tiers.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name} · {fmtCents(t.monthlyFeeCents)}/mo
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => handleStartCheckout(loc)}
+                            disabled={billingBusyLocId === loc.id || !pickedTierByLoc[loc.id]}
+                            style={{
+                              background: '#00D4FF', border: 'none', borderRadius: 6,
+                              color: '#0A2342', fontWeight: 700,
+                              cursor: billingBusyLocId === loc.id ? 'wait' : 'pointer',
+                              padding: '4px 10px', fontSize: 12,
+                              opacity: (billingBusyLocId === loc.id || !pickedTierByLoc[loc.id]) ? 0.5 : 1,
+                            }}
+                          >
+                            {billingBusyLocId === loc.id ? 'Starting…' : 'Start Checkout'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {billingMsg && billingMsg.locId === loc.id && (
+                      <div style={{
+                        marginTop: 6, fontSize: 11,
+                        color: billingMsg.kind === 'ok' ? '#4CAF50' : '#F44336',
+                      }}>
+                        {billingMsg.text}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

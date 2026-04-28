@@ -313,3 +313,164 @@ describe('POST /api/webhooks/stripe/connect — payment_intent.succeeded for Loc
     );
   });
 });
+
+// ===========================================================================
+// Per-location SaaS subscription dispatch (platform webhook).
+// Each marina (= Location) has its own Stripe subscription. Webhooks must
+// route to the LOCATION using metadata.locationId, never to the tenant.
+// ===========================================================================
+
+describe('POST /api/webhooks/stripe/platform — per-location SaaS lifecycle', () => {
+  beforeEach(() => {
+    process.env.STRIPE_WEBHOOK_SECRET_PLATFORM = 'whsec_test_platform';
+  });
+
+  it('checkout.session.completed writes subscription onto Location.metadata.locationId', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_co_completed_loc',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_1',
+          subscription: 'sub_loc_a',
+          metadata: { locationId: 'loc-A', tenantId: 'tenant-X', tierId: 'tier-pro' },
+        },
+      },
+    });
+
+    await request(app)
+      .post('/api/webhooks/stripe/platform')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_co_completed_loc' }));
+
+    expect((mockPrisma as any).location.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'loc-A' },
+        data: expect.objectContaining({
+          stripeSubscriptionId: 'sub_loc_a',
+          subscriptionStatus: 'active',
+          saasTierId: 'tier-pro',
+        }),
+      }),
+    );
+    // The Tenant row must NOT be touched.
+    expect(mockPrisma.tenant.update).not.toHaveBeenCalled();
+  });
+
+  it('customer.subscription.deleted clears the Location subscription', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_sub_deleted_loc',
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          id: 'sub_loc_b',
+          status: 'canceled',
+          metadata: { locationId: 'loc-B' },
+        },
+      },
+    });
+
+    await request(app)
+      .post('/api/webhooks/stripe/platform')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_sub_deleted_loc' }));
+
+    expect((mockPrisma as any).location.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'loc-B' },
+        data: expect.objectContaining({
+          stripeSubscriptionId: null,
+          saasTierId: null,
+          subscriptionStatus: 'canceled',
+        }),
+      }),
+    );
+    expect(mockPrisma.tenant.update).not.toHaveBeenCalled();
+  });
+
+  it('invoice.payment_failed marks Location.gracePeriodStartedAt and writes audit log', async () => {
+    (mockPrisma as any).location.findFirst.mockResolvedValue({
+      id: 'loc-C',
+      name: 'Pier 99',
+      tenantId: 'tenant-Y',
+      gracePeriodStartedAt: null,
+      tenant: { name: 'Pier 99 Holdings' },
+    });
+    mockPrisma.user.findMany.mockResolvedValue([] as any);
+
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_invoice_failed',
+      type: 'invoice.payment_failed',
+      data: {
+        object: {
+          id: 'in_1',
+          customer: 'cus_loc_c',
+          amount_due: 49900,
+          attempt_count: 1,
+        },
+      },
+    });
+
+    await request(app)
+      .post('/api/webhooks/stripe/platform')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_invoice_failed' }));
+
+    expect((mockPrisma as any).location.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { stripeCustomerId: 'cus_loc_c' } }),
+    );
+    expect((mockPrisma as any).location.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'loc-C' },
+        data: expect.objectContaining({
+          subscriptionStatus: 'past_due',
+          gracePeriodStartedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          tenantId: 'tenant-Y',
+          recordType: 'Location',
+          recordId: 'loc-C',
+          action: 'SAAS_INVOICE_PAYMENT_FAILED',
+        }),
+      }),
+    );
+  });
+
+  it('invoice.paid clears Location.gracePeriodStartedAt', async () => {
+    (mockPrisma as any).location.findFirst.mockResolvedValue({
+      id: 'loc-D',
+      gracePeriodStartedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_invoice_paid',
+      type: 'invoice.paid',
+      data: {
+        object: { id: 'in_2', customer: 'cus_loc_d' },
+      },
+    });
+
+    await request(app)
+      .post('/api/webhooks/stripe/platform')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_invoice_paid' }));
+
+    expect((mockPrisma as any).location.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'loc-D' },
+        data: expect.objectContaining({
+          gracePeriodStartedAt: null,
+          subscriptionStatus: 'active',
+        }),
+      }),
+    );
+  });
+});

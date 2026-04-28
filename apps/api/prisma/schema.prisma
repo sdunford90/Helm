@@ -266,8 +266,11 @@ model Tenant {
   brandingJson             Json?
   invoiceTemplateJson      Json?
   stripeAccountId          String?
-  stripeCustomerId         String? // Helm's platform customer record for SaaS billing
-  stripeSubscriptionId     String? // active SaaS subscription on the platform account
+  // DEPRECATED — SaaS subscriptions now live on Location. These are read-only
+  // mirrors of the primary location's billing during the transition. Do not
+  // write to or read from them in new code; use Location.* instead.
+  stripeCustomerId         String?
+  stripeSubscriptionId     String?
   // Per-tenant platform fee taken via Stripe Connect application_fee_amount.
   // Negotiated individually. Total fee = ceil(amount * pctBps / 10000) + fixedCents.
   applicationFeePctBps     Int          @default(0) // basis points (100 = 1%)
@@ -401,10 +404,22 @@ model Location {
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 
+  // ----- Per-location SaaS subscription billing -----
+  // We charge per marina (= per Location), not per holding company. Each
+  // Location has its own Stripe Customer, Stripe Subscription and SaaS tier.
+  // The matching fields on Tenant are deprecated mirrors kept only for legacy
+  // reads during the transition; new writes/lookups must use these.
+  saasTierId           String?
+  stripeCustomerId     String? // Helm's platform customer record for this location's SaaS billing
+  stripeSubscriptionId String? // active SaaS subscription on the platform account
+  subscriptionStatus   String? // mirrors Stripe subscription.status (active, past_due, canceled, ...)
+  gracePeriodStartedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  saasTier       SaasTier?       @relation(fields: [saasTierId], references: [id])
   dockageRates   DockageRate[]
   serviceFees    ServiceFee[]
   invoices       Invoice[]
@@ -413,6 +428,8 @@ model Location {
   userLocations  UserLocation[]
 
   @@index([tenantId])
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
   @@map("locations")
 }
 
@@ -426,7 +443,8 @@ model SaasTier {
   storageLimitGb      Int
   stripePriceId       String? // Stripe recurring Price used for SaaS subscription checkout
 
-  tenants Tenant[]
+  tenants   Tenant[]
+  locations Location[]
 
   @@map("saas_tiers")
 }
