@@ -574,6 +574,8 @@ model Boat {
   fuelType           String?
   engineCount        Int?
   engineHp           Int?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   customer         Customer           @relation(fields: [customerId], references: [id])
   safetyRecords    VesselSafetyRecord[]

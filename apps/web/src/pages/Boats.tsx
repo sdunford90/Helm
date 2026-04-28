@@ -15,6 +15,7 @@ interface ApiBoat {
   registrationState: string | null;
   registrationExpiry: string | null;
   fuelType: string | null;
+  createdAt: string | null;
   customer: { id: string; firstName: string; lastName: string };
   insuranceRecords: Array<{ id: string; expiryDate: string | null }>;
 }
@@ -267,6 +268,7 @@ export default function Boats() {
                 <th style={styles.th}>Type</th>
                 <th style={{ ...styles.th, textAlign: 'right' }}>Length</th>
                 <th style={styles.th}>Registration</th>
+                <th style={styles.th}>Added On</th>
                 <th style={styles.th}>Compliance</th>
               </tr>
             </thead>
@@ -308,6 +310,11 @@ export default function Boats() {
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
                       {b.registrationNumber
                         ? `${b.registrationNumber}${b.registrationState ? ` (${b.registrationState})` : ''}`
+                        : '—'}
+                    </td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
+                      {b.createdAt
+                        ? new Date(b.createdAt).toLocaleDateString()
                         : '—'}
                     </td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
