@@ -156,7 +156,33 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: '12px', color: '#B71C1C',
     fontSize: '15px', fontWeight: 600,
   },
+  expiredPill: {
+    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '9999px',
+    backgroundColor: '#FBE9E7', color: '#B71C1C', letterSpacing: '0.04em',
+    textTransform: 'uppercase',
+  },
+  expiredBanner: {
+    backgroundColor: '#FFF4E5', border: '1px solid #FFB74D', borderRadius: '8px',
+    padding: '12px 14px', marginBottom: '12px', color: '#7A4F01', fontSize: '13px',
+    lineHeight: 1.5,
+  },
+  expiredBannerTitle: {
+    fontSize: '13px', fontWeight: 700, color: '#7A4F01', marginBottom: '4px',
+    display: 'flex', alignItems: 'center', gap: '6px',
+  },
 };
+
+/* ─── Helpers ─── */
+
+export function isCardExpired(method: SavedMethod, now: Date = new Date()): boolean {
+  if (method.kind !== 'card') return false;
+  if (!method.expMonth || !method.expYear) return false;
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // 1-12
+  if (method.expYear < currentYear) return true;
+  if (method.expYear === currentYear && method.expMonth < currentMonth) return true;
+  return false;
+}
 
 /* ─── Main component ─── */
 
@@ -206,6 +232,15 @@ export default function PaymentModal({
   }, [customerId, invoiceId]);
 
   const handleChargeSavedMethod = async (method: SavedMethod) => {
+    if (isCardExpired(method)) {
+      const proceed = window.confirm(
+        `This card looks expired (${method.expiry ?? 'past expiry date'}) and the bank ` +
+          `will likely decline the charge. Ask the customer to add a new payment method ` +
+          `from their portal or the Billing tab on their customer record.\n\n` +
+          `Attempt the charge anyway?`,
+      );
+      if (!proceed) return;
+    }
     setChargingMethodId(method.id);
     setChargedMethodKind(method.kind);
     setStatus('processing');
@@ -352,54 +387,95 @@ export default function PaymentModal({
                 )}
 
               {!savedMethods.loading && stripeReady && sortedMethods.length > 0 && (
-                <div style={s.methodList}>
-                  {sortedMethods.map((m) => {
-                    const isCharging = chargingMethodId === m.id;
-                    const Icon = m.kind === 'bank' ? Building2 : CreditCard;
-                    return (
-                      <button
-                        key={m.id}
-                        style={{
-                          ...s.savedMethodBtn,
-                          opacity: status === 'processing' && !isCharging ? 0.5 : 1,
-                          cursor:
-                            status === 'processing' ? 'not-allowed' : 'pointer',
-                        }}
-                        onClick={() => handleChargeSavedMethod(m)}
-                        disabled={status === 'processing'}
+                <>
+                  {sortedMethods.some((m) => isCardExpired(m)) && (
+                    <div style={s.expiredBanner}>
+                      <div style={s.expiredBannerTitle}>
+                        <AlertCircle size={14} />
+                        Expired card on file
+                      </div>
+                      One or more saved cards are past their expiry date and will likely
+                      be declined. Ask the customer to add a new payment method from their
+                      portal, or open their{' '}
+                      <Link
+                        to={`/customers/${customerId}?tab=billing`}
+                        style={{ ...s.emptyLink, color: '#7A4F01' }}
+                        onClick={onClose}
                       >
-                        {isCharging ? (
-                          <Loader2 size={20} />
-                        ) : (
-                          <Icon size={20} />
-                        )}
-                        <div style={s.methodLabel}>
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                            }}
-                          >
-                            {m.label} •••• {m.last4}
-                            {m.isDefault && (
-                              <span style={s.defaultPill}>Default</span>
-                            )}
+                        Billing tab
+                      </Link>{' '}
+                      to add one for them.
+                    </div>
+                  )}
+                  <div style={s.methodList}>
+                    {sortedMethods.map((m) => {
+                      const isCharging = chargingMethodId === m.id;
+                      const Icon = m.kind === 'bank' ? Building2 : CreditCard;
+                      const expired = isCardExpired(m);
+                      return (
+                        <button
+                          key={m.id}
+                          style={{
+                            ...s.savedMethodBtn,
+                            opacity: status === 'processing' && !isCharging ? 0.5 : 1,
+                            cursor:
+                              status === 'processing' ? 'not-allowed' : 'pointer',
+                            ...(expired
+                              ? {
+                                  backgroundColor: '#FFFFFF',
+                                  color: '#0A2342',
+                                  border: '1px solid #E57373',
+                                }
+                              : {}),
+                          }}
+                          onClick={() => handleChargeSavedMethod(m)}
+                          disabled={status === 'processing'}
+                        >
+                          {isCharging ? (
+                            <Loader2 size={20} />
+                          ) : (
+                            <Icon size={20} color={expired ? '#B71C1C' : undefined} />
+                          )}
+                          <div style={s.methodLabel}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                              }}
+                            >
+                              {m.label} •••• {m.last4}
+                              {m.isDefault && (
+                                <span style={s.defaultPill}>Default</span>
+                              )}
+                              {expired && (
+                                <span style={s.expiredPill}>Expired</span>
+                              )}
+                            </div>
+                            <div
+                              style={{
+                                ...s.methodHint,
+                                ...(expired
+                                  ? { color: '#B71C1C', opacity: 1 }
+                                  : {}),
+                              }}
+                            >
+                              {isCharging
+                                ? 'Charging…'
+                                : expired
+                                  ? `Expired ${m.expiry ?? ''} · Charge will likely be declined`
+                                  : m.kind === 'bank'
+                                    ? 'Charge bank account on file'
+                                    : m.expiry
+                                      ? `Expires ${m.expiry} · Charge instantly`
+                                      : 'Charge instantly'}
+                            </div>
                           </div>
-                          <div style={s.methodHint}>
-                            {isCharging
-                              ? 'Charging…'
-                              : m.kind === 'bank'
-                                ? 'Charge bank account on file'
-                                : m.expiry
-                                  ? `Expires ${m.expiry} · Charge instantly`
-                                  : 'Charge instantly'}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
               )}
 
               <hr style={s.divider} />
