@@ -29,6 +29,7 @@ const BYPASS_PREFIXES = [
   "/api/auth/webhook",
   "/api/webhooks", // Stripe webhooks resolve tenant from event.account, not subdomain
   "/api/email", // unsubscribe + Resend webhook — tenant comes from signed token or event payload
+  "/api/qbo/webhook", // Intuit QBO webhook — tenant resolved from realmId in payload
 ];
 
 function shouldBypass(path: string): boolean {

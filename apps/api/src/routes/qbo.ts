@@ -10,9 +10,7 @@ import {
   syncInvoice,
   getStatus,
   disconnect,
-  handleQboWebhook,
 } from "../services/qbo-sync.js";
-import crypto from "node:crypto";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
 const router: Router = Router();
@@ -186,46 +184,10 @@ router.post(
   },
 );
 
-// --------------------------------------------------------------------------
-// POST /webhook — Handle QBO webhook notifications (no auth — verified by signature)
-// --------------------------------------------------------------------------
-
-router.post(
-  "/webhook",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const payload = req.body;
-
-      // QBO webhooks include a verifier token in the header
-      const signature = req.headers["intuit-signature"] as string;
-      if (!signature) {
-        res.status(401).json({ error: "Missing webhook signature" });
-        return;
-      }
-
-      // Verify webhook signature using HMAC-SHA256
-      const webhookVerifierToken = process.env.QBO_WEBHOOK_VERIFIER_TOKEN;
-      if (webhookVerifierToken) {
-        const hash = crypto
-          .createHmac("sha256", webhookVerifierToken)
-          .update(JSON.stringify(payload))
-          .digest("base64");
-
-        if (hash !== signature) {
-          res.status(401).json({ error: "Invalid webhook signature" });
-          return;
-        }
-      }
-
-      // The webhook handler resolves tenant/location from the payload's
-      // realmId — no tenant context required from the request.
-      await handleQboWebhook(payload);
-
-      res.json({ success: true });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
+// NOTE: POST /webhook is intentionally NOT defined here. Intuit cannot
+// present a Clerk session, so the webhook is mounted at /api/qbo/webhook
+// from index.ts via the dedicated webhooks-qbo router (which performs
+// HMAC signature verification instead). Defining it on this router would
+// re-impose the clerkAuth + requireRole middleware above.
 
 export default router;

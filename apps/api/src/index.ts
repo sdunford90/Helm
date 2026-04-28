@@ -46,6 +46,7 @@ import biApiRouter from "./routes/bi-api.js";
 import insuranceRouter from "./routes/insurance.js";
 import fuelRouter from "./routes/fuel.js";
 import qboRouter from "./routes/qbo.js";
+import qboWebhookRouter from "./routes/webhooks-qbo.js";
 import storageRouter from "./routes/storage.js";
 import inventoryRouter from "./routes/inventory.js";
 import communicationPrefsRouter from "./routes/communication-prefs.js";
@@ -173,6 +174,10 @@ app.use("/api/audit-log", auditLogRouter);
 app.use("/api/bi", biApiRouter);
 app.use("/api/insurance", insuranceRouter);
 app.use("/api/fuel", fuelRouter);
+// QBO webhook MUST mount before /api/qbo so it doesn't inherit the Clerk
+// auth + role middleware on the qboRouter. Intuit authenticates via the
+// Intuit-Signature HMAC header instead of a user session.
+app.use("/api/qbo/webhook", qboWebhookRouter);
 app.use("/api/qbo", qboRouter);
 app.use("/api/storage", storageRouter);
 app.use("/api/inventory", inventoryRouter);
