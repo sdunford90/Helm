@@ -1,0 +1,31 @@
+Operational / day-to-day support
+
+"Log in as tenant" impersonation — let a platform admin jump into a tenant's app to reproduce issues, with a banner and audit trail.
+Global search bar — search across all tenants, users, boats, and invoices from a single box.
+Tenant notes / activity timeline — internal CRM-style notes on each tenant detail page so support context isn't lost.
+Bulk tenant actions — lock/unlock, change tier, or message many tenants at once.
+Analytics (build out the placeholder)
+5. Cohort & churn analytics — monthly cohorts, churn rate, net revenue retention, ARPU trends.
+
+Funnel from trial → paid — trial conversion rate, time-to-paid, drop-off reasons.
+Per-tier usage heatmap — which tiers are using which features, so you know what's working.
+Revenue / billing depth
+8. Coupons & promo codes for SaaS subscriptions (trial extensions, % off, fixed credits).
+
+Refunds and credit notes on SaaS invoices, with a reason log.
+Dunning console — view failed SaaS payments, retry, send reminder, pause auto-lock.
+Plan change flow — upgrade/downgrade a tenant inline, with proration preview.
+Platform health & reliability
+12. System health page — queue depth, background job failures, webhook delivery rates, error counts by tenant.
+
+Stripe Connect health monitor — cross-tenant view of connected accounts, missing capabilities, payout issues.
+QuickBooks health monitor — token expirations, sync failures, last successful sync per tenant/location.
+Governance & compliance
+15. Platform admin role & permission management — different access levels (read-only support vs. billing admin vs. superuser).
+
+Audit log viewer for admin actions — who locked which tenant, who impersonated whom, when.
+Tenant data export & deletion — GDPR-style export and hard-delete workflow with safeguards.
+Lifecycle
+18. Trial onboarding checklist tracker — see how far each trial tenant has gotten in setup, nudge the stragglers.
+
+At-risk tenant deep-dive — beyond the dashboard widget, a dedicated page with usage decline signals and a "save play" workflow.
