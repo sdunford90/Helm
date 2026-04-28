@@ -220,6 +220,9 @@ router.post("/:tenantId/branding", async (req, res, next) => {
 router.post("/:tenantId/stripe", async (req, res, next) => {
   try {
     const { tenantId } = req.params;
+    const locationId: string | undefined = typeof req.body?.locationId === "string" && req.body.locationId
+      ? req.body.locationId
+      : undefined;
 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
     if (!tenant) {
@@ -227,10 +230,25 @@ router.post("/:tenantId/stripe", async (req, res, next) => {
       return;
     }
 
+    // When the caller targets a specific Location (the per-location model),
+    // verify it belongs to this tenant and use its existing stripeAccountId
+    // as the seed; otherwise fall back to the tenant-level account.
+    let location: { id: string; stripeAccountId: string | null } | null = null;
+    if (locationId) {
+      location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true, stripeAccountId: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+        return;
+      }
+    }
+
     const s = requireStripe();
 
     // If we don't have a connected account yet, create one.
-    let stripeAccountId = tenant.stripeAccountId;
+    let stripeAccountId = location ? location.stripeAccountId : tenant.stripeAccountId;
     if (!stripeAccountId) {
       // Stripe's v2 Accounts API is reached via stripe.v2.core.accounts.
       // The TypeScript SDK may mark this as unknown until v2 support ships;
@@ -273,10 +291,17 @@ router.post("/:tenantId/stripe", async (req, res, next) => {
 
       stripeAccountId = account.id;
 
-      await prisma.tenant.update({
-        where: { id: tenantId },
-        data: { stripeAccountId },
-      });
+      if (location) {
+        await prisma.location.update({
+          where: { id: location.id },
+          data: { stripeAccountId, stripeOnboardingComplete: false },
+        });
+      } else {
+        await prisma.tenant.update({
+          where: { id: tenantId },
+          data: { stripeAccountId },
+        });
+      }
     }
 
     // Hand the marina a hosted onboarding URL. AccountLinks accepts the v2
@@ -301,6 +326,9 @@ router.post("/:tenantId/stripe", async (req, res, next) => {
 router.post("/:tenantId/qbo", async (req, res, next) => {
   try {
     const { tenantId } = req.params;
+    const locationId: string | undefined = typeof req.body?.locationId === "string" && req.body.locationId
+      ? req.body.locationId
+      : undefined;
 
     // Verify tenant exists
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
@@ -309,12 +337,27 @@ router.post("/:tenantId/qbo", async (req, res, next) => {
       return;
     }
 
+    // If a Location is targeted, verify it belongs to this tenant before
+    // embedding it into the signed OAuth state.
+    if (locationId) {
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+        return;
+      }
+    }
+
     const clientId = process.env.QBO_CLIENT_ID;
     const redirectUri = `${process.env.APP_URL}/api/onboarding/${tenantId}/qbo/callback`;
     const scope = "com.intuit.quickbooks.accounting";
     // Sign the state so an attacker who knows the tenantId can't forge the
-    // callback. Verified on the callback route.
-    const state = issueOAuthState(tenantId);
+    // callback. Verified on the callback route. The optional locationId is
+    // carried through so the callback knows whether to write the realmId to
+    // the Location row or the Tenant row.
+    const state = issueOAuthState(tenantId, { locationId });
 
     const authUrl =
       `https://appcenter.intuit.com/connect/oauth2?` +
@@ -353,18 +396,33 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
 
     // CSRF: verify the signed state matches this tenant before doing anything
     // sensitive. Rejects expired tokens, bad signatures, and state from a
-    // different tenant's authorize call.
+    // different tenant's authorize call. Also extracts the optional
+    // locationId so we can write the realmId to the right row.
+    let stateLocationId: string | undefined;
     try {
       const verified = verifyOAuthState(state);
       if (verified.tenantId !== tenantId) {
         res.status(400).json({ error: "State does not match tenant" });
         return;
       }
+      stateLocationId = verified.locationId;
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : "Invalid state",
       });
       return;
+    }
+
+    // Validate that the location (if any) still belongs to this tenant.
+    if (stateLocationId) {
+      const loc = await prisma.location.findFirst({
+        where: { id: stateLocationId, tenantId },
+        select: { id: true },
+      });
+      if (!loc) {
+        res.status(400).json({ error: "Location no longer belongs to tenant" });
+        return;
+      }
     }
 
     // Exchange code for tokens
@@ -395,11 +453,19 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
       return;
     }
 
-    // Store realmId on tenant
-    const tenant = await prisma.tenant.update({
-      where: { id: tenantId },
-      data: { qboRealmId: realmId as string },
-    });
+    // Store realmId on the targeted Location (per-location model) or fall
+    // back to the legacy tenant-level field.
+    if (stateLocationId) {
+      await prisma.location.update({
+        where: { id: stateLocationId },
+        data: { qboRealmId: realmId as string, qboConnectedAt: new Date() },
+      });
+    } else {
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { qboRealmId: realmId as string },
+      });
+    }
 
     const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
     res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true`);

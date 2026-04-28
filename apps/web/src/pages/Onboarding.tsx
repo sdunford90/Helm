@@ -314,7 +314,7 @@ export default function Onboarding() {
 }
 
 function OnboardingInner() {
-  const { userId, getToken } = useAuth();
+  const { userId } = useAuth();
   const { user } = useUser();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -426,16 +426,15 @@ function OnboardingInner() {
     }
   }
 
-  // Helper that calls an authenticated settings endpoint as the newly
-  // signed-in marina owner. The /start handler links this Clerk user to a
-  // MARINA_OWNER User row, so the settings endpoints' role check passes.
-  async function postSettingsJson(path: string, body: Record<string, unknown>) {
-    const token = await getToken();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers.Authorization = `Bearer ${token}`;
+  // The onboarding-scoped /api/onboarding/:tenantId/{stripe,qbo} endpoints
+  // are intentionally exempt from tenantMiddleware (they predate subdomain
+  // routing and run before the marina has its own subdomain). They derive
+  // tenant from the URL path and accept an optional locationId so the
+  // resulting Stripe/QBO connection is bound to a specific Location.
+  async function postOnboardingJson(path: string, body: Record<string, unknown>) {
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -450,7 +449,7 @@ function OnboardingInner() {
     setError('');
     setLoading(true);
     try {
-      const data = await postSettingsJson('/api/settings/stripe/connect', { locationId });
+      const data = await postOnboardingJson(`/api/onboarding/${tenantId}/stripe`, { locationId });
       if (data.url) {
         openOAuthPopup(data.url, () => setStripeConnected(true));
       }
@@ -467,7 +466,7 @@ function OnboardingInner() {
     setError('');
     setLoading(true);
     try {
-      const data = await postSettingsJson('/api/settings/qbo/connect', { locationId });
+      const data = await postOnboardingJson(`/api/onboarding/${tenantId}/qbo`, { locationId });
       if (data.url) {
         openOAuthPopup(data.url, () => setQboConnected(true));
       }
