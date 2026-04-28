@@ -40,11 +40,14 @@ const card: React.CSSProperties = {
 };
 
 function mapTenant(t: ApiTenant): Tenant {
+  // The Prisma enum comes back uppercase (e.g. "TRIAL"); the local UI was
+  // built around the lowercase variants, so normalize once on the boundary.
+  const normalized = String(t.status ?? '').toLowerCase() as Tenant['status'];
   return {
     id: t.id,
     name: t.name,
     subdomain: t.subdomain,
-    status: t.status,
+    status: normalized,
     tier: t.saasTier?.name ?? 'Unknown',
     mrr: Math.round(t.mrrCents / 100),
     slips: 0,
@@ -68,7 +71,9 @@ const Tenants: React.FC = () => {
   const fetchTenants = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiFetch<{ items: ApiTenant[]; pagination: { total: number } }>('/api/admin/tenants?limit=100');
+      const params = new URLSearchParams({ limit: '100' });
+      if (statusFilter !== 'all') params.set('status', statusFilter.toUpperCase());
+      const res = await apiFetch<{ items: ApiTenant[]; pagination: { total: number } }>(`/api/admin/tenants?${params}`);
       setTenants(res.items.map(mapTenant));
       setTotal(res.pagination.total);
     } catch {
@@ -76,7 +81,7 @@ const Tenants: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [apiFetch]);
+  }, [apiFetch, statusFilter]);
 
   useEffect(() => { fetchTenants(); }, [fetchTenants]);
 

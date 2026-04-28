@@ -7,6 +7,7 @@ const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: '▣' },
   { path: '/tenants', label: 'Tenants', icon: '⛵' },
+  { path: '/trials', label: 'Trials', icon: '◐' },
   { path: '/billing', label: 'Billing', icon: '$' },
   { path: '/analytics', label: 'Analytics', icon: '◈' },
   { path: '/health', label: 'Health', icon: '♥' },

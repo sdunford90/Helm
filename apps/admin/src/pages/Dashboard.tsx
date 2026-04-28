@@ -1,4 +1,24 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useApiFetch } from '../lib/api';
+
+interface AnalyticsTenant {
+  id: string;
+  name: string;
+  subdomain: string;
+  status: string;
+  saasTier: string | null;
+  mrrCents: number;
+  healthScore: number;
+  atRisk: boolean;
+  usage: {
+    users: number;
+    slips: number;
+    customers: number;
+    recentPayments: number;
+    recentInvoices: number;
+  };
+}
 
 const KPIS = [
   { label: 'Total Tenants', value: '18', sub: '14 active / 3 trial / 1 locked', color: '#00D4FF' },
@@ -35,11 +55,15 @@ const RECENT_ACTIVITY = [
   { time: '1 week ago', event: 'Config', detail: 'Pacific Coast Marina enabled custom domain' },
 ];
 
-const AT_RISK_TENANTS = [
-  { name: 'Old Port Marina', reason: 'Payment failed — grace period ends in 5 days', mrr: '$499', tier: 'Professional' },
-  { name: 'Lakeside Harbor', reason: 'Usage declining 40% month-over-month', mrr: '$299', tier: 'Starter' },
-  { name: 'Fisherman\'s Wharf Marina', reason: 'Support tickets increasing, low NPS', mrr: '$999', tier: 'Enterprise' },
-];
+// Build a human-friendly reason from the live analytics payload.
+function reasonFor(t: AnalyticsTenant): string {
+  if (t.status === 'GRACE_PERIOD') return 'Payment failed — grace period';
+  if (t.status === 'LOCKED') return 'Account locked after grace period';
+  if (t.usage.recentPayments === 0 && t.usage.recentInvoices === 0)
+    return 'No payments or invoices in the last 30 days';
+  if (t.healthScore < 40) return `Low health score (${t.healthScore})`;
+  return 'Flagged for follow-up';
+}
 
 const card: React.CSSProperties = {
   background: '#0D1B2A',
@@ -58,8 +82,32 @@ const cardTitle: React.CSSProperties = {
 };
 
 const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
+  const apiFetch = useApiFetch();
   const maxMRR = Math.max(...MRR_TREND.map((m) => m.value));
   const totalHealth = TENANT_HEALTH.reduce((a, b) => a + b.count, 0);
+  const [atRisk, setAtRisk] = useState<AnalyticsTenant[]>([]);
+  const [atRiskLoading, setAtRiskLoading] = useState(true);
+
+  useEffect(() => {
+    let aborted = false;
+    apiFetch<{ tenants: AnalyticsTenant[] }>('/api/admin/analytics/tenants')
+      .then((data) => {
+        if (aborted) return;
+        // Tenants flagged at-risk first; otherwise fall back to the
+        // lowest-health-score tenants so the widget is still useful when
+        // nothing has tripped the at-risk heuristic.
+        const flagged = data.tenants.filter((t) => t.atRisk);
+        const fallback = [...data.tenants].sort(
+          (a, b) => a.healthScore - b.healthScore,
+        );
+        const list = flagged.length ? flagged : fallback;
+        setAtRisk(list.slice(0, 5));
+      })
+      .catch(() => { if (!aborted) setAtRisk([]); })
+      .finally(() => { if (!aborted) setAtRiskLoading(false); });
+    return () => { aborted = true; };
+  }, [apiFetch]);
 
   return (
     <div>
@@ -155,17 +203,39 @@ const Dashboard: React.FC = () => {
 
         {/* At-Risk Tenants */}
         <div style={card}>
-          <div style={cardTitle}>At-Risk Tenants</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ ...cardTitle, marginBottom: 0 }}>At-Risk Tenants</div>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>Click a row to deep-dive</span>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {AT_RISK_TENANTS.map((t) => (
-              <div key={t.name} style={{ background: 'rgba(244,67,54,0.06)', border: '1px solid rgba(244,67,54,0.15)', borderRadius: 6, padding: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: '#FFF' }}>{t.name}</span>
-                  <span style={{ fontSize: 12, color: '#FF9800' }}>{t.mrr}/mo — {t.tier}</span>
-                </div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>{t.reason}</div>
+            {atRiskLoading ? (
+              <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>Loading…</div>
+            ) : atRisk.length === 0 ? (
+              <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>
+                No at-risk tenants right now. 🎉
               </div>
-            ))}
+            ) : (
+              atRisk.map((t) => (
+                <div
+                  key={t.id}
+                  onClick={() => navigate(`/tenants/${t.id}/deep-dive`)}
+                  style={{ background: 'rgba(244,67,54,0.06)', border: '1px solid rgba(244,67,54,0.15)', borderRadius: 6, padding: 14, cursor: 'pointer', transition: 'background 0.15s' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(244,67,54,0.12)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(244,67,54,0.06)')}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: '#FFF' }}>{t.name}</span>
+                    <span style={{ fontSize: 12, color: '#FF9800' }}>
+                      ${Math.round(t.mrrCents / 100)}/mo{t.saasTier ? ` — ${t.saasTier}` : ''}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>{reasonFor(t)}</span>
+                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>health: {t.healthScore}</span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

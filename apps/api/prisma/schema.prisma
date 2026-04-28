@@ -10,6 +10,7 @@ datasource db {
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 enum TenantStatus {
+  TRIAL
   ACTIVE
   GRACE_PERIOD
   LOCKED
@@ -286,6 +287,15 @@ model Tenant {
   status                   TenantStatus @default(ACTIVE)
   gracePeriodStartedAt     DateTime?
   lockedAt                 DateTime?
+  // Trial onboarding lifecycle. Set when status=TRIAL; cleared when the
+  // tenant converts. trialEndsAt drives the days-remaining badge in the
+  // admin Trials view.
+  trialStartedAt           DateTime?
+  trialEndsAt              DateTime?
+  // Platform admin user (User row with role=PLATFORM_ADMIN) who owns
+  // follow-up for this trial / at-risk tenant. Nullable — most tenants
+  // are unassigned.
+  assignedAdminUserId      String?
   // Operator opt-in: when true, autoRenewCheck() not only creates and
   // approves the renewal batch but also executes it immediately. Default
   // false because rate-change batches usually want a human glance.
@@ -301,8 +311,39 @@ model Tenant {
   portalMessages   PortalMessage[]
   customRoles      CustomRole[]
   scheduledReports ScheduledReport[]
+  timelineEvents   TenantTimelineEvent[]
 
   @@map("tenants")
+}
+
+// Admin-side activity feed for a tenant. Powers the at-risk deep-dive
+// "save play" log and the trial nudge / assignment audit trail. Distinct
+// from AuditLog (which is tenant-scoped business event history) because
+// these entries are written by platform_admin users about their
+// retention work on the account.
+model TenantTimelineEvent {
+  id            String   @id @default(uuid())
+  tenantId      String
+  // adminUserId is the platform_admin who took the action. Nullable so
+  // automated lifecycle entries (status transitions, etc.) can omit it.
+  adminUserId   String?
+  // type is a short machine-readable verb so the UI can pick an icon /
+  // color: nudge_sent | assigned | unassigned | trial_extended |
+  // coupon_applied | tier_changed | check_in_scheduled | ticket_opened |
+  // note. Free-form on purpose — adding new save-play actions doesn't
+  // require a migration.
+  type          String
+  summary       String
+  // Optional structured payload for the action (e.g. new tier id, coupon
+  // code, ticket id, scheduled-at timestamp). Rendered as small chips
+  // below the summary in the timeline UI.
+  metadataJson  Json?
+  createdAt     DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@map("tenant_timeline_events")
 }
 
 // Deliverability suppression list. Separate from CommunicationPreference,

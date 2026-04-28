@@ -93,7 +93,7 @@ router.get("/tenants", async (req, res, next) => {
       ];
     }
 
-    if (status && ["ACTIVE", "GRACE_PERIOD", "LOCKED"].includes(status)) {
+    if (status && ["TRIAL", "ACTIVE", "GRACE_PERIOD", "LOCKED"].includes(status)) {
       where.status = status;
     }
 
@@ -121,11 +121,220 @@ router.get("/tenants", async (req, res, next) => {
       mrrCents: t.saasTier?.monthlyFeeCents ?? 0,
       userCount: t._count.users,
       createdAt: t.createdAt,
+      trialStartedAt: t.trialStartedAt,
+      trialEndsAt: t.trialEndsAt,
+      assignedAdminUserId: t.assignedAdminUserId,
     }));
 
     res.json({
       items,
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/trials — trial onboarding tracker
+//
+// Returns every tenant currently on a trial (status=TRIAL) with a derived
+// onboarding checklist + stalled-trial flag. The checklist items are
+// computed from existing tenant data so we don't need separate
+// progress-tracking columns:
+//
+//   account_created       → tenant row exists (always true)
+//   first_user_invited    → at least one User in addition to the seeded owner
+//   first_location_setup  → at least one Location row
+//   first_customer_added  → at least one Customer row
+//   first_invoice_sent    → at least one Invoice not in DRAFT
+//   first_payment_received→ at least one Payment with status=COMPLETED
+//   integrations_connected→ Stripe OR QBO connected on tenant or any Location
+//
+// Stalled = no checklist progress timestamp newer than `stalledAfterDays`
+// (default 5). The "progress timestamp" is the most recent createdAt
+// across the items above plus qboConnectedAt for integration connect time.
+// --------------------------------------------------------------------------
+router.get("/tenants/trials", async (req, res, next) => {
+  try {
+    const stalledAfterDays = Math.max(
+      1,
+      Math.min(60, parseInt(req.query.stalledAfterDays as string) || 5),
+    );
+    const onlyStalled = req.query.onlyStalled === "true";
+
+    const tenants = await prisma.tenant.findMany({
+      where: { status: "TRIAL" },
+      include: {
+        saasTier: { select: { id: true, name: true, monthlyFeeCents: true } },
+        users: { select: { id: true, createdAt: true, role: true, active: true } },
+        locations: {
+          select: {
+            id: true,
+            createdAt: true,
+            stripeAccountId: true,
+            qboRealmId: true,
+            qboConnectedAt: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const tenantIds = tenants.map((t) => t.id);
+
+    // Aggregate the data-driven checklist signals in bulk so we don't
+    // round-trip per tenant.
+    const [customerStats, invoiceStats, paymentStats] = await Promise.all([
+      prisma.customer.groupBy({
+        by: ["tenantId"],
+        where: { tenantId: { in: tenantIds } },
+        _count: { _all: true },
+        _max: { createdAt: true },
+      }),
+      prisma.invoice.groupBy({
+        by: ["tenantId"],
+        where: { tenantId: { in: tenantIds }, status: { not: "DRAFT" } },
+        _count: { _all: true },
+        _max: { createdAt: true },
+      }),
+      prisma.payment.groupBy({
+        by: ["tenantId"],
+        where: { tenantId: { in: tenantIds }, status: "COMPLETED" },
+        _count: { _all: true },
+        _max: { createdAt: true },
+      }),
+    ]);
+
+    const byTenant = <T extends { tenantId: string }>(rows: T[]) =>
+      new Map(rows.map((r) => [r.tenantId, r]));
+    const customerMap = byTenant(customerStats);
+    const invoiceMap = byTenant(invoiceStats);
+    const paymentMap = byTenant(paymentStats);
+
+    const now = Date.now();
+    const stalledCutoff = new Date(now - stalledAfterDays * 24 * 60 * 60 * 1000);
+
+    const items = tenants.map((t) => {
+      const c = customerMap.get(t.id);
+      const i = invoiceMap.get(t.id);
+      const p = paymentMap.get(t.id);
+
+      const ownerOnly = t.users.length <= 1;
+      const stripeConnected =
+        !!t.stripeAccountId || t.locations.some((l) => !!l.stripeAccountId);
+      const qboConnected =
+        !!t.qboRealmId || t.locations.some((l) => !!l.qboRealmId);
+      const integrationsConnected = stripeConnected || qboConnected;
+
+      // Best-effort "when did integrations last get connected?" — combine
+      // every timestamp we have evidence of:
+      //   - qboConnectedAt on tenant + each location
+      //   - createdAt of any location whose stripeAccountId is set (we
+      //     don't store a stripeConnectedAt, so the location's createdAt
+      //     is the closest proxy)
+      //   - tenant.updatedAt as a fallback when the tenant itself has a
+      //     stripeAccountId but no per-row connection timestamp
+      // Without this, Stripe-only tenants appear "stalled" because their
+      // integration completion never lands in lastProgressAt.
+      const integrationTimes: Date[] = [
+        t.qboConnectedAt,
+        ...t.locations.map((l) => l.qboConnectedAt),
+        ...t.locations
+          .filter((l) => !!l.stripeAccountId)
+          .map((l) => l.createdAt),
+      ].filter((d): d is Date => !!d);
+      if (t.stripeAccountId) integrationTimes.push(t.updatedAt);
+      const lastIntegrationConnected =
+        integrationTimes.length > 0
+          ? new Date(Math.max(...integrationTimes.map((d) => d.getTime())))
+          : null;
+
+      const userTimes = t.users.map((u) => u.createdAt.getTime());
+      const lastUserCreated =
+        userTimes.length > 0 ? new Date(Math.max(...userTimes)) : null;
+
+      const locationTimes = t.locations.map((l) => l.createdAt.getTime());
+      const lastLocationCreated =
+        locationTimes.length > 0
+          ? new Date(Math.max(...locationTimes))
+          : null;
+
+      const checklist = [
+        { key: "account_created", label: "Account created", complete: true,
+          completedAt: t.createdAt },
+        { key: "first_user_invited", label: "First user invited",
+          complete: !ownerOnly,
+          completedAt: !ownerOnly ? lastUserCreated : null },
+        { key: "first_location_setup", label: "First location set up",
+          complete: t.locations.length > 0,
+          completedAt: lastLocationCreated },
+        { key: "first_customer_added", label: "First customer added",
+          complete: (c?._count?._all ?? 0) > 0,
+          completedAt: c?._max?.createdAt ?? null },
+        { key: "first_invoice_sent", label: "First invoice sent",
+          complete: (i?._count?._all ?? 0) > 0,
+          completedAt: i?._max?.createdAt ?? null },
+        { key: "first_payment_received", label: "First payment received",
+          complete: (p?._count?._all ?? 0) > 0,
+          completedAt: p?._max?.createdAt ?? null },
+        { key: "integrations_connected", label: "Integrations connected",
+          complete: integrationsConnected,
+          completedAt: integrationsConnected ? lastIntegrationConnected : null },
+      ];
+
+      const completed = checklist.filter((c) => c.complete).length;
+      const total = checklist.length;
+      const pctComplete = Math.round((completed / total) * 100);
+
+      // "Last progress" — newest completion timestamp across the checklist.
+      const allTimes = checklist
+        .map((c) => c.completedAt?.getTime())
+        .filter((t): t is number => typeof t === "number");
+      const lastProgressAt = allTimes.length
+        ? new Date(Math.max(...allTimes))
+        : t.createdAt;
+
+      const stalled =
+        completed < total && lastProgressAt < stalledCutoff;
+
+      const trialDaysRemaining = t.trialEndsAt
+        ? Math.ceil((t.trialEndsAt.getTime() - now) / (24 * 60 * 60 * 1000))
+        : null;
+
+      return {
+        id: t.id,
+        name: t.name,
+        subdomain: t.subdomain,
+        status: t.status,
+        saasTier: t.saasTier
+          ? {
+              id: t.saasTier.id,
+              name: t.saasTier.name,
+              monthlyFeeCents: t.saasTier.monthlyFeeCents,
+            }
+          : null,
+        createdAt: t.createdAt,
+        trialStartedAt: t.trialStartedAt ?? t.createdAt,
+        trialEndsAt: t.trialEndsAt,
+        trialDaysRemaining,
+        assignedAdminUserId: t.assignedAdminUserId,
+        checklist,
+        completed,
+        total,
+        pctComplete,
+        lastProgressAt,
+        stalled,
+      };
+    });
+
+    const filtered = onlyStalled ? items.filter((i) => i.stalled) : items;
+
+    res.json({
+      total: items.length,
+      stalledCount: items.filter((i) => i.stalled).length,
+      stalledAfterDays,
+      items: filtered,
     });
   } catch (err) {
     next(err);
@@ -164,6 +373,16 @@ router.get("/tenants/:id", async (req, res, next) => {
       }),
     ]);
 
+    // Resolve assigned admin (best-effort) so the UI can show a name.
+    let assignedAdmin: { id: string; firstName: string; lastName: string; email: string } | null = null;
+    if (tenant.assignedAdminUserId) {
+      const u = await prisma.user.findUnique({
+        where: { id: tenant.assignedAdminUserId },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      });
+      if (u) assignedAdmin = u;
+    }
+
     res.json({
       id: tenant.id,
       name: tenant.name,
@@ -174,6 +393,10 @@ router.get("/tenants/:id", async (req, res, next) => {
       fiscalYearEnd: tenant.fiscalYearEnd,
       gracePeriodStartedAt: tenant.gracePeriodStartedAt,
       lockedAt: tenant.lockedAt,
+      trialStartedAt: tenant.trialStartedAt,
+      trialEndsAt: tenant.trialEndsAt,
+      assignedAdminUserId: tenant.assignedAdminUserId,
+      assignedAdmin,
       createdAt: tenant.createdAt,
       updatedAt: tenant.updatedAt,
       branding: tenant.brandingJson,
@@ -1029,6 +1252,651 @@ router.put("/support/tickets/:id", async (req, res, next) => {
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  TENANT TIMELINE (admin-side activity feed)
+// ==========================================================================
+
+// Helper: write an entry to the tenant's admin timeline. Best-effort —
+// failures here are logged but never block the action that triggered the
+// write, so a transient DB hiccup doesn't undo a save-play.
+async function recordTimelineEvent(opts: {
+  tenantId: string;
+  adminUserId?: string | null;
+  type: string;
+  summary: string;
+  metadata?: Record<string, unknown> | null;
+}): Promise<void> {
+  try {
+    await prisma.tenantTimelineEvent.create({
+      data: {
+        tenantId: opts.tenantId,
+        adminUserId: opts.adminUserId ?? null,
+        type: opts.type,
+        summary: opts.summary,
+        metadataJson: opts.metadata ?? undefined,
+      },
+    });
+  } catch (err) {
+    console.error(`[admin/timeline] Failed to record ${opts.type} for ${opts.tenantId}:`, err);
+  }
+}
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id/timeline — admin activity feed for a tenant
+// --------------------------------------------------------------------------
+router.get("/tenants/:id/timeline", async (req, res, next) => {
+  try {
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const events = await prisma.tenantTimelineEvent.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+
+    // Resolve admin user names in one query so the UI can show "by Sarah".
+    const adminIds = Array.from(
+      new Set(events.map((e) => e.adminUserId).filter((id): id is string => !!id)),
+    );
+    const admins = adminIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: adminIds } },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        })
+      : [];
+    const adminMap = new Map(admins.map((a) => [a.id, a]));
+
+    res.json({
+      items: events.map((e) => ({
+        id: e.id,
+        tenantId: e.tenantId,
+        type: e.type,
+        summary: e.summary,
+        metadata: e.metadataJson,
+        createdAt: e.createdAt.toISOString(),
+        admin: e.adminUserId ? adminMap.get(e.adminUserId) ?? null : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/assign — assign trial / at-risk follow-up
+//
+// Body: { adminUserId?: string | null }  (omit/null to unassign).
+// In production we use req.userId (the authenticated platform admin). In
+// the dev bypass we accept the body.adminUserId so manual testing works.
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/assign", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    // "Assign to me" — prefer the authenticated user. Fallback to body
+    // (unassign or manual id in dev).
+    const explicit = req.body?.adminUserId;
+    const target: string | null =
+      explicit === null
+        ? null
+        : typeof explicit === "string" && explicit.length > 0
+          ? explicit
+          : (req.userId ?? null);
+
+    if (target) {
+      // Only platform admins can be the assignee — otherwise an admin
+      // could (intentionally or not) hand a trial off to a marina-side
+      // user, which would never appear in the admin queue.
+      const user = await prisma.user.findUnique({
+        where: { id: target },
+        select: { id: true, firstName: true, lastName: true, email: true, role: true },
+      });
+      if (!user) {
+        res.status(400).json({ error: "Target user not found" });
+        return;
+      }
+      if (user.role !== "PLATFORM_ADMIN") {
+        res.status(400).json({
+          error: "Only platform admins can be assigned to a tenant follow-up",
+        });
+        return;
+      }
+    }
+
+    const updated = await prisma.tenant.update({
+      where: { id: req.params.id },
+      data: { assignedAdminUserId: target },
+    });
+
+    let assignedName = "unassigned";
+    if (target) {
+      const u = await prisma.user.findUnique({
+        where: { id: target },
+        select: { firstName: true, lastName: true, email: true },
+      });
+      assignedName = u
+        ? `${u.firstName} ${u.lastName}`.trim() || u.email
+        : "an admin";
+    }
+
+    await recordTimelineEvent({
+      tenantId: req.params.id,
+      adminUserId: req.userId ?? null,
+      type: target ? "assigned" : "unassigned",
+      summary: target
+        ? `Assigned follow-up to ${assignedName}`
+        : "Cleared follow-up assignment",
+      metadata: target ? { adminUserId: target } : null,
+    });
+
+    res.json({
+      tenantId: updated.id,
+      assignedAdminUserId: updated.assignedAdminUserId,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/nudge — queue a templated nudge email
+//
+// Body: { templateKey?: string, customSubject?: string, customBody?: string }
+// templateKey selects one of three canned messages (welcome, mid-trial,
+// final-day). The actual send happens via the email worker; if Redis
+// isn't configured the queue is a no-op but we still record the timeline
+// entry so the admin sees their attempt.
+// --------------------------------------------------------------------------
+const NUDGE_TEMPLATES: Record<string, { subject: string; message: string }> = {
+  welcome: {
+    subject: "Welcome to Helm — let's get your marina set up",
+    message:
+      "Hi there! We noticed you've started your Helm trial but haven't completed setup yet. Reply to this email and we'll personally walk you through getting your first slip and customer added.",
+  },
+  midtrial: {
+    subject: "Halfway through your Helm trial — need a hand?",
+    message:
+      "You're halfway through your Helm trial. We'd love to help you finish setting up your marina before the trial ends. Want to schedule a quick 15-minute walkthrough?",
+  },
+  final: {
+    subject: "Your Helm trial ends soon — let's talk",
+    message:
+      "Your Helm trial ends in a few days. If anything is blocking you from going live, please reply to this email and we'll get it sorted today.",
+  },
+};
+
+router.post("/tenants/:id/nudge", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      include: {
+        users: {
+          where: { role: "MARINA_OWNER", active: true },
+          select: { email: true, firstName: true },
+          take: 1,
+        },
+      },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    const owner = tenant.users[0];
+    if (!owner?.email) {
+      res.status(400).json({ error: "No active owner email on file for this tenant" });
+      return;
+    }
+
+    const templateKey =
+      typeof req.body?.templateKey === "string" ? req.body.templateKey : "midtrial";
+    const template = NUDGE_TEMPLATES[templateKey] ?? NUDGE_TEMPLATES.midtrial;
+    const subject =
+      typeof req.body?.customSubject === "string" && req.body.customSubject
+        ? req.body.customSubject
+        : template.subject;
+    const message =
+      typeof req.body?.customBody === "string" && req.body.customBody
+        ? req.body.customBody
+        : template.message;
+
+    // Best-effort enqueue. Email worker is responsible for actual delivery
+    // and may not be running locally. We don't fail the request if Redis
+    // is down — the timeline entry still records the admin's intent.
+    let queued = false;
+    try {
+      await queues.email.add("trial-nudge-email", {
+        type: "trial_nudge",
+        to: owner.email,
+        tenantId: tenant.id,
+        data: {
+          tenantName: tenant.name,
+          recipientName: owner.firstName,
+          subject,
+          message,
+          templateKey,
+        },
+      });
+      queued = true;
+    } catch (err) {
+      console.error(`[admin/nudge] Queue add failed for tenant ${tenant.id}:`, err);
+    }
+
+    await recordTimelineEvent({
+      tenantId: tenant.id,
+      adminUserId: req.userId ?? null,
+      type: "nudge_sent",
+      summary: `Nudge email queued to ${owner.email}: "${subject}"`,
+      metadata: { templateKey, queued, recipient: owner.email },
+    });
+
+    res.json({ queued, recipient: owner.email, subject });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id/deep-dive — at-risk tenant deep-dive payload
+//
+// Returns the things the deep-dive page renders:
+//   - Tenant header (name, status, tier, MRR, assigned admin, trial info)
+//   - 8-week sparklines: invoices sent, payment volume, new customers,
+//     new active users
+//   - "Login recency" proxy: most recent createdAt across users / payments
+//     / invoices (we don't track Clerk session activity)
+//   - WoW change calculations for the headline signals
+//   - Recent open / urgent support tickets (last 5)
+// --------------------------------------------------------------------------
+router.get("/tenants/:id/deep-dive", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      include: {
+        saasTier: { select: { id: true, name: true, monthlyFeeCents: true } },
+        _count: { select: { users: true, locations: true } },
+      },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    let assignedAdmin: { id: string; firstName: string; lastName: string; email: string } | null = null;
+    if (tenant.assignedAdminUserId) {
+      assignedAdmin = await prisma.user.findUnique({
+        where: { id: tenant.assignedAdminUserId },
+        select: { id: true, firstName: true, lastName: true, email: true },
+      });
+    }
+
+    // Build 8-week buckets ending at "now" (sunday-aligned for clarity).
+    const WEEKS = 8;
+    const now = new Date();
+    const buckets: { start: Date; end: Date }[] = [];
+    for (let i = WEEKS - 1; i >= 0; i--) {
+      const end = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      buckets.push({ start, end });
+    }
+    const earliest = buckets[0].start;
+
+    // Fetch raw rows since `earliest` and bucket in JS — much cheaper than
+    // 8 separate aggregate queries per series.
+    //
+    // For "active users" and "user activity volume" we use AuditLog as a
+    // proxy: every meaningful state change (record created/updated/etc.)
+    // is logged with the acting userId, so distinct(userId) per week is a
+    // reasonable WAU and total entries per week is an "activity recency"
+    // sparkline. We deliberately avoid using User.createdAt here because
+    // signups don't represent ongoing engagement.
+    const [invoices, payments, customers, auditEntries] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { tenantId: tenant.id, createdAt: { gte: earliest } },
+        select: { createdAt: true },
+      }),
+      prisma.payment.findMany({
+        where: {
+          tenantId: tenant.id,
+          status: "COMPLETED",
+          createdAt: { gte: earliest },
+        },
+        select: { createdAt: true, amountCents: true },
+      }),
+      prisma.customer.findMany({
+        where: { tenantId: tenant.id, createdAt: { gte: earliest } },
+        select: { createdAt: true },
+      }),
+      prisma.auditLog.findMany({
+        where: {
+          tenantId: tenant.id,
+          createdAt: { gte: earliest },
+          userId: { not: null },
+        },
+        select: { createdAt: true, userId: true },
+      }),
+    ]);
+
+    const bucketize = <T extends { createdAt: Date }>(
+      rows: T[],
+      reducer: (row: T) => number = () => 1,
+    ): number[] =>
+      buckets.map((b) =>
+        rows
+          .filter((r) => r.createdAt >= b.start && r.createdAt < b.end)
+          .reduce((sum, r) => sum + reducer(r), 0),
+      );
+
+    const invoicesPerWeek = bucketize(invoices);
+    const paymentVolumePerWeek = bucketize(payments, (p) => p.amountCents);
+    const customersPerWeek = bucketize(customers);
+
+    // "Active users" = distinct userIds in AuditLog per week (WAU proxy).
+    const activeUsersPerWeek = buckets.map((b) => {
+      const ids = new Set<string>();
+      for (const a of auditEntries) {
+        if (a.userId && a.createdAt >= b.start && a.createdAt < b.end) {
+          ids.add(a.userId);
+        }
+      }
+      return ids.size;
+    });
+
+    // "Login recency" sparkline = total user-attributed events per week.
+    // Higher = more activity; trend down = waning engagement.
+    const userActivityPerWeek = bucketize(auditEntries);
+
+    const wowChange = (series: number[]): number | null => {
+      if (series.length < 2) return null;
+      const last = series[series.length - 1];
+      const prev = series[series.length - 2];
+      if (prev === 0) return last > 0 ? 100 : 0;
+      return Math.round(((last - prev) / prev) * 100);
+    };
+
+    // "Last activity" — most recent user-attributed audit event wins
+    // (it's the closest thing we have to a real session log). Fall back
+    // to invoice/payment timestamps for tenants whose audit log is empty.
+    const lastAudit = auditEntries.length
+      ? auditEntries.reduce(
+          (max, a) => (a.createdAt > max ? a.createdAt : max),
+          auditEntries[0].createdAt,
+        )
+      : null;
+    const lastPayment = payments.length
+      ? payments.reduce((max, p) => (p.createdAt > max ? p.createdAt : max), payments[0].createdAt)
+      : null;
+    const lastInvoice = invoices.length
+      ? invoices.reduce((max, i) => (i.createdAt > max ? i.createdAt : max), invoices[0].createdAt)
+      : null;
+    const candidates = [lastAudit, lastPayment, lastInvoice].filter(
+      (d): d is Date => !!d,
+    );
+    const lastActivityAt = candidates.length
+      ? new Date(Math.max(...candidates.map((d) => d.getTime())))
+      : null;
+
+    // Recent support tickets (last 5, newest first).
+    const recentTickets = await prisma.supportTicket.findMany({
+      where: { tenantId: tenant.id },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    });
+
+    res.json({
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        subdomain: tenant.subdomain,
+        status: tenant.status,
+        createdAt: tenant.createdAt,
+        trialStartedAt: tenant.trialStartedAt,
+        trialEndsAt: tenant.trialEndsAt,
+        assignedAdmin,
+        saasTier: tenant.saasTier,
+        userCount: tenant._count.users,
+        locationCount: tenant._count.locations,
+      },
+      weekLabels: buckets.map((b) => b.end.toISOString().slice(0, 10)),
+      signals: {
+        invoicesPerWeek: {
+          label: "Invoices sent",
+          series: invoicesPerWeek,
+          last: invoicesPerWeek[invoicesPerWeek.length - 1] ?? 0,
+          wowChangePct: wowChange(invoicesPerWeek),
+        },
+        paymentVolumePerWeek: {
+          label: "Payment volume",
+          unit: "cents",
+          series: paymentVolumePerWeek,
+          last: paymentVolumePerWeek[paymentVolumePerWeek.length - 1] ?? 0,
+          wowChangePct: wowChange(paymentVolumePerWeek),
+        },
+        newCustomersPerWeek: {
+          label: "New customers",
+          series: customersPerWeek,
+          last: customersPerWeek[customersPerWeek.length - 1] ?? 0,
+          wowChangePct: wowChange(customersPerWeek),
+        },
+        activeUsersPerWeek: {
+          label: "Active users (WAU)",
+          series: activeUsersPerWeek,
+          last: activeUsersPerWeek[activeUsersPerWeek.length - 1] ?? 0,
+          wowChangePct: wowChange(activeUsersPerWeek),
+        },
+        userActivityPerWeek: {
+          label: "User activity volume",
+          series: userActivityPerWeek,
+          last: userActivityPerWeek[userActivityPerWeek.length - 1] ?? 0,
+          wowChangePct: wowChange(userActivityPerWeek),
+        },
+      },
+      lastActivityAt,
+      recentTickets: recentTickets.map((t) => ({
+        id: t.id,
+        subject: t.subject,
+        status: t.status,
+        priority: t.priority,
+        createdAt: t.createdAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/save-play — execute a retention "save play"
+//
+// Body: { action: 'extend_trial' | 'apply_coupon' | 'change_tier'
+//                 | 'schedule_check_in' | 'open_ticket', ... }
+//
+// Each action makes the relevant DB write (where applicable) and writes
+// a TenantTimelineEvent. For actions that aren't fully wired into other
+// systems (e.g. coupon application), we record the intent on the timeline
+// so the admin has a paper trail.
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/save-play", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    const action = String(req.body?.action ?? "");
+
+    const note: string | undefined =
+      typeof req.body?.note === "string" ? req.body.note : undefined;
+
+    switch (action) {
+      case "extend_trial": {
+        const days = Math.max(1, Math.min(60, parseInt(req.body?.days) || 14));
+        const base = tenant.trialEndsAt ?? new Date();
+        const newEnd = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
+        // If the tenant isn't currently TRIAL, flipping it back lets the
+        // owner resume onboarding without paying yet.
+        const updated = await prisma.tenant.update({
+          where: { id: tenant.id },
+          data: {
+            trialEndsAt: newEnd,
+            trialStartedAt: tenant.trialStartedAt ?? new Date(),
+            status: tenant.status === "LOCKED" ? tenant.status : "TRIAL",
+          },
+        });
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "trial_extended",
+          summary: `Trial extended by ${days} days (now ends ${newEnd.toISOString().slice(0, 10)})`,
+          metadata: { days, newTrialEndsAt: newEnd.toISOString(), note },
+        });
+        res.json({ ok: true, trialEndsAt: updated.trialEndsAt, status: updated.status });
+        return;
+      }
+
+      case "apply_coupon": {
+        const code = String(req.body?.code ?? "").trim();
+        const percentOff = Number(req.body?.percentOff) || null;
+        if (!code) {
+          res.status(400).json({ error: "code is required" });
+          return;
+        }
+        // We don't have a Coupon table yet — record the intent on
+        // brandingJson._adminCoupons and on the timeline so it shows up
+        // in billing later.
+        const branding = (tenant.brandingJson as Record<string, unknown> | null) ?? {};
+        const coupons = Array.isArray(branding._adminCoupons)
+          ? (branding._adminCoupons as Record<string, unknown>[])
+          : [];
+        coupons.push({
+          code,
+          percentOff,
+          appliedAt: new Date().toISOString(),
+          appliedBy: req.userId ?? null,
+        });
+        await prisma.tenant.update({
+          where: { id: tenant.id },
+          data: { brandingJson: { ...branding, _adminCoupons: coupons } },
+        });
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "coupon_applied",
+          summary: percentOff
+            ? `Applied coupon ${code} (${percentOff}% off)`
+            : `Applied coupon ${code}`,
+          metadata: { code, percentOff, note },
+        });
+        res.json({ ok: true, code, percentOff });
+        return;
+      }
+
+      case "change_tier": {
+        const tierId = String(req.body?.tierId ?? "");
+        const tier = tierId
+          ? await prisma.saasTier.findUnique({ where: { id: tierId } })
+          : null;
+        if (!tier) {
+          res.status(400).json({ error: "Invalid tierId" });
+          return;
+        }
+        await prisma.tenant.update({
+          where: { id: tenant.id },
+          data: { saasTierId: tier.id },
+        });
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "tier_changed",
+          summary: `Changed plan to ${tier.name}`,
+          metadata: { tierId: tier.id, tierName: tier.name, note },
+        });
+        res.json({ ok: true, tierId: tier.id, tierName: tier.name });
+        return;
+      }
+
+      case "schedule_check_in": {
+        const scheduledAt = req.body?.scheduledAt
+          ? new Date(req.body.scheduledAt)
+          : null;
+        if (!scheduledAt || isNaN(scheduledAt.getTime())) {
+          res.status(400).json({ error: "scheduledAt is required (ISO timestamp)" });
+          return;
+        }
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "check_in_scheduled",
+          summary: `Check-in scheduled for ${scheduledAt.toISOString().slice(0, 16).replace("T", " ")} UTC`,
+          metadata: { scheduledAt: scheduledAt.toISOString(), note },
+        });
+        res.json({ ok: true, scheduledAt: scheduledAt.toISOString() });
+        return;
+      }
+
+      case "open_ticket": {
+        const subject = String(req.body?.subject ?? "").trim();
+        const description = String(req.body?.description ?? note ?? "").trim();
+        const priority = ["low", "medium", "high", "urgent"].includes(
+          String(req.body?.priority),
+        )
+          ? String(req.body.priority)
+          : "medium";
+        if (!subject || !description) {
+          res.status(400).json({ error: "subject and description are required" });
+          return;
+        }
+        const ticket = await prisma.supportTicket.create({
+          data: {
+            tenantId: tenant.id,
+            subject,
+            description,
+            priority,
+            status: "open",
+            assignedTo: req.userId ?? null,
+          },
+        });
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "ticket_opened",
+          summary: `Opened support ticket "${subject}" (${priority})`,
+          metadata: { ticketId: ticket.id, priority },
+        });
+        res.json({ ok: true, ticketId: ticket.id });
+        return;
+      }
+
+      case "note": {
+        if (!note) {
+          res.status(400).json({ error: "note is required" });
+          return;
+        }
+        await recordTimelineEvent({
+          tenantId: tenant.id,
+          adminUserId: req.userId ?? null,
+          type: "note",
+          summary: note.slice(0, 240),
+          metadata: null,
+        });
+        res.json({ ok: true });
+        return;
+      }
+
+      default:
+        res.status(400).json({
+          error:
+            "Unknown save-play action. Expected one of: extend_trial, apply_coupon, change_tier, schedule_check_in, open_ticket, note",
+        });
+        return;
+    }
   } catch (err) {
     next(err);
   }
