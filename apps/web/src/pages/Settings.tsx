@@ -1881,6 +1881,35 @@ export default function Settings() {
       {/* Catalog */}
       {tab === 'catalog' && (
         <>
+          {/* GL Account Mapping link */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '12px 16px', borderRadius: '8px',
+            backgroundColor: '#EEF2FF', border: '1px solid #C7D2FE',
+            marginBottom: '20px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Landmark size={16} style={{ color: '#4338CA' }} />
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#3730A3' }}>
+                GL Account Mapping
+              </span>
+              <span style={{ fontSize: '13px', color: '#4338CA' }}>
+                — Assign revenue GL accounts to each product type for proper accounting
+              </span>
+            </div>
+            <a
+              href="/settings/products"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '6px 14px', borderRadius: '6px', textDecoration: 'none',
+                fontSize: '13px', fontWeight: 600, color: '#FFFFFF',
+                backgroundColor: '#4338CA',
+              }}
+            >
+              Products &amp; Revenue →
+            </a>
+          </div>
+
           {/* Location Selector */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

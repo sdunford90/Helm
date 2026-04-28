@@ -901,9 +901,13 @@ model GlAccount {
   subType           String?
   qboAccountId      String?
   isDeferredRevenue Boolean       @default(false)
+  active            Boolean       @default(true)
+  description       String?
 
-  entries   GlEntry[]
-  lineItems InvoiceLineItem[]
+  entries        GlEntry[]
+  lineItems      InvoiceLineItem[]
+  products       Product[]       @relation(name: "ProductGlAccount")
+  rentalProducts RentalProduct[] @relation(name: "RentalProductGlAccount")
 
   @@index([tenantId])
   @@map("gl_accounts")
@@ -1039,9 +1043,11 @@ model RentalProduct {
   cancellationPolicyId String?
   taxClass             String?  @default("Tax Exempt")
   active               Boolean  @default(true)
+  glAccountId          String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
+  glAccount             GlAccount?              @relation(name: "RentalProductGlAccount", fields: [glAccountId], references: [id])
   cancellationPolicy    CancellationPolicy?     @relation(fields: [cancellationPolicyId], references: [id])
   pricingRules          PricingRule[]
   calendarOverrides     PricingCalendarOverride[]
@@ -1381,7 +1387,9 @@ model Product {
   taxClass       String?
   trackInventory Boolean @default(false)
   reorderQty     Int?
+  glAccountId    String?
 
+  glAccount    GlAccount?  @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
   inventory    Inventory[]
   posLineItems PosLineItem[]
 

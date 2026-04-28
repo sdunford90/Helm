@@ -102,6 +102,18 @@ const ACCOUNTS = {
   TERMINATION_INCOME: "4700",
 } as const;
 
+/**
+ * Emits a warning when a GL account must be resolved from a hardcoded fallback
+ * account number rather than from a product's configured GL account mapping.
+ * This helps operators identify unconfigured revenue accounts.
+ */
+function warnGlFallback(tenantId: string, accountNumber: string, context: string): void {
+  console.warn(
+    `[gl-posting] UNCONFIGURED_GL_MAPPING tenantId=${tenantId} account=${accountNumber} context="${context}" — ` +
+    `Revenue is posting to the hardcoded fallback account. Configure a GL account mapping in Settings > Products & Revenue to silence this warning.`,
+  );
+}
+
 /** Resolve the deferred-revenue liability account for a tenant.
  *  Prefers the first account flagged isDeferredRevenue = true in their chart
  *  (ordered by accountNumber so 2100 comes before 2110).  Falls back to the
@@ -190,8 +202,13 @@ export async function postInvoice(
           description: `Invoice ${invoice.id} — deferred revenue`,
         });
       } else {
-        const revenueAccountId = li.glAccountId
-          ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        let revenueAccountId: string;
+        if (li.glAccountId) {
+          revenueAccountId = li.glAccountId;
+        } else {
+          warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id}`);
+          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        }
         lines.push({
           accountId: revenueAccountId,
           debitCents: 0,
@@ -244,8 +261,13 @@ export async function postInvoice(
           description: `Invoice ${invoice.id} — deferred revenue`,
         });
       } else {
-        const revenueAccountId = li.glAccountId
-          ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        let revenueAccountId: string;
+        if (li.glAccountId) {
+          revenueAccountId = li.glAccountId;
+        } else {
+          warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id} (legacy path)`);
+          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+        }
         lines.push({
           accountId: revenueAccountId,
           debitCents: 0,

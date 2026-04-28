@@ -61,6 +61,7 @@ export async function generateRecurringInvoices(
           id: true,
           slipNumber: true,
           locationId: true,
+          slipType: true,
           electricityMode: true,
           flatFeeCents: true,
           kwhRateCents: true,
@@ -122,12 +123,30 @@ export async function generateRecurringInvoices(
           )
         : contract.rateCents;
 
+      // Resolve GL account from DockageRate configuration
+      let slipGlAccountId: string | undefined;
+      if (contract.slip.locationId && contract.slip.slipType) {
+        const dockageRate = await prisma.dockageRate.findFirst({
+          where: {
+            tenantId,
+            locationId: contract.slip.locationId,
+            slipType: contract.slip.slipType,
+            active: true,
+          },
+          select: { glAccountId: true },
+          orderBy: { createdAt: "desc" },
+        });
+        if (dockageRate?.glAccountId) {
+          slipGlAccountId = dockageRate.glAccountId;
+        }
+      }
+
       lineItems.push({
         description: `Slip ${contract.slip.slipNumber} — ${billingStart.toLocaleDateString("en-US", { month: "long", year: "numeric" })}${needsProration ? " (prorated)" : ""}`,
         quantity: 1,
         unitPriceCents: rentalAmount,
         taxCategory: "slip_rental",
-        glAccountId: contract.qboItemId ?? undefined,
+        glAccountId: slipGlAccountId,
         isDeferred: contract.billingCycle !== "MONTHLY",
         sourceType: "CONTRACT",
         sourceId: contract.id,
@@ -143,6 +162,7 @@ export async function generateRecurringInvoices(
           quantity: 1,
           unitPriceCents: contract.slip.flatFeeCents,
           taxCategory: "electricity",
+          glAccountId: slipGlAccountId,
           isDeferred: false,
           sourceType: "ELECTRICITY",
           sourceId: contract.slipId,
@@ -167,6 +187,7 @@ export async function generateRecurringInvoices(
               quantity: 1,
               unitPriceCents: r.amountCents,
               taxCategory: "electricity",
+              glAccountId: slipGlAccountId,
               isDeferred: false,
               sourceType: "METER_READING",
               sourceId: r.id,

@@ -37,7 +37,7 @@ const UpdateProductSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
   category: ProductCategoryEnum.optional(),
-  basePriceCents: z.number().int().min(0).optional().nullable(),
+  basePriceCents: z.number().int().min(0).optional(),
   hourlyRateCents: z.number().int().min(0).optional().nullable(),
   dailyRateCents: z.number().int().min(0).optional().nullable(),
   weeklyRateCents: z.number().int().min(0).optional().nullable(),

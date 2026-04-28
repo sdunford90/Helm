@@ -20,6 +20,7 @@ import Announcements from './pages/Announcements';
 import Settings from './pages/Settings';
 import SettingsBilling from './pages/SettingsBilling';
 import SettingsTaxRates from './pages/SettingsTaxRates';
+import SettingsProducts from './pages/SettingsProducts';
 import ReportsSalesTax from './pages/ReportsSalesTax';
 import Onboarding from './pages/Onboarding';
 import Transient from './pages/Transient';
@@ -77,6 +78,7 @@ function AppRoutes() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/settings/billing" element={<SettingsBilling />} />
         <Route path="/settings/tax-rates" element={<SettingsTaxRates />} />
+        <Route path="/settings/products" element={<SettingsProducts />} />
         <Route path="/reports/sales-tax" element={<ReportsSalesTax />} />
       </Route>
     </Routes>

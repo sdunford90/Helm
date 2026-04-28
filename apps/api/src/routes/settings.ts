@@ -918,6 +918,12 @@ router.put("/notifications", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
   }
 });
 
+// Helper: verify a GL account belongs to this tenant (cross-tenant guard)
+async function assertGlAccountBelongsToTenant(glAccountId: string, tenantId: string): Promise<boolean> {
+  const acct = await prisma.glAccount.findFirst({ where: { id: glAccountId, tenantId } });
+  return acct !== null;
+}
+
 // ==========================================================================
 // CATALOG — DOCKAGE RATES  (location-scoped)
 // ==========================================================================
@@ -945,6 +951,9 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
     } = req.body;
     if (!locationId || !slipType || monthlyRateCents == null) {
       res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
+    }
+    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+      res.status(400).json({ error: "GL account not found" }); return;
     }
     const rate = await prisma.dockageRate.create({
       data: {
@@ -976,6 +985,9 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
       slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
+    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+      res.status(400).json({ error: "GL account not found" }); return;
+    }
     const updated = await prisma.dockageRate.update({
       where: { id: req.params.id },
       data: {
@@ -1031,6 +1043,9 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
     if (!locationId || !name) {
       res.status(400).json({ error: "locationId and name are required" }); return;
     }
+    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+      res.status(400).json({ error: "GL account not found" }); return;
+    }
     const fee = await prisma.serviceFee.create({
       data: {
         tenantId: req.tenantId!,
@@ -1054,6 +1069,9 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
     const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
     const { name, feeType, amountCents, pct, glAccountId, taxClass, active } = req.body;
+    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+      res.status(400).json({ error: "GL account not found" }); return;
+    }
     const updated = await prisma.serviceFee.update({
       where: { id: req.params.id },
       data: {
@@ -1094,10 +1112,20 @@ router.get("/locations", ...clerkAuth(), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ─── GET /settings/gl-accounts ───────────────────────────────────────────────
-// Flat list of tenant GL accounts for use in dropdowns.  Includes qboAccountId
-// so the frontend can show which accounts are already linked to QuickBooks.
+// ─── GL ACCOUNTS CRUD ────────────────────────────────────────────────────────
 
+const glAccountSchema = z.object({
+  accountNumber: z.string().min(1).max(20),
+  name: z.string().min(1).max(200),
+  type: z.enum(["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]),
+  subType: z.string().max(100).optional().nullable(),
+  description: z.string().max(500).optional().nullable(),
+  qboAccountId: z.string().max(200).optional().nullable(),
+  isDeferredRevenue: z.boolean().optional(),
+  active: z.boolean().optional(),
+});
+
+// GET /api/settings/gl-accounts
 router.get("/gl-accounts", async (req, res, next) => {
   try {
     const tenantId = (req as any).tenantId;
@@ -1109,12 +1137,208 @@ router.get("/gl-accounts", async (req, res, next) => {
         name: true,
         type: true,
         subType: true,
+        description: true,
         isDeferredRevenue: true,
+        active: true,
         qboAccountId: true,
       },
       orderBy: { accountNumber: "asc" },
     });
     res.json({ data: accounts });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/settings/gl-accounts
+router.post("/gl-accounts", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId!;
+    const body = glAccountSchema.parse(req.body);
+
+    // Check for duplicate account number within tenant
+    const existing = await prisma.glAccount.findFirst({
+      where: { tenantId, accountNumber: body.accountNumber },
+    });
+    if (existing) {
+      res.status(409).json({ error: "An account with this number already exists" });
+      return;
+    }
+
+    const account = await prisma.glAccount.create({
+      data: {
+        tenantId,
+        accountNumber: body.accountNumber,
+        name: body.name,
+        type: body.type,
+        subType: body.subType ?? null,
+        description: body.description ?? null,
+        qboAccountId: body.qboAccountId ?? null,
+        isDeferredRevenue: body.isDeferredRevenue ?? false,
+        active: body.active ?? true,
+      },
+    });
+    res.status(201).json({ data: account });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: "Validation failed", details: err.errors });
+      return;
+    }
+    next(err);
+  }
+});
+
+// PUT /api/settings/gl-accounts/:id
+router.put("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId!;
+    const existing = await prisma.glAccount.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "GL account not found" });
+      return;
+    }
+
+    const body = glAccountSchema.partial().parse(req.body);
+
+    // If changing account number, check for duplicates
+    if (body.accountNumber && body.accountNumber !== existing.accountNumber) {
+      const dup = await prisma.glAccount.findFirst({
+        where: { tenantId, accountNumber: body.accountNumber, id: { not: existing.id } },
+      });
+      if (dup) {
+        res.status(409).json({ error: "An account with this number already exists" });
+        return;
+      }
+    }
+
+    const updated = await prisma.glAccount.update({
+      where: { id: req.params.id },
+      data: {
+        ...(body.accountNumber != null && { accountNumber: body.accountNumber }),
+        ...(body.name != null && { name: body.name }),
+        ...(body.type != null && { type: body.type }),
+        ...(body.subType !== undefined && { subType: body.subType }),
+        ...(body.description !== undefined && { description: body.description }),
+        ...(body.qboAccountId !== undefined && { qboAccountId: body.qboAccountId }),
+        ...(body.isDeferredRevenue !== undefined && { isDeferredRevenue: body.isDeferredRevenue }),
+        ...(body.active !== undefined && { active: body.active }),
+      },
+    });
+    res.json({ data: updated });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: "Validation failed", details: err.errors });
+      return;
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/settings/gl-accounts/:id
+router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId!;
+    const existing = await prisma.glAccount.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "GL account not found" });
+      return;
+    }
+
+    // Check if account has any GL entries posted to it
+    const entryCount = await prisma.glEntry.count({
+      where: { accountId: req.params.id },
+    });
+    if (entryCount > 0) {
+      // Soft-delete: mark inactive instead of hard delete
+      await prisma.glAccount.update({
+        where: { id: req.params.id },
+        data: { active: false },
+      });
+      res.json({ success: true, archived: true, message: "Account has posted entries — it has been archived rather than deleted." });
+      return;
+    }
+
+    await prisma.glAccount.delete({ where: { id: req.params.id } });
+    res.json({ success: true, archived: false });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── CATALOG — GL ACCOUNT ASSIGNMENT FOR PRODUCTS ────────────────────────────
+
+// PUT /api/settings/catalog/rental-products/:id/gl-account
+router.put("/catalog/rental-products/:id/gl-account", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId!;
+    const { glAccountId } = req.body;
+    const existing = await prisma.rentalProduct.findFirst({ where: { id: req.params.id, tenantId } });
+    if (!existing) { res.status(404).json({ error: "Rental product not found" }); return; }
+    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, tenantId))) {
+      res.status(400).json({ error: "GL account not found" }); return;
+    }
+    const updated = await prisma.rentalProduct.update({
+      where: { id: req.params.id },
+      data: { glAccountId: glAccountId ?? null },
+    });
+    res.json({ data: updated });
+  } catch (err) { next(err); }
+});
+
+// ─── CATALOG — PRODUCTS SUMMARY (all product types with GL account info) ─────
+
+// GET /api/settings/catalog/products-summary?locationId=xxx
+// Returns a unified view of all product-generating catalog entries
+router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
+  try {
+    const tenantId = (req as any).tenantId!;
+    const { locationId } = req.query as { locationId?: string };
+    const where: any = { tenantId };
+    if (locationId) where.locationId = locationId;
+
+    const [dockageRates, serviceFees, rentalProducts, glAccounts] = await Promise.all([
+      prisma.dockageRate.findMany({
+        where,
+        orderBy: [{ slipType: "asc" }],
+        include: { location: { select: { name: true } } },
+      }),
+      prisma.serviceFee.findMany({
+        where,
+        orderBy: { name: "asc" },
+        include: { location: { select: { name: true } } },
+      }),
+      prisma.rentalProduct.findMany({
+        where: { tenantId },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, category: true, glAccountId: true, active: true },
+      }),
+      prisma.glAccount.findMany({
+        where: { tenantId, active: true, type: "REVENUE" },
+        select: { id: true, accountNumber: true, name: true },
+        orderBy: { accountNumber: "asc" },
+      }),
+    ]);
+
+    // Count unconfigured items (no GL account)
+    const unconfiguredCount =
+      dockageRates.filter((r) => !r.glAccountId).length +
+      serviceFees.filter((f) => !f.glAccountId).length +
+      rentalProducts.filter((p) => p.active && !p.glAccountId).length;
+
+    res.json({
+      data: {
+        dockageRates,
+        serviceFees,
+        rentalProducts,
+        glAccounts,
+        unconfiguredCount,
+        hasGlAccounts: glAccounts.length > 0,
+      },
+    });
   } catch (err) {
     next(err);
   }
