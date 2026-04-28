@@ -5,7 +5,44 @@ import {
   ArrowLeft, CheckCircle2, AlertTriangle, Anchor,
   Camera, ChevronLeft, ChevronRight, Trash2, X,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
+import { useToast } from '../components/Toast';
+
+/* ── Upload error helpers (mirrors CustomerDetail boat-photo pipeline) ── */
+
+const MAX_PHOTOS_PER_SLIP = 4;
+
+const UPLOAD_ERROR_MESSAGES: Record<string, string> = {
+  EXTENSION_FORBIDDEN:
+    "That file type isn't supported. Please choose a JPG, PNG, WEBP, or HEIC image.",
+  CONTENT_TYPE_FORBIDDEN:
+    "That file type isn't supported. Please choose a JPG, PNG, WEBP, or HEIC image.",
+  SIZE_EXCEEDED: 'Image is too large. Photos must be under the storage limit.',
+  MAGIC_MISMATCH:
+    "The file's contents didn't match its extension. Please try a fresh photo from the camera.",
+  QUOTA_EXCEEDED:
+    'Your storage quota is full. Delete some old files to free up space, then try again.',
+  AV_INFECTED: 'That photo was rejected by the antivirus scanner.',
+  AV_REQUIRED_BUT_SKIPPED:
+    'Antivirus scanning is temporarily unavailable. Please try again in a few minutes.',
+  FORBIDDEN: "You don't have permission to upload here.",
+  STORAGE_NETWORK_BLOCKED:
+    "Couldn't reach file storage. This is usually a network or CORS issue — please contact support.",
+  STORAGE_PUT_FAILED: 'Upload to storage failed — please try again.',
+};
+
+function describeUploadError(err: unknown): { title: string; message: string } {
+  if (err instanceof ApiClientError) {
+    const friendly = err.code ? UPLOAD_ERROR_MESSAGES[err.code] : undefined;
+    if (friendly) return { title: 'Upload failed', message: friendly };
+    return {
+      title: 'Upload failed',
+      message: `${err.message} (status ${err.status}${err.code ? `, ${err.code}` : ''})`,
+    };
+  }
+  if (err instanceof Error) return { title: 'Upload failed', message: err.message };
+  return { title: 'Upload failed', message: 'An unexpected error occurred.' };
+}
 
 /* ── API shapes ──────────────────────────────────────────── */
 
@@ -483,13 +520,25 @@ const ui = {
         opacity: disabled ? 0.5 : 1,
       };
     }
-    const bg = variant === 'success' ? c.green : c.navy;
+    // Accent gradient on the primary CTA so Save & Next really pops; the
+    // success variant uses a green gradient for the final-slip "Save slip"
+    // moment.
+    const bg = disabled
+      ? '#94A3B8'
+      : variant === 'success'
+      ? `linear-gradient(135deg, #15803D 0%, ${c.green} 100%)`
+      : `linear-gradient(135deg, ${c.navy} 0%, #1E40AF 60%, #0EA5E9 100%)`;
+    const shadow = disabled
+      ? 'none'
+      : variant === 'success'
+      ? '0 4px 14px rgba(22,163,74,0.32)'
+      : '0 4px 14px rgba(14,165,233,0.32)';
     return {
       flex: 1,
       minHeight: '56px',
       borderRadius: '12px',
       border: 'none',
-      background: disabled ? '#94A3B8' : bg,
+      background: bg,
       color: '#fff',
       cursor: disabled ? 'not-allowed' : 'pointer',
       fontSize: '16px',
@@ -498,7 +547,8 @@ const ui = {
       alignItems: 'center',
       justifyContent: 'center',
       gap: '6px',
-      boxShadow: disabled ? 'none' : '0 2px 8px rgba(10,35,66,0.25)',
+      boxShadow: shadow,
+      letterSpacing: '0.01em',
     };
   },
   emptyState: {
@@ -514,6 +564,7 @@ export default function DockWalkRunner() {
   const { id: walkId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getToken } = useAuth();
+  const toast = useToast();
 
   const [data, setData] = useState<WalkListResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -635,8 +686,18 @@ export default function DockWalkRunner() {
 
   /* ── Photo upload (presign → PUT → verify → attach) ───────────────── */
   async function handlePhotoUpload(slipId: string, file: File) {
+    // Hard cap — task spec: up to 4 photos per slip.
+    const currentCount = drafts[slipId]?.photoUrls.length ?? 0;
+    if (currentCount >= MAX_PHOTOS_PER_SLIP) {
+      const msg = `You can attach up to ${MAX_PHOTOS_PER_SLIP} photos per slip. Remove one to add another.`;
+      patchDraft(slipId, { photoError: msg });
+      toast.error('Photo limit reached', msg);
+      return;
+    }
     if (!file.type.startsWith('image/') && !/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name)) {
-      patchDraft(slipId, { photoError: 'Please pick an image file.' });
+      const msg = 'Please pick an image file.';
+      patchDraft(slipId, { photoError: msg });
+      toast.error('Unsupported file', msg);
       return;
     }
     patchDraft(slipId, { uploading: true, photoError: null });
@@ -652,6 +713,8 @@ export default function DockWalkRunner() {
       );
       presignKey = presign.key;
 
+      // R2 PUT with structured CORS / network diagnostics so a future
+      // bucket misconfiguration is debuggable from a single console line.
       let put: Response;
       try {
         put = await fetch(presign.url, {
@@ -659,11 +722,35 @@ export default function DockWalkRunner() {
           body: file,
           headers: { 'Content-Type': contentType },
         });
-      } catch {
-        throw new Error("Couldn't reach file storage. Check your connection and try again.");
+      } catch (netErr) {
+        let r2Host = 'unknown';
+        try {
+          r2Host = new URL(presign.url).host;
+        } catch {
+          /* malformed presign URL */
+        }
+        // eslint-disable-next-line no-console
+        console.error('[dock walk photo upload network error]', {
+          stage: 'r2-put',
+          r2Host,
+          storageKey: presignKey,
+          filename: file.name,
+          sizeBytes: file.size,
+          contentType,
+          error: netErr,
+        });
+        throw new ApiClientError(
+          UPLOAD_ERROR_MESSAGES.STORAGE_NETWORK_BLOCKED,
+          0,
+          'STORAGE_NETWORK_BLOCKED',
+        );
       }
       if (!put.ok) {
-        throw new Error(`Upload to storage failed (status ${put.status})`);
+        throw new ApiClientError(
+          `Upload to storage failed (status ${put.status})`,
+          put.status,
+          'STORAGE_PUT_FAILED',
+        );
       }
 
       // Magic-byte verify; on failure, clean up the orphan and bail.
@@ -705,8 +792,18 @@ export default function DockWalkRunner() {
         };
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Photo upload failed';
-      patchDraft(slipId, { uploading: false, photoError: msg });
+      const status = err instanceof ApiClientError ? err.status : undefined;
+      // eslint-disable-next-line no-console
+      console.error('[dock walk photo upload failed]', {
+        storageKey: presignKey,
+        filename: file.name,
+        sizeBytes: file.size,
+        httpStatus: status,
+        error: err,
+      });
+      const { title, message } = describeUploadError(err);
+      patchDraft(slipId, { uploading: false, photoError: message });
+      toast.error(title, message);
       // If we managed to presign but never finished, the orphan is benign:
       // the storage quota worker will sweep it. We only proactively delete
       // when verify failed (handled above).
@@ -714,34 +811,70 @@ export default function DockWalkRunner() {
     }
   }
 
-  function removePhoto(row: WalkListSlip, key: string) {
+  async function removePhoto(row: WalkListSlip, key: string) {
+    if (!walkId) return;
     const persistedKeys = persistedPhotoKeys(row);
     const isPersisted = persistedKeys.includes(key);
+
+    // Optimistic local update so the tile disappears immediately.
+    const prevDraft = drafts[row.slip.id] ?? emptyDraft();
+    const newDraftKeys = prevDraft.photoUrls.filter((k) => k !== key);
     setDrafts((prev) => {
       const cur = prev[row.slip.id] ?? emptyDraft();
       return {
         ...prev,
-        [row.slip.id]: {
-          ...cur,
-          photoUrls: cur.photoUrls.filter((k) => k !== key),
-        },
+        [row.slip.id]: { ...cur, photoUrls: newDraftKeys },
       };
     });
-    // CORRECTNESS: only physically delete the R2 object when it isn't
-    // referenced by a saved DockWalkItem yet. Persisted keys must wait
-    // until the next successful save sweeps them — otherwise the DB row
-    // would still point at a deleted object if the inspector closes the
-    // tab without re-saving. Freshly-uploaded session keys are safe to
-    // delete immediately because nothing references them.
-    if (isPersisted) return;
-    (async () => {
+
+    // Session-only key (uploaded but not yet saved to a DockWalkItem):
+    // safe to free the R2 bytes right now since nothing references them.
+    if (!isPersisted) {
       try {
         const token = await getToken();
         await api.delete(`/api/storage/${encodeURIComponent(key)}`, token);
       } catch {
         /* best-effort */
       }
-    })();
+      return;
+    }
+
+    // Persisted key: per task spec, immediately PUT the new photoUrls list
+    // so the DB stops referencing the object BEFORE we delete it from R2.
+    // If the PUT fails we revert the optimistic change so the UI stays in
+    // sync with what's actually saved.
+    if (!row.item) return;
+    try {
+      const token = await getToken();
+      const updated = await api.put<WalkListItem>(
+        `/api/dock-walks/${walkId}/items/${row.item.id}`,
+        { photoUrls: newDraftKeys.length > 0 ? newDraftKeys : null },
+        token,
+      );
+      setData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          slips: prev.slips.map((s) =>
+            s.slip.id === row.slip.id ? { ...s, item: updated } : s,
+          ),
+        };
+      });
+      // Best-effort R2 delete — the DB no longer points at this key.
+      api
+        .delete(`/api/storage/${encodeURIComponent(key)}`, token)
+        .catch(() => {/* best-effort */});
+      toast.success('Photo removed');
+    } catch (err) {
+      // Revert optimistic update.
+      setDrafts((prev) => {
+        const cur = prev[row.slip.id] ?? emptyDraft();
+        if (cur.photoUrls.includes(key)) return prev;
+        return { ...prev, [row.slip.id]: { ...cur, photoUrls: prevDraft.photoUrls } };
+      });
+      const message = err instanceof Error ? err.message : 'Could not remove photo';
+      toast.error('Could not remove photo', message);
+    }
   }
 
   // Save (POST first time, PUT on edit). Idempotent against double-tap via
@@ -806,9 +939,9 @@ export default function DockWalkRunner() {
       patchDraft(row.slip.id, { saving: false, error: null });
 
       // Sweep R2 objects that used to be referenced by this DockWalkItem
-      // but aren't anymore — these are the keys whose physical delete we
-      // deferred in `removePhoto` for safety. Now that the DB no longer
-      // references them, it's safe to free the bytes.
+      // but aren't anymore — defensive cleanup for any keys whose physical
+      // delete might not have happened during a removePhoto call. Now that
+      // the DB no longer references them, it's safe to free the bytes.
       const keptKeys = new Set(draft.photoUrls);
       const orphans = previouslyPersistedKeys.filter((k) => !keptKeys.has(k));
       if (orphans.length > 0) {
@@ -818,10 +951,19 @@ export default function DockWalkRunner() {
             .catch(() => {/* best-effort */});
         }
       }
+
+      // Success toast — confirms the save without stealing focus from the
+      // next slip the inspector is about to see.
+      const slipLabel = row.slip.slipNumber ?? `Slip ${row.slip.id.slice(0, 6)}`;
+      toast.success(
+        isCreate ? 'Slip saved' : 'Slip updated',
+        `${slipLabel} · ${status === 'OK' ? 'OK' : status === 'VIOLATION' ? 'Issue flagged' : 'Needs follow-up'}`,
+      );
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Save failed';
       patchDraft(row.slip.id, { saving: false, error: msg });
+      toast.error('Save failed', msg);
       return false;
     } finally {
       inFlightRef.current.delete(row.slip.id);
@@ -1154,8 +1296,10 @@ export default function DockWalkRunner() {
               />
             )}
 
-            {/* Photos */}
-            <div style={ui.questionLabel}>Photos ({draft.photoUrls.length})</div>
+            {/* Photos (max MAX_PHOTOS_PER_SLIP per slip) */}
+            <div style={ui.questionLabel}>
+              Photos ({draft.photoUrls.length}/{MAX_PHOTOS_PER_SLIP})
+            </div>
             <div style={ui.photoGrid}>
               {draft.photoUrls.map((key) => {
                 const url = photoUrlMap[key];
@@ -1170,7 +1314,7 @@ export default function DockWalkRunner() {
                       <button
                         type="button"
                         style={ui.photoRemove}
-                        onClick={() => removePhoto(row, key)}
+                        onClick={() => void removePhoto(row, key)}
                         aria-label="Remove photo"
                       >
                         <X size={14} />
@@ -1179,7 +1323,7 @@ export default function DockWalkRunner() {
                   </div>
                 );
               })}
-              {!isCompleted && (
+              {!isCompleted && draft.photoUrls.length < MAX_PHOTOS_PER_SLIP && (
                 <label style={ui.photoAddTile}>
                   {draft.uploading ? (
                     <>
@@ -1209,6 +1353,11 @@ export default function DockWalkRunner() {
                 </label>
               )}
             </div>
+            {!isCompleted && draft.photoUrls.length >= MAX_PHOTOS_PER_SLIP && (
+              <div style={ui.helperText}>
+                Maximum {MAX_PHOTOS_PER_SLIP} photos per slip — remove one to add another.
+              </div>
+            )}
             {draft.photoError && <div style={ui.errorText}>{draft.photoError}</div>}
 
             {/* Save state hints */}
