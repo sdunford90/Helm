@@ -54,6 +54,13 @@ describe('POST /api/inventory/categories', () => {
   it('creates a category with GL & tax defaults', async () => {
     const created = buildCategory({ id: 'cat-new' });
     mockPrisma.productCategory.create.mockResolvedValue(created);
+    // The route now tenant-scopes every supplied GL ID before the write —
+    // mock findMany to return all three so validation passes.
+    mockPrisma.glAccount.findMany.mockResolvedValue([
+      { id: '11111111-1111-1111-1111-111111111111' },
+      { id: '22222222-2222-2222-2222-222222222222' },
+      { id: '33333333-3333-3333-3333-333333333333' },
+    ] as any);
     const res = await request(app)
       .post('/api/inventory/categories')
       .send({
@@ -75,6 +82,28 @@ describe('POST /api/inventory/categories', () => {
         }),
       }),
     );
+  });
+
+  it('rejects category create when a default GL ID belongs to another tenant', async () => {
+    // glAccount.findMany returns nothing for the requested IDs (simulating
+    // a cross-tenant lookup), so the route must 400 with INVALID_GL_ACCOUNT_ID
+    // and never call productCategory.create.
+    mockPrisma.glAccount.findMany.mockResolvedValue([]);
+    const FOREIGN = '99999999-9999-4999-8999-999999999999';
+    const res = await request(app)
+      .post('/api/inventory/categories')
+      .send({
+        name: 'Cross-tenant attempt',
+        defaultRevenueGlAccountId: FOREIGN,
+        defaultTaxCategory: 'general',
+        taxable: true,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      code: 'INVALID_GL_ACCOUNT_ID',
+      invalid: [FOREIGN],
+    });
+    expect(mockPrisma.productCategory.create).not.toHaveBeenCalled();
   });
 
   it('rejects payload without a name', async () => {

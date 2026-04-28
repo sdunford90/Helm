@@ -275,6 +275,29 @@ function getTenantId(req: Request): string {
   return (req as any).tenantId ?? (req as any).userRecord?.tenant_id ?? "default";
 }
 
+/**
+ * Verify that every supplied GL account ID actually belongs to this tenant.
+ * GlAccount is not in TENANT_SCOPED_MODELS, so a malicious or buggy caller
+ * could otherwise persist a cross-tenant FK by sending another tenant's
+ * account UUID. We reject up-front with a 400 listing the offending IDs so
+ * misconfigured UIs surface the problem instead of silently writing the FK.
+ */
+async function findInvalidGlAccountIds(
+  tenantId: string,
+  ids: Array<string | null | undefined>,
+): Promise<string[]> {
+  const requested = Array.from(
+    new Set(ids.filter((v): v is string => typeof v === "string" && v.length > 0)),
+  );
+  if (requested.length === 0) return [];
+  const found = await prisma.glAccount.findMany({
+    where: { id: { in: requested }, tenantId },
+    select: { id: true },
+  });
+  const foundSet = new Set(found.map((r) => r.id));
+  return requested.filter((id) => !foundSet.has(id));
+}
+
 // Shape products for API responses — keeps the front-end fields stable
 // (priceCents/costCents always numbers, etc.)
 function shapeProduct(p: ProductRow) {
@@ -431,6 +454,21 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
+    // Tenant-scope every GL account ID we're about to persist as an FK on
+    // the new product row. Stops cross-tenant FK writes if a malicious or
+    // misconfigured client sends another tenant's account UUID.
+    const invalidGl = await findInvalidGlAccountIds(tenantId, [
+      body.revenueGlAccountId,
+      body.cogsGlAccountId,
+      body.inventoryAssetGlAccountId,
+    ]);
+    if (invalidGl.length > 0) {
+      return res.status(400).json({
+        error: "One or more GL account IDs do not belong to this tenant",
+        code: "INVALID_GL_ACCOUNT_ID",
+        invalid: invalidGl,
+      });
+    }
     // Resolve category defaults into the per-product fields so QBO sync,
     // reports, and tax engine all see consistent values.
     const resolved = await applyCategoryDefaultsToProductData(tenantId, {
@@ -507,6 +545,21 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     const body = UpdateProductSchema.parse(req.body);
     const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Product not found" });
+
+    // Tenant-scope every GL account ID the caller is trying to write so a
+    // cross-tenant FK can't be slipped in via PUT.
+    const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
+      body.revenueGlAccountId,
+      body.cogsGlAccountId,
+      body.inventoryAssetGlAccountId,
+    ]);
+    if (invalidGl.length > 0) {
+      return res.status(400).json({
+        error: "One or more GL account IDs do not belong to this tenant",
+        code: "INVALID_GL_ACCOUNT_ID",
+        invalid: invalidGl,
+      });
+    }
 
     const data: Prisma.ProductUncheckedUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
@@ -701,6 +754,21 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
   try {
     const tenantId = getTenantId(req);
     const body = CategorySchema.parse(req.body);
+    // Tenant-scope every default GL ID before they're persisted so the
+    // category can't be created pointing at another tenant's chart of
+    // accounts (which would propagate via product inheritance).
+    const invalidGl = await findInvalidGlAccountIds(tenantId, [
+      body.defaultRevenueGlAccountId,
+      body.defaultCogsGlAccountId,
+      body.defaultInventoryAssetGlAccountId,
+    ]);
+    if (invalidGl.length > 0) {
+      return res.status(400).json({
+        error: "One or more GL account IDs do not belong to this tenant",
+        code: "INVALID_GL_ACCOUNT_ID",
+        invalid: invalidGl,
+      });
+    }
     const created = await prisma.productCategory.create({
       data: {
         tenantId,
@@ -727,6 +795,21 @@ router.put("/categories/:id", async (req: Request, res: Response, next: NextFunc
     const body = UpdateCategorySchema.parse(req.body);
     const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Category not found" });
+
+    // Tenant-scope every default GL ID the caller is updating, just like
+    // POST — stops cross-tenant FK rewrites via the edit form.
+    const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
+      body.defaultRevenueGlAccountId,
+      body.defaultCogsGlAccountId,
+      body.defaultInventoryAssetGlAccountId,
+    ]);
+    if (invalidGl.length > 0) {
+      return res.status(400).json({
+        error: "One or more GL account IDs do not belong to this tenant",
+        code: "INVALID_GL_ACCOUNT_ID",
+        invalid: invalidGl,
+      });
+    }
 
     const data: Prisma.ProductCategoryUncheckedUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
