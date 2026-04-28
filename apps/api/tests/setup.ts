@@ -294,12 +294,23 @@ vi.mock('../src/middleware/tenant.js', () => ({
   },
 }));
 
-// Mock Stripe
-vi.mock('../src/lib/stripe.js', () => ({
-  stripe: {
-    paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
-    refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
+// Mock Stripe — keep `stripe` and `requireStripe()` returning the SAME object
+// so tests can mutate one mock and have the route see the changes.
+const stripeMock = {
+  paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
+  refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
+  customers: {
+    retrieve: vi.fn().mockResolvedValue({ id: 'cus_test', metadata: { autopay: 'true' } }),
+    update: vi.fn().mockResolvedValue({ id: 'cus_test' }),
+    create: vi.fn().mockResolvedValue({ id: 'cus_test' }),
   },
+  paymentMethods: {
+    list: vi.fn().mockResolvedValue({ data: [] }),
+  },
+};
+vi.mock('../src/lib/stripe.js', () => ({
+  stripe: stripeMock,
+  requireStripe: () => stripeMock,
   createPaymentIntent: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
   createCustomer: vi.fn().mockResolvedValue({ id: 'cus_test' }),
   processWebhook: vi.fn().mockResolvedValue(null),

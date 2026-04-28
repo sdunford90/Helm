@@ -328,18 +328,56 @@ export async function generateRecurringInvoices(
 
       // 6. Auto-charge
       let autoChargeResult: "SUCCESS" | "FAILED" | "SKIPPED" = "SKIPPED";
+      let skipReason: string | null = null;
 
-      if (
-        contract.customer.stripeCustomerId &&
-        !contract.customer.achBlocked
-      ) {
+      if (!contract.customer.stripeCustomerId) {
+        skipReason = "no Stripe customer";
+      } else if (contract.customer.achBlocked) {
+        skipReason = "ACH blocked";
+      } else {
         try {
-          const tenant = await prisma.tenant.findUnique({
-            where: { id: tenantId },
-            select: { stripeAccountId: true },
-          });
+          // Resolve the Stripe Connect account once, preferring the slip's
+          // location account (where the customer record + saved cards
+          // actually live for this contract). Fall back to the tenant
+          // account for marinas that haven't split locations onto separate
+          // Connect accounts yet. This is the same account the portal +
+          // staff autopay toggles write to via the per-customer resolver,
+          // so the metadata read here matches the metadata written there.
+          const [tenant, slipLocation] = await Promise.all([
+            prisma.tenant.findUnique({
+              where: { id: tenantId },
+              select: { stripeAccountId: true },
+            }),
+            contract.slip.locationId
+              ? prisma.location.findUnique({
+                  where: { id: contract.slip.locationId },
+                  select: { stripeAccountId: true },
+                })
+              : Promise.resolve(null),
+          ]);
+          const stripeAccountId =
+            slipLocation?.stripeAccountId ??
+            tenant?.stripeAccountId ??
+            null;
 
-          if (tenant?.stripeAccountId) {
+          if (!stripeAccountId) {
+            skipReason = "no Stripe account configured";
+          } else {
+            // Read the autopay opt-in flag from the customer's Stripe
+            // metadata before charging. Without this gate, anyone who
+            // saved a card for one-off use would silently get auto-charged
+            // on every recurring invoice. The portal writes this same
+            // flag, so the staff toggle and customer toggle agree.
+            const stripeForRead = requireStripe();
+            const stripeCustomer = (await stripeForRead.customers.retrieve(
+              contract.customer.stripeCustomerId,
+              {},
+              { stripeAccount: stripeAccountId },
+            )) as import("stripe").default.Customer;
+
+            if (stripeCustomer.metadata?.autopay !== "true") {
+              skipReason = "autopay not enabled";
+            } else {
             // Reload invoice balance after credits
             const currentInvoice = await prisma.invoice.findUnique({
               where: { id: invoiceId },
@@ -366,7 +404,7 @@ export async function generateRecurringInvoices(
                     contractId: contract.id,
                   },
                 },
-                { stripeAccount: tenant.stripeAccountId },
+                { stripeAccount: stripeAccountId },
               );
 
               if (paymentIntent.status === "succeeded") {
@@ -413,6 +451,8 @@ export async function generateRecurringInvoices(
             } else {
               // Invoice fully covered by credits
               autoChargeResult = "SKIPPED";
+              skipReason = "invoice covered by credits";
+            }
             }
           }
         } catch (err) {
@@ -422,6 +462,12 @@ export async function generateRecurringInvoices(
           );
           autoChargeResult = "FAILED";
         }
+      }
+
+      if (autoChargeResult === "SKIPPED" && skipReason) {
+        console.log(
+          `[billing] auto-charge skipped for invoice ${invoiceId}: ${skipReason}`,
+        );
       }
 
       results.push({

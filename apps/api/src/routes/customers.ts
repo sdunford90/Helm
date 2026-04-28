@@ -1397,4 +1397,109 @@ router.delete(
   },
 );
 
+// ---------------------------------------------------------------------------
+// PUT /api/customers/:id/autopay  — staff-side autopay toggle
+//
+// Mirrors the customer-portal PUT /api/portal/autopay route: writes the
+// `autopay` flag onto the Stripe customer's metadata on the correct Connect
+// account, creating the Stripe customer record on the fly if needed (so the
+// flag can be flipped from "off" → "on" before the customer ever logs in
+// to the portal themselves). The recurring-billing job reads this same flag
+// to decide whether to charge.
+//
+// Tenant-scoped: the customer is resolved with `{ id, tenantId }` and the
+// Stripe call always uses `stripeAccount` from getStripeAccountForCustomer.
+// ---------------------------------------------------------------------------
+const AutopaySchema = z.object({ autopay: z.boolean() });
+
+router.put(
+  "/:id/autopay",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const { autopay } = AutopaySchema.parse(req.body);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true, stripeCustomerId: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      // Block "turn ON" when there's no card on file. Staff still need a real
+      // payment method before autopay can run, and silently letting them flip
+      // the flag would leave the customer's next invoice open with no charge.
+      // The "turn OFF" path is always allowed so staff can disable autopay
+      // even if the customer's last card was just removed.
+      if (autopay && customer.stripeCustomerId) {
+        const stripe = requireStripe();
+        const stripeOpts = { stripeAccount: account.stripeAccountId };
+        const [cards, banks] = await Promise.all([
+          stripe.paymentMethods.list(
+            { customer: customer.stripeCustomerId, type: "card" },
+            stripeOpts,
+          ),
+          stripe.paymentMethods.list(
+            { customer: customer.stripeCustomerId, type: "us_bank_account" },
+            stripeOpts,
+          ),
+        ]);
+        if (cards.data.length === 0 && banks.data.length === 0) {
+          res.status(400).json({
+            error: "Add a card or bank account before enabling autopay.",
+            code: "NO_PAYMENT_METHOD",
+          });
+          return;
+        }
+      } else if (autopay && !customer.stripeCustomerId) {
+        res.status(400).json({
+          error: "Add a card or bank account before enabling autopay.",
+          code: "NO_PAYMENT_METHOD",
+        });
+        return;
+      }
+
+      const stripeCustomerId = await ensureStripeCustomer(
+        customerId,
+        tenantId,
+        account.stripeAccountId,
+      );
+
+      const stripe = requireStripe();
+      await stripe.customers.update(
+        stripeCustomerId,
+        { metadata: { autopay: String(autopay) } },
+        { stripeAccount: account.stripeAccountId },
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "AUTOPAY_CHANGED",
+          changedFieldsJson: { autopay },
+        },
+      });
+
+      res.json({ autopay });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;

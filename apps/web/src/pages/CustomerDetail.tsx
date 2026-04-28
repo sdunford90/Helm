@@ -1318,6 +1318,25 @@ export default function CustomerDetailPage() {
     }
   }
 
+  const [autopayBusy, setAutopayBusy] = useState(false);
+  async function toggleAutopay() {
+    if (!paymentMethods) return;
+    const next = !paymentMethods.autopay;
+    setPmError(null);
+    setAutopayBusy(true);
+    try {
+      const token = await getToken();
+      await api.put(`/api/customers/${id}/autopay`, { autopay: next }, token);
+      await refetchPaymentMethods();
+    } catch (err) {
+      setPmError(
+        err instanceof Error ? err.message : 'Could not update autopay',
+      );
+    } finally {
+      setAutopayBusy(false);
+    }
+  }
+
   async function removeMethod(pmId: string, label: string) {
     if (!window.confirm(`Remove this saved ${label}? The customer will need to re-enter it next time.`)) return;
     setPmError(null);
@@ -1516,22 +1535,43 @@ export default function CustomerDetailPage() {
             <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <CreditCard size={16} color="#0F2E4D" />
               Cards on File
-              {paymentMethods && (
-                <span
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: '10px',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    textTransform: 'none',
-                    letterSpacing: 0,
-                    backgroundColor: paymentMethods.autopay ? '#DCFCE7' : '#F1F5F9',
-                    color: paymentMethods.autopay ? '#166534' : '#64748B',
-                  }}
-                >
-                  {paymentMethods.autopay ? 'Autopay enabled' : 'Autopay off'}
-                </span>
-              )}
+              {paymentMethods && paymentMethods.stripeConfigured && paymentMethods.locationConnected && (() => {
+                const hasMethods = paymentMethods.methods.length > 0;
+                const disabled = autopayBusy || (!paymentMethods.autopay && !hasMethods);
+                const title = !paymentMethods.autopay && !hasMethods
+                  ? 'Add a card or bank account before enabling autopay'
+                  : paymentMethods.autopay
+                    ? 'Click to turn autopay off'
+                    : 'Click to turn autopay on';
+                return (
+                  <button
+                    type="button"
+                    onClick={toggleAutopay}
+                    disabled={disabled}
+                    title={title}
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: '10px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      textTransform: 'none',
+                      letterSpacing: 0,
+                      backgroundColor: paymentMethods.autopay ? '#DCFCE7' : '#F1F5F9',
+                      color: paymentMethods.autopay ? '#166534' : '#64748B',
+                      border: '1px solid',
+                      borderColor: paymentMethods.autopay ? '#86EFAC' : '#CBD5E1',
+                      cursor: disabled ? 'not-allowed' : 'pointer',
+                      opacity: disabled && !paymentMethods.autopay ? 0.6 : 1,
+                    }}
+                  >
+                    {autopayBusy
+                      ? 'Saving…'
+                      : paymentMethods.autopay
+                        ? 'Autopay on · click to disable'
+                        : 'Autopay off · click to enable'}
+                  </button>
+                );
+              })()}
             </span>
             {paymentMethods?.stripeConfigured && paymentMethods?.locationConnected && (
               <span style={{ display: 'flex', gap: '8px' }}>
