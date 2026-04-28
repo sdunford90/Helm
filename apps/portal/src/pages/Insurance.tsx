@@ -122,15 +122,18 @@ export default function Insurance() {
       const token = await getToken();
       const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
-      // Step 1: Get presigned upload URL from storage service
+      // Step 1: Get presigned upload URL from storage service.
+      // Field names must match the backend's PresignUploadSchema exactly
+      // (category/filename/contentType) — earlier mismatches were the
+      // cause of the "failed to fetch" error customers saw on insurance
+      // doc upload.
       const presignRes = await fetch('/api/storage/presign-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
+          category: 'insurance',
+          filename: file.name,
           contentType: file.type,
-          fileName: file.name,
-          folder: 'documents',
-          sizeBytesHint: file.size,
         }),
       });
       if (!presignRes.ok) {

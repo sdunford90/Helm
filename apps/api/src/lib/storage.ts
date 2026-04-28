@@ -23,7 +23,7 @@ const r2 = new S3Client({
 const BUCKET = process.env.R2_BUCKET || "helm-files";
 
 // Key format: {tenantId}/{category}/{filename}
-type FileCategory = "insurance" | "photos" | "contracts" | "invoices" | "documents";
+type FileCategory = "insurance" | "photos" | "contracts" | "invoices" | "documents" | "logo";
 
 /**
  * Upload a file directly to R2.
@@ -129,6 +129,7 @@ export async function getStorageUsage(
     "contracts",
     "invoices",
     "documents",
+    "logo",
   ];
   const byCategory: Record<FileCategory, number> = {
     insurance: 0,
@@ -136,6 +137,7 @@ export async function getStorageUsage(
     contracts: 0,
     invoices: 0,
     documents: 0,
+    logo: 0,
   };
 
   let totalBytes = 0;

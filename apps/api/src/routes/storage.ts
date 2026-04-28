@@ -30,6 +30,7 @@ const FileCategoryEnum = z.enum([
   "contracts",
   "invoices",
   "documents",
+  "logo",
 ]);
 
 const PresignUploadSchema = z.object({

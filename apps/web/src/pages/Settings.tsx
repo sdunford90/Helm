@@ -454,8 +454,8 @@ export default function Settings() {
 
   const handleLogoUpload = async (file: File) => {
     if (!file) return;
-    const validTypes = ['image/png', 'image/jpeg', 'image/svg+xml', 'image/webp'];
-    if (!validTypes.includes(file.type)) { setLogoError('Please upload a PNG, JPG, SVG, or WebP image.'); return; }
+    const validTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!validTypes.includes(file.type)) { setLogoError('Please upload a PNG, JPG, or WebP image.'); return; }
     if (file.size > 5 * 1024 * 1024) { setLogoError('Logo must be under 5 MB.'); return; }
     setLogoUploading(true);
     setLogoError(null);
@@ -2000,7 +2000,7 @@ export default function Settings() {
             <input
               ref={logoInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/svg+xml,image/webp"
+              accept="image/png,image/jpeg,image/webp"
               style={{ display: 'none' }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleLogoUpload(f); }}
             />

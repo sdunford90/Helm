@@ -3,6 +3,8 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
+import { requireStripe } from "../lib/stripe.js";
+import type Stripe from "stripe";
 
 const router: Router = Router();
 
@@ -833,6 +835,95 @@ router.delete(
 
       await prisma.customerDocument.delete({ where: { id: docId } });
       res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/customers/:id/payment-methods — staff-facing list of saved Stripe
+// payment methods (cards + ACH bank accounts) for a given customer. Mirrors
+// the portal endpoint but scoped by URL param so marina staff can see what's
+// on file when helping customers over the phone.
+// ---------------------------------------------------------------------------
+router.get(
+  "/:id/payment-methods",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { stripeCustomerId: true },
+      });
+      if (!customer) {
+        res.status(404).json({ error: "Customer not found", code: "NOT_FOUND" });
+        return;
+      }
+      if (!customer.stripeCustomerId) {
+        res.json({ methods: [], defaultMethodId: null, autopay: false });
+        return;
+      }
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { stripeAccountId: true },
+      });
+      if (!tenant?.stripeAccountId) {
+        res.json({ methods: [], defaultMethodId: null, autopay: false });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: tenant.stripeAccountId };
+
+      const [cardList, bankList, stripeCustomer] = await Promise.all([
+        stripe.paymentMethods.list(
+          { customer: customer.stripeCustomerId, type: "card" },
+          stripeOpts,
+        ),
+        stripe.paymentMethods.list(
+          { customer: customer.stripeCustomerId, type: "us_bank_account" },
+          stripeOpts,
+        ),
+        stripe.customers.retrieve(customer.stripeCustomerId, {}, stripeOpts),
+      ]);
+
+      const sc = stripeCustomer as Stripe.Customer;
+      const defaultMethodId =
+        (typeof sc.invoice_settings?.default_payment_method === "string"
+          ? sc.invoice_settings.default_payment_method
+          : null) ??
+        (typeof sc.default_source === "string" ? sc.default_source : null);
+      const autopay = sc.metadata?.autopay === "true";
+
+      const methods = [
+        ...cardList.data.map((pm) => ({
+          id: pm.id,
+          kind: "card" as const,
+          brand: pm.card?.brand ?? "card",
+          label: (pm.card?.brand ?? "Card").replace(/^\w/, (c) => c.toUpperCase()),
+          last4: pm.card?.last4 ?? "****",
+          expiry:
+            pm.card?.exp_month && pm.card?.exp_year
+              ? `${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)}`
+              : null,
+          isDefault: pm.id === defaultMethodId,
+        })),
+        ...bankList.data.map((pm) => ({
+          id: pm.id,
+          kind: "bank" as const,
+          brand: "bank",
+          label: pm.us_bank_account?.bank_name ?? "Bank Account",
+          last4: pm.us_bank_account?.last4 ?? "****",
+          expiry: null,
+          isDefault: pm.id === defaultMethodId,
+        })),
+      ];
+
+      res.json({ methods, defaultMethodId, autopay });
     } catch (err) {
       next(err);
     }

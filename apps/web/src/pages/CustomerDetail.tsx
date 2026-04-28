@@ -833,6 +833,23 @@ export default function CustomerDetailPage() {
   const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
   const { data: documentsData, execute: refetchDocuments } = useApi<ApiCustomerDocument[]>('get', `/api/customers/${id}/documents`, { immediate: true });
+  // Saved Stripe payment methods on file (cards + ACH). Backed by
+  // GET /api/customers/:id/payment-methods which talks to Stripe via the
+  // tenant's Connect account. Fails open with an empty list when the
+  // tenant has no Stripe account configured.
+  const { data: paymentMethodsData } = useApi<{
+    methods: Array<{
+      id: string;
+      kind: 'card' | 'bank';
+      brand: string;
+      label: string;
+      last4: string;
+      expiry: string | null;
+      isDefault: boolean;
+    }>;
+    defaultMethodId: string | null;
+    autopay: boolean;
+  }>('get', `/api/customers/${id}/payment-methods`, { immediate: true });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -1175,8 +1192,68 @@ export default function CustomerDetailPage() {
   );
 
   /* ── Billing Tab ─── */
+  const renderPaymentMethods = () => {
+    const methods = paymentMethodsData?.methods ?? [];
+    return (
+      <div style={{ ...s.tableWrap, marginBottom: 24 }} className="helm-table-wrap">
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#0F172A' }}>Payment Methods on File</div>
+            <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>
+              {paymentMethodsData?.autopay ? 'Autopay enabled' : 'Autopay off'}
+              {paymentMethodsData?.defaultMethodId ? ' · default set' : ''}
+            </div>
+          </div>
+        </div>
+        {methods.length === 0 ? (
+          <div style={{ padding: 20, color: '#64748B', fontSize: 13 }}>
+            No saved cards or bank accounts. Customers can add a payment method from the customer portal.
+          </div>
+        ) : (
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>Type</th>
+                <th style={s.th}>Brand / Bank</th>
+                <th style={s.th}>Last 4</th>
+                <th style={s.th}>Expiry</th>
+                <th style={s.th}>Default</th>
+              </tr>
+            </thead>
+            <tbody>
+              {methods.map((pm, idx) => {
+                const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                return (
+                  <tr key={pm.id}>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>
+                      {pm.kind === 'card' ? 'Card' : 'Bank (ACH)'}
+                    </td>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>{pm.label}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>•••• {pm.last4}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, color: '#64748B' }}>
+                      {pm.expiry ?? '—'}
+                    </td>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>
+                      {pm.isDefault ? (
+                        <span style={{ ...s.badge, backgroundColor: '#DCFCE7', color: '#166534' }}>Default</span>
+                      ) : (
+                        <span style={{ color: '#94A3B8', fontSize: 12 }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  };
+
   const renderBilling = () => (
-    <div style={s.tableWrap} className="helm-table-wrap">
+    <div>
+      {renderPaymentMethods()}
+      <div style={s.tableWrap} className="helm-table-wrap">
       <table style={s.table}>
         <thead>
           <tr>
@@ -1211,6 +1288,7 @@ export default function CustomerDetailPage() {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 

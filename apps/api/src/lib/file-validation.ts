@@ -21,7 +21,8 @@ export type FileCategory =
   | "photos"
   | "contracts"
   | "invoices"
-  | "documents";
+  | "documents"
+  | "logo";
 
 interface CategoryPolicy {
   maxBytes: number;
@@ -66,6 +67,14 @@ const POLICY: Record<FileCategory, CategoryPolicy> = {
       "text/csv",
     ],
     allowedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".txt", ".csv"],
+  },
+  // Tenant logo uploaded from Settings; small raster image only.
+  // (SVG intentionally excluded — verifyUploadedFile() does magic-byte
+  // checks and SVG would always trip MAGIC_MISMATCH.)
+  logo: {
+    maxBytes: 5 * MB,
+    allowedContentTypes: ["image/png", "image/jpeg", "image/webp"],
+    allowedExtensions: [".png", ".jpg", ".jpeg", ".webp"],
   },
 };
 
