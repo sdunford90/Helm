@@ -266,6 +266,10 @@ model Tenant {
   qboRefreshToken      String?
   qboTokenExpiresAt    DateTime?
   qboConnectedAt       DateTime?
+  // Last time we pulled Vendors / Bills from QBO for this tenant. Used as
+  // the watermark when querying QBO for "everything updated since X".
+  qboLastVendorPullAt  DateTime?
+  qboLastBillPullAt    DateTime?
   timezone             String       @default("America/New_York")
   fiscalYearEnd        String       @default("12/31")
   saasTierId           String?
@@ -333,6 +337,9 @@ model Location {
   qboTokenExpiresAt   DateTime?
   qboConnectedAt      DateTime?
   qboCompanyName      String?
+  // Last time we pulled Vendors / Bills from QBO for this location.
+  qboLastVendorPullAt DateTime?
+  qboLastBillPullAt   DateTime?
 
   // Per-location Stripe Connect (each property routes payments to its own account)
   stripeAccountId           String?

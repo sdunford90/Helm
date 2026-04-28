@@ -10,6 +10,7 @@ import {
   syncInvoice,
   getStatus,
   disconnect,
+  pullVendorsAndBillsForTenant,
 } from "../services/qbo-sync.js";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 
@@ -189,5 +190,28 @@ router.post(
 // from index.ts via the dedicated webhooks-qbo router (which performs
 // HMAC signature verification instead). Defining it on this router would
 // re-impose the clerkAuth + requireRole middleware above.
+
+// --------------------------------------------------------------------------
+// POST /pull — Pull Vendors and Bills from QBO into Helm
+// --------------------------------------------------------------------------
+//
+// Iterates every QBO connection for this tenant (per-location and tenant-
+// level) and asks QBO for everything updated since each endpoint's last
+// successful pull. Safe to call repeatedly — uses qboVendorId / qboBillId
+// to upsert. Each applied change writes an audit log entry.
+// --------------------------------------------------------------------------
+
+router.post(
+  "/pull",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const result = await pullVendorsAndBillsForTenant(tenantId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

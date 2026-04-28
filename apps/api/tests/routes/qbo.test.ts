@@ -13,6 +13,13 @@ vi.mock('../../src/services/qbo-sync.js', () => ({
   disconnect: vi.fn().mockResolvedValue(undefined),
   disconnectLocation: vi.fn().mockResolvedValue(undefined),
   handleQboWebhook: vi.fn().mockResolvedValue(undefined),
+  pullVendorsAndBillsForTenant: vi.fn().mockResolvedValue({
+    vendors: { created: 2, updated: 1, skipped: 0 },
+    bills:   { created: 1, updated: 0, skipped: 0 },
+    endpoints: [
+      { scope: 'location', locationId: 'loc-1', vendors: { created: 2, updated: 1, skipped: 0 }, bills: { created: 1, updated: 0, skipped: 0 } },
+    ],
+  }),
 }));
 
 import {
@@ -244,5 +251,19 @@ describe('POST /api/qbo/webhook — Intuit delivery (no Clerk session)', () => {
 
     expect(res.status).toBe(500);
     expect(vi.mocked(handleQboWebhook)).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/qbo/pull — manual pull of vendors and bills', () => {
+  it('invokes pullVendorsAndBillsForTenant for the request tenant and returns the summary', async () => {
+    const { pullVendorsAndBillsForTenant } = await import('../../src/services/qbo-sync.js');
+
+    const res = await request(app).post('/api/qbo/pull').send({});
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(pullVendorsAndBillsForTenant)).toHaveBeenCalledWith('test-tenant-id');
+    expect(res.body.vendors).toEqual({ created: 2, updated: 1, skipped: 0 });
+    expect(res.body.bills).toEqual({ created: 1, updated: 0, skipped: 0 });
+    expect(Array.isArray(res.body.endpoints)).toBe(true);
   });
 });

@@ -15,6 +15,40 @@ beforeEach(async () => {
   handleQboWebhook = mod.handleQboWebhook;
 });
 
+let applyQboVendor: typeof import('../../src/services/qbo-sync.js').applyQboVendor;
+let applyQboBill: typeof import('../../src/services/qbo-sync.js').applyQboBill;
+let pullVendorsAndBillsForTenant: typeof import('../../src/services/qbo-sync.js').pullVendorsAndBillsForTenant;
+
+beforeEach(async () => {
+  const mod = await import('../../src/services/qbo-sync.js');
+  applyQboVendor = mod.applyQboVendor;
+  applyQboBill = mod.applyQboBill;
+  pullVendorsAndBillsForTenant = mod.pullVendorsAndBillsForTenant;
+
+  (mockPrisma as any).vendor = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+  };
+  (mockPrisma as any).purchaseOrder = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+  };
+  (mockPrisma as any).location = {
+    findUnique: vi.fn().mockResolvedValue(null),
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
+  };
+  mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({});
+  mockPrisma.tenant.update = vi.fn().mockResolvedValue({});
+  mockPrisma.auditLog.create = vi.fn().mockResolvedValue({});
+});
+
 describe('syncInvoice — location credential guard', () => {
   it('throws "QuickBooks Online is not connected for location" when the invoice location has no QBO credentials', async () => {
     const locationId = 'loc-no-qbo';
@@ -311,166 +345,304 @@ describe('getInventorySyncStatus — aggregates sync refs into a status summary'
   });
 });
 
-describe('handleQboWebhook — Location-first realm routing', () => {
-  it('routes a webhook event to the Location whose realmId matches', async () => {
-    const realmId = 'realm-loc-123';
+// ===========================================================================
+// Pull-back from QBO — Vendors and Bills (webhook + manual pull)
+// ===========================================================================
 
-    (mockPrisma as any).location = {
-      findFirst: vi.fn().mockResolvedValue({
-        id: 'loc-qbo-1',
-        tenantId: 'tenant-qbo-1',
-      }),
-    };
-    mockPrisma.tenant.findFirst = vi.fn() as any;
+beforeEach(async () => {
+  const mod = await import('../../src/services/qbo-sync.js');
+  applyQboVendor = mod.applyQboVendor;
+  applyQboBill = mod.applyQboBill;
+  pullVendorsAndBillsForTenant = mod.pullVendorsAndBillsForTenant;
 
-    // No matching invoice — handler should still resolve location and not crash.
-    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+  (mockPrisma as any).vendor = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+  };
+  (mockPrisma as any).purchaseOrder = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+  };
+  (mockPrisma as any).location = {
+    findUnique: vi.fn().mockResolvedValue(null),
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
+  };
+  mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({});
+  mockPrisma.tenant.update = vi.fn().mockResolvedValue({});
+  mockPrisma.auditLog.create = vi.fn().mockResolvedValue({});
+});
 
-    await handleQboWebhook({
-      eventNotifications: [
-        {
-          realmId,
-          dataChangeEvent: {
-            entities: [
-              { name: 'Payment', id: 'qbo-pay-1', operation: 'Create' },
-            ],
-          },
-        },
-      ],
+describe('applyQboVendor — upsert by qboVendorId', () => {
+  it('creates a new local Vendor when none exists with the qboVendorId', async () => {
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockResolvedValue(null);
+    (mockPrisma as any).vendor.create = vi.fn().mockResolvedValue({
+      id: 'vendor-new',
+      tenantId: 'tenant-1',
+      name: 'ACME Marina Supplies',
+      email: 'ap@acme.test',
+      phone: '555-1212',
+      address: '1 Dock Rd',
+      active: true,
     });
 
-    // Location must have been consulted first by realmId.
-    expect((mockPrisma as any).location.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ qboRealmId: realmId }),
-      }),
+    const result = await applyQboVendor(
+      'tenant-1',
+      null,
+      {
+        Id: '999',
+        DisplayName: 'ACME Marina Supplies',
+        PrimaryEmailAddr: { Address: 'ap@acme.test' },
+        PrimaryPhone: { FreeFormNumber: '555-1212' },
+        BillAddr: { Line1: '1 Dock Rd' },
+        Active: true,
+      },
+      'webhook',
     );
-    // Tenant fallback must NOT be used when a location matches.
-    expect(mockPrisma.tenant.findFirst).not.toHaveBeenCalled();
 
-    // Audit log should record the resolved locationId.
-    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+    expect(result.created).toBe(true);
+    expect(result.vendorId).toBe('vendor-new');
+    expect((mockPrisma as any).vendor.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          tenantId: 'tenant-qbo-1',
-          action: 'QBO_WEBHOOK_PAYMENT_RECEIVED',
-          changedFieldsJson: expect.objectContaining({
-            qboPaymentId: 'qbo-pay-1',
-            locationId: 'loc-qbo-1',
-            realmId,
-          }),
+          tenantId: 'tenant-1',
+          name: 'ACME Marina Supplies',
+          email: 'ap@acme.test',
+          qboVendorId: '999',
         }),
+      }),
+    );
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'QBO_VENDOR_PULLED' }),
       }),
     );
   });
 
-  it('falls back to Tenant lookup when no Location owns the realmId', async () => {
-    const realmId = 'realm-tenant-only';
-
-    (mockPrisma as any).location = {
-      findFirst: vi.fn().mockResolvedValue(null),
-    };
-    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue({
-      id: 'tenant-legacy-qbo',
-    }) as any;
-
-    mockPrisma.invoice.findFirst.mockResolvedValue(null);
-
-    await handleQboWebhook({
-      eventNotifications: [
-        {
-          realmId,
-          dataChangeEvent: {
-            entities: [
-              { name: 'Payment', id: 'qbo-pay-2', operation: 'Create' },
-            ],
-          },
-        },
-      ],
+  it('updates an existing local Vendor matched by qboVendorId and audits the changed fields', async () => {
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockResolvedValue({
+      id: 'vendor-1',
+      tenantId: 'tenant-1',
+      name: 'Old Name',
+      email: null,
+      phone: null,
+      address: null,
+      active: true,
+      qboVendorId: '777',
     });
+    (mockPrisma as any).vendor.update = vi.fn().mockResolvedValue({});
 
-    expect((mockPrisma as any).location.findFirst).toHaveBeenCalled();
-    expect(mockPrisma.tenant.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ qboRealmId: realmId }),
-      }),
+    const result = await applyQboVendor(
+      'tenant-1',
+      null,
+      {
+        Id: '777',
+        DisplayName: 'New Name',
+        PrimaryEmailAddr: { Address: 'new@test.com' },
+      },
+      'pull',
     );
 
-    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(
+    expect(result.created).toBe(false);
+    expect(result.vendorId).toBe('vendor-1');
+    expect((mockPrisma as any).vendor.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          tenantId: 'tenant-legacy-qbo',
-          action: 'QBO_WEBHOOK_PAYMENT_RECEIVED',
-          changedFieldsJson: expect.objectContaining({
-            locationId: null,
-          }),
-        }),
+        where: { id: 'vendor-1' },
+        data: expect.objectContaining({ name: 'New Name', email: 'new@test.com' }),
       }),
     );
+    const auditCalls = (mockPrisma.auditLog.create as any).mock.calls;
+    const pulled = auditCalls.find((c: any) => c[0]?.data?.action === 'QBO_VENDOR_PULLED');
+    expect(pulled).toBeTruthy();
+    expect(pulled[0].data.changedFieldsJson.changed).toHaveProperty('name');
+    expect(pulled[0].data.changedFieldsJson.changed).toHaveProperty('email');
   });
 
-  it('silently skips events for an unknown realmId without crashing', async () => {
-    (mockPrisma as any).location = {
-      findFirst: vi.fn().mockResolvedValue(null),
-    };
-    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue(null) as any;
+  it('skips audit log when nothing actually changed but still touches qboVendorSyncedAt', async () => {
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockResolvedValue({
+      id: 'vendor-noop',
+      tenantId: 'tenant-1',
+      name: 'Same Name',
+      email: 'same@test.com',
+      phone: null,
+      address: null,
+      active: true,
+      qboVendorId: '555',
+    });
+    (mockPrisma as any).vendor.update = vi.fn().mockResolvedValue({});
 
-    await expect(
-      handleQboWebhook({
-        eventNotifications: [
-          {
-            realmId: 'realm-unknown',
-            dataChangeEvent: {
-              entities: [{ name: 'Customer', id: 'x', operation: 'Update' }],
-            },
-          },
-        ],
+    await applyQboVendor(
+      'tenant-1',
+      null,
+      {
+        Id: '555',
+        DisplayName: 'Same Name',
+        PrimaryEmailAddr: { Address: 'same@test.com' },
+        Active: true,
+      },
+      'pull',
+    );
+
+    expect((mockPrisma as any).vendor.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ qboVendorSyncedAt: expect.any(Date) }),
       }),
-    ).resolves.toBeUndefined();
-
-    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+    );
+    const auditCalls = (mockPrisma.auditLog.create as any).mock.calls;
+    const pulled = auditCalls.find((c: any) => c[0]?.data?.action === 'QBO_VENDOR_PULLED');
+    expect(pulled).toBeUndefined();
   });
 });
 
-describe('findFailedInventorySyncRefs — drives bulk retry endpoint', () => {
-  it('queries only sync refs whose lastError is set and shapes them for the retry helper', async () => {
-    const now = new Date();
-    const failingRow = {
-      qboType: 'Item',
-      qboId: null,
-      lastSyncedAt: null,
-      lastError: 'QBO 401',
-      lastErrorAt: now,
-      sourceType: 'product',
-      sourceId: 'inv-prod-100',
-      locationId: 'loc-1',
-    };
-    const findMany = vi.fn().mockResolvedValue([failingRow]);
-    (mockPrisma as any).qboInventorySyncRef.findMany = findMany;
-
-    const mod = await import('../../src/services/qbo-sync.js');
-    const refs = await mod.findFailedInventorySyncRefs('tenant-1');
-
-    expect(findMany).toHaveBeenCalledWith({
-      where: { tenantId: 'tenant-1', lastError: { not: null } },
-      orderBy: [{ lastErrorAt: 'asc' }],
+describe('applyQboBill — upsert PurchaseOrder by qboBillId', () => {
+  it('creates a new PurchaseOrder when none exists, linking the existing local vendor', async () => {
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockResolvedValue({
+      id: 'vendor-existing',
+      tenantId: 'tenant-1',
+      qboVendorId: '888',
+      name: 'ACME',
     });
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toEqual({
-      sourceType: 'product',
-      sourceId: 'inv-prod-100',
-      qboType: 'Item',
-      qboId: null,
-      locationId: 'loc-1',
-      lastError: 'QBO 401',
-      lastErrorAt: now,
-    });
+    (mockPrisma as any).purchaseOrder.findFirst = vi.fn().mockResolvedValue(null);
+    (mockPrisma as any).purchaseOrder.create = vi.fn().mockResolvedValue({ id: 'po-new' });
+
+    const result = await applyQboBill(
+      'tenant-1',
+      'loc-1',
+      {
+        Id: '4242',
+        DocNumber: 'BILL-4242',
+        TxnDate: '2026-04-28',
+        DueDate: '2026-05-28',
+        TotalAmt: 125.50,
+        Balance: 125.50,
+        VendorRef: { value: '888', name: 'ACME' },
+      },
+      'pull',
+    );
+
+    expect(result.created).toBe(true);
+    expect(result.purchaseOrderId).toBe('po-new');
+    expect((mockPrisma as any).purchaseOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          tenantId: 'tenant-1',
+          locationId: 'loc-1',
+          vendorId: 'vendor-existing',
+          qboBillId: '4242',
+          poNumber: 'BILL-4242',
+          totalCents: 12550,
+          status: 'received',
+        }),
+      }),
+    );
+    const audited = (mockPrisma.auditLog.create as any).mock.calls.find(
+      (c: any) => c[0]?.data?.action === 'QBO_BILL_PULLED',
+    );
+    expect(audited).toBeTruthy();
   });
 
-  it('returns an empty array when no refs are in an error state', async () => {
-    (mockPrisma as any).qboInventorySyncRef.findMany = vi.fn().mockResolvedValue([]);
-    const mod = await import('../../src/services/qbo-sync.js');
-    const refs = await mod.findFailedInventorySyncRefs('tenant-1');
-    expect(refs).toEqual([]);
+  it('creates a stub local Vendor when the bill references a vendor we have not seen yet', async () => {
+    let vendorLookups = 0;
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockImplementation(() => {
+      vendorLookups++;
+      return Promise.resolve(null);
+    });
+    (mockPrisma as any).vendor.create = vi.fn().mockResolvedValue({
+      id: 'vendor-stub',
+      tenantId: 'tenant-1',
+      qboVendorId: '300',
+      name: 'New QBO Vendor',
+    });
+    (mockPrisma as any).purchaseOrder.findFirst = vi.fn().mockResolvedValue(null);
+    (mockPrisma as any).purchaseOrder.create = vi.fn().mockResolvedValue({ id: 'po-stub' });
+
+    await applyQboBill(
+      'tenant-1',
+      null,
+      {
+        Id: '7000',
+        TotalAmt: 50,
+        VendorRef: { value: '300', name: 'New QBO Vendor' },
+      },
+      'webhook',
+    );
+
+    expect(vendorLookups).toBeGreaterThanOrEqual(1);
+    expect((mockPrisma as any).vendor.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ qboVendorId: '300' }),
+      }),
+    );
+    expect((mockPrisma as any).purchaseOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ vendorId: 'vendor-stub', qboBillId: '7000' }),
+      }),
+    );
+    const stubAudit = (mockPrisma.auditLog.create as any).mock.calls.find(
+      (c: any) => c[0]?.data?.action === 'QBO_VENDOR_STUB_CREATED',
+    );
+    expect(stubAudit).toBeTruthy();
+  });
+
+  it('updates an existing PurchaseOrder matched by qboBillId rather than duplicating', async () => {
+    (mockPrisma as any).vendor.findFirst = vi.fn().mockResolvedValue({
+      id: 'vendor-1',
+      qboVendorId: '888',
+      name: 'ACME',
+    });
+    (mockPrisma as any).purchaseOrder.findFirst = vi.fn().mockResolvedValue({
+      id: 'po-existing',
+      tenantId: 'tenant-1',
+      vendorId: 'vendor-1',
+      poNumber: 'BILL-OLD',
+      totalCents: 10000,
+      status: 'received',
+      qboBillId: '4242',
+    });
+    (mockPrisma as any).purchaseOrder.update = vi.fn().mockResolvedValue({});
+
+    const result = await applyQboBill(
+      'tenant-1',
+      null,
+      {
+        Id: '4242',
+        DocNumber: 'BILL-NEW',
+        TotalAmt: 200,
+        Balance: 200,
+        VendorRef: { value: '888' },
+      },
+      'webhook',
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.purchaseOrderId).toBe('po-existing');
+    expect((mockPrisma as any).purchaseOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'po-existing' },
+        data: expect.objectContaining({ totalCents: 20000, poNumber: 'BILL-NEW' }),
+      }),
+    );
+    expect((mockPrisma as any).purchaseOrder.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('pullVendorsAndBillsForTenant — iterates connected QBO endpoints', () => {
+  it('returns empty endpoint list when neither tenant nor any location has QBO connected', async () => {
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: null,
+      qboRealmId: null,
+    });
+    (mockPrisma as any).location.findMany = vi.fn().mockResolvedValue([]);
+
+    const result = await pullVendorsAndBillsForTenant('tenant-1');
+    expect(result.endpoints).toHaveLength(0);
+    expect(result.vendors).toEqual({ created: 0, updated: 0, skipped: 0 });
+    expect(result.bills).toEqual({ created: 0, updated: 0, skipped: 0 });
   });
 });

@@ -920,6 +920,31 @@ export async function syncAll(
 // --------------------------------------------------------------------------
 // Webhook Handler
 // --------------------------------------------------------------------------
+//
+// Resolves the incoming realmId to either a tenant-level connection or a
+// per-location connection (since each marina property files its own books
+// and so has its own QBO realm). Then dispatches per-entity handlers that
+// fetch the changed QBO record and upsert it into Helm.
+// --------------------------------------------------------------------------
+
+async function resolveWebhookContext(realmId: string): Promise<QboCredentialContext | null> {
+  // Prefer location-level — per-location QBO is the standard configuration.
+  const location = await prisma.location.findFirst({
+    where: { qboRealmId: realmId } as any,
+    select: { id: true, tenantId: true } as any,
+  });
+  if (location) {
+    return { tenantId: (location as any).tenantId, locationId: (location as any).id };
+  }
+  const tenant = await prisma.tenant.findFirst({
+    where: { qboRealmId: realmId } as any,
+    select: { id: true },
+  });
+  if (tenant) {
+    return { tenantId: tenant.id };
+  }
+  return null;
+}
 
 export async function handleQboWebhook(
   payload: any,
@@ -929,54 +954,22 @@ export async function handleQboWebhook(
 
   for (const notification of payload.eventNotifications) {
     const realmId = notification.realmId;
+    const ctx = await resolveWebhookContext(realmId);
 
-    // Resolve which Helm location/tenant owns this realm.
-    // Per-Location QBO connections are now primary, so check Location first
-    // and fall back to Tenant for legacy tenant-level connections.
-    let effectiveTenantId: string | null = null;
-    let effectiveLocationId: string | null = null;
-
-    const location = await prisma.location.findFirst({
-      where: { qboRealmId: realmId } as any,
-      select: { id: true, tenantId: true },
-    });
-
-    if (location) {
-      effectiveTenantId = location.tenantId;
-      effectiveLocationId = location.id;
-    } else {
-      const tenant = await prisma.tenant.findFirst({
-        where: { qboRealmId: realmId } as any,
-        select: { id: true },
-      });
-      if (tenant) {
-        effectiveTenantId = tenant.id;
-      }
-    }
-
-    if (!effectiveTenantId) {
+    if (!ctx) {
       console.warn("[qbo-sync] Unknown realmId in webhook", { realmId });
       continue;
     }
 
-    // Build credential context once per notification — location-scoped
-    // when the realm belongs to a Location, tenant-scoped otherwise.
-    const ctx: QboCredentialContext = effectiveLocationId
-      ? { tenantId: effectiveTenantId, locationId: effectiveLocationId }
-      : { tenantId: effectiveTenantId };
+    const effectiveTenantId = ctx.tenantId;
+    const effectiveLocationId = ctx.locationId ?? null;
 
     for (const entity of notification.dataChangeEvent?.entities || []) {
       const { name, id, operation } = entity;
 
       try {
         if (name === "Customer" && (operation === "Create" || operation === "Update")) {
-          // Fetch QBO customer and update our records
-          const qboCustomer = await qboRequest(
-            ctx,
-            "GET",
-            `customer/${id}?minorversion=73`,
-          );
-
+          const qboCustomer = await qboRequest(ctx, "GET", `customer/${id}?minorversion=73`);
           const customer = qboCustomer.Customer;
           const existing = await prisma.customer.findFirst({
             where: { tenantId: effectiveTenantId, qboCustomerId: id } as any,
@@ -1004,13 +997,7 @@ export async function handleQboWebhook(
         }
 
         if (name === "Invoice" && operation === "Update") {
-          // Fetch QBO invoice and update status
-          const qboInvoice = await qboRequest(
-            ctx,
-            "GET",
-            `invoice/${id}?minorversion=73`,
-          );
-
+          const qboInvoice = await qboRequest(ctx, "GET", `invoice/${id}?minorversion=73`);
           const invoice = qboInvoice.Invoice;
           const existing = await prisma.invoice.findFirst({
             where: { tenantId: effectiveTenantId, qboInvoiceId: id } as any,
@@ -1043,6 +1030,18 @@ export async function handleQboWebhook(
             locationId: effectiveLocationId,
             realmId,
           });
+        }
+
+        // ── Vendor pulled back from QBO ──────────────────────────────────
+        if (name === "Vendor" && (operation === "Create" || operation === "Update")) {
+          const qboVendor = await qboRequest(ctx, "GET", `vendor/${id}?minorversion=73`);
+          await applyQboVendor(effectiveTenantId, ctx.locationId ?? null, qboVendor.Vendor, "webhook");
+        }
+
+        // ── Bill pulled back from QBO ────────────────────────────────────
+        if (name === "Bill" && (operation === "Create" || operation === "Update")) {
+          const qboBill = await qboRequest(ctx, "GET", `bill/${id}?minorversion=73`);
+          await applyQboBill(effectiveTenantId, ctx.locationId ?? null, qboBill.Bill, "webhook");
         }
       } catch (err) {
         console.error("[qbo-sync] Webhook entity processing failed", {
@@ -1937,5 +1936,512 @@ export async function getBulkProductSyncStatus(
       lastErrorAt: r.lastErrorAt ?? null,
     };
   }
+  return out;
+}
+
+// ===========================================================================
+// Pull-back from QBO — Vendors and Bills
+// ---------------------------------------------------------------------------
+// Bookkeepers often live in QuickBooks. When they create a Vendor or a Bill
+// directly in QBO, those records were previously stranded there because the
+// sync was push-only. These functions close that loop:
+//
+//   - Webhook path: Intuit pings /api/qbo/webhook on entity changes; the
+//     handler above fetches the changed record and calls applyQboVendor /
+//     applyQboBill which upsert into Helm.
+//   - Pull path: pullVendorsAndBillsForTenant queries QBO for everything
+//     updated since the last successful pull (per-tenant or per-location),
+//     and applies each record. Safe to call repeatedly (idempotent on
+//     qboVendorId / qboBillId).
+//
+// Existing rows are matched by qboVendorId / qboBillId and updated in place.
+// Audit log entries are written for every applied change so users can see in
+// the audit trail what came from QBO.
+// ===========================================================================
+
+export interface QboVendorPayload {
+  Id: string;
+  DisplayName?: string;
+  CompanyName?: string;
+  PrimaryEmailAddr?: { Address?: string };
+  PrimaryPhone?: { FreeFormNumber?: string };
+  BillAddr?: {
+    Line1?: string;
+    City?: string;
+    CountrySubDivisionCode?: string;
+    PostalCode?: string;
+  };
+  Active?: boolean;
+  MetaData?: { LastUpdatedTime?: string; CreateTime?: string };
+}
+
+export interface QboBillPayload {
+  Id: string;
+  DocNumber?: string;
+  TxnDate?: string;
+  DueDate?: string;
+  TotalAmt?: number;
+  Balance?: number;
+  VendorRef?: { value: string; name?: string };
+  PrivateNote?: string;
+  MetaData?: { LastUpdatedTime?: string; CreateTime?: string };
+}
+
+interface ApplyResult {
+  created: number;
+  updated: number;
+  skipped: number;
+}
+
+function emptyApplyResult(): ApplyResult {
+  return { created: 0, updated: 0, skipped: 0 };
+}
+
+function flattenAddress(addr?: QboVendorPayload["BillAddr"]): string | null {
+  if (!addr) return null;
+  const parts = [addr.Line1, addr.City, addr.CountrySubDivisionCode, addr.PostalCode].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
+// ---------------------------------------------------------------------------
+// Vendor: upsert by qboVendorId
+// ---------------------------------------------------------------------------
+
+export async function applyQboVendor(
+  tenantId: string,
+  locationId: string | null,
+  payload: QboVendorPayload,
+  source: "webhook" | "pull",
+): Promise<{ vendorId: string; created: boolean }> {
+  const qboVendorId = String(payload.Id);
+  const name = (payload.DisplayName ?? payload.CompanyName ?? `QBO Vendor ${qboVendorId}`).slice(0, 200);
+  const email = payload.PrimaryEmailAddr?.Address ?? null;
+  const phone = payload.PrimaryPhone?.FreeFormNumber ?? null;
+  const address = flattenAddress(payload.BillAddr);
+  const active = payload.Active !== false;
+  const now = new Date();
+
+  const existing = await prisma.vendor.findFirst({
+    where: { tenantId, qboVendorId } as any,
+  });
+
+  if (existing) {
+    const changed: Record<string, { from: unknown; to: unknown }> = {};
+    if (existing.name !== name) changed.name = { from: existing.name, to: name };
+    if ((existing.email ?? null) !== email) changed.email = { from: existing.email, to: email };
+    if ((existing.phone ?? null) !== phone) changed.phone = { from: existing.phone, to: phone };
+    if ((existing.address ?? null) !== address) changed.address = { from: existing.address, to: address };
+    if (existing.active !== active) changed.active = { from: existing.active, to: active };
+
+    if (Object.keys(changed).length === 0) {
+      // No-op update: still bump the synced-at marker so we know we saw it.
+      await prisma.vendor.update({
+        where: { id: existing.id },
+        data: { qboVendorSyncedAt: now } as any,
+      });
+      return { vendorId: existing.id, created: false };
+    }
+
+    await prisma.vendor.update({
+      where: { id: existing.id },
+      data: {
+        name,
+        email,
+        phone,
+        address,
+        active,
+        qboVendorSyncedAt: now,
+        qboVendorSyncError: null,
+        qboVendorSyncErrorAt: null,
+      } as any,
+    });
+
+    await auditLog(tenantId, "QBO_VENDOR_PULLED", {
+      vendorId: existing.id,
+      qboVendorId,
+      source,
+      changed,
+      locationId,
+    });
+
+    return { vendorId: existing.id, created: false };
+  }
+
+  const created = await prisma.vendor.create({
+    data: {
+      tenantId,
+      name,
+      email,
+      phone,
+      address,
+      active,
+      qboVendorId,
+      qboVendorSyncedAt: now,
+    } as any,
+  });
+
+  await auditLog(tenantId, "QBO_VENDOR_PULLED", {
+    vendorId: created.id,
+    qboVendorId,
+    source,
+    created: true,
+    locationId,
+  });
+
+  return { vendorId: created.id, created: true };
+}
+
+// ---------------------------------------------------------------------------
+// Bill: upsert into PurchaseOrder by qboBillId
+// ---------------------------------------------------------------------------
+//
+// The Bill's local representation is a PurchaseOrder row marked as received
+// (since a Bill in QBO means goods/services have been billed). We do NOT
+// sync line items here — Helm's PO line items live in-memory in inventory.ts
+// and aren't 1:1 with QBO Bill lines. The PO row holds the totals, vendor
+// link, and qboBillId so future updates can find it.
+// ---------------------------------------------------------------------------
+
+export async function applyQboBill(
+  tenantId: string,
+  locationId: string | null,
+  payload: QboBillPayload,
+  source: "webhook" | "pull",
+): Promise<{ purchaseOrderId: string; created: boolean }> {
+  const qboBillId = String(payload.Id);
+  const totalCents = Math.round((payload.TotalAmt ?? 0) * 100);
+  const expectedDate = payload.DueDate ? new Date(payload.DueDate) : payload.TxnDate ? new Date(payload.TxnDate) : null;
+  const poNumber = (payload.DocNumber ?? `QBO-${qboBillId}`).slice(0, 40);
+  const balance = Math.round((payload.Balance ?? payload.TotalAmt ?? 0) * 100);
+  const status = balance <= 0 ? "received" : "received"; // Bill exists ⇒ goods already received
+
+  // Resolve the vendor: ensure we have a local Vendor row keyed to this QBO vendor.
+  let vendorId: string | null = null;
+  const qboVendorId = payload.VendorRef?.value ? String(payload.VendorRef.value) : null;
+  if (qboVendorId) {
+    const existingVendor = await prisma.vendor.findFirst({
+      where: { tenantId, qboVendorId } as any,
+    });
+    if (existingVendor) {
+      vendorId = existingVendor.id;
+    } else {
+      // Create a stub vendor — full vendor sync happens via applyQboVendor when
+      // we pull the vendor itself. Stub keeps the FK valid in the meantime.
+      const stub = await prisma.vendor.create({
+        data: {
+          tenantId,
+          name: payload.VendorRef?.name?.slice(0, 200) ?? `QBO Vendor ${qboVendorId}`,
+          qboVendorId,
+          qboVendorSyncedAt: new Date(),
+        } as any,
+      });
+      vendorId = stub.id;
+      await auditLog(tenantId, "QBO_VENDOR_STUB_CREATED", {
+        vendorId,
+        qboVendorId,
+        reason: "referenced_by_pulled_bill",
+        source,
+      });
+    }
+  }
+
+  const existing = await prisma.purchaseOrder.findFirst({
+    where: { tenantId, qboBillId } as any,
+  });
+
+  const now = new Date();
+
+  if (existing) {
+    const changed: Record<string, { from: unknown; to: unknown }> = {};
+    if (existing.totalCents !== totalCents) changed.totalCents = { from: existing.totalCents, to: totalCents };
+    if (existing.poNumber !== poNumber) changed.poNumber = { from: existing.poNumber, to: poNumber };
+    if (existing.vendorId !== vendorId) changed.vendorId = { from: existing.vendorId, to: vendorId };
+    if (existing.status !== status) changed.status = { from: existing.status, to: status };
+
+    await prisma.purchaseOrder.update({
+      where: { id: existing.id },
+      data: {
+        totalCents,
+        poNumber,
+        vendorId,
+        status,
+        expectedDate,
+        qboBillSyncedAt: now,
+        qboBillSyncError: null,
+        qboBillSyncErrorAt: null,
+      } as any,
+    });
+
+    if (Object.keys(changed).length > 0) {
+      await auditLog(tenantId, "QBO_BILL_PULLED", {
+        purchaseOrderId: existing.id,
+        qboBillId,
+        source,
+        changed,
+        locationId,
+      });
+    }
+
+    return { purchaseOrderId: existing.id, created: false };
+  }
+
+  const created = await prisma.purchaseOrder.create({
+    data: {
+      tenantId,
+      locationId,
+      vendorId,
+      poNumber,
+      status,
+      expectedDate,
+      totalCents,
+      qboBillId,
+      qboBillSyncedAt: now,
+    } as any,
+  });
+
+  await auditLog(tenantId, "QBO_BILL_PULLED", {
+    purchaseOrderId: created.id,
+    qboBillId,
+    source,
+    created: true,
+    locationId,
+  });
+
+  return { purchaseOrderId: created.id, created: true };
+}
+
+// ---------------------------------------------------------------------------
+// Pull driver — query QBO for vendors / bills updated since last watermark
+// ---------------------------------------------------------------------------
+
+// Helper: format Date as QBO query timestamp (`YYYY-MM-DDTHH:mm:ss-00:00`)
+function qboTimestamp(d: Date): string {
+  // QBO requires no fractional seconds on Metadata.LastUpdatedTime filters.
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+async function readPullWatermark(
+  tenantId: string,
+  locationId: string | null,
+  field: "qboLastVendorPullAt" | "qboLastBillPullAt",
+): Promise<Date | null> {
+  if (locationId) {
+    const loc = await prisma.location.findUnique({
+      where: { id: locationId },
+      select: { [field]: true } as any,
+    });
+    return ((loc as any)?.[field] as Date | null) ?? null;
+  }
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { [field]: true } as any,
+  });
+  return ((tenant as any)?.[field] as Date | null) ?? null;
+}
+
+async function writePullWatermark(
+  tenantId: string,
+  locationId: string | null,
+  field: "qboLastVendorPullAt" | "qboLastBillPullAt",
+  at: Date,
+): Promise<void> {
+  if (locationId) {
+    await prisma.location.update({
+      where: { id: locationId },
+      data: { [field]: at } as any,
+    });
+    return;
+  }
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { [field]: at } as any,
+  });
+}
+
+async function queryQboPaged<T>(
+  ctx: QboCredentialContext,
+  selectExpr: string,
+  rowsKey: "Vendor" | "Bill",
+): Promise<T[]> {
+  const PAGE_SIZE = 100;
+  let startPosition = 1;
+  const out: T[] = [];
+  // Cap total records pulled per cycle to avoid runaway loops on bad data.
+  for (let i = 0; i < 50; i++) {
+    const q = `${selectExpr} STARTPOSITION ${startPosition} MAXRESULTS ${PAGE_SIZE}`;
+    const path = `query?query=${encodeURIComponent(q)}&minorversion=73`;
+    const result = await qboRequest(ctx, "GET", path);
+    const rows: T[] = (result?.QueryResponse?.[rowsKey] as T[]) ?? [];
+    out.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
+    startPosition += PAGE_SIZE;
+  }
+  return out;
+}
+
+export async function pullVendorsFromQbo(
+  tenantId: string,
+  locationId: string | null,
+): Promise<ApplyResult> {
+  const ctx: QboCredentialContext = locationId ? { tenantId, locationId } : { tenantId };
+  const result = emptyApplyResult();
+  const startedAt = new Date();
+
+  try {
+    const since = await readPullWatermark(tenantId, locationId, "qboLastVendorPullAt");
+    // First-time pull: fetch all active vendors (no watermark filter).
+    const where = since ? `WHERE Metadata.LastUpdatedTime > '${qboTimestamp(since)}'` : "";
+    const select = `SELECT * FROM Vendor ${where}`.trim();
+
+    const rows = await queryQboPaged<QboVendorPayload>(ctx, select, "Vendor");
+    for (const v of rows) {
+      try {
+        const r = await applyQboVendor(tenantId, locationId, v, "pull");
+        if (r.created) result.created++;
+        else result.updated++;
+      } catch (err) {
+        result.skipped++;
+        console.error("[qbo-sync] applyQboVendor failed", { qboVendorId: v.Id, err });
+      }
+    }
+
+    await writePullWatermark(tenantId, locationId, "qboLastVendorPullAt", startedAt);
+
+    await auditLog(tenantId, "QBO_VENDORS_PULLED", {
+      locationId,
+      since: since?.toISOString() ?? null,
+      counts: result,
+    });
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await auditLog(tenantId, "QBO_VENDORS_PULL_FAILED", {
+      locationId,
+      error: msg,
+    });
+    throw err;
+  }
+}
+
+export async function pullBillsFromQbo(
+  tenantId: string,
+  locationId: string | null,
+): Promise<ApplyResult> {
+  const ctx: QboCredentialContext = locationId ? { tenantId, locationId } : { tenantId };
+  const result = emptyApplyResult();
+  const startedAt = new Date();
+
+  try {
+    const since = await readPullWatermark(tenantId, locationId, "qboLastBillPullAt");
+    const where = since ? `WHERE Metadata.LastUpdatedTime > '${qboTimestamp(since)}'` : "";
+    const select = `SELECT * FROM Bill ${where}`.trim();
+
+    const rows = await queryQboPaged<QboBillPayload>(ctx, select, "Bill");
+    for (const b of rows) {
+      try {
+        const r = await applyQboBill(tenantId, locationId, b, "pull");
+        if (r.created) result.created++;
+        else result.updated++;
+      } catch (err) {
+        result.skipped++;
+        console.error("[qbo-sync] applyQboBill failed", { qboBillId: b.Id, err });
+      }
+    }
+
+    await writePullWatermark(tenantId, locationId, "qboLastBillPullAt", startedAt);
+
+    await auditLog(tenantId, "QBO_BILLS_PULLED", {
+      locationId,
+      since: since?.toISOString() ?? null,
+      counts: result,
+    });
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await auditLog(tenantId, "QBO_BILLS_PULL_FAILED", {
+      locationId,
+      error: msg,
+    });
+    throw err;
+  }
+}
+
+// Iterate every connected QBO endpoint for the tenant (per-location and
+// tenant-level) and pull vendors + bills from each. Returns aggregated counts.
+export interface TenantPullResult {
+  vendors: ApplyResult;
+  bills: ApplyResult;
+  endpoints: Array<{
+    scope: "tenant" | "location";
+    locationId: string | null;
+    vendors: ApplyResult;
+    bills: ApplyResult;
+    error?: string;
+  }>;
+}
+
+export async function pullVendorsAndBillsForTenant(tenantId: string): Promise<TenantPullResult> {
+  const out: TenantPullResult = {
+    vendors: emptyApplyResult(),
+    bills: emptyApplyResult(),
+    endpoints: [],
+  };
+
+  const accumulate = (target: ApplyResult, source: ApplyResult) => {
+    target.created += source.created;
+    target.updated += source.updated;
+    target.skipped += source.skipped;
+  };
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { qboAccessToken: true, qboRealmId: true } as any,
+  });
+
+  if ((tenant as any)?.qboAccessToken && (tenant as any)?.qboRealmId) {
+    try {
+      const v = await pullVendorsFromQbo(tenantId, null);
+      const b = await pullBillsFromQbo(tenantId, null);
+      out.endpoints.push({ scope: "tenant", locationId: null, vendors: v, bills: b });
+      accumulate(out.vendors, v);
+      accumulate(out.bills, b);
+    } catch (err) {
+      out.endpoints.push({
+        scope: "tenant",
+        locationId: null,
+        vendors: emptyApplyResult(),
+        bills: emptyApplyResult(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const locations = await prisma.location.findMany({
+    where: {
+      tenantId,
+      qboAccessToken: { not: null },
+      qboRealmId: { not: null },
+    } as any,
+    select: { id: true } as any,
+  });
+
+  for (const loc of locations) {
+    try {
+      const v = await pullVendorsFromQbo(tenantId, (loc as any).id);
+      const b = await pullBillsFromQbo(tenantId, (loc as any).id);
+      out.endpoints.push({ scope: "location", locationId: (loc as any).id, vendors: v, bills: b });
+      accumulate(out.vendors, v);
+      accumulate(out.bills, b);
+    } catch (err) {
+      out.endpoints.push({
+        scope: "location",
+        locationId: (loc as any).id,
+        vendors: emptyApplyResult(),
+        bills: emptyApplyResult(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return out;
 }
