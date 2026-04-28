@@ -4,6 +4,7 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import {
   calculateBoatCompliance,
+  computeBoatCompliance,
   getExpiringCompliance,
 } from "../services/compliance.js";
 
@@ -54,8 +55,18 @@ const ListBoatsQuerySchema = z.object({
     .optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
+  // `insuranceExpiry` is not a column on `boats`; the route sorts by it in
+  // application code. All other options map to real columns on the model.
   sortBy: z
-    .enum(["createdAt", "updatedAt", "name", "lengthFt", "make"])
+    .enum([
+      "createdAt",
+      "updatedAt",
+      "name",
+      "lengthFt",
+      "make",
+      "registrationExpiry",
+      "insuranceExpiry",
+    ])
     .default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
@@ -104,12 +115,21 @@ router.get(
       const where: Record<string, unknown> = { tenantId };
       if (query.customerId) where.customerId = query.customerId;
 
+      // `insuranceExpiry` is not a column on `boats`, so defer ordering to
+      // application code in that case. Otherwise let the DB sort.
+      const dbOrderBy =
+        query.sortBy === "insuranceExpiry"
+          ? { name: query.sortOrder }
+          : { [query.sortBy]: query.sortOrder };
+
       const [boats, total] = await Promise.all([
         prisma.boat.findMany({
           where,
-          orderBy: { [query.sortBy]: query.sortOrder },
-          skip: query.skip,
-          take: query.take,
+          orderBy: dbOrderBy,
+          // When a compliance filter is applied we have to post-filter, so
+          // skip/take are applied after filtering instead of by the DB.
+          skip: query.complianceStatus ? undefined : query.skip,
+          take: query.complianceStatus ? undefined : query.take,
           include: {
             customer: {
               select: { id: true, firstName: true, lastName: true },
@@ -122,31 +142,56 @@ router.get(
               orderBy: { inspectionDate: "desc" },
               take: 1,
             },
+            slipContracts: {
+              where: { status: "ACTIVE" },
+              include: {
+                slip: { select: { id: true, slipNumber: true } },
+              },
+              orderBy: { startDate: "desc" },
+            },
           },
         }),
         prisma.boat.count({ where }),
       ]);
 
-      // If compliance filter is applied, compute compliance per boat and filter
-      let filteredBoats = boats;
+      // Always compute compliance using the same scoring as the customer
+      // detail page so the Boats list and detail views stay in sync.
+      let enrichedBoats = boats.map((b) => ({
+        ...b,
+        compliance: computeBoatCompliance(b),
+      }));
+
       if (query.complianceStatus) {
-        const boatsWithCompliance = await Promise.all(
-          boats.map(async (boat) => {
-            const compliance = await calculateBoatCompliance(boat.id, tenantId);
-            return { ...boat, compliance };
-          }),
-        );
-        filteredBoats = boatsWithCompliance.filter(
+        enrichedBoats = enrichedBoats.filter(
           (b) => b.compliance.overallScore === query.complianceStatus,
         );
       }
 
+      // Application-side sort for insurance expiry (latest insurance record).
+      if (query.sortBy === "insuranceExpiry") {
+        const dir = query.sortOrder === "asc" ? 1 : -1;
+        enrichedBoats = [...enrichedBoats].sort((a, b) => {
+          const ax = a.insuranceRecords[0]?.expiryDate?.getTime() ?? null;
+          const bx = b.insuranceRecords[0]?.expiryDate?.getTime() ?? null;
+          // Nulls always sort last regardless of direction.
+          if (ax === null && bx === null) return 0;
+          if (ax === null) return 1;
+          if (bx === null) return -1;
+          return (ax - bx) * dir;
+        });
+      }
+
+      const totalCount = query.complianceStatus ? enrichedBoats.length : total;
+      const pagedBoats = query.complianceStatus
+        ? enrichedBoats.slice(query.skip, query.skip + query.take)
+        : enrichedBoats;
+
       res.json({
-        data: filteredBoats,
+        data: pagedBoats,
         pagination: {
           skip: query.skip,
           take: query.take,
-          total: query.complianceStatus ? filteredBoats.length : total,
+          total: totalCount,
         },
       });
     } catch (err) {

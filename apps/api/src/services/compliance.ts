@@ -52,32 +52,33 @@ export interface ExpiringComplianceResult {
 }
 
 // --------------------------------------------------------------------------
-// calculateBoatCompliance
+// computeBoatCompliance — synchronous variant for already-loaded boats
 // --------------------------------------------------------------------------
 
-export async function calculateBoatCompliance(
-  boatId: string,
-  _tenantId: string,
-): Promise<BoatComplianceResult> {
+interface BoatComplianceInput {
+  id: string;
+  registrationNumber: string | null;
+  registrationExpiry: Date | null;
+  insuranceRecords: Array<{
+    expiryDate: Date | null;
+    policyNumber: string | null;
+    insurer: string | null;
+  }>;
+  safetyRecords: Array<{
+    inspectionDate: Date;
+    nextDueDate: Date | null;
+    passFail: string | null;
+    fireExtExpiry: Date | null;
+    flareExpiry: Date | null;
+    hasHorn: boolean | null;
+    hasThrowable: boolean | null;
+  }>;
+}
+
+export function computeBoatCompliance(
+  boat: BoatComplianceInput,
+): BoatComplianceResult {
   const now = new Date();
-
-  const boat = await prisma.boat.findUnique({
-    where: { id: boatId },
-    include: {
-      insuranceRecords: {
-        orderBy: { expiryDate: "desc" },
-        take: 1,
-      },
-      safetyRecords: {
-        orderBy: { inspectionDate: "desc" },
-        take: 1,
-      },
-    },
-  });
-
-  if (!boat) {
-    throw new Error(`Boat ${boatId} not found`);
-  }
 
   // --- Insurance ---
   let insurance: InsuranceCompliance;
@@ -180,12 +181,41 @@ export async function calculateBoatCompliance(
   }
 
   return {
-    boatId,
+    boatId: boat.id,
     overallScore,
     insurance,
     registration,
     safety,
   };
+}
+
+// --------------------------------------------------------------------------
+// calculateBoatCompliance
+// --------------------------------------------------------------------------
+
+export async function calculateBoatCompliance(
+  boatId: string,
+  _tenantId: string,
+): Promise<BoatComplianceResult> {
+  const boat = await prisma.boat.findUnique({
+    where: { id: boatId },
+    include: {
+      insuranceRecords: {
+        orderBy: { expiryDate: "desc" },
+        take: 1,
+      },
+      safetyRecords: {
+        orderBy: { inspectionDate: "desc" },
+        take: 1,
+      },
+    },
+  });
+
+  if (!boat) {
+    throw new Error(`Boat ${boatId} not found`);
+  }
+
+  return computeBoatCompliance(boat);
 }
 
 // --------------------------------------------------------------------------

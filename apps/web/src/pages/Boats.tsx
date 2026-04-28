@@ -1,8 +1,40 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
-import { Ship, Search } from 'lucide-react';
+import { Ship, Search, ArrowUp, ArrowDown } from 'lucide-react';
 import { api } from '../lib/api';
+
+type ComplianceStatus = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
+type InsuranceStatus = 'VALID' | 'EXPIRED' | 'MISSING';
+type RegistrationStatus = 'VALID' | 'EXPIRED' | 'MISSING';
+
+interface ApiInsuranceRecord {
+  id: string;
+  expiryDate: string | null;
+  insurer: string | null;
+  policyNumber: string | null;
+}
+
+interface ApiSlipContract {
+  id: string;
+  status: string;
+  slip: { id: string; slipNumber: string } | null;
+}
+
+interface ApiBoatCompliance {
+  overallScore: ComplianceStatus;
+  insurance: {
+    status: InsuranceStatus;
+    expiryDate: string | null;
+    insurer: string | null;
+    policyNumber: string | null;
+  };
+  registration: {
+    status: RegistrationStatus;
+    expiryDate: string | null;
+    registrationNumber: string | null;
+  };
+}
 
 interface ApiBoat {
   id: string;
@@ -17,27 +49,14 @@ interface ApiBoat {
   fuelType: string | null;
   createdAt: string | null;
   customer: { id: string; firstName: string; lastName: string };
-  insuranceRecords: Array<{ id: string; expiryDate: string | null }>;
+  insuranceRecords: ApiInsuranceRecord[];
+  slipContracts: ApiSlipContract[];
+  compliance: ApiBoatCompliance;
 }
 
 interface ApiResponse {
   data: ApiBoat[];
   pagination: { skip: number; take: number; total: number };
-}
-
-type ComplianceStatus = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
-
-function deriveCompliance(b: ApiBoat): ComplianceStatus {
-  const now = Date.now();
-  const insurance = b.insuranceRecords[0];
-  if (!insurance || !insurance.expiryDate) return 'NON_COMPLIANT';
-  if (!b.registrationNumber) return 'NON_COMPLIANT';
-  const insExpired = new Date(insurance.expiryDate).getTime() < now;
-  const regExpired = b.registrationExpiry
-    ? new Date(b.registrationExpiry).getTime() < now
-    : false;
-  if (insExpired || regExpired) return 'ATTENTION_REQUIRED';
-  return 'ALL_GOOD';
 }
 
 const COMPLIANCE_LABEL: Record<ComplianceStatus, string> = {
@@ -50,6 +69,18 @@ const complianceBadgeColors: Record<ComplianceStatus, { bg: string; color: strin
   ALL_GOOD: { bg: '#E8F5E9', color: '#1B5E20' },
   ATTENTION_REQUIRED: { bg: '#FFF3CD', color: '#856404' },
   NON_COMPLIANT: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
+const insuranceBadgeColors: Record<InsuranceStatus, { bg: string; color: string }> = {
+  VALID: { bg: '#E8F5E9', color: '#1B5E20' },
+  EXPIRED: { bg: '#FFF3CD', color: '#856404' },
+  MISSING: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
+const registrationBadgeColors: Record<RegistrationStatus, { bg: string; color: string }> = {
+  VALID: { bg: '#E8F5E9', color: '#1B5E20' },
+  EXPIRED: { bg: '#FFF3CD', color: '#856404' },
+  MISSING: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
 const styles: Record<string, React.CSSProperties> = {
@@ -113,7 +144,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '8px',
     border: '1px solid #E2E8F0',
     boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    overflow: 'hidden',
+    overflowX: 'auto' as const,
   },
   table: {
     width: '100%',
@@ -130,12 +161,28 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#FFFFFF',
     backgroundColor: '#0A2342',
     borderBottom: '2px solid #00D4FF',
+    whiteSpace: 'nowrap' as const,
+  },
+  thButton: {
+    background: 'transparent',
+    border: 'none',
+    color: '#FFFFFF',
+    fontWeight: 600,
+    fontSize: '12px',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    cursor: 'pointer',
+    padding: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
   },
   tdBase: {
     padding: '12px 16px',
     color: '#0A2342',
     borderBottom: '1px solid #E2E8F0',
     cursor: 'pointer',
+    verticalAlign: 'top' as const,
   },
   badge: {
     display: 'inline-block',
@@ -160,10 +207,39 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #E2E8F0',
     boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
   },
+  muted: {
+    color: '#64748B',
+  },
+  subtle: {
+    fontSize: '12px',
+    color: '#64748B',
+    marginTop: '2px',
+  },
 };
 
 const PAGE_SIZE = 100;
 const SAFETY_LIMIT = 50; // refuse to fetch more than 5,000 boats client-side
+
+type SortField = 'name' | 'insuranceExpiry' | 'registrationExpiry';
+type SortOrder = 'asc' | 'desc';
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function compareNullable(a: number | null, b: number | null, dir: 1 | -1): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1; // nulls always last
+  if (b === null) return -1;
+  return (a - b) * dir;
+}
 
 export default function Boats() {
   const navigate = useNavigate();
@@ -173,6 +249,8 @@ export default function Boats() {
   const [boats, setBoats] = useState<ApiBoat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
   // The API caps `take` at 100, so paginate through every page until we
   // have all boats for the tenant.
@@ -209,10 +287,13 @@ export default function Boats() {
     };
   }, [getToken]);
 
-  const enriched = boats.map((b) => ({ ...b, compliance: deriveCompliance(b) }));
-
-  const filtered = enriched.filter((b) => {
-    if (complianceFilter !== 'All' && b.compliance !== complianceFilter) return false;
+  const filtered = boats.filter((b) => {
+    if (
+      complianceFilter !== 'All' &&
+      b.compliance.overallScore !== complianceFilter
+    ) {
+      return false;
+    }
     if (search) {
       const q = search.toLowerCase();
       const customerName = `${b.customer.firstName} ${b.customer.lastName}`.toLowerCase();
@@ -224,6 +305,44 @@ export default function Boats() {
     }
     return true;
   });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir: 1 | -1 = sortOrder === 'asc' ? 1 : -1;
+    if (sortField === 'name') {
+      const an = (a.name ?? '').toLowerCase();
+      const bn = (b.name ?? '').toLowerCase();
+      if (an < bn) return -1 * dir;
+      if (an > bn) return 1 * dir;
+      return 0;
+    }
+    if (sortField === 'insuranceExpiry') {
+      const ax = a.insuranceRecords[0]?.expiryDate
+        ? new Date(a.insuranceRecords[0].expiryDate).getTime()
+        : null;
+      const bx = b.insuranceRecords[0]?.expiryDate
+        ? new Date(b.insuranceRecords[0].expiryDate).getTime()
+        : null;
+      return compareNullable(ax, bx, dir);
+    }
+    // registrationExpiry
+    const ax = a.registrationExpiry ? new Date(a.registrationExpiry).getTime() : null;
+    const bx = b.registrationExpiry ? new Date(b.registrationExpiry).getTime() : null;
+    return compareNullable(ax, bx, dir);
+  });
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  };
+
+  const sortIndicator = (field: SortField) => {
+    if (sortField !== field) return null;
+    return sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />;
+  };
 
   return (
     <div style={styles.page}>
@@ -258,25 +377,61 @@ export default function Boats() {
       </div>
 
       {/* Data Table */}
-      {filtered.length > 0 ? (
+      {sorted.length > 0 ? (
         <div style={styles.tableWrap} className="helm-table-wrap">
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={styles.th}>Boat</th>
+                <th style={styles.th}>
+                  <button
+                    type="button"
+                    style={styles.thButton}
+                    onClick={() => toggleSort('name')}
+                    aria-label="Sort by boat name"
+                  >
+                    Boat {sortIndicator('name')}
+                  </button>
+                </th>
                 <th style={styles.th}>Owner</th>
                 <th style={styles.th}>Type</th>
                 <th style={{ ...styles.th, textAlign: 'right' }}>Length</th>
-                <th style={styles.th}>Registration</th>
+                <th style={styles.th}>
+                  <button
+                    type="button"
+                    style={styles.thButton}
+                    onClick={() => toggleSort('registrationExpiry')}
+                    aria-label="Sort by registration expiry"
+                  >
+                    Registration {sortIndicator('registrationExpiry')}
+                  </button>
+                </th>
+                <th style={styles.th}>
+                  <button
+                    type="button"
+                    style={styles.thButton}
+                    onClick={() => toggleSort('insuranceExpiry')}
+                    aria-label="Sort by insurance expiry"
+                  >
+                    Insurance {sortIndicator('insuranceExpiry')}
+                  </button>
+                </th>
+                <th style={styles.th}>Slip Contract</th>
                 <th style={styles.th}>Added On</th>
                 <th style={styles.th}>Compliance</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((b, idx) => {
+              {sorted.map((b, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-                const cb = complianceBadgeColors[b.compliance];
+                const cb = complianceBadgeColors[b.compliance.overallScore];
                 const typeLabel = [b.year, b.make, b.model].filter(Boolean).join(' ') || '—';
+                const insStatus = b.compliance.insurance.status;
+                const insColors = insuranceBadgeColors[insStatus];
+                const insurer = b.compliance.insurance.insurer;
+                const insExpiry = b.compliance.insurance.expiryDate;
+                const regStatus = b.compliance.registration.status;
+                const regColors = registrationBadgeColors[regStatus];
+                const activeContract = b.slipContracts[0] ?? null;
                 return (
                   <tr
                     key={b.id}
@@ -307,10 +462,45 @@ export default function Boats() {
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                       {b.lengthFt ? `${b.lengthFt}'` : '—'}
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
-                      {b.registrationNumber
-                        ? `${b.registrationNumber}${b.registrationState ? ` (${b.registrationState})` : ''}`
-                        : '—'}
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
+                      {regStatus === 'MISSING' ? (
+                        <span style={{ ...styles.badge, backgroundColor: regColors.bg, color: regColors.color }}>
+                          No registration
+                        </span>
+                      ) : (
+                        <>
+                          <div style={{ color: '#0A2342' }}>
+                            {b.registrationNumber}
+                            {b.registrationState ? ` (${b.registrationState})` : ''}
+                          </div>
+                          <div style={styles.subtle}>
+                            {regStatus === 'EXPIRED' ? 'Expired' : 'Expires'} {formatDate(b.registrationExpiry)}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
+                      {insStatus === 'MISSING' ? (
+                        <span style={{ ...styles.badge, backgroundColor: insColors.bg, color: insColors.color }}>
+                          No insurance
+                        </span>
+                      ) : (
+                        <>
+                          <div style={{ color: '#0A2342' }}>{insurer ?? 'Unknown insurer'}</div>
+                          <div style={styles.subtle}>
+                            {insStatus === 'EXPIRED' ? 'Expired' : 'Expires'} {formatDate(insExpiry)}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
+                      {activeContract && activeContract.slip ? (
+                        <span style={{ color: '#0A2342' }}>
+                          Slip {activeContract.slip.slipNumber}
+                        </span>
+                      ) : (
+                        <span style={styles.muted}>None</span>
+                      )}
                     </td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>
                       {b.createdAt
@@ -319,7 +509,7 @@ export default function Boats() {
                     </td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
                       <span style={{ ...styles.badge, backgroundColor: cb.bg, color: cb.color }}>
-                        {COMPLIANCE_LABEL[b.compliance]}
+                        {COMPLIANCE_LABEL[b.compliance.overallScore]}
                       </span>
                     </td>
                   </tr>
