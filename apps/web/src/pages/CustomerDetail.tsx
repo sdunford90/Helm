@@ -95,8 +95,10 @@ interface ApiBoat {
   engineHp: number | null;
   hin: string | null;
   insuranceRecords: ApiInsuranceRecord[];
-  compliance?: number;
+  compliance?: { overallScore?: ComplianceLevel } | ComplianceLevel | number;
 }
+
+type ComplianceLevel = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
 
 interface ApiInvoice {
   id: string;
@@ -113,6 +115,17 @@ interface ApiTimelineEvent {
   date: string;
   description: string;
   meta?: Record<string, unknown>;
+}
+
+function extractComplianceLevel(c: ApiBoat['compliance']): ComplianceLevel {
+  if (!c) return 'ALL_GOOD';
+  if (typeof c === 'string') return c;
+  if (typeof c === 'number') {
+    if (c >= 90) return 'ALL_GOOD';
+    if (c >= 70) return 'ATTENTION_REQUIRED';
+    return 'NON_COMPLIANT';
+  }
+  return c.overallScore ?? 'ALL_GOOD';
 }
 
 function mapApiBoat(b: ApiBoat): Boat {
@@ -134,7 +147,7 @@ function mapApiBoat(b: ApiBoat): Boat {
     engineType: '',
     engineHp: b.engineHp?.toString() ?? '',
     fuelType: b.fuelType ?? '',
-    compliance: b.compliance ?? 100,
+    compliance: extractComplianceLevel(b.compliance),
   };
 }
 
@@ -174,7 +187,7 @@ interface Boat {
   type: string;
   length: number;
   registration: string;
-  compliance: number;
+  compliance: ComplianceLevel;
   make?: string;
   model?: string;
   year?: string;
@@ -232,10 +245,10 @@ const invoiceStatusColors: Record<string, { bg: string; color: string }> = {
   Overdue: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
-const complianceBadge = (score: number): { bg: string; color: string } => {
-  if (score >= 90) return { bg: '#E8F5E9', color: '#1B5E20' };
-  if (score >= 70) return { bg: '#FFF3CD', color: '#856404' };
-  return { bg: '#FDECEA', color: '#B71C1C' };
+const complianceBadge = (level: ComplianceLevel): { bg: string; color: string; label: string } => {
+  if (level === 'ALL_GOOD') return { bg: '#E8F5E9', color: '#1B5E20', label: 'All Good' };
+  if (level === 'ATTENTION_REQUIRED') return { bg: '#FFF3CD', color: '#856404', label: 'Attention Required' };
+  return { bg: '#FDECEA', color: '#B71C1C', label: 'Non-Compliant' };
 };
 
 const activityIcons: Record<string, React.ElementType> = {
@@ -768,7 +781,7 @@ export default function CustomerDetailPage() {
   };
 
   const handleAddBoat = (data: Partial<Boat>) => {
-    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', compliance: 100 };
+    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', compliance: 'ALL_GOOD' };
     setLocalBoats([...boats, newBoat]);
     addBoatApi.execute({ body: { ...data, customerId: id } }).catch(() => {});
   };
@@ -912,7 +925,7 @@ export default function CustomerDetailPage() {
                   <Plus size={13} /> New Contract
                 </button>
                 <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
-                  Compliance: {b.compliance}%
+                  Compliance: {cb.label}
                 </span>
               </div>
             </div>
