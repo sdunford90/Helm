@@ -4,7 +4,7 @@ import {
   ArrowLeft, Edit, GitMerge, Mail, Phone, Building, MapPin,
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
-  Download, Trash2,
+  Download, Trash2, Building2, Star, Loader,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
@@ -155,6 +155,44 @@ interface ApiCustomerDocument {
   sizeBytes: number;
   storageKey: string;
   createdAt: string;
+}
+
+interface ApiPaymentHistoryEntry {
+  id: string;
+  amountCents: number;
+  method: 'CARD' | 'ACH' | 'CASH' | 'CHARGE_TO_SLIP' | 'GIFT_CARD' | string;
+  status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'REFUNDED' | 'PARTIALLY_REFUNDED' | string;
+  postedDate: string;
+  createdAt: string;
+  stripePaymentId: string | null;
+  invoice: { id: string; invoiceNumber: string; totalCents: number; balanceCents: number; status: string } | null;
+  recordedBy: { userId: string | null; userName: string | null };
+}
+
+interface ApiPaymentHistoryResponse {
+  data: ApiPaymentHistoryEntry[];
+  pagination: { skip: number; take: number; total: number };
+}
+
+interface ApiSavedPaymentMethod {
+  id: string;
+  kind: 'card' | 'bank';
+  brand: string;
+  label: string;
+  last4: string;
+  expMonth: number | null;
+  expYear: number | null;
+  expiry: string | null;
+  isDefault: boolean;
+}
+
+interface ApiPaymentMethodsResponse {
+  methods: ApiSavedPaymentMethod[];
+  defaultMethodId: string | null;
+  autopay: boolean;
+  stripeConfigured: boolean;
+  locationConnected: boolean;
+  locationName: string | null;
 }
 
 function mapApiBoat(b: ApiBoat): Boat {
@@ -815,7 +853,7 @@ type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
 export default function CustomerDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'overview';
   const validTabs: Tab[] = ['overview', 'boats', 'billing', 'documents', 'activity'];
   const [tab, setTab] = useState<Tab>(validTabs.includes(initialTab) ? initialTab : 'overview');
@@ -833,27 +871,47 @@ export default function CustomerDetailPage() {
   const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
   const { data: documentsData, execute: refetchDocuments } = useApi<ApiCustomerDocument[]>('get', `/api/customers/${id}/documents`, { immediate: true });
-  // Saved Stripe payment methods on file (cards + ACH). Backed by
-  // GET /api/customers/:id/payment-methods which talks to Stripe via the
-  // tenant's Connect account. Fails open with an empty list when the
-  // tenant has no Stripe account configured.
-  const { data: paymentMethodsData } = useApi<{
-    methods: Array<{
-      id: string;
-      kind: 'card' | 'bank';
-      brand: string;
-      label: string;
-      last4: string;
-      expiry: string | null;
-      isDefault: boolean;
-    }>;
-    defaultMethodId: string | null;
-    autopay: boolean;
-  }>('get', `/api/customers/${id}/payment-methods`, { immediate: true });
+  // Payment history (paged, newest-first) and saved payment methods on file.
+  const [paymentSkip, setPaymentSkip] = useState(0);
+  const PAYMENT_PAGE_SIZE = 10;
+  const { data: paymentHistory, execute: refetchPaymentHistory } = useApi<ApiPaymentHistoryResponse>(
+    'get',
+    `/api/customers/${id}/payment-history?skip=${paymentSkip}&take=${PAYMENT_PAGE_SIZE}`,
+    { immediate: true },
+  );
+  const { data: paymentMethods, execute: refetchPaymentMethods } = useApi<ApiPaymentMethodsResponse>(
+    'get',
+    `/api/customers/${id}/payment-methods`,
+    { immediate: true },
+  );
+  const [pmActionId, setPmActionId] = useState<string | null>(null);
+  const [pmError, setPmError] = useState<string | null>(null);
+  const [setupBusy, setSetupBusy] = useState<'card' | 'bank' | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // If we just returned from a Stripe Checkout setup session, refresh the
+  // saved-cards list so the new method appears immediately. Done in an effect
+  // so we can also strip the query string after handling it.
+  React.useEffect(() => {
+    const setupParam = searchParams.get('setup');
+    if (setupParam === 'success' || setupParam === 'cancelled') {
+      void refetchPaymentMethods();
+      const next = new URLSearchParams(searchParams);
+      next.delete('setup');
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('setup')]);
+
+  // When the page index changes, fire the API again. useApi's immediate fetch
+  // doesn't re-run automatically when the URL changes between renders.
+  React.useEffect(() => {
+    void refetchPaymentHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentSkip]);
 
   if (!apiCustomer && loading) {
     return (
@@ -1192,105 +1250,457 @@ export default function CustomerDetailPage() {
   );
 
   /* ── Billing Tab ─── */
-  const renderPaymentMethods = () => {
-    const methods = paymentMethodsData?.methods ?? [];
+  /* ── Payment History helpers ─── */
+  const paymentStatusColors: Record<string, { bg: string; color: string }> = {
+    COMPLETED: { bg: '#E8F5E9', color: '#1B5E20' },
+    PENDING: { bg: '#FFF8E1', color: '#92400E' },
+    FAILED: { bg: '#FFEBEE', color: '#B71C1C' },
+    REFUNDED: { bg: '#EDE7F6', color: '#4527A0' },
+    PARTIALLY_REFUNDED: { bg: '#EDE7F6', color: '#4527A0' },
+  };
+  const paymentMethodLabels: Record<string, string> = {
+    CARD: 'Card',
+    ACH: 'ACH',
+    CASH: 'Cash',
+    CHARGE_TO_SLIP: 'Charge to slip',
+    GIFT_CARD: 'Gift card',
+  };
+  const fmtCents = (cents: number) =>
+    `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    } catch {
+      return iso;
+    }
+  };
+
+  /* ── Cards on File actions ─── */
+  async function startSetupSession(type: 'card' | 'bank') {
+    setPmError(null);
+    setSetupBusy(type);
+    try {
+      const token = await getToken();
+      // Strip any existing ?tab so the return URL lands back on the Billing tab.
+      const returnUrl = `${window.location.origin}/customers/${id}?tab=billing`;
+      const resp = await api.post<{ url: string }>(
+        `/api/customers/${id}/payment-methods/setup-session`,
+        { type, returnUrl },
+        token,
+      );
+      if (resp.url) {
+        window.location.href = resp.url;
+      }
+    } catch (err) {
+      setPmError(err instanceof Error ? err.message : 'Could not start payment setup');
+      setSetupBusy(null);
+    }
+  }
+
+  async function setDefaultMethod(pmId: string) {
+    setPmError(null);
+    setPmActionId(pmId);
+    try {
+      const token = await getToken();
+      await api.put(`/api/customers/${id}/payment-methods/${pmId}/default`, {}, token);
+      await refetchPaymentMethods();
+    } catch (err) {
+      setPmError(err instanceof Error ? err.message : 'Could not set as default');
+    } finally {
+      setPmActionId(null);
+    }
+  }
+
+  async function removeMethod(pmId: string, label: string) {
+    if (!window.confirm(`Remove this saved ${label}? The customer will need to re-enter it next time.`)) return;
+    setPmError(null);
+    setPmActionId(pmId);
+    try {
+      const token = await getToken();
+      await api.delete(`/api/customers/${id}/payment-methods/${pmId}`, token);
+      await refetchPaymentMethods();
+    } catch (err) {
+      setPmError(err instanceof Error ? err.message : 'Could not remove payment method');
+    } finally {
+      setPmActionId(null);
+    }
+  }
+
+  const renderBilling = () => {
+    const history = paymentHistory?.data ?? [];
+    const total = paymentHistory?.pagination.total ?? 0;
+    const page = Math.floor(paymentSkip / PAYMENT_PAGE_SIZE) + 1;
+    const totalPages = Math.max(1, Math.ceil(total / PAYMENT_PAGE_SIZE));
+    const sectionHeader: React.CSSProperties = {
+      fontSize: '13px',
+      fontWeight: 700,
+      color: '#0F2E4D',
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      marginBottom: '12px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+    };
+    const card: React.CSSProperties = {
+      backgroundColor: '#FFFFFF',
+      border: '1px solid #E2E8F0',
+      borderRadius: '8px',
+      padding: '20px',
+      marginTop: '24px',
+    };
+
     return (
-      <div style={{ ...s.tableWrap, marginBottom: 24 }} className="helm-table-wrap">
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#0F172A' }}>Payment Methods on File</div>
-            <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>
-              {paymentMethodsData?.autopay ? 'Autopay enabled' : 'Autopay off'}
-              {paymentMethodsData?.defaultMethodId ? ' · default set' : ''}
-            </div>
-          </div>
-        </div>
-        {methods.length === 0 ? (
-          <div style={{ padding: 20, color: '#64748B', fontSize: 13 }}>
-            No saved cards or bank accounts. Customers can add a payment method from the customer portal.
-          </div>
-        ) : (
+      <div>
+        {/* Existing Invoices table */}
+        <div style={s.tableWrap} className="helm-table-wrap">
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>Type</th>
-                <th style={s.th}>Brand / Bank</th>
-                <th style={s.th}>Last 4</th>
-                <th style={s.th}>Expiry</th>
-                <th style={s.th}>Default</th>
+                <th style={s.th}>Invoice</th>
+                <th style={s.th}>Description</th>
+                <th style={s.th}>Amount</th>
+                <th style={s.th}>Status</th>
+                <th style={s.th}>Date</th>
               </tr>
             </thead>
             <tbody>
-              {methods.map((pm, idx) => {
+              {invoices.map((inv, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
                 return (
-                  <tr key={pm.id}>
+                  <tr
+                    key={inv.id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => navigate(`/billing/invoices/${inv.id}`)}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
+                  >
+                    <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
                     <td style={{ ...s.td, backgroundColor: rowBg }}>
-                      {pm.kind === 'card' ? 'Card' : 'Bank (ACH)'}
+                      <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
                     </td>
-                    <td style={{ ...s.td, backgroundColor: rowBg }}>{pm.label}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>•••• {pm.last4}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, color: '#64748B' }}>
-                      {pm.expiry ?? '—'}
-                    </td>
-                    <td style={{ ...s.td, backgroundColor: rowBg }}>
-                      {pm.isDefault ? (
-                        <span style={{ ...s.badge, backgroundColor: '#DCFCE7', color: '#166534' }}>Default</span>
-                      ) : (
-                        <span style={{ color: '#94A3B8', fontSize: 12 }}>—</span>
-                      )}
-                    </td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-        )}
+        </div>
+
+        {/* Payment History */}
+        <div style={card}>
+          <div style={sectionHeader}>
+            <DollarSign size={16} color="#1B5E20" />
+            Payment History
+            {total > 0 && (
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#64748B', textTransform: 'none', letterSpacing: 0 }}>
+                ({total} total)
+              </span>
+            )}
+          </div>
+          {history.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
+              No payments recorded yet.
+            </div>
+          ) : (
+            <>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={s.th}>Date</th>
+                      <th style={s.th}>Amount</th>
+                      <th style={s.th}>Method</th>
+                      <th style={s.th}>Status</th>
+                      <th style={s.th}>Invoice</th>
+                      <th style={s.th}>Recorded by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((p, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+                      const sb = paymentStatusColors[p.status] || { bg: '#F2F4F6', color: '#64748B' };
+                      return (
+                        <tr key={p.id}>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#334155' }}>{fmtDate(p.postedDate ?? p.createdAt)}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600 }}>{fmtCents(p.amountCents)}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{paymentMethodLabels[p.method] ?? p.method}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            <span style={{ ...s.badge, backgroundColor: sb.bg, color: sb.color }}>{p.status.replace('_', ' ')}</span>
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>
+                            {p.invoice ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/billing/invoices/${p.invoice!.id}`)}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  color: '#0066CC',
+                                  textDecoration: 'underline',
+                                  cursor: 'pointer',
+                                  fontFamily: 'inherit',
+                                  fontSize: 'inherit',
+                                }}
+                              >
+                                {p.invoice.invoiceNumber}
+                              </button>
+                            ) : (
+                              <span style={{ color: '#94A3B8' }}>—</span>
+                            )}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>
+                            {p.recordedBy.userName ?? <span style={{ color: '#94A3B8' }}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {totalPages > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '12px', fontSize: '13px', color: '#64748B' }}>
+                  <span>Page {page} of {totalPages}</span>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      disabled={paymentSkip === 0}
+                      onClick={() => setPaymentSkip(Math.max(0, paymentSkip - PAYMENT_PAGE_SIZE))}
+                      style={{
+                        padding: '6px 12px',
+                        border: '1px solid #CBD5E1',
+                        borderRadius: '6px',
+                        backgroundColor: paymentSkip === 0 ? '#F1F5F9' : '#FFFFFF',
+                        cursor: paymentSkip === 0 ? 'not-allowed' : 'pointer',
+                        fontSize: '13px',
+                      }}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      disabled={page >= totalPages}
+                      onClick={() => setPaymentSkip(paymentSkip + PAYMENT_PAGE_SIZE)}
+                      style={{
+                        padding: '6px 12px',
+                        border: '1px solid #CBD5E1',
+                        borderRadius: '6px',
+                        backgroundColor: page >= totalPages ? '#F1F5F9' : '#FFFFFF',
+                        cursor: page >= totalPages ? 'not-allowed' : 'pointer',
+                        fontSize: '13px',
+                      }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Cards on File */}
+        <div style={card}>
+          <div style={{ ...sectionHeader, justifyContent: 'space-between' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <CreditCard size={16} color="#0F2E4D" />
+              Cards on File
+              {paymentMethods && (
+                <span
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    textTransform: 'none',
+                    letterSpacing: 0,
+                    backgroundColor: paymentMethods.autopay ? '#DCFCE7' : '#F1F5F9',
+                    color: paymentMethods.autopay ? '#166534' : '#64748B',
+                  }}
+                >
+                  {paymentMethods.autopay ? 'Autopay enabled' : 'Autopay off'}
+                </span>
+              )}
+            </span>
+            {paymentMethods?.stripeConfigured && paymentMethods?.locationConnected && (
+              <span style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => startSetupSession('card')}
+                  disabled={setupBusy !== null}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    backgroundColor: '#0F2E4D',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: setupBusy ? 'wait' : 'pointer',
+                    textTransform: 'none',
+                    letterSpacing: 0,
+                  }}
+                >
+                  {setupBusy === 'card' ? <Loader size={12} /> : <Plus size={12} />}
+                  Add card
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startSetupSession('bank')}
+                  disabled={setupBusy !== null}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    backgroundColor: '#FFFFFF',
+                    color: '#0F2E4D',
+                    border: '1px solid #0F2E4D',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: setupBusy ? 'wait' : 'pointer',
+                    textTransform: 'none',
+                    letterSpacing: 0,
+                  }}
+                >
+                  {setupBusy === 'bank' ? <Loader size={12} /> : <Plus size={12} />}
+                  Add bank
+                </button>
+              </span>
+            )}
+          </div>
+
+          {pmError && (
+            <div style={{
+              display: 'flex', alignItems: 'flex-start', gap: '8px',
+              padding: '12px', marginBottom: '12px',
+              backgroundColor: '#FFEBEE', border: '1px solid #FFCDD2',
+              borderRadius: '6px', color: '#B71C1C', fontSize: '13px',
+            }}>
+              <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
+              <span>{pmError}</span>
+            </div>
+          )}
+
+          {paymentMethods && !paymentMethods.stripeConfigured ? (
+            <div style={{
+              display: 'flex', alignItems: 'flex-start', gap: '12px',
+              padding: '16px', backgroundColor: '#FFF8E1',
+              border: '1px solid #FFE082', borderRadius: '6px',
+              color: '#92400E', fontSize: '13px',
+            }}>
+              <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: '4px' }}>
+                  Stripe is not set up for {paymentMethods.locationName ? `${paymentMethods.locationName}` : 'this location'}.
+                </div>
+                <div>Connect a Stripe account from Settings → Locations to start saving cards on file.</div>
+              </div>
+            </div>
+          ) : !paymentMethods ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
+              Loading saved payment methods...
+            </div>
+          ) : paymentMethods.methods.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
+              No payment methods saved yet. Use “Add card” or “Add bank” to save one.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {paymentMethods.methods.map((m) => {
+                const Icon = m.kind === 'bank' ? Building2 : CreditCard;
+                const busy = pmActionId === m.id;
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '12px 16px',
+                      border: m.isDefault ? '1px solid #1B5E20' : '1px solid #E2E8F0',
+                      borderRadius: '6px',
+                      backgroundColor: m.isDefault ? '#F1F8E9' : '#FFFFFF',
+                    }}
+                  >
+                    <Icon size={20} color="#0F2E4D" />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#0F2E4D', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {m.label} •••• {m.last4}
+                        {m.isDefault && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', backgroundColor: '#1B5E20', color: '#FFFFFF', fontSize: '11px', borderRadius: '10px', fontWeight: 600 }}>
+                            <Star size={10} fill="#FFFFFF" /> Default
+                          </span>
+                        )}
+                      </div>
+                      {m.expiry && (
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>Exp {m.expiry}</div>
+                      )}
+                    </div>
+                    {!m.isDefault && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setDefaultMethod(m.id)}
+                        style={{
+                          padding: '6px 12px',
+                          border: '1px solid #CBD5E1',
+                          borderRadius: '6px',
+                          backgroundColor: '#FFFFFF',
+                          color: '#0F2E4D',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: busy ? 'wait' : 'pointer',
+                        }}
+                      >
+                        Set as default
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => removeMethod(m.id, m.kind === 'bank' ? 'bank account' : 'card')}
+                      title="Remove"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '6px 10px',
+                        border: '1px solid #FFCDD2',
+                        borderRadius: '6px',
+                        backgroundColor: '#FFFFFF',
+                        color: '#B71C1C',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        cursor: busy ? 'wait' : 'pointer',
+                      }}
+                    >
+                      <Trash2 size={12} /> Remove
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     );
   };
-
-  const renderBilling = () => (
-    <div>
-      {renderPaymentMethods()}
-      <div style={s.tableWrap} className="helm-table-wrap">
-      <table style={s.table}>
-        <thead>
-          <tr>
-            <th style={s.th}>Invoice</th>
-            <th style={s.th}>Description</th>
-            <th style={s.th}>Amount</th>
-            <th style={s.th}>Status</th>
-            <th style={s.th}>Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {invoices.map((inv, idx) => {
-            const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
-            const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
-            return (
-              <tr
-                key={inv.id}
-                style={{ cursor: 'pointer' }}
-                onClick={() => navigate(`/billing/invoices/${inv.id}`)}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
-              >
-                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>
-                  <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
-                </td>
-                <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  );
 
   /* ── Documents Tab ─── */
   async function uploadDocument(file: File) {
@@ -1552,7 +1962,12 @@ export default function CustomerDetailPage() {
           <button
             key={t.key}
             style={{ ...s.tab, ...(tab === t.key ? s.tabActive : {}) }}
-            onClick={() => setTab(t.key)}
+            onClick={() => {
+              setTab(t.key);
+              const next = new URLSearchParams(searchParams);
+              next.set('tab', t.key);
+              setSearchParams(next, { replace: true });
+            }}
           >
             {t.label}
           </button>

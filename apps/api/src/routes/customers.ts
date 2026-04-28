@@ -2,8 +2,8 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 import { requireStripe } from "../lib/stripe.js";
+import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 import type Stripe from "stripe";
 
 const router: Router = Router();
@@ -122,6 +122,116 @@ function appError(message: string, statusCode: number, code: string): Error {
   err.statusCode = statusCode;
   err.code = code;
   return err;
+}
+
+// ─── Stripe account resolver for customers ─────────────────────────────────
+//
+// Marina-staff payment-method operations need to talk to the Stripe Connect
+// account that owns the customer's Stripe customer record. Since Customer
+// has no homeLocationId column, we derive the location the same way invoice
+// payments do: take the most recent invoice's locationId. If the customer
+// has no invoices with a location yet (brand-new customer), or that location
+// has no Stripe account connected, we fall back to the tenant-level Stripe
+// account so single-location marinas continue to work.
+//
+// Returns:
+//   stripeAccountId   — account to use, or null when nothing is configured
+//   locationConnected — false when the chosen location has no completed
+//                       Stripe onboarding; the UI uses this to surface a
+//                       clear "Stripe is not set up for this location" msg
+//   locationName      — name of the chosen location (for nicer UI messages)
+async function getStripeAccountForCustomer(
+  customerId: string,
+  tenantId: string,
+): Promise<{
+  stripeAccountId: string | null;
+  locationConnected: boolean;
+  locationName: string | null;
+}> {
+  // Find the customer's most recent invoice that has a location attached.
+  const recentInvoice = await prisma.invoice.findFirst({
+    where: { customerId, tenantId, locationId: { not: null } },
+    orderBy: { issuedDate: "desc" },
+    select: {
+      location: {
+        select: {
+          name: true,
+          stripeAccountId: true,
+          stripeOnboardingComplete: true,
+        },
+      },
+    },
+  });
+
+  if (recentInvoice?.location?.stripeAccountId) {
+    return {
+      stripeAccountId: recentInvoice.location.stripeAccountId,
+      locationConnected: recentInvoice.location.stripeOnboardingComplete,
+      locationName: recentInvoice.location.name,
+    };
+  }
+
+  // Location exists but no Stripe account on it.
+  if (recentInvoice?.location && !recentInvoice.location.stripeAccountId) {
+    return {
+      stripeAccountId: null,
+      locationConnected: false,
+      locationName: recentInvoice.location.name,
+    };
+  }
+
+  // No invoices yet — fall back to tenant-level Stripe account.
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { stripeAccountId: true },
+  });
+
+  return {
+    stripeAccountId: tenant?.stripeAccountId ?? null,
+    locationConnected: !!tenant?.stripeAccountId,
+    locationName: null,
+  };
+}
+
+// Ensures the customer has a Stripe customer record in the given Connect
+// account, creating one on the fly if missing. Persists the new id back to
+// the local Customer row so subsequent calls reuse it.
+async function ensureStripeCustomer(
+  customerId: string,
+  tenantId: string,
+  stripeAccountId: string,
+): Promise<string> {
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, tenantId },
+    select: {
+      id: true,
+      stripeCustomerId: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+    },
+  });
+  if (!customer) {
+    throw appError("Customer not found", 404, "NOT_FOUND");
+  }
+  if (customer.stripeCustomerId) return customer.stripeCustomerId;
+
+  const stripe = requireStripe();
+  const sc = await stripe.customers.create(
+    {
+      email: customer.email ?? undefined,
+      name:
+        [customer.firstName, customer.lastName].filter(Boolean).join(" ") ||
+        undefined,
+      metadata: { helmCustomerId: customer.id, tenantId },
+    },
+    { stripeAccount: stripeAccountId },
+  );
+  await prisma.customer.update({
+    where: { id: customer.id },
+    data: { stripeCustomerId: sc.id },
+  });
+  return sc.id;
 }
 
 // ─── Authenticated routes ───────────────────────────────────────────────────
@@ -841,12 +951,121 @@ router.delete(
   },
 );
 
-// ---------------------------------------------------------------------------
-// GET /api/customers/:id/payment-methods — staff-facing list of saved Stripe
-// payment methods (cards + ACH bank accounts) for a given customer. Mirrors
-// the portal endpoint but scoped by URL param so marina staff can see what's
-// on file when helping customers over the phone.
-// ---------------------------------------------------------------------------
+// ─── Payment History ────────────────────────────────────────────────────────
+//
+// Returns this customer's payments newest-first with the fields needed for
+// the marina-portal payment-history view: date, amount, method, status,
+// related invoice (if any), and who recorded the payment (looked up from
+// the Payment-CREATED audit log).
+
+const PaymentHistoryQuerySchema = z.object({
+  skip: z.coerce.number().int().min(0).default(0),
+  take: z.coerce.number().int().positive().max(100).default(25),
+});
+
+router.get(
+  "/:id/payment-history",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const { skip, take } = PaymentHistoryQuerySchema.parse(req.query);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const where = { customerId, tenantId };
+
+      const [payments, total] = await Promise.all([
+        prisma.payment.findMany({
+          where,
+          orderBy: [{ postedDate: "desc" }, { createdAt: "desc" }],
+          skip,
+          take,
+          include: {
+            invoice: {
+              select: {
+                id: true,
+                invoiceNumber: true,
+                totalCents: true,
+                balanceCents: true,
+                status: true,
+              },
+            },
+          },
+        }),
+        prisma.payment.count({ where }),
+      ]);
+
+      // Resolve "recorded by" via the Payment-CREATED audit log entries.
+      const paymentIds = payments.map((p) => p.id);
+      const auditLogs = paymentIds.length
+        ? await prisma.auditLog.findMany({
+            where: {
+              tenantId,
+              recordType: "Payment",
+              recordId: { in: paymentIds },
+              action: "CREATED",
+            },
+            select: { recordId: true, userName: true, userId: true },
+          })
+        : [];
+
+      const recordedByMap = new Map<string, { userId: string | null; userName: string | null }>();
+      for (const log of auditLogs) {
+        if (!recordedByMap.has(log.recordId)) {
+          recordedByMap.set(log.recordId, {
+            userId: log.userId,
+            userName: log.userName,
+          });
+        }
+      }
+
+      const data = payments.map((p) => ({
+        id: p.id,
+        amountCents: p.amountCents,
+        method: p.method,
+        status: p.status,
+        postedDate: p.postedDate,
+        createdAt: p.createdAt,
+        stripePaymentId: p.stripePaymentId,
+        invoice: p.invoice
+          ? {
+              id: p.invoice.id,
+              invoiceNumber: p.invoice.invoiceNumber,
+              totalCents: p.invoice.totalCents,
+              balanceCents: p.invoice.balanceCents,
+              status: p.invoice.status,
+            }
+          : null,
+        recordedBy: recordedByMap.get(p.id) ?? { userId: null, userName: null },
+      }));
+
+      res.json({
+        data,
+        pagination: { skip, take, total },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── Saved payment methods (cards on file) ─────────────────────────────────
+//
+// These endpoints mirror the customer-portal payment-method routes but are
+// scoped per-customer and routed through the customer's location's Stripe
+// Connect account (matching how invoice payments are routed per-location).
+// Staff initiate "save a card" via a Stripe-hosted Checkout setup session,
+// so they never see or type the customer's raw card number.
+//
+// The response also exposes the customer's `autopay` flag (read from the
+// Stripe customer's metadata) so the staff UI can show whether automatic
+// charging is on for this customer.
+
 router.get(
   "/:id/payment-methods",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -856,28 +1075,54 @@ router.get(
 
       const customer = await prisma.customer.findFirst({
         where: { id: customerId, tenantId },
-        select: { stripeCustomerId: true },
+        select: { id: true, stripeCustomerId: true },
       });
-      if (!customer) {
-        res.status(404).json({ error: "Customer not found", code: "NOT_FOUND" });
-        return;
-      }
-      if (!customer.stripeCustomerId) {
-        res.json({ methods: [], defaultMethodId: null, autopay: false });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+
+      // No Stripe configured anywhere: surface a clear empty/no-config state.
+      if (!account.stripeAccountId) {
+        res.json({
+          methods: [],
+          defaultMethodId: null,
+          autopay: false,
+          stripeConfigured: false,
+          locationConnected: account.locationConnected,
+          locationName: account.locationName,
+        });
         return;
       }
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { stripeAccountId: true },
-      });
-      if (!tenant?.stripeAccountId) {
-        res.json({ methods: [], defaultMethodId: null, autopay: false });
+      // Account exists but onboarding still pending: surface the same warning
+      // so staff don't see actionable buttons that will fail at submit time.
+      if (!account.locationConnected) {
+        res.json({
+          methods: [],
+          defaultMethodId: null,
+          autopay: false,
+          stripeConfigured: false,
+          locationConnected: false,
+          locationName: account.locationName,
+        });
+        return;
+      }
+
+      // No Stripe customer record yet — nothing to list, but Stripe IS set up.
+      if (!customer.stripeCustomerId) {
+        res.json({
+          methods: [],
+          defaultMethodId: null,
+          autopay: false,
+          stripeConfigured: true,
+          locationConnected: true,
+          locationName: account.locationName,
+        });
         return;
       }
 
       const stripe = requireStripe();
-      const stripeOpts = { stripeAccount: tenant.stripeAccountId };
+      const stripeOpts = { stripeAccount: account.stripeAccountId };
 
       const [cardList, bankList, stripeCustomer] = await Promise.all([
         stripe.paymentMethods.list(
@@ -906,6 +1151,8 @@ router.get(
           brand: pm.card?.brand ?? "card",
           label: (pm.card?.brand ?? "Card").replace(/^\w/, (c) => c.toUpperCase()),
           last4: pm.card?.last4 ?? "****",
+          expMonth: pm.card?.exp_month ?? null,
+          expYear: pm.card?.exp_year ?? null,
           expiry:
             pm.card?.exp_month && pm.card?.exp_year
               ? `${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)}`
@@ -918,12 +1165,232 @@ router.get(
           brand: "bank",
           label: pm.us_bank_account?.bank_name ?? "Bank Account",
           last4: pm.us_bank_account?.last4 ?? "****",
+          expMonth: null,
+          expYear: null,
           expiry: null,
           isDefault: pm.id === defaultMethodId,
         })),
       ];
 
-      res.json({ methods, defaultMethodId, autopay });
+      res.json({
+        methods,
+        defaultMethodId,
+        autopay,
+        stripeConfigured: true,
+        locationConnected: true,
+        locationName: account.locationName,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const SetupSessionSchema = z.object({
+  type: z.enum(["card", "bank"]).default("card"),
+  returnUrl: z.string().url(),
+});
+
+router.post(
+  "/:id/payment-methods/setup-session",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const { type, returnUrl } = SetupSessionSchema.parse(req.body);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripeCustomerId = await ensureStripeCustomer(
+        customerId,
+        tenantId,
+        account.stripeAccountId,
+      );
+
+      const successUrl = returnUrl.includes("?")
+        ? `${returnUrl}&setup=success`
+        : `${returnUrl}?setup=success`;
+      const cancelUrl = returnUrl.includes("?")
+        ? `${returnUrl}&setup=cancelled`
+        : `${returnUrl}?setup=cancelled`;
+
+      const stripe = requireStripe();
+      const session = await stripe.checkout.sessions.create(
+        {
+          mode: "setup",
+          customer: stripeCustomerId,
+          payment_method_types:
+            type === "bank" ? ["us_bank_account"] : ["card"],
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+        },
+        { stripeAccount: account.stripeAccountId },
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_SETUP_STARTED",
+          changedFieldsJson: { type },
+        },
+      });
+
+      res.json({ url: session.url });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.put(
+  "/:id/payment-methods/:pmId/default",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const pmId = req.params.pmId;
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true, stripeCustomerId: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+      if (!customer.stripeCustomerId) {
+        throw appError(
+          "Customer has no saved payment methods",
+          400,
+          "NO_STRIPE_CUSTOMER",
+        );
+      }
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: account.stripeAccountId };
+
+      // Verify the payment method belongs to this customer before mutating.
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
+      if (pm.customer !== customer.stripeCustomerId) {
+        res.status(403).json({
+          error: "Payment method does not belong to this customer",
+          code: "FORBIDDEN",
+        });
+        return;
+      }
+
+      await stripe.customers.update(
+        customer.stripeCustomerId,
+        { invoice_settings: { default_payment_method: pmId } },
+        stripeOpts,
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_DEFAULT_SET",
+          changedFieldsJson: { paymentMethodId: pmId },
+        },
+      });
+
+      res.json({ success: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  "/:id/payment-methods/:pmId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const pmId = req.params.pmId;
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true, stripeCustomerId: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+      if (!customer.stripeCustomerId) {
+        throw appError(
+          "Customer has no saved payment methods",
+          400,
+          "NO_STRIPE_CUSTOMER",
+        );
+      }
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: account.stripeAccountId };
+
+      // Verify ownership before detaching.
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
+      if (pm.customer !== customer.stripeCustomerId) {
+        res.status(403).json({
+          error: "Payment method does not belong to this customer",
+          code: "FORBIDDEN",
+        });
+        return;
+      }
+
+      await stripe.paymentMethods.detach(pmId, {}, stripeOpts);
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_REMOVED",
+          changedFieldsJson: { paymentMethodId: pmId },
+        },
+      });
+
+      res.json({ success: true });
     } catch (err) {
       next(err);
     }
