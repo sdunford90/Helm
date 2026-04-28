@@ -32,6 +32,18 @@ interface Lead {
   /** Free-form note about the source — e.g. the staffer who took the call,
    *  the referrer's name, or the social-media account that DM'd. */
   sourceDetail?: string | null;
+  /** Marketing attribution captured by the embedded lead-capture form. */
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  /** Page URL the form was submitted from. */
+  sourceUrl?: string | null;
+  /** Referral partner code, if the lead used one. */
+  referralCode?: string | null;
+  /** ID of the lead form submission that created this lead. */
+  sourceFormId?: string | null;
+  /** Lead form record (joined by the API), used to show a friendly name. */
+  sourceForm?: { id: string; name: string; formType?: string | null } | null;
   slipType: string;
   boatLength: number;
   assignedTo: string;
@@ -97,6 +109,25 @@ const STAGE_LABELS: Record<string, string> = {
   WON: 'Won',
   LOST: 'Lost',
 };
+
+/**
+ * Returns the input string if it parses as an http(s) URL, otherwise null.
+ * `sourceUrl` originates from public lead-capture form submissions and is
+ * therefore attacker-controllable; rendering an unvalidated value in an
+ * `<a href>` would allow `javascript:` / `data:` URI XSS against staff users.
+ */
+function safeExternalUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function humanizeStage(value: unknown): string {
   if (typeof value !== 'string') return String(value ?? '');
@@ -741,8 +772,74 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
               </div>
             </div>
 
-            {/* Source/UTM block removed (was hardcoded mock data). Real Source +
-                Source Detail are shown in the field grid above. */}
+            {/* Source Details — shows real attribution captured by the embedded
+                lead-capture form (UTM tags, source URL, referral code, originating
+                form). Each row is hidden when its field is empty, and the entire
+                section collapses for leads with no attribution data (e.g. walk-in
+                or phone leads). The free-form Source Detail note already lives in
+                the field grid above. */}
+            {(() => {
+              const formName = lead.sourceForm?.name ?? null;
+              const attributionRows: Array<{ label: string; value: React.ReactNode }> = [];
+              if (lead.utmSource) {
+                attributionRows.push({ label: 'UTM Source', value: lead.utmSource });
+              }
+              if (lead.utmMedium) {
+                attributionRows.push({ label: 'UTM Medium', value: lead.utmMedium });
+              }
+              if (lead.utmCampaign) {
+                attributionRows.push({ label: 'UTM Campaign', value: lead.utmCampaign });
+              }
+              if (lead.sourceUrl) {
+                const safeUrl = safeExternalUrl(lead.sourceUrl);
+                attributionRows.push({
+                  label: 'Source URL',
+                  value: safeUrl ? (
+                    <a
+                      href={safeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: '#0A2342', textDecoration: 'underline', wordBreak: 'break-all' }}
+                    >
+                      {safeUrl}
+                    </a>
+                  ) : (
+                    // Unsafe scheme (e.g. `javascript:`) — render as inert text
+                    // so staff can still see what was submitted without it being
+                    // clickable.
+                    <span style={{ wordBreak: 'break-all', color: '#64748B' }}>
+                      {lead.sourceUrl}
+                    </span>
+                  ),
+                });
+              }
+              if (lead.referralCode) {
+                attributionRows.push({ label: 'Referral Code', value: lead.referralCode });
+              }
+              if (formName || lead.sourceFormId) {
+                attributionRows.push({
+                  label: 'Lead Form',
+                  value: formName ?? lead.sourceFormId,
+                });
+              }
+              if (attributionRows.length === 0) return null;
+              return (
+                <div style={s.section}>
+                  <div style={s.sectionTitle}>
+                    <Globe size={14} />
+                    Source Details
+                  </div>
+                  <div style={s.fieldGrid}>
+                    {attributionRows.map((row) => (
+                      <div key={row.label} style={s.field}>
+                        <span style={s.fieldLabel}>{row.label}</span>
+                        <span style={s.fieldValue}>{row.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Activity Timeline */}
             <div style={s.section}>
