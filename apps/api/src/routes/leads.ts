@@ -17,6 +17,16 @@ const LeadStageEnum = z.enum([
   "LOST",
 ]);
 
+const LeadSourceEnum = z.enum([
+  "WEBSITE",
+  "REFERRAL",
+  "WALK_IN",
+  "PHONE",
+  "SOCIAL_MEDIA",
+  "EMAIL",
+  "OTHER",
+]);
+
 /** Ordered pipeline stages (index = ordinal position). */
 const STAGE_ORDER: z.infer<typeof LeadStageEnum>[] = [
   "NEW",
@@ -37,6 +47,8 @@ const CreateLeadSchema = z.object({
   notes: z.string().optional().nullable(),
   assignedTo: z.string().uuid().optional().nullable(),
   locationId: z.string().uuid().optional().nullable(),
+  source: LeadSourceEnum.optional(),
+  sourceDetail: z.string().optional().nullable(),
   sourceFormId: z.string().uuid().optional().nullable(),
   sourceUrl: z.string().optional().nullable(),
   utmSource: z.string().optional().nullable(),
@@ -55,6 +67,8 @@ const UpdateLeadSchema = z.object({
   notes: z.string().optional().nullable(),
   assignedTo: z.string().uuid().optional().nullable(),
   locationId: z.string().uuid().optional().nullable(),
+  source: LeadSourceEnum.optional(),
+  sourceDetail: z.string().optional().nullable(),
 });
 
 const StageTransitionSchema = z.object({
@@ -105,7 +119,7 @@ const ConvertLeadSchema = z.object({
 
 const ListLeadsQuerySchema = z.object({
   stage: LeadStageEnum.optional(),
-  source: z.string().optional(),
+  source: LeadSourceEnum.optional(),
   assignedTo: z.string().uuid().optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
@@ -187,11 +201,53 @@ router.get(
           Math.round((totalDays / convertedLeads.length) * 10) / 10;
       }
 
+      // Conversion rate broken out by source — one groupBy across (source, stage)
+      // and we fold totals/won/lost in code so we don't N+1.
+      const sourceStageCounts = await prisma.lead.groupBy({
+        by: ["source", "stage"],
+        _count: { id: true },
+        where: { tenantId },
+      });
+
+      const sourceTotals: Record<string, { total: number; won: number; lost: number }> = {};
+      for (const row of sourceStageCounts) {
+        const src = row.source as string;
+        if (!sourceTotals[src]) sourceTotals[src] = { total: 0, won: 0, lost: 0 };
+        sourceTotals[src].total += row._count.id;
+        if (row.stage === "WON") sourceTotals[src].won += row._count.id;
+        if (row.stage === "LOST") sourceTotals[src].lost += row._count.id;
+      }
+
+      const ALL_SOURCES = [
+        "WEBSITE",
+        "REFERRAL",
+        "WALK_IN",
+        "PHONE",
+        "SOCIAL_MEDIA",
+        "EMAIL",
+        "OTHER",
+      ] as const;
+
+      const bySource = ALL_SOURCES.map((src) => {
+        const t = sourceTotals[src] ?? { total: 0, won: 0, lost: 0 };
+        const closed = t.won + t.lost;
+        const conversionRate =
+          closed > 0 ? Math.round((t.won / closed) * 10000) / 100 : 0;
+        return {
+          source: src,
+          total: t.total,
+          won: t.won,
+          lost: t.lost,
+          conversionRate,
+        };
+      });
+
       res.json({
         totalLeads,
         countByStage,
         conversionRate,
         avgDaysToConvert,
+        bySource,
       });
     } catch (err) {
       next(err);
@@ -212,12 +268,7 @@ router.get(
 
       if (query.stage) where.stage = query.stage;
       if (query.assignedTo) where.assignedTo = query.assignedTo;
-      if (query.source) {
-        where.OR = [
-          { utmSource: { contains: query.source, mode: "insensitive" } },
-          { referralCode: { contains: query.source, mode: "insensitive" } },
-        ];
-      }
+      if (query.source) where.source = query.source;
       if (query.dateFrom || query.dateTo) {
         where.createdAt = {
           ...(query.dateFrom ? { gte: query.dateFrom } : {}),
@@ -321,7 +372,7 @@ router.post(
           recordType: "Lead",
           recordId: lead.id,
           action: "CREATED",
-          changedFieldsJson: { stage: lead.stage },
+          changedFieldsJson: { stage: lead.stage, source: lead.source },
         },
       });
 

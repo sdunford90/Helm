@@ -9,6 +9,28 @@ export enum LeadStage {
   LOST = 'LOST',
 }
 
+/** Where a lead came from. Mirrors the Prisma `LeadSource` enum. */
+export enum LeadSource {
+  WEBSITE = 'WEBSITE',
+  REFERRAL = 'REFERRAL',
+  WALK_IN = 'WALK_IN',
+  PHONE = 'PHONE',
+  SOCIAL_MEDIA = 'SOCIAL_MEDIA',
+  EMAIL = 'EMAIL',
+  OTHER = 'OTHER',
+}
+
+/** Human-readable labels for `LeadSource` enum values. */
+export const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
+  [LeadSource.WEBSITE]: 'Website',
+  [LeadSource.REFERRAL]: 'Referral',
+  [LeadSource.WALK_IN]: 'Walk-in',
+  [LeadSource.PHONE]: 'Phone call',
+  [LeadSource.SOCIAL_MEDIA]: 'Social media',
+  [LeadSource.EMAIL]: 'Email',
+  [LeadSource.OTHER]: 'Other',
+};
+
 /** A prospective customer / sales lead. */
 export interface Lead {
   id: string;

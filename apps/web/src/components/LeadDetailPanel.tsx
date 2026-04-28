@@ -29,11 +29,39 @@ interface Lead {
   phone: string;
   stage: Stage;
   source: string;
+  /** Free-form note about the source — e.g. the staffer who took the call,
+   *  the referrer's name, or the social-media account that DM'd. */
+  sourceDetail?: string | null;
   slipType: string;
   boatLength: number;
   assignedTo: string;
   createdAt: string;
   notes: string;
+}
+
+const SOURCE_OPTIONS: ReadonlyArray<string> = [
+  'WEBSITE',
+  'REFERRAL',
+  'WALK_IN',
+  'PHONE',
+  'SOCIAL_MEDIA',
+  'EMAIL',
+  'OTHER',
+];
+
+const SOURCE_LABELS: Record<string, string> = {
+  WEBSITE: 'Website',
+  REFERRAL: 'Referral',
+  WALK_IN: 'Walk-in',
+  PHONE: 'Phone call',
+  SOCIAL_MEDIA: 'Social media',
+  EMAIL: 'Email',
+  OTHER: 'Other',
+};
+
+function sourceLabel(value: string | null | undefined): string {
+  if (!value) return '—';
+  return SOURCE_LABELS[value] ?? value;
 }
 
 interface ActivityEvent {
@@ -156,7 +184,6 @@ const STAGE_COLORS: Record<Stage, { bg: string; text: string }> = {
 };
 
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
-const SOURCES = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 const SLIP_TYPES = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STAFF = ['Sarah Chen', 'Mike Torres', 'Jessica Park', 'David Liu'];
 
@@ -440,7 +467,7 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
   const stageColor = STAGE_COLORS[editData.stage];
   const nextStage = getNextStage(lead.stage);
 
-  const handleEdit = (field: keyof Lead, value: string | number) => {
+  const handleEdit = (field: keyof Lead, value: string | number | null) => {
     setEditData((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -616,13 +643,32 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                   {isEditing ? (
                     <select
                       style={s.fieldSelect}
-                      value={editData.source}
+                      value={editData.source || 'OTHER'}
                       onChange={(e) => handleEdit('source', e.target.value)}
                     >
-                      {SOURCES.map((src) => <option key={src}>{src}</option>)}
+                      {SOURCE_OPTIONS.map((src) => (
+                        <option key={src} value={src}>{SOURCE_LABELS[src]}</option>
+                      ))}
                     </select>
                   ) : (
-                    <span style={s.fieldValue}>{lead.source || '—'}</span>
+                    <span style={s.fieldValue}>{sourceLabel(lead.source)}</span>
+                  )}
+                </div>
+                {/* Source Detail — free-form context (e.g. "took the call",
+                    referrer name, social handle).  Optional. */}
+                <div style={s.field}>
+                  <span style={s.fieldLabel}>Source Detail</span>
+                  {isEditing ? (
+                    <input
+                      style={s.fieldInput}
+                      value={editData.sourceDetail ?? ''}
+                      onChange={(e) =>
+                        handleEdit('sourceDetail', e.target.value || null)
+                      }
+                      placeholder="e.g. taken by Sarah, referred by Ava"
+                    />
+                  ) : (
+                    <span style={s.fieldValue}>{lead.sourceDetail || '—'}</span>
                   )}
                 </div>
                 {/* Stage */}

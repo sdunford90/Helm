@@ -112,10 +112,26 @@ export async function convertLeadToCustomer(
       throw appError("Lead has already been converted", 400, "ALREADY_CONVERTED");
     }
 
-    // 2. Create Customer — carry forward source attribution
-    const leadSource = [lead.utmSource, lead.utmMedium, lead.referralCode]
+    // 2. Create Customer — carry forward source attribution.
+    // Prefer the first-class `source` enum (set on every lead).  When the lead
+    // is in the OTHER catch-all and we have UTM/referral data, fall back to
+    // the legacy slash-joined string so existing reporting keeps working.
+    const SOURCE_LABELS: Record<string, string> = {
+      WEBSITE: "Website",
+      REFERRAL: "Referral",
+      WALK_IN: "Walk-in",
+      PHONE: "Phone call",
+      SOCIAL_MEDIA: "Social media",
+      EMAIL: "Email",
+      OTHER: "Other",
+    };
+    const utmJoined = [lead.utmSource, lead.utmMedium, lead.referralCode]
       .filter(Boolean)
-      .join(" / ") || "direct";
+      .join(" / ");
+    const leadSource =
+      lead.source && lead.source !== "OTHER"
+        ? SOURCE_LABELS[lead.source as string] ?? (lead.source as string)
+        : utmJoined || SOURCE_LABELS[(lead.source as string) ?? "OTHER"] || "direct";
 
     const customer = await tx.customer.create({
       data: {

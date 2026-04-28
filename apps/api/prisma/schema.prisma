@@ -35,6 +35,16 @@ enum LeadStage {
   LOST
 }
 
+enum LeadSource {
+  WEBSITE
+  REFERRAL
+  WALK_IN
+  PHONE
+  SOCIAL_MEDIA
+  EMAIL
+  OTHER
+}
+
 enum WaitlistStatus {
   WAITING
   NOTIFIED
@@ -471,10 +481,12 @@ model LeadForm {
 }
 
 model Lead {
-  id           String    @id @default(uuid())
+  id           String     @id @default(uuid())
   tenantId     String
   locationId   String?
-  stage        LeadStage @default(NEW)
+  stage        LeadStage  @default(NEW)
+  source       LeadSource @default(OTHER)
+  sourceDetail String?
   sourceFormId String?
   sourceUrl    String?
   utmSource    String?
@@ -491,13 +503,14 @@ model Lead {
   lostReason   String?
   convertedAt  DateTime?
   customerId   String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   sourceForm      LeadForm?       @relation(fields: [sourceFormId], references: [id])
   waitlistEntries WaitlistEntry[]
 
   @@index([tenantId])
+  @@index([source])
   @@map("leads")
 }
 

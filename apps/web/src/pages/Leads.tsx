@@ -1,25 +1,37 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import {
   UserPlus,
   Search,
   LayoutGrid,
   List,
-  ChevronDown,
   Calendar,
   Mail,
-  Phone,
   Anchor,
   Globe,
   User,
+  Phone,
+  Footprints,
+  TrendingUp,
 } from 'lucide-react';
 import LeadDetailPanel from '../components/LeadDetailPanel';
 import LeadFormBuilder from '../components/LeadFormBuilder';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ── Types ─────────────────────────────────────────────── */
 
 type Stage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Won' | 'Lost';
-type Source = 'Website' | 'Referral' | 'Walk-in' | 'Phone' | 'Social Media';
+/** API enum values for `LeadSource` — kept as string so we can pass through
+ *  the wire format unchanged.  Use {@link SOURCE_LABELS} for display. */
+type SourceEnum =
+  | 'WEBSITE'
+  | 'REFERRAL'
+  | 'WALK_IN'
+  | 'PHONE'
+  | 'SOCIAL_MEDIA'
+  | 'EMAIL'
+  | 'OTHER';
 type SlipType = 'Annual' | 'Seasonal' | 'Transient' | 'Liveaboard';
 
 interface Lead {
@@ -29,7 +41,8 @@ interface Lead {
   email: string;
   phone: string;
   stage: Stage;
-  source: Source;
+  source: SourceEnum;
+  sourceDetail?: string | null;
   slipType: SlipType;
   boatLength: number;
   assignedTo: string;
@@ -37,18 +50,61 @@ interface Lead {
   notes: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
-const SOURCES: Source[] = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
+
+const SOURCE_OPTIONS: SourceEnum[] = [
+  'WEBSITE',
+  'REFERRAL',
+  'WALK_IN',
+  'PHONE',
+  'SOCIAL_MEDIA',
+  'EMAIL',
+  'OTHER',
+];
+
+const SOURCE_LABELS: Record<SourceEnum, string> = {
+  WEBSITE: 'Website',
+  REFERRAL: 'Referral',
+  WALK_IN: 'Walk-in',
+  PHONE: 'Phone call',
+  SOCIAL_MEDIA: 'Social media',
+  EMAIL: 'Email',
+  OTHER: 'Other',
+};
+
+function sourceLabel(value: string | null | undefined): string {
+  if (!value) return '—';
+  return SOURCE_LABELS[value as SourceEnum] ?? value;
+}
 
 // Normalize uppercase API stage values → frontend title-case Stage type
 const STAGE_API_MAP: Record<string, Stage> = {
   NEW: 'New', CONTACTED: 'Contacted', QUALIFIED: 'Qualified',
   PROPOSAL_SENT: 'Proposal Sent', WON: 'Won', LOST: 'Lost',
 };
+const STAGE_TO_API: Record<Stage, string> = {
+  'New': 'NEW', 'Contacted': 'CONTACTED', 'Qualified': 'QUALIFIED',
+  'Proposal Sent': 'PROPOSAL_SENT', 'Won': 'WON', 'Lost': 'LOST',
+};
 function normalizeStage(s: string): Stage {
   return STAGE_API_MAP[s] ?? (s as Stage);
+}
+
+interface SourceStat {
+  source: SourceEnum;
+  total: number;
+  won: number;
+  lost: number;
+  conversionRate: number;
+}
+
+interface LeadStatsResponse {
+  totalLeads: number;
+  conversionRate: number;
+  avgDaysToConvert: number | null;
+  bySource: SourceStat[];
 }
 
 /* ── Stage Colors ──────────────────────────────────────── */
@@ -291,9 +347,10 @@ const s: Record<string, React.CSSProperties> = {
 /* ── Component ─────────────────────────────────────────── */
 
 export default function Leads() {
+  const { getToken } = useAuth();
   const [view, setView] = useState<'kanban' | 'table'>('kanban');
   const [stageFilter, setStageFilter] = useState<string>('All');
-  const [sourceFilter, setSourceFilter] = useState<string>('All');
+  const [sourceFilter, setSourceFilter] = useState<'All' | SourceEnum>('All');
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
@@ -301,8 +358,52 @@ export default function Leads() {
 
   // API calls
   const { data: apiLeadsResp, loading, execute: refetchLeads } = useApi<{ data: Lead[] }>('get', '/api/leads', { immediate: true });
+  const { data: stats, execute: refetchStats } = useApi<LeadStatsResponse>('get', '/api/leads/stats', { immediate: true });
   const createLeadApi = useApi<Lead>('post', '/api/leads');
-  const updateLeadApi = useApi<Lead>('put', '/api/leads');
+
+  // PUT path needs the lead id baked in (route is `/api/leads/:id`), so we
+  // call api.put directly rather than going through useApi which captures a
+  // static path. `stage` is intentionally stripped — pipeline transitions
+  // must go through `persistStageChange` so the API's transition rules
+  // (one-step advance, lostReason gating, audit log, conversion side-effects)
+  // are honored.
+  const persistUpdate = async (lead: Lead): Promise<void> => {
+    if (!lead.id) return;
+    const token = await getToken();
+    const { id, createdAt: _createdAt, stage: _stage, ...rest } = lead;
+    void _createdAt;
+    void _stage;
+    try {
+      await api.put<Lead>(`/api/leads/${id}`, rest, token);
+    } catch (err) {
+      console.error('Failed to update lead', err);
+      window.alert(`Couldn't save lead: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // Re-sync from server so the optimistic local state is reverted.
+      refetchLeads();
+    }
+  };
+
+  // Stage transitions go through the dedicated /:id/stage endpoint which
+  // enforces the pipeline rules and triggers the WON→Customer conversion.
+  const persistStageChange = async (
+    leadId: string,
+    newStage: Stage,
+    lostReason?: string,
+  ): Promise<boolean> => {
+    const token = await getToken();
+    const apiStage = STAGE_TO_API[newStage];
+    const body: { stage: string; lostReason?: string } = { stage: apiStage };
+    if (newStage === 'Lost' && lostReason) body.lostReason = lostReason;
+    try {
+      await api.put<Lead>(`/api/leads/${leadId}/stage`, body, token);
+      return true;
+    } catch (err) {
+      console.error('Failed to change lead stage', err);
+      window.alert(`Couldn't update stage: ${err instanceof Error ? err.message : 'unknown error'}`);
+      refetchLeads();
+      return false;
+    }
+  };
 
   useEffect(() => {
     if (apiLeadsResp?.data) {
@@ -327,6 +428,25 @@ export default function Leads() {
 
   const leadsByStage = (stage: Stage) => filtered.filter((l) => l.stage === stage);
 
+  /** Open the detail panel pre-populated for a quick-add walk-in / phone-call. */
+  const startQuickAdd = (source: SourceEnum) => {
+    setSelectedLead({
+      id: '',
+      firstName: '',
+      lastName: '',
+      email: '',
+      phone: '',
+      stage: 'New',
+      source,
+      sourceDetail: '',
+      slipType: 'Annual',
+      boatLength: 0,
+      assignedTo: '',
+      createdAt: new Date().toISOString().slice(0, 10),
+      notes: '',
+    });
+  };
+
   return (
     <div style={s.page}>
       <h1 style={s.title} className="helm-page-title">Leads</h1>
@@ -350,11 +470,11 @@ export default function Leads() {
         <select
           style={s.select}
           value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value)}
+          onChange={(e) => setSourceFilter(e.target.value as 'All' | SourceEnum)}
         >
           <option value="All">All Sources</option>
-          {SOURCES.map((src) => (
-            <option key={src} value={src}>{src}</option>
+          {SOURCE_OPTIONS.map((src) => (
+            <option key={src} value={src}>{SOURCE_LABELS[src]}</option>
           ))}
         </select>
 
@@ -387,20 +507,103 @@ export default function Leads() {
           </button>
         </div>
 
+        <button
+          style={s.secondaryBtn}
+          onClick={() => startQuickAdd('WALK_IN')}
+          title="Log a walk-in lead"
+        >
+          <Footprints size={16} />
+          Log walk-in
+        </button>
+
+        <button
+          style={s.secondaryBtn}
+          onClick={() => startQuickAdd('PHONE')}
+          title="Log a phone-call lead"
+        >
+          <Phone size={16} />
+          Log phone call
+        </button>
+
         <button style={s.secondaryBtn} onClick={() => setShowFormBuilder(true)}>
           <Globe size={16} />
           Lead Form
         </button>
 
-        <button style={s.primaryBtn} onClick={() => setSelectedLead({
-          id: '', firstName: '', lastName: '', email: '', phone: '',
-          stage: 'New', source: 'Website', slipType: 'Annual',
-          boatLength: 0, assignedTo: '', createdAt: new Date().toISOString().slice(0, 10), notes: '',
-        })}>
+        <button style={s.primaryBtn} onClick={() => startQuickAdd('WEBSITE')}>
           <UserPlus size={16} />
           Add Lead
         </button>
       </div>
+
+      {/* Conversion by Source */}
+      {stats?.bySource && stats.bySource.some((b) => b.total > 0) && (
+        <div
+          style={{
+            background: '#FFFFFF',
+            border: '1px solid #E2E8F0',
+            borderRadius: '8px',
+            padding: '16px 20px',
+            marginBottom: '24px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              marginBottom: '12px',
+              fontSize: '13px',
+              fontWeight: 600,
+              color: '#2E4A6B',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+          >
+            <TrendingUp size={14} />
+            Conversion by source
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+              gap: '12px',
+            }}
+          >
+            {stats.bySource
+              .filter((b) => b.total > 0)
+              .map((b) => (
+                <div
+                  key={b.source}
+                  style={{
+                    padding: '10px 12px',
+                    border: '1px solid #E2E8F0',
+                    borderRadius: '6px',
+                    background: '#F7F9FB',
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#64748B', fontWeight: 600 }}>
+                    {SOURCE_LABELS[b.source]}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '20px',
+                      fontWeight: 700,
+                      color: '#0A2342',
+                      marginTop: '2px',
+                    }}
+                  >
+                    {b.conversionRate.toFixed(1)}%
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>
+                    {b.won}/{b.won + b.lost} closed &middot; {b.total} total
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       {/* Kanban View */}
       {view === 'kanban' && (
@@ -434,7 +637,7 @@ export default function Leads() {
                         <Anchor size={12} /> {lead.slipType} &middot; {lead.boatLength}ft
                       </div>
                       <div style={s.cardDetail}>
-                        <Globe size={12} /> {lead.source}
+                        <Globe size={12} /> {sourceLabel(lead.source)}
                       </div>
                       <div style={s.cardFooter}>
                         <span style={s.cardDate}>
@@ -515,7 +718,7 @@ export default function Leads() {
                       {lead.stage}
                     </span>
                   </td>
-                  <td style={s.td}>{lead.source}</td>
+                  <td style={s.td}>{sourceLabel(lead.source)}</td>
                   <td style={s.td}>{lead.assignedTo}</td>
                   <td style={s.td}>{lead.createdAt}</td>
                 </tr>
@@ -540,21 +743,40 @@ export default function Leads() {
           onSave={(updated) => {
             if (updated.id) {
               setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated as Lead : l));
-              updateLeadApi.execute(updated).then(() => refetchLeads());
+              persistUpdate(updated as Lead).then(() => {
+                refetchLeads();
+                refetchStats();
+              });
             } else {
+              // For walk-ins / phone calls, the API generates the id; we
+              // optimistically add a placeholder, then refetch to pick up the
+              // real one from the server.
               const newLead = { ...updated, id: String(Date.now()) } as Lead;
               setLocalLeads((prev) => [newLead, ...prev]);
-              createLeadApi.execute(newLead).then(() => refetchLeads());
+              createLeadApi.execute(newLead).then(() => {
+                refetchLeads();
+                refetchStats();
+              });
             }
             setSelectedLead(null);
           }}
           onStageChange={async (newStage) => {
-            const updated = { ...selectedLead, stage: newStage as Stage };
+            const stage = newStage as Stage;
+            if (!selectedLead.id) return;
+            // The /:id/stage endpoint requires lostReason when transitioning to Lost.
+            let lostReason: string | undefined;
+            if (stage === 'Lost') {
+              const r = window.prompt('Why is this lead lost?');
+              if (r === null) return; // user cancelled
+              lostReason = r.trim() || 'No reason provided';
+            }
+            const updated = { ...selectedLead, stage };
             setSelectedLead(updated);
             setLocalLeads((prev) => prev.map((l) => l.id === selectedLead.id ? updated : l));
-            if (selectedLead.id) {
-              await updateLeadApi.execute(updated);
+            const ok = await persistStageChange(selectedLead.id, stage, lostReason);
+            if (ok) {
               refetchLeads();
+              refetchStats();
             }
           }}
         />
