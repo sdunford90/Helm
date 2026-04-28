@@ -633,6 +633,20 @@ export default function Inventory() {
     'get', '/api/inventory/adjustments?take=50', { immediate: true },
   );
   const { execute: createProductApi } = useApi<ApiProduct>('post', '/api/inventory/products');
+  // Page-level categories load so the table/filter can show the real category
+  // name (from ProductCategory) instead of the legacy free-text column. New
+  // products created via the categorized flow may not have anything in the
+  // legacy `category` field, which would otherwise leave the table cell blank.
+  const { data: pageCategoriesData } = useApi<{ categories: ApiProductCategory[] }>(
+    'get', '/api/inventory/categories', { immediate: true },
+  );
+  const categoryNameById = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of pageCategoriesData?.categories ?? []) m.set(c.id, c.name);
+    return m;
+  }, [pageCategoriesData]);
+  const displayCategory = (p: Product): string =>
+    (p.productCategoryId && categoryNameById.get(p.productCategoryId)) || p.category || '';
 
   React.useEffect(() => {
     if (productsData?.data) setProducts(productsData.data.map(toProduct));
@@ -654,10 +668,13 @@ export default function Inventory() {
   const lowCount = products.filter((p) => p.qoh <= p.reorderPoint && p.qoh > 0).length;
   const outCount = products.filter((p) => p.qoh === 0).length;
   const openPOs = purchaseOrders.filter((p) => p.status === 'Submitted' || p.status === 'Partial').length;
-  const categories = ['All', ...Array.from(new Set(products.map((p) => p.category)))];
+  const categories = [
+    'All',
+    ...Array.from(new Set(products.map(displayCategory).filter(Boolean))),
+  ];
 
   const filteredProducts = products.filter((p) => {
-    if (catFilter !== 'All' && p.category !== catFilter) return false;
+    if (catFilter !== 'All' && displayCategory(p) !== catFilter) return false;
     if (lowOnly && p.qoh > p.reorderPoint) return false;
     if (search) { const q = search.toLowerCase(); return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode && p.barcode.includes(q)); }
     return true;
@@ -798,7 +815,7 @@ export default function Inventory() {
                     <td style={{ ...st.td, ...st.mono, fontWeight: 600, color: '#0066CC', cursor: 'pointer', textDecoration: 'underline' }} onClick={() => openEdit(p)}>{p.sku}</td>
                     <td style={{ ...st.td, ...st.mono, fontSize: '11px' }}>{p.barcode}</td>
                     <td style={{ ...st.td, fontWeight: 600, cursor: 'pointer', color: '#0A2342' }} onClick={() => openEdit(p)}>{p.name}</td>
-                    <td style={st.td}>{p.category}</td>
+                    <td style={st.td}>{displayCategory(p)}</td>
                     <td style={{ ...st.td, ...st.mono }}>{fmt(p.costCents)}</td>
                     <td style={{ ...st.td, ...st.mono }}>{fmt(p.priceCents)}</td>
                     <td style={{ ...st.td, color: '#03543F', fontWeight: 600 }}>{margin}%</td>
@@ -929,8 +946,8 @@ export default function Inventory() {
         <div style={st.tableWrap} className="helm-table-wrap"><table style={st.table}><thead><tr>
           <th style={st.th}>Category</th><th style={st.th}>Products</th><th style={st.th}>Total Units</th><th style={st.th}>Cost Value</th><th style={st.th}>Retail Value</th><th style={st.th}>Margin %</th>
         </tr></thead><tbody>
-          {Array.from(new Set(products.map((p) => p.category))).map((cat, idx) => {
-            const catProducts = products.filter((p) => p.category === cat);
+          {Array.from(new Set(products.map(displayCategory).filter(Boolean))).map((cat, idx) => {
+            const catProducts = products.filter((p) => displayCategory(p) === cat);
             const costVal = catProducts.reduce((s, p) => s + p.qoh * p.costCents, 0);
             const retailVal = catProducts.reduce((s, p) => s + p.qoh * p.priceCents, 0);
             const margin = retailVal > 0 ? ((retailVal - costVal) / retailVal * 100).toFixed(1) : '0';
