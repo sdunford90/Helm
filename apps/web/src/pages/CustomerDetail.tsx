@@ -70,6 +70,10 @@ function formatAddress(a: CustomerAddress | null | undefined): string {
 
 /* ── API shapes (from server) ────────────────────────────── */
 
+type ComplianceStatus = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
+type InsuranceStatus = 'VALID' | 'EXPIRED' | 'MISSING';
+type RegistrationStatus = 'VALID' | 'EXPIRED' | 'MISSING';
+
 interface ApiInsuranceRecord {
   id: string;
   policyNumber: string;
@@ -80,6 +84,27 @@ interface ApiInsuranceRecord {
   status: string;
 }
 
+interface ApiBoatCompliance {
+  overallScore: ComplianceStatus;
+  insurance: {
+    status: InsuranceStatus;
+    expiryDate: string | null;
+    insurer: string | null;
+    policyNumber: string | null;
+  };
+  registration: {
+    status: RegistrationStatus;
+    expiryDate: string | null;
+    registrationNumber: string | null;
+  };
+}
+
+interface ApiSlipContract {
+  id: string;
+  status: string;
+  slip: { id: string; slipNumber: string } | null;
+}
+
 interface ApiBoat {
   id: string;
   name: string | null;
@@ -88,6 +113,8 @@ interface ApiBoat {
   beamFt?: number | null;
   draftFt?: number | null;
   registrationNumber: string | null;
+  registrationState?: string | null;
+  registrationExpiry?: string | null;
   make: string | null;
   model: string | null;
   year: number | null;
@@ -95,10 +122,9 @@ interface ApiBoat {
   engineHp: number | null;
   hin: string | null;
   insuranceRecords: ApiInsuranceRecord[];
-  compliance?: { overallScore?: ComplianceLevel } | ComplianceLevel | number;
+  slipContracts?: ApiSlipContract[];
+  compliance?: ApiBoatCompliance;
 }
-
-type ComplianceLevel = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
 
 interface ApiInvoice {
   id: string;
@@ -117,18 +143,8 @@ interface ApiTimelineEvent {
   meta?: Record<string, unknown>;
 }
 
-function extractComplianceLevel(c: ApiBoat['compliance']): ComplianceLevel {
-  if (!c) return 'ALL_GOOD';
-  if (typeof c === 'string') return c;
-  if (typeof c === 'number') {
-    if (c >= 90) return 'ALL_GOOD';
-    if (c >= 70) return 'ATTENTION_REQUIRED';
-    return 'NON_COMPLIANT';
-  }
-  return c.overallScore ?? 'ALL_GOOD';
-}
-
 function mapApiBoat(b: ApiBoat): Boat {
+  const activeContract = (b.slipContracts ?? []).find((c) => c.status === 'ACTIVE') ?? null;
   return {
     id: b.id,
     name: b.name ?? '—',
@@ -138,6 +154,8 @@ function mapApiBoat(b: ApiBoat): Boat {
     draft: b.draftFt?.toString() ?? '',
     height: '',
     registration: b.registrationNumber ?? '—',
+    registrationState: b.registrationState ?? null,
+    registrationExpiry: b.registrationExpiry ?? null,
     make: b.make ?? '',
     model: b.model ?? '',
     year: b.year?.toString() ?? '',
@@ -147,7 +165,12 @@ function mapApiBoat(b: ApiBoat): Boat {
     engineType: '',
     engineHp: b.engineHp?.toString() ?? '',
     fuelType: b.fuelType ?? '',
-    compliance: extractComplianceLevel(b.compliance),
+    complianceStatus: b.compliance?.overallScore ?? 'NON_COMPLIANT',
+    insuranceStatus: b.compliance?.insurance.status ?? 'MISSING',
+    insurer: b.compliance?.insurance.insurer ?? null,
+    insuranceExpiry: b.compliance?.insurance.expiryDate ?? null,
+    registrationStatus: b.compliance?.registration.status ?? 'MISSING',
+    activeSlipNumber: activeContract?.slip?.slipNumber ?? null,
   };
 }
 
@@ -187,7 +210,14 @@ interface Boat {
   type: string;
   length: number;
   registration: string;
-  compliance: ComplianceLevel;
+  registrationState?: string | null;
+  registrationExpiry?: string | null;
+  registrationStatus?: RegistrationStatus;
+  insurer?: string | null;
+  insuranceExpiry?: string | null;
+  insuranceStatus?: InsuranceStatus;
+  activeSlipNumber?: string | null;
+  complianceStatus?: ComplianceStatus;
   make?: string;
   model?: string;
   year?: string;
@@ -245,11 +275,40 @@ const invoiceStatusColors: Record<string, { bg: string; color: string }> = {
   Overdue: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
-const complianceBadge = (level: ComplianceLevel): { bg: string; color: string; label: string } => {
-  if (level === 'ALL_GOOD') return { bg: '#E8F5E9', color: '#1B5E20', label: 'All Good' };
-  if (level === 'ATTENTION_REQUIRED') return { bg: '#FFF3CD', color: '#856404', label: 'Attention Required' };
-  return { bg: '#FDECEA', color: '#B71C1C', label: 'Non-Compliant' };
+const COMPLIANCE_LABEL: Record<ComplianceStatus, string> = {
+  ALL_GOOD: 'Compliant',
+  ATTENTION_REQUIRED: 'Attention',
+  NON_COMPLIANT: 'Non-Compliant',
 };
+
+const complianceBadgeColors: Record<ComplianceStatus, { bg: string; color: string }> = {
+  ALL_GOOD: { bg: '#E8F5E9', color: '#1B5E20' },
+  ATTENTION_REQUIRED: { bg: '#FFF3CD', color: '#856404' },
+  NON_COMPLIANT: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
+const insuranceBadgeColors: Record<InsuranceStatus, { bg: string; color: string }> = {
+  VALID: { bg: '#E8F5E9', color: '#1B5E20' },
+  EXPIRED: { bg: '#FFF3CD', color: '#856404' },
+  MISSING: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
+const registrationBadgeColors: Record<RegistrationStatus, { bg: string; color: string }> = {
+  VALID: { bg: '#E8F5E9', color: '#1B5E20' },
+  EXPIRED: { bg: '#FFF3CD', color: '#856404' },
+  MISSING: { bg: '#FDECEA', color: '#B71C1C' },
+};
+
+function formatBoatDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
 
 const activityIcons: Record<string, React.ElementType> = {
   service: Activity,
@@ -781,7 +840,7 @@ export default function CustomerDetailPage() {
   };
 
   const handleAddBoat = (data: Partial<Boat>) => {
-    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', compliance: 'ALL_GOOD' };
+    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', complianceStatus: 'NON_COMPLIANT', insuranceStatus: 'MISSING', registrationStatus: 'MISSING', activeSlipNumber: null };
     setLocalBoats([...boats, newBoat]);
     addBoatApi.execute({ body: { ...data, customerId: id } }).catch(() => {});
   };
@@ -898,8 +957,30 @@ export default function CustomerDetailPage() {
         </button>
       </div>
       {boats.map((b) => {
-        const cb = complianceBadge(b.compliance);
+        const complianceStatus: ComplianceStatus = b.complianceStatus ?? 'NON_COMPLIANT';
+        const cb = complianceBadgeColors[complianceStatus];
+        const insStatus: InsuranceStatus = b.insuranceStatus ?? 'MISSING';
+        const insColors = insuranceBadgeColors[insStatus];
+        const regStatus: RegistrationStatus = b.registrationStatus ?? 'MISSING';
+        const regColors = registrationBadgeColors[regStatus];
         const boatInsurance = allInsurance.filter((ins) => ins.boatId === b.id);
+        const summaryLabelStyle: React.CSSProperties = {
+          fontSize: '11px',
+          fontWeight: 600,
+          color: '#64748B',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          marginBottom: '4px',
+        };
+        const summaryValueStyle: React.CSSProperties = {
+          fontSize: '13px',
+          color: '#0A2342',
+        };
+        const summarySubStyle: React.CSSProperties = {
+          fontSize: '12px',
+          color: '#64748B',
+          marginTop: '2px',
+        };
         return (
           <div key={b.id} style={{ ...s.card, padding: 0, overflow: 'hidden' }}>
             {/* Boat Header */}
@@ -925,8 +1006,52 @@ export default function CustomerDetailPage() {
                   <Plus size={13} /> New Contract
                 </button>
                 <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
-                  Compliance: {cb.label}
+                  {COMPLIANCE_LABEL[complianceStatus]}
                 </span>
+              </div>
+            </div>
+            {/* Compliance Summary Row */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', padding: '16px 24px', borderBottom: '1px solid #E2E8F0' }}>
+              <div>
+                <div style={summaryLabelStyle}>Insurance</div>
+                {insStatus === 'MISSING' ? (
+                  <span style={{ ...s.badge, backgroundColor: insColors.bg, color: insColors.color }}>
+                    No insurance
+                  </span>
+                ) : (
+                  <>
+                    <div style={summaryValueStyle}>{b.insurer ?? 'Unknown insurer'}</div>
+                    <div style={summarySubStyle}>
+                      {insStatus === 'EXPIRED' ? 'Expired' : 'Expires'} {formatBoatDate(b.insuranceExpiry)}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div>
+                <div style={summaryLabelStyle}>Registration</div>
+                {regStatus === 'MISSING' ? (
+                  <span style={{ ...s.badge, backgroundColor: regColors.bg, color: regColors.color }}>
+                    No registration
+                  </span>
+                ) : (
+                  <>
+                    <div style={summaryValueStyle}>
+                      {b.registration}
+                      {b.registrationState ? ` (${b.registrationState})` : ''}
+                    </div>
+                    <div style={summarySubStyle}>
+                      {regStatus === 'EXPIRED' ? 'Expired' : 'Expires'} {formatBoatDate(b.registrationExpiry)}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div>
+                <div style={summaryLabelStyle}>Active Slip Contract</div>
+                {b.activeSlipNumber ? (
+                  <div style={summaryValueStyle}>Slip {b.activeSlipNumber}</div>
+                ) : (
+                  <div style={{ ...summaryValueStyle, color: '#64748B' }}>None</div>
+                )}
               </div>
             </div>
             {/* Insurance Section */}
