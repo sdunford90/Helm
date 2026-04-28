@@ -10,6 +10,7 @@ import { useAuth } from '@clerk/clerk-react';
 import CustomerForm, { type CustomerFormPayload } from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
+import { isCardExpired } from '../components/PaymentModal';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
 
@@ -1765,9 +1766,29 @@ export default function CustomerDetailPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {paymentMethods.methods.some((m) => isCardExpired(m)) && (
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '10px',
+                  padding: '12px 14px', marginBottom: '4px',
+                  backgroundColor: '#FFF4E5', border: '1px solid #FFB74D',
+                  borderRadius: '6px', color: '#7A4F01', fontSize: '13px',
+                  lineHeight: 1.5,
+                }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: '2px' }}>
+                      Expired card on file
+                    </div>
+                    One or more saved cards are past their expiry date and will likely be
+                    declined. Use “Add card” above to save a new one, then remove the
+                    expired card.
+                  </div>
+                </div>
+              )}
               {paymentMethods.methods.map((m) => {
                 const Icon = m.kind === 'bank' ? Building2 : CreditCard;
                 const busy = pmActionId === m.id;
+                const expired = isCardExpired(m);
                 return (
                   <div
                     key={m.id}
@@ -1776,12 +1797,20 @@ export default function CustomerDetailPage() {
                       alignItems: 'center',
                       gap: '12px',
                       padding: '12px 16px',
-                      border: m.isDefault ? '1px solid #1B5E20' : '1px solid #E2E8F0',
+                      border: expired
+                        ? '1px solid #E57373'
+                        : m.isDefault
+                          ? '1px solid #1B5E20'
+                          : '1px solid #E2E8F0',
                       borderRadius: '6px',
-                      backgroundColor: m.isDefault ? '#F1F8E9' : '#FFFFFF',
+                      backgroundColor: expired
+                        ? '#FFF8F7'
+                        : m.isDefault
+                          ? '#F1F8E9'
+                          : '#FFFFFF',
                     }}
                   >
-                    <Icon size={20} color="#0F2E4D" />
+                    <Icon size={20} color={expired ? '#B71C1C' : '#0F2E4D'} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: '14px', fontWeight: 600, color: '#0F2E4D', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         {m.label} •••• {m.last4}
@@ -1790,9 +1819,27 @@ export default function CustomerDetailPage() {
                             <Star size={10} fill="#FFFFFF" /> Default
                           </span>
                         )}
+                        {expired && (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center',
+                            padding: '2px 8px', backgroundColor: '#FBE9E7',
+                            color: '#B71C1C', fontSize: '11px', borderRadius: '10px',
+                            fontWeight: 700, letterSpacing: '0.04em',
+                            textTransform: 'uppercase',
+                          }}>
+                            Expired
+                          </span>
+                        )}
                       </div>
                       {m.expiry && (
-                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>Exp {m.expiry}</div>
+                        <div style={{
+                          fontSize: '12px',
+                          color: expired ? '#B71C1C' : '#64748B',
+                          marginTop: '2px',
+                          fontWeight: expired ? 600 : 400,
+                        }}>
+                          {expired ? `Expired ${m.expiry}` : `Exp ${m.expiry}`}
+                        </div>
                       )}
                     </div>
                     {!m.isDefault && (

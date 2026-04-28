@@ -20,8 +20,20 @@ interface PaymentMethod {
   label: string;
   last4: string;
   expiry: string | null;
+  expMonth: number | null;
+  expYear: number | null;
   isDefault: boolean;
   kind: 'card' | 'bank';
+}
+
+function isCardExpired(method: PaymentMethod, now: Date = new Date()): boolean {
+  if (method.kind !== 'card') return false;
+  if (!method.expMonth || !method.expYear) return false;
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (method.expYear < currentYear) return true;
+  if (method.expYear === currentYear && method.expMonth < currentMonth) return true;
+  return false;
 }
 
 interface PaymentMethodsResponse {
@@ -245,24 +257,50 @@ export default function PaymentMethods() {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {methods.map((pm) => (
+          {methods.some((pm) => isCardExpired(pm)) && (
+            <div style={{
+              ...card,
+              background: '#FFF4E5', border: '1px solid #FFB74D',
+              display: 'flex', alignItems: 'flex-start', gap: 12,
+              color: '#7A4F01',
+            }}>
+              <AlertCircle size={18} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div style={{ fontSize: 14, lineHeight: 1.5 }}>
+                <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                  Expired card on file
+                </div>
+                One or more of your saved cards is past its expiry date and will likely
+                be declined. Add a new card above, then remove the expired one.
+              </div>
+            </div>
+          )}
+          {methods.map((pm) => {
+            const expired = isCardExpired(pm);
+            return (
             <div
               key={pm.id}
               style={{
                 ...card,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                border: pm.isDefault ? `2px solid ${CYAN}` : '2px solid transparent',
+                border: expired
+                  ? '2px solid #E57373'
+                  : pm.isDefault
+                    ? `2px solid ${CYAN}`
+                    : '2px solid transparent',
+                background: expired ? '#FFF8F7' : '#fff',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <div style={{
                   width: 48, height: 48, borderRadius: 10,
-                  background: pm.kind === 'bank' ? '#EDE9FE' : '#EFF6FF',
+                  background: expired
+                    ? '#FBE9E7'
+                    : pm.kind === 'bank' ? '#EDE9FE' : '#EFF6FF',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
                   {pm.kind === 'bank'
                     ? <Building2 size={22} color="#8B5CF6" />
-                    : <CreditCard size={22} color="#3B82F6" />}
+                    : <CreditCard size={22} color={expired ? '#B71C1C' : '#3B82F6'} />}
                 </div>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -279,9 +317,29 @@ export default function PaymentMethods() {
                         <Star size={10} /> Default
                       </span>
                     )}
+                    {expired && (
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center',
+                        padding: '2px 8px', borderRadius: 12,
+                        background: '#FBE9E7', color: '#B71C1C',
+                        fontSize: 11, fontWeight: 700,
+                        textTransform: 'uppercase', letterSpacing: '0.04em',
+                      }}>
+                        Expired
+                      </span>
+                    )}
                   </div>
-                  <div style={{ fontSize: 13, color: '#64748B', marginTop: 2 }}>
-                    {pm.expiry ? `Expires ${pm.expiry}` : 'Bank account (ACH)'}
+                  <div style={{
+                    fontSize: 13,
+                    color: expired ? '#B71C1C' : '#64748B',
+                    marginTop: 2,
+                    fontWeight: expired ? 600 : 400,
+                  }}>
+                    {pm.expiry
+                      ? expired
+                        ? `Expired ${pm.expiry}`
+                        : `Expires ${pm.expiry}`
+                      : 'Bank account (ACH)'}
                   </div>
                 </div>
               </div>
@@ -315,7 +373,8 @@ export default function PaymentMethods() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

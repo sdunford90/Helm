@@ -377,6 +377,8 @@ router.get(
           type: pm.card?.brand ?? "card",
           label: (pm.card?.brand ?? "Card").replace(/^\w/, (c) => c.toUpperCase()),
           last4: pm.card?.last4 ?? "****",
+          expMonth: pm.card?.exp_month ?? null,
+          expYear: pm.card?.exp_year ?? null,
           expiry: pm.card?.exp_month && pm.card?.exp_year
             ? `${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)}`
             : null,
@@ -388,6 +390,8 @@ router.get(
           type: "bank",
           label: pm.us_bank_account?.bank_name ?? "Bank Account",
           last4: pm.us_bank_account?.last4 ?? "****",
+          expMonth: null,
+          expYear: null,
           expiry: null,
           isDefault: pm.id === defaultMethodId,
           kind: "bank" as const,
