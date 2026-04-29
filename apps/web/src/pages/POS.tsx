@@ -250,11 +250,12 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
 /* ── Card-Not-Present inner form (must be inside Elements) ── */
 
 function CnpForm({
-  total, onBack, onComplete, apiCall, locationId,
+  total, onBack, onComplete, apiCall, locationId, backLabel,
 }: {
   total: number; onBack: () => void; onComplete: (method: string) => void;
   apiCall: (method: string, path: string, body?: unknown) => Promise<any>;
   locationId: string | null;
+  backLabel?: string;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -315,7 +316,7 @@ function CnpForm({
         {cnpLoading ? 'Processing…' : `Charge $${total.toFixed(2)}`}
       </button>
       <button style={{ width: '100%', marginTop: '10px', padding: '10px', background: 'none', border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#64748B' }} onClick={onBack}>
-        ← Back to readers
+        {backLabel ?? '← Back to readers'}
       </button>
     </>
   );
@@ -336,6 +337,14 @@ function CardPaymentModal({
   const [readers, setReaders] = useState<StripeReader[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [selectedReader, setSelectedReader] = useState<StripeReader | null>(null);
+  // Reason we routed straight to the manual ("keyed") entry form instead of
+  // a reader list — surfaced as a warning banner above the form so cashiers
+  // know card payments aren't blocked, just falling back to manual entry.
+  // 'none' = banner hidden (cashier explicitly chose CNP, or readers exist).
+  // 'no_reader' = discovery completed but found zero readers.
+  // 'discovery_failed' = discovery threw (SDK/network); same fallback, but
+  // copy makes clear we couldn't actually check.
+  const [noReaderWarning, setNoReaderWarning] = useState<'none' | 'no_reader' | 'discovery_failed'>('none');
   const terminalRef = useRef<any>(null);
   // Stores the raw SDK reader objects (needed by connectReader — the reshaped StripeReader objects are only for display)
   const rawReadersRef = useRef<Map<string, any>>(new Map());
@@ -352,6 +361,7 @@ function CardPaymentModal({
   const discoverReaders = useCallback(async () => {
     setStatus('loading');
     setErrorMsg('');
+    setNoReaderWarning('none');
     rawReadersRef.current.clear();
     try {
       const { secret } = await apiCall(
@@ -388,12 +398,26 @@ function CardPaymentModal({
         }));
 
       setReaders(merged);
-      setStatus('readers');
+      if (merged.length === 0) {
+        // No reader paired/discovered → don't dead-end the cashier on a
+        // "No readers found" screen. Drop straight into manual ("keyed")
+        // card entry with a warning banner so card payments aren't blocked.
+        setNoReaderWarning('no_reader');
+        setStatus('cnp');
+      } else {
+        setNoReaderWarning('none');
+        setStatus('readers');
+      }
     } catch {
-      setStatus('readers');
+      // Discovery itself failed (SDK/network). Stripe was already confirmed
+      // configured before opening the modal, so treat this the same as the
+      // no-reader fallback and let the cashier key the card in manually.
+      // The banner copy makes clear we couldn't actually verify reader status.
       setReaders([]);
+      setNoReaderWarning('discovery_failed');
+      setStatus('cnp');
     }
-  }, [apiCall]);
+  }, [apiCall, locationId]);
 
   const connectAndCollect = useCallback(async (reader: StripeReader) => {
     if (!terminalRef.current) return;
@@ -459,7 +483,7 @@ function CardPaymentModal({
         <span style={tSt.dividerText}>or card not present</span>
         <div style={tSt.dividerLine} />
       </div>
-      <button style={{ ...tSt.outlineBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => setStatus('cnp')}>
+      <button style={{ ...tSt.outlineBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => { setNoReaderWarning('none'); setStatus('cnp'); }}>
         <CreditCard size={15} /> Card Not Present (Keyed)
       </button>
     </>
@@ -562,15 +586,49 @@ function CardPaymentModal({
 
           {/* ── Card Not Present entry ── */}
           {status === 'cnp' && (
-            <Elements stripe={getStripe()}>
-              <CnpForm
-                total={total}
-                onBack={() => setStatus('readers')}
-                onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
-                apiCall={apiCall}
-                locationId={locationId}
-              />
-            </Elements>
+            <>
+              {noReaderWarning !== 'none' && (
+                <div
+                  role="status"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '10px',
+                    padding: '12px 14px',
+                    background: '#FEF3C7',
+                    border: '1px solid #FCD34D',
+                    borderRadius: '8px',
+                    marginBottom: '16px',
+                    color: '#92400E',
+                  }}
+                >
+                  <AlertTriangle size={18} style={{ color: '#B45309', flexShrink: 0, marginTop: '1px' }} />
+                  <div style={{ fontSize: '13px', lineHeight: 1.4 }}>
+                    {noReaderWarning === 'discovery_failed' ? (
+                      <>
+                        <div style={{ fontWeight: 700, marginBottom: '2px' }}>Couldn't check for card readers</div>
+                        <div>You can key the card in manually below, or retry reader discovery.</div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontWeight: 700, marginBottom: '2px' }}>No card reader detected</div>
+                        <div>You can key the card in manually below to complete this sale.</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              <Elements stripe={getStripe()}>
+                <CnpForm
+                  total={total}
+                  onBack={noReaderWarning !== 'none' ? () => void discoverReaders() : () => setStatus('readers')}
+                  backLabel={noReaderWarning !== 'none' ? '↻ Check for readers again' : '← Back to readers'}
+                  onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
+                  apiCall={apiCall}
+                  locationId={locationId}
+                />
+              </Elements>
+            </>
           )}
 
           {/* ── CNP success ── */}
