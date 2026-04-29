@@ -9,6 +9,13 @@
 -- Every change uses IF NOT EXISTS / DO blocks so this migration is a
 -- no-op on environments (like dev) that already have the objects.
 
+-- ── enums ───────────────────────────────────────────────────────────
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'FeeType') THEN
+    CREATE TYPE "FeeType" AS ENUM ('FLAT', 'PERCENT');
+  END IF;
+END $$;
+
 -- ── locations: feature flags + branding + per-location QBO ───────────
 ALTER TABLE "locations" ADD COLUMN IF NOT EXISTS "rentalsEnabled"      BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE "locations" ADD COLUMN IF NOT EXISTS "transientEnabled"    BOOLEAN NOT NULL DEFAULT true;
