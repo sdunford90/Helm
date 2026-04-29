@@ -31,6 +31,7 @@ const BYPASS_PREFIXES = [
   "/api/email", // unsubscribe + Resend webhook — tenant comes from signed token or event payload
   "/api/impersonation", // public impersonation handoff — tenant is encoded in the token payload
   "/api/qbo/webhook", // Intuit QBO webhook — tenant resolved from realmId in payload
+  "/api/qbo/callback", // Intuit OAuth callback — tenant resolved from HMAC-signed state
 ];
 
 function shouldBypass(path: string): boolean {
