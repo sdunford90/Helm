@@ -1,0 +1,1563 @@
+import { Router } from "express";
+import { randomUUID, createHmac } from "node:crypto";
+import {
+  requirePlatformAdmin,
+  requireAdminRole,
+  ADMIN_ROLES,
+  isAdminRole,
+} from "../middleware/auth.js";
+import { prisma } from "../lib/prisma.js";
+import { queues, type QueueName } from "../lib/queue.js";
+import { logAdminAction, logAdminActionDetached } from "../lib/admin-audit.js";
+import {
+  runTenantExport,
+  publicExportView,
+} from "../services/tenant-export.js";
+import { GRACE_PERIOD_MS } from "../services/tenant-deletion.js";
+
+const router: Router = Router();
+
+// All admin routes require platform_admin role + populate userAdminRole
+router.use(...requirePlatformAdmin());
+
+// READ_ONLY_SUPPORT can read everything but mutate nothing. The two helpers
+// below are passed as middleware on every mutation handler.
+const allowAnyAdmin = requireAdminRole(...ADMIN_ROLES);
+const allowMutations = requireAdminRole("SUPERUSER", "BILLING_ADMIN");
+const allowSuperuserOnly = requireAdminRole("SUPERUSER");
+
+// Expose what role this admin has, so the UI can hide / disable controls
+// without making a separate /me round-trip on every navigation.
+router.get("/me", allowAnyAdmin, (req, res) => {
+  const record = req.userRecord as Record<string, unknown> | undefined;
+  res.json({
+    id: req.userId ?? null,
+    email: (record?.email as string | undefined) ?? null,
+    firstName: (record?.firstName as string | undefined) ?? null,
+    lastName: (record?.lastName as string | undefined) ?? null,
+    role: req.userRole ?? null,
+    adminRole: req.userAdminRole ?? null,
+  });
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/queues/pause — pause every BullMQ queue
+// --------------------------------------------------------------------------
+router.post("/queues/pause", allowMutations, async (req, res, next) => {
+  try {
+    await Promise.all(Object.values(queues).map((q) => q.pause()));
+    await logAdminAction(req, { action: "QUEUES_PAUSE", details: { queues: Object.keys(queues) } });
+    res.json({ status: "paused", queues: Object.keys(queues) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/queues/unpause — resume every BullMQ queue
+// --------------------------------------------------------------------------
+router.post("/queues/unpause", allowMutations, async (req, res, next) => {
+  try {
+    await Promise.all(Object.values(queues).map((q) => q.resume()));
+    await logAdminAction(req, { action: "QUEUES_RESUME", details: { queues: Object.keys(queues) } });
+    res.json({ status: "resumed", queues: Object.keys(queues) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/queues/status — per-queue job counts
+// --------------------------------------------------------------------------
+router.get("/queues/status", async (_req, res, next) => {
+  try {
+    const statuses: Record<string, unknown> = {};
+
+    for (const [name, queue] of Object.entries(queues) as [QueueName, typeof queues[QueueName]][]) {
+      const counts = await queue.getJobCounts(
+        "active",
+        "completed",
+        "delayed",
+        "failed",
+        "paused",
+        "waiting",
+      );
+      const isPaused = await queue.isPaused();
+      statuses[name] = { isPaused, counts };
+    }
+
+    res.json({ queues: statuses });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  TENANT MANAGEMENT
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants — list all tenants with filtering & pagination
+// --------------------------------------------------------------------------
+router.get("/tenants", async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+    const search = (req.query.search as string)?.trim();
+    const status = req.query.status as string | undefined;
+
+    const where: Record<string, unknown> = {};
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { subdomain: { contains: search, mode: "insensitive" } },
+        { customDomain: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    if (status && ["ACTIVE", "GRACE_PERIOD", "LOCKED"].includes(status)) {
+      where.status = status;
+    }
+
+    const [tenants, total] = await Promise.all([
+      prisma.tenant.findMany({
+        where,
+        include: {
+          saasTier: true,
+          _count: { select: { users: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.tenant.count({ where }),
+    ]);
+
+    const items = tenants.map((t) => ({
+      id: t.id,
+      name: t.name,
+      subdomain: t.subdomain,
+      customDomain: t.customDomain,
+      status: t.status,
+      saasTier: t.saasTier ? { id: t.saasTier.id, name: t.saasTier.name } : null,
+      mrrCents: t.saasTier?.monthlyFeeCents ?? 0,
+      userCount: t._count.users,
+      createdAt: t.createdAt,
+    }));
+
+    res.json({
+      items,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id — full tenant details
+// --------------------------------------------------------------------------
+router.get("/tenants/:id", async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      include: {
+        saasTier: true,
+        users: {
+          select: { id: true, email: true, role: true, firstName: true, lastName: true, active: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    // Gather usage stats across tenant-scoped tables
+    const [slipCount, customerCount, invoiceCount, paymentAgg] = await Promise.all([
+      prisma.slip.count({ where: { tenantId: tenant.id } }),
+      prisma.customer.count({ where: { tenantId: tenant.id } }),
+      prisma.invoice.count({ where: { tenantId: tenant.id } }),
+      prisma.payment.aggregate({
+        where: { tenantId: tenant.id, status: "COMPLETED" },
+        _sum: { amountCents: true },
+        _count: true,
+      }),
+    ]);
+
+    res.json({
+      id: tenant.id,
+      name: tenant.name,
+      subdomain: tenant.subdomain,
+      customDomain: tenant.customDomain,
+      status: tenant.status,
+      timezone: tenant.timezone,
+      fiscalYearEnd: tenant.fiscalYearEnd,
+      gracePeriodStartedAt: tenant.gracePeriodStartedAt,
+      lockedAt: tenant.lockedAt,
+      createdAt: tenant.createdAt,
+      updatedAt: tenant.updatedAt,
+      branding: tenant.brandingJson,
+      invoiceTemplate: tenant.invoiceTemplateJson,
+      connectedServices: {
+        stripe: !!tenant.stripeAccountId,
+        quickbooks: !!tenant.qboRealmId,
+      },
+      subscription: tenant.saasTier
+        ? {
+            tierId: tenant.saasTier.id,
+            tierName: tenant.saasTier.name,
+            monthlyFeeCents: tenant.saasTier.monthlyFeeCents,
+            perLocationFeeCents: tenant.saasTier.perLocationFeeCents,
+            achFeeRate: tenant.saasTier.achFeeRate,
+            cardFeeRate: tenant.saasTier.cardFeeRate,
+            storageLimitGb: tenant.saasTier.storageLimitGb,
+          }
+        : null,
+      usage: {
+        slips: slipCount,
+        customers: customerCount,
+        invoices: invoiceCount,
+        completedPayments: paymentAgg._count,
+        totalPaymentVolumeCents: paymentAgg._sum.amountCents ?? 0,
+      },
+      users: tenant.users,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants — create a new tenant
+// --------------------------------------------------------------------------
+router.post("/tenants", allowMutations, async (req, res, next) => {
+  try {
+    const { name, subdomain, adminEmail, saasTierId } = req.body;
+
+    if (!name || !subdomain || !adminEmail) {
+      res.status(400).json({ error: "name, subdomain, and adminEmail are required" });
+      return;
+    }
+
+    // Validate subdomain format
+    if (!/^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(subdomain)) {
+      res.status(400).json({ error: "Invalid subdomain format. Use lowercase alphanumeric and hyphens." });
+      return;
+    }
+
+    // Check uniqueness
+    const existing = await prisma.tenant.findUnique({ where: { subdomain } });
+    if (existing) {
+      res.status(409).json({ error: "Subdomain already taken" });
+      return;
+    }
+
+    // Validate tier if provided
+    if (saasTierId) {
+      const tier = await prisma.saasTier.findUnique({ where: { id: saasTierId } });
+      if (!tier) {
+        res.status(400).json({ error: "Invalid SaaS tier ID" });
+        return;
+      }
+    }
+
+    const tenant = await prisma.tenant.create({
+      data: {
+        name,
+        subdomain,
+        saasTierId: saasTierId ?? null,
+      },
+    });
+
+    // Create the initial admin user for this tenant
+    await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: adminEmail,
+        role: "MARINA_OWNER",
+        firstName: "Admin",
+        lastName: "(Pending Setup)",
+      },
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_CREATE",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { name, subdomain, adminEmail, saasTierId: saasTierId ?? null },
+    });
+
+    res.status(201).json(tenant);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/admin/tenants/:id — update tenant details
+// --------------------------------------------------------------------------
+router.put("/tenants/:id", allowMutations, async (req, res, next) => {
+  try {
+    const { status, saasTierId, customDomain, notes, name } = req.body;
+
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const data: Record<string, unknown> = {};
+    if (name !== undefined) data.name = name;
+    if (status !== undefined) data.status = status;
+    if (saasTierId !== undefined) data.saasTierId = saasTierId;
+    if (customDomain !== undefined) data.customDomain = customDomain;
+    // notes — stored in brandingJson as an admin-side field until a dedicated column exists
+    if (notes !== undefined) {
+      const existing = (tenant.brandingJson as Record<string, unknown>) ?? {};
+      data.brandingJson = { ...existing, _adminNotes: notes };
+    }
+
+    const updated = await prisma.tenant.update({
+      where: { id: req.params.id },
+      data,
+      include: { saasTier: true },
+    });
+
+    // Tier-change is a notable enough event to emit its own audit row.
+    if (saasTierId !== undefined && saasTierId !== tenant.saasTierId) {
+      await logAdminAction(req, {
+        action: "TENANT_TIER_CHANGE",
+        targetTenantId: tenant.id,
+        targetType: "TENANT",
+        targetId: tenant.id,
+        details: { from: tenant.saasTierId, to: saasTierId },
+      });
+    }
+    await logAdminAction(req, {
+      action: "TENANT_UPDATE",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { updatedFields: Object.keys(data) },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/impersonate — generate impersonation token
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/impersonate", allowMutations, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      include: { users: { where: { role: "MARINA_OWNER", active: true }, take: 1 } },
+    });
+
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const targetUser = tenant.users[0];
+    if (!targetUser) {
+      res.status(400).json({ error: "No active owner user found for this tenant" });
+      return;
+    }
+
+    // Generate a short-lived impersonation token.
+    // In production this would create a signed JWT via your auth provider (e.g. Clerk).
+    // For now we return a verifiable HMAC-based token that downstream middleware can validate.
+    const secret = process.env.IMPERSONATION_SECRET ?? "helm-impersonation-dev-key";
+    const payload = {
+      sub: targetUser.id,
+      tenantId: tenant.id,
+      email: targetUser.email,
+      role: targetUser.role,
+      impersonatedBy: (req as unknown as Record<string, unknown>).userId ?? "platform_admin",
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+    };
+    const tokenId = randomUUID();
+    const signature = createHmac("sha256", secret)
+      .update(JSON.stringify({ ...payload, jti: tokenId }))
+      .digest("hex");
+
+    await logAdminAction(req, {
+      action: "TENANT_IMPERSONATE_START",
+      targetTenantId: tenant.id,
+      targetType: "USER",
+      targetId: targetUser.id,
+      details: { tokenId, asUserEmail: targetUser.email, expiresIn: 3600 },
+    });
+
+    res.json({
+      token: `imp_${tokenId}.${signature}`,
+      expiresIn: 3600,
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+      asUser: { id: targetUser.id, email: targetUser.email, role: targetUser.role },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/lock — lock tenant (e.g., after grace period)
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/lock", allowMutations, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (tenant.status === "LOCKED") {
+      res.status(400).json({ error: "Tenant is already locked" });
+      return;
+    }
+
+    const updated = await prisma.tenant.update({
+      where: { id: req.params.id },
+      data: { status: "LOCKED", lockedAt: new Date() },
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_LOCK",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { reason: req.body?.reason ?? null },
+    });
+
+    res.json({ id: updated.id, status: updated.status, lockedAt: updated.lockedAt });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/unlock — unlock tenant (e.g., after payment)
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/unlock", allowMutations, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (tenant.status === "ACTIVE") {
+      res.status(400).json({ error: "Tenant is already active" });
+      return;
+    }
+
+    const updated = await prisma.tenant.update({
+      where: { id: req.params.id },
+      data: { status: "ACTIVE", lockedAt: null, gracePeriodStartedAt: null },
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_UNLOCK",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { reason: req.body?.reason ?? null, previousStatus: tenant.status },
+    });
+
+    res.json({ id: updated.id, status: updated.status });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  SAAS BILLING
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// GET /api/admin/billing/overview — platform revenue summary
+// --------------------------------------------------------------------------
+router.get("/billing/overview", async (_req, res, next) => {
+  try {
+    const [tenants, tiers] = await Promise.all([
+      prisma.tenant.findMany({
+        select: { id: true, status: true, saasTierId: true, createdAt: true },
+      }),
+      prisma.saasTier.findMany({ include: { _count: { select: { tenants: true } } } }),
+    ]);
+
+    const tierMap = new Map(tiers.map((t) => [t.id, t]));
+
+    const activeTenants = tenants.filter((t) => t.status === "ACTIVE");
+    const lockedTenants = tenants.filter((t) => t.status === "LOCKED");
+    const gracePeriodTenants = tenants.filter((t) => t.status === "GRACE_PERIOD");
+
+    let totalMrrCents = 0;
+    for (const t of activeTenants) {
+      if (t.saasTierId) {
+        const tier = tierMap.get(t.saasTierId);
+        if (tier) totalMrrCents += tier.monthlyFeeCents;
+      }
+    }
+
+    const totalTenants = tenants.length;
+    const churnRate = totalTenants > 0 ? lockedTenants.length / totalTenants : 0;
+    const arpuCents = activeTenants.length > 0 ? Math.round(totalMrrCents / activeTenants.length) : 0;
+
+    // New tenants in the last 30 days
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const newTenants = tenants.filter((t) => t.createdAt >= thirtyDaysAgo).length;
+
+    res.json({
+      totalMrrCents,
+      totalArrCents: totalMrrCents * 12,
+      totalTenants,
+      activeTenants: activeTenants.length,
+      gracePeriodTenants: gracePeriodTenants.length,
+      lockedTenants: lockedTenants.length,
+      churnRate: Math.round(churnRate * 10000) / 10000, // 4 decimal places
+      arpuCents,
+      newTenantsLast30Days: newTenants,
+      tiers: tiers.map((t) => ({
+        id: t.id,
+        name: t.name,
+        monthlyFeeCents: t.monthlyFeeCents,
+        tenantCount: t._count.tenants,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/billing/invoices — list SaaS invoices
+// --------------------------------------------------------------------------
+router.get("/billing/invoices", async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+    const status = req.query.status as string | undefined;
+    const tenantId = req.query.tenantId as string | undefined;
+
+    const where: Record<string, unknown> = {};
+    if (status) where.status = status;
+    if (tenantId) where.tenantId = tenantId;
+
+    const [total, rows] = await Promise.all([
+      prisma.saasInvoice.count({ where }),
+      prisma.saasInvoice.findMany({
+        where,
+        include: { tenant: { select: { id: true, name: true } } },
+        orderBy: { issuedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    const items = rows.map((inv) => ({
+      id: inv.id,
+      tenantId: inv.tenantId,
+      tenantName: inv.tenant.name,
+      periodStart: inv.periodStart.toISOString(),
+      periodEnd: inv.periodEnd.toISOString(),
+      amountCents: inv.amountCents,
+      status: inv.status,
+      issuedAt: inv.issuedAt.toISOString(),
+      paidAt: inv.paidAt?.toISOString() ?? null,
+    }));
+
+    res.json({
+      items,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/billing/invoices/generate — generate monthly SaaS invoices
+// --------------------------------------------------------------------------
+router.post("/billing/invoices/generate", allowMutations, async (req, res, next) => {
+  try {
+    const activeTenants = await prisma.tenant.findMany({
+      where: { status: "ACTIVE", saasTierId: { not: null } },
+      include: { saasTier: true },
+    });
+
+    const now = new Date();
+    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const generated = [];
+
+    for (const tenant of activeTenants) {
+      if (!tenant.saasTier) continue;
+
+      // Skip if invoice already exists for this period
+      const alreadyExists = await prisma.saasInvoice.findFirst({
+        where: {
+          tenantId: tenant.id,
+          periodStart: { gte: periodStart, lte: periodStart },
+        },
+      });
+      if (alreadyExists) continue;
+
+      const invoice = await prisma.saasInvoice.create({
+        data: {
+          tenantId: tenant.id,
+          periodStart,
+          periodEnd,
+          amountCents: tenant.saasTier.monthlyFeeCents,
+          status: "issued",
+        },
+        include: { tenant: { select: { name: true } } },
+      });
+
+      generated.push({
+        id: invoice.id,
+        tenantId: invoice.tenantId,
+        tenantName: invoice.tenant.name,
+        periodStart: invoice.periodStart.toISOString(),
+        periodEnd: invoice.periodEnd.toISOString(),
+        amountCents: invoice.amountCents,
+        status: invoice.status,
+        issuedAt: invoice.issuedAt.toISOString(),
+        paidAt: null,
+      });
+    }
+
+    await logAdminAction(req, {
+      action: "SAAS_INVOICE_GENERATE",
+      details: { generated: generated.length, skipped: activeTenants.length - generated.length },
+    });
+
+    res.status(201).json({
+      generated: generated.length,
+      skipped: activeTenants.length - generated.length,
+      invoices: generated,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/billing/tiers — list SaaS pricing tiers
+// --------------------------------------------------------------------------
+router.get("/billing/tiers", async (_req, res, next) => {
+  try {
+    const tiers = await prisma.saasTier.findMany({
+      include: { _count: { select: { tenants: true } } },
+      orderBy: { monthlyFeeCents: "asc" },
+    });
+
+    res.json(
+      tiers.map((t) => ({
+        id: t.id,
+        name: t.name,
+        monthlyFeeCents: t.monthlyFeeCents,
+        perLocationFeeCents: t.perLocationFeeCents,
+        achFeeRate: t.achFeeRate,
+        cardFeeRate: t.cardFeeRate,
+        storageLimitGb: t.storageLimitGb,
+        tenantCount: t._count.tenants,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/admin/billing/tiers/:id — update tier pricing
+// --------------------------------------------------------------------------
+router.put("/billing/tiers/:id", allowMutations, async (req, res, next) => {
+  try {
+    const tier = await prisma.saasTier.findUnique({ where: { id: req.params.id } });
+    if (!tier) {
+      res.status(404).json({ error: "Tier not found" });
+      return;
+    }
+
+    const allowedFields = [
+      "name",
+      "monthlyFeeCents",
+      "perLocationFeeCents",
+      "achFeeRate",
+      "cardFeeRate",
+      "storageLimitGb",
+    ] as const;
+
+    const data: Record<string, unknown> = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        data[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ error: "No valid fields to update" });
+      return;
+    }
+
+    const updated = await prisma.saasTier.update({
+      where: { id: req.params.id },
+      data,
+    });
+
+    await logAdminAction(req, {
+      action: "SAAS_TIER_UPDATE",
+      targetType: "SAAS_TIER",
+      targetId: tier.id,
+      details: { updatedFields: Object.keys(data) },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  PLATFORM ANALYTICS
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// GET /api/admin/analytics/overview — platform-wide KPIs
+// --------------------------------------------------------------------------
+router.get("/analytics/overview", async (_req, res, next) => {
+  try {
+    const [
+      totalSlips,
+      totalCustomers,
+      totalInvoices,
+      paymentAgg,
+      posAgg,
+      transientAgg,
+      rampAgg,
+      tenantCount,
+    ] = await Promise.all([
+      prisma.slip.count(),
+      prisma.customer.count(),
+      prisma.invoice.count(),
+      prisma.payment.aggregate({
+        where: { status: "COMPLETED" },
+        _sum: { amountCents: true },
+        _count: true,
+      }),
+      prisma.posTransaction.aggregate({
+        where: { status: "completed" },
+        _sum: { totalCents: true },
+        _count: true,
+      }),
+      prisma.transientBooking.aggregate({
+        _sum: { totalCents: true },
+        _count: true,
+      }),
+      prisma.rampTicket.aggregate({
+        _sum: { amountCents: true },
+        _count: true,
+      }),
+      prisma.tenant.count(),
+    ]);
+
+    const totalPaymentVolumeCents = paymentAgg._sum.amountCents ?? 0;
+    const totalPosVolumeCents = posAgg._sum.totalCents ?? 0;
+    const totalTransientVolumeCents = transientAgg._sum.totalCents ?? 0;
+    const totalRampVolumeCents = rampAgg._sum.amountCents ?? 0;
+
+    const totalGmvCents =
+      totalPaymentVolumeCents + totalPosVolumeCents + totalTransientVolumeCents + totalRampVolumeCents;
+
+    // Platform fee revenue: sum MRR from all active tenants
+    const activeTenants = await prisma.tenant.findMany({
+      where: { status: "ACTIVE", saasTierId: { not: null } },
+      include: { saasTier: true },
+    });
+    const platformFeeRevenueCents = activeTenants.reduce(
+      (sum, t) => sum + (t.saasTier?.monthlyFeeCents ?? 0),
+      0,
+    );
+
+    res.json({
+      totalSlips,
+      totalCustomers,
+      totalInvoices,
+      totalTransactions: paymentAgg._count + posAgg._count + transientAgg._count + rampAgg._count,
+      totalGmvCents,
+      breakdown: {
+        slipPaymentsCents: totalPaymentVolumeCents,
+        posTransactionsCents: totalPosVolumeCents,
+        transientBookingsCents: totalTransientVolumeCents,
+        rampTicketsCents: totalRampVolumeCents,
+      },
+      platformFeeRevenueMrrCents: platformFeeRevenueCents,
+      tenantCount,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/analytics/tenants — tenant health scores & usage metrics
+// --------------------------------------------------------------------------
+router.get("/analytics/tenants", async (_req, res, next) => {
+  try {
+    const tenants = await prisma.tenant.findMany({
+      include: {
+        saasTier: true,
+        _count: { select: { users: true } },
+      },
+    });
+
+    // Gather per-tenant metrics in parallel
+    const tenantMetrics = await Promise.all(
+      tenants.map(async (tenant) => {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+        const [slipCount, customerCount, recentPayments, recentInvoices] = await Promise.all([
+          prisma.slip.count({ where: { tenantId: tenant.id } }),
+          prisma.customer.count({ where: { tenantId: tenant.id } }),
+          prisma.payment.count({
+            where: { tenantId: tenant.id, createdAt: { gte: thirtyDaysAgo } },
+          }),
+          prisma.invoice.count({
+            where: { tenantId: tenant.id, createdAt: { gte: thirtyDaysAgo } },
+          }),
+        ]);
+
+        // Simple health score: 0-100
+        // Factors: has active users, recent activity (payments/invoices), slip utilization
+        let healthScore = 0;
+        if (tenant.status === "ACTIVE") healthScore += 30;
+        else if (tenant.status === "GRACE_PERIOD") healthScore += 10;
+        if (tenant._count.users > 0) healthScore += 15;
+        if (recentPayments > 0) healthScore += 25;
+        if (recentInvoices > 0) healthScore += 15;
+        if (slipCount > 0) healthScore += 15;
+
+        const atRisk =
+          tenant.status === "GRACE_PERIOD" ||
+          (tenant.status === "ACTIVE" && recentPayments === 0 && recentInvoices === 0);
+
+        return {
+          id: tenant.id,
+          name: tenant.name,
+          subdomain: tenant.subdomain,
+          status: tenant.status,
+          saasTier: tenant.saasTier?.name ?? null,
+          mrrCents: tenant.saasTier?.monthlyFeeCents ?? 0,
+          healthScore,
+          atRisk,
+          usage: {
+            users: tenant._count.users,
+            slips: slipCount,
+            customers: customerCount,
+            recentPayments,
+            recentInvoices,
+          },
+        };
+      }),
+    );
+
+    // Sort by health score ascending so at-risk tenants are first
+    tenantMetrics.sort((a, b) => a.healthScore - b.healthScore);
+
+    const atRiskCount = tenantMetrics.filter((t) => t.atRisk).length;
+
+    res.json({
+      total: tenantMetrics.length,
+      atRiskCount,
+      tenants: tenantMetrics,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  SUPPORT
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// GET /api/admin/support/tickets — list support tickets across all tenants
+// --------------------------------------------------------------------------
+router.get("/support/tickets", async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+    const status = req.query.status as string | undefined;
+    const priority = req.query.priority as string | undefined;
+    const tenantId = req.query.tenantId as string | undefined;
+
+    const where: Record<string, unknown> = {};
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (tenantId) where.tenantId = tenantId;
+
+    const [total, rows] = await Promise.all([
+      prisma.supportTicket.count({ where }),
+      prisma.supportTicket.findMany({
+        where,
+        include: { tenant: { select: { id: true, name: true } } },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    const items = rows.map((t) => ({
+      id: t.id,
+      tenantId: t.tenantId,
+      tenantName: t.tenant.name,
+      subject: t.subject,
+      description: t.description,
+      status: t.status,
+      priority: t.priority,
+      assignedTo: t.assignedTo,
+      createdAt: t.createdAt.toISOString(),
+      updatedAt: t.updatedAt.toISOString(),
+    }));
+
+    res.json({ items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/support/tickets — create a support ticket (from tenant)
+// --------------------------------------------------------------------------
+router.post("/support/tickets", allowMutations, async (req, res, next) => {
+  try {
+    const { tenantId, subject, description, priority = "medium" } = req.body;
+    if (!tenantId || !subject || !description) {
+      res.status(400).json({ error: "tenantId, subject, and description are required" });
+      return;
+    }
+    const ticket = await prisma.supportTicket.create({
+      data: { tenantId, subject, description, priority, status: "open" },
+      include: { tenant: { select: { name: true } } },
+    });
+    await logAdminAction(req, {
+      action: "SUPPORT_TICKET_CREATE",
+      targetTenantId: tenantId,
+      targetType: "SUPPORT_TICKET",
+      targetId: ticket.id,
+      details: { subject, priority },
+    });
+    res.status(201).json({
+      id: ticket.id,
+      tenantId: ticket.tenantId,
+      tenantName: ticket.tenant.name,
+      subject: ticket.subject,
+      description: ticket.description,
+      status: ticket.status,
+      priority: ticket.priority,
+      assignedTo: ticket.assignedTo,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: ticket.updatedAt.toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/admin/support/tickets/:id — update ticket status / priority
+// --------------------------------------------------------------------------
+router.put("/support/tickets/:id", allowMutations, async (req, res, next) => {
+  try {
+    const existing = await prisma.supportTicket.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
+      res.status(404).json({ error: "Ticket not found" });
+      return;
+    }
+
+    const { status, priority, assignedTo } = req.body;
+    const validStatuses = ["open", "in_progress", "waiting_on_customer", "resolved", "closed"];
+    const validPriorities = ["low", "medium", "high", "urgent"];
+
+    if (status !== undefined && !validStatuses.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+      return;
+    }
+    if (priority !== undefined && !validPriorities.includes(priority)) {
+      res.status(400).json({ error: `Invalid priority. Must be one of: ${validPriorities.join(", ")}` });
+      return;
+    }
+
+    const data: Record<string, unknown> = {};
+    if (status !== undefined) data.status = status;
+    if (priority !== undefined) data.priority = priority;
+    if (assignedTo !== undefined) data.assignedTo = assignedTo;
+
+    const updated = await prisma.supportTicket.update({
+      where: { id: req.params.id },
+      data,
+      include: { tenant: { select: { name: true } } },
+    });
+
+    await logAdminAction(req, {
+      action: "SUPPORT_TICKET_UPDATE",
+      targetTenantId: updated.tenantId,
+      targetType: "SUPPORT_TICKET",
+      targetId: updated.id,
+      details: { updatedFields: Object.keys(data) },
+    });
+
+    res.json({
+      id: updated.id,
+      tenantId: updated.tenantId,
+      tenantName: updated.tenant.name,
+      subject: updated.subject,
+      description: updated.description,
+      status: updated.status,
+      priority: updated.priority,
+      assignedTo: updated.assignedTo,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  LOCATION MANAGEMENT  (per-tenant)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/locations
+router.get("/tenants/:id/locations", async (req, res, next) => {
+  try {
+    const locations = await prisma.location.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { name: "asc" },
+    });
+    res.json(locations);
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/tenants/:id/locations
+router.post("/tenants/:id/locations", allowMutations, async (req, res, next) => {
+  try {
+    const { name, address, city, state, zip, phone, timezone, active } = req.body;
+    if (!name) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+    const location = await prisma.location.create({
+      data: {
+        tenantId: req.params.id,
+        name,
+        address: address ?? null,
+        city: city ?? null,
+        state: state ?? null,
+        zip: zip ?? null,
+        phone: phone ?? null,
+        timezone: timezone ?? "America/New_York",
+        active: active !== false,
+      },
+    });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_CREATE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: location.id,
+      details: { name },
+    });
+    res.status(201).json(location);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/admin/tenants/:id/locations/:locationId
+router.put("/tenants/:id/locations/:locationId", allowMutations, async (req, res, next) => {
+  try {
+    const { name, address, city, state, zip, phone, timezone, active } = req.body;
+    const location = await prisma.location.update({
+      where: { id: req.params.locationId },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(address !== undefined && { address }),
+        ...(city !== undefined && { city }),
+        ...(state !== undefined && { state }),
+        ...(zip !== undefined && { zip }),
+        ...(phone !== undefined && { phone }),
+        ...(timezone !== undefined && { timezone }),
+        ...(active !== undefined && { active }),
+      },
+    });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_UPDATE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: location.id,
+      details: { updatedFields: Object.keys(req.body ?? {}) },
+    });
+    res.json(location);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/admin/tenants/:id/locations/:locationId
+router.delete("/tenants/:id/locations/:locationId", allowMutations, async (req, res, next) => {
+  try {
+    await prisma.location.delete({ where: { id: req.params.locationId } });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_DELETE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: req.params.locationId,
+    });
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
+// ==========================================================================
+//  ADMIN ACTIVITY LOG (read-only across all admin sub-roles)
+// ==========================================================================
+
+// GET /api/admin/activity?actor=&action=&tenantId=&startDate=&endDate=&page=&limit=
+router.get("/activity", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const actor = (req.query.actor as string | undefined)?.trim();
+    const action = (req.query.action as string | undefined)?.trim();
+    const tenantId = (req.query.tenantId as string | undefined)?.trim();
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : null;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : null;
+
+    const where: Record<string, unknown> = {};
+    if (actor) {
+      where.OR = [
+        { actorEmail: { contains: actor, mode: "insensitive" } },
+        { actorName: { contains: actor, mode: "insensitive" } },
+        { actorUserId: actor },
+      ];
+    }
+    if (action) where.action = action;
+    if (tenantId) where.targetTenantId = tenantId;
+    if (startDate || endDate) {
+      const createdAt: Record<string, Date> = {};
+      if (startDate && !Number.isNaN(startDate.getTime())) createdAt.gte = startDate;
+      if (endDate && !Number.isNaN(endDate.getTime())) createdAt.lte = endDate;
+      where.createdAt = createdAt;
+    }
+
+    const [items, total] = await Promise.all([
+      prisma.adminAuditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.adminAuditLog.count({ where }),
+    ]);
+
+    // Hydrate target tenant names so the UI doesn't need a second call.
+    const tenantIds = [...new Set(items.map((i) => i.targetTenantId).filter(Boolean) as string[])];
+    const tenants = tenantIds.length
+      ? await prisma.tenant.findMany({
+          where: { id: { in: tenantIds } },
+          select: { id: true, name: true, subdomain: true },
+        })
+      : [];
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    res.json({
+      items: items.map((i) => ({
+        ...i,
+        targetTenant: i.targetTenantId ? tenantMap.get(i.targetTenantId) ?? null : null,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/activity/actions — distinct action codes for filter dropdown
+router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const rows = await prisma.adminAuditLog.findMany({
+      distinct: ["action"],
+      select: { action: true },
+      orderBy: { action: "asc" },
+    });
+    res.json({ actions: rows.map((r) => r.action) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  ADMIN USER MANAGEMENT (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/users — list every PLATFORM_ADMIN user with their sub-role
+router.get("/users", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const admins = await prisma.user.findMany({
+      where: { role: "PLATFORM_ADMIN" },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        active: true,
+        adminRole: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { email: "asc" },
+    });
+    res.json({ items: admins });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/users/:id/role — change an admin's sub-role
+router.put("/users/:id/role", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const { adminRole } = req.body as { adminRole?: unknown };
+    if (!isAdminRole(adminRole)) {
+      res.status(400).json({
+        error: `adminRole must be one of: ${ADMIN_ROLES.join(", ")}`,
+      });
+      return;
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target || target.role !== "PLATFORM_ADMIN") {
+      res.status(404).json({ error: "Admin user not found" });
+      return;
+    }
+
+    // Don't let the last Superuser demote themselves — would lock everyone
+    // out of role management permanently.
+    if (target.adminRole === "SUPERUSER" && adminRole !== "SUPERUSER") {
+      const remainingSuperusers = await prisma.user.count({
+        where: {
+          role: "PLATFORM_ADMIN",
+          adminRole: "SUPERUSER",
+          active: true,
+          NOT: { id: target.id },
+        },
+      });
+      if (remainingSuperusers === 0) {
+        res.status(409).json({
+          error: "Cannot demote the last Superuser — promote another admin first.",
+          code: "LAST_SUPERUSER",
+        });
+        return;
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: target.id },
+      data: { adminRole },
+      select: {
+        id: true, email: true, firstName: true, lastName: true,
+        active: true, adminRole: true, createdAt: true, updatedAt: true,
+      },
+    });
+
+    await logAdminAction(req, {
+      action: "ADMIN_ROLE_CHANGE",
+      targetType: "USER",
+      targetId: target.id,
+      details: { from: target.adminRole, to: adminRole, email: target.email },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/users/:id/active — activate / deactivate a platform admin
+router.put("/users/:id/active", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const active = Boolean(req.body?.active);
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target || target.role !== "PLATFORM_ADMIN") {
+      res.status(404).json({ error: "Admin user not found" });
+      return;
+    }
+
+    if (!active && target.adminRole === "SUPERUSER") {
+      const remainingSuperusers = await prisma.user.count({
+        where: {
+          role: "PLATFORM_ADMIN",
+          adminRole: "SUPERUSER",
+          active: true,
+          NOT: { id: target.id },
+        },
+      });
+      if (remainingSuperusers === 0) {
+        res.status(409).json({
+          error: "Cannot deactivate the last active Superuser.",
+          code: "LAST_SUPERUSER",
+        });
+        return;
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: target.id },
+      data: { active },
+      select: {
+        id: true, email: true, firstName: true, lastName: true,
+        active: true, adminRole: true, createdAt: true, updatedAt: true,
+      },
+    });
+
+    await logAdminAction(req, {
+      action: active ? "ADMIN_INVITE" : "ADMIN_DEACTIVATE",
+      targetType: "USER",
+      targetId: target.id,
+      details: { email: target.email, active },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  TENANT DATA EXPORT  (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/exports — list past exports for a tenant
+router.get("/tenants/:id/exports", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const rows = await prisma.tenantExport.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      take: 25,
+    });
+    res.json({ items: rows.map((r) => publicExportView(r)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/exports — create a tenant data export
+router.post("/tenants/:id/exports", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const record = req.userRecord as Record<string, unknown> | undefined;
+    const result = await runTenantExport({
+      tenantId: tenant.id,
+      requestedById: (req.userId as string) ?? "unknown",
+      requestedByEmail: (record?.email as string | undefined) ?? "unknown",
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_EXPORT_REQUEST",
+      targetTenantId: tenant.id,
+      targetType: "TENANT_EXPORT",
+      targetId: result.id,
+      details: {
+        status: result.status,
+        fileSizeBytes: result.fileSizeBytes,
+        rowCounts: result.rowCounts,
+      },
+    });
+
+    res.status(201).json(publicExportView(result));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/tenants/:id/exports/:exportId/download?token=
+//   Streams the zip back. The token check is in addition to admin auth so
+//   the link is still single-tenant-scoped and harder to misuse.
+router.get("/tenants/:id/exports/:exportId/download", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const exportRow = await prisma.tenantExport.findUnique({
+      where: { id: req.params.exportId },
+    });
+    if (!exportRow || exportRow.tenantId !== req.params.id) {
+      res.status(404).json({ error: "Export not found" });
+      return;
+    }
+    if (exportRow.status !== "COMPLETED") {
+      res.status(409).json({ error: `Export not ready (status=${exportRow.status})` });
+      return;
+    }
+    if (exportRow.expiresAt && exportRow.expiresAt < new Date()) {
+      res.status(410).json({ error: "Export download link expired" });
+      return;
+    }
+    const token = (req.query.token as string | undefined)?.trim();
+    if (!token || token !== exportRow.downloadToken) {
+      res.status(403).json({ error: "Invalid download token" });
+      return;
+    }
+    if (!exportRow.localBlob) {
+      res.status(500).json({ error: "Export bytes missing" });
+      return;
+    }
+
+    logAdminActionDetached(req, {
+      action: "TENANT_EXPORT_DOWNLOAD",
+      targetTenantId: exportRow.tenantId,
+      targetType: "TENANT_EXPORT",
+      targetId: exportRow.id,
+    });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="tenant-${exportRow.tenantId}-${exportRow.id}.zip"`,
+    );
+    res.send(Buffer.from(exportRow.localBlob));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  TENANT HARD-DELETE WITH 24H GRACE  (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/deletion — current pending deletion (or null)
+router.get("/tenants/:id/deletion", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const row = await prisma.tenantDeletion.findUnique({
+      where: { tenantId: req.params.id },
+    });
+    res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/deletion — schedule a hard-delete
+//   Body: { confirmation: <subdomain> } — must echo the subdomain so an
+//   accidental click cannot wipe a tenant.
+router.post("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (req.body?.confirmation !== tenant.subdomain) {
+      res.status(400).json({
+        error: `Confirmation must equal the tenant subdomain ('${tenant.subdomain}')`,
+        code: "BAD_CONFIRMATION",
+      });
+      return;
+    }
+
+    const existing = await prisma.tenantDeletion.findUnique({
+      where: { tenantId: tenant.id },
+    });
+    if (existing && existing.status === "PENDING") {
+      res.status(409).json({
+        error: "A deletion is already pending for this tenant.",
+        code: "ALREADY_PENDING",
+        deletion: existing,
+      });
+      return;
+    }
+    if (existing && existing.status === "COMPLETED") {
+      res.status(409).json({
+        error: "This tenant has already been deleted.",
+        code: "ALREADY_DELETED",
+      });
+      return;
+    }
+
+    const record = req.userRecord as Record<string, unknown> | undefined;
+    const scheduledFor = new Date(Date.now() + GRACE_PERIOD_MS);
+    const data = {
+      tenantId: tenant.id,
+      requestedById: (req.userId as string) ?? "unknown",
+      requestedByEmail: (record?.email as string | undefined) ?? "unknown",
+      scheduledFor,
+      status: "PENDING" as const,
+      cancelledAt: null,
+      cancelledById: null,
+      completedAt: null,
+      errorMsg: null,
+    };
+    // Re-use the row if a previously-cancelled / failed deletion exists,
+    // since `tenantId` is unique.
+    const created = existing
+      ? await prisma.tenantDeletion.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await prisma.tenantDeletion.create({ data });
+
+    await logAdminAction(req, {
+      action: "TENANT_DELETE_REQUEST",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { scheduledFor, deletionId: created.id },
+    });
+
+    res.status(201).json(created);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/admin/tenants/:id/deletion — cancel a pending deletion
+router.delete("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const existing = await prisma.tenantDeletion.findUnique({
+      where: { tenantId: req.params.id },
+    });
+    if (!existing || existing.status !== "PENDING") {
+      res.status(404).json({ error: "No pending deletion to cancel" });
+      return;
+    }
+
+    const cancelled = await prisma.tenantDeletion.update({
+      where: { id: existing.id },
+      data: {
+        status: "CANCELLED",
+        cancelledAt: new Date(),
+        cancelledById: (req.userId as string) ?? null,
+      },
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_DELETE_CANCEL",
+      targetTenantId: req.params.id,
+      targetType: "TENANT",
+      targetId: req.params.id,
+      details: { deletionId: existing.id },
+    });
+
+    res.json(cancelled);
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;

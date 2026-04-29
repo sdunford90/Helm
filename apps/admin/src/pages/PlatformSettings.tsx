@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useAdminMe, isSuperuser, adminRoleLabel, AdminRole } from '../hooks/useAdminMe';
 
 const card: React.CSSProperties = {
   background: '#0D1B2A',
@@ -61,6 +62,201 @@ const toggleKnob = (on: boolean): React.CSSProperties => ({
   transition: 'left 0.2s',
 });
 
+interface AdminUser {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  active: boolean;
+  adminRole: AdminRole | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const ADMIN_ROLE_OPTIONS: AdminRole[] = ['SUPERUSER', 'BILLING_ADMIN', 'READ_ONLY_SUPPORT'];
+
+const adminBadgeColor = (role: AdminRole | null): string => {
+  switch (role) {
+    case 'SUPERUSER': return '#F44336';
+    case 'BILLING_ADMIN': return '#00D4FF';
+    case 'READ_ONLY_SUPPORT': return '#9C27B0';
+    default: return '#94A3B8';
+  }
+};
+
+const AdminUsersCard: React.FC = () => {
+  const { me } = useAdminMe();
+  const superuser = isSuperuser(me);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const fetchUsers = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/users');
+      if (!res.ok) throw new Error(`Failed to load admins (${res.status})`);
+      const data = await res.json();
+      setUsers(data.items as AdminUser[]);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+  const updateRole = async (user: AdminUser, role: AdminRole) => {
+    if (role === user.adminRole) return;
+    setBusyId(user.id);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminRole: role }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed (${res.status})`);
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, ...data } : u)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const toggleActive = async (user: AdminUser) => {
+    setBusyId(user.id);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}/active`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !user.active }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed (${res.status})`);
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, ...data } : u)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div style={{ ...card, marginBottom: 20 }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16,
+      }}>
+        <div>
+          <div style={cardTitle}>Platform Admin Users</div>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: -12 }}>
+            {superuser
+              ? 'Assign sub-roles for governance and least-privilege access.'
+              : 'Only Superusers can change admin roles or activation.'}
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{
+          background: 'rgba(244,67,54,0.08)', border: '1px solid rgba(244,67,54,0.3)',
+          borderRadius: 6, padding: 12, color: '#F44336', fontSize: 13, marginBottom: 12,
+        }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>
+          Loading admins…
+        </div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              {['Admin', 'Email', 'Sub-role', 'Status', 'Actions'].map((h) => (
+                <th key={h} style={{
+                  textAlign: 'left', padding: '10px 12px', fontSize: 11,
+                  fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+                  textTransform: 'uppercase', letterSpacing: 0.5,
+                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => {
+              const color = adminBadgeColor(u.adminRole);
+              const isMe = me?.id === u.id;
+              return (
+                <tr key={u.id}>
+                  <td style={{ padding: '12px', fontSize: 13, color: '#FFF', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    {`${u.firstName ?? ''} ${u.lastName ?? ''}`.trim() || '—'}
+                    {isMe && <span style={{ marginLeft: 8, fontSize: 10, color: '#00D4FF' }}>(you)</span>}
+                  </td>
+                  <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{u.email}</td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    {superuser ? (
+                      <select
+                        value={u.adminRole ?? ''}
+                        disabled={busyId === u.id}
+                        onChange={(e) => updateRole(u, e.target.value as AdminRole)}
+                        style={{
+                          background: '#070E18', color: '#FFF',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: 6, padding: '6px 10px', fontSize: 12,
+                        }}
+                      >
+                        {!u.adminRole && <option value="" disabled>— select —</option>}
+                        {ADMIN_ROLE_OPTIONS.map((r) => (
+                          <option key={r} value={r}>{adminRoleLabel(r)}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span style={{
+                        background: `${color}22`, color, padding: '3px 10px',
+                        borderRadius: 10, fontSize: 11, fontWeight: 600,
+                      }}>{adminRoleLabel(u.adminRole)}</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{
+                      background: u.active ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.15)',
+                      color: u.active ? '#4CAF50' : '#F44336',
+                      padding: '2px 10px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                    }}>{u.active ? 'Active' : 'Inactive'}</span>
+                  </td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)', textAlign: 'right' }}>
+                    {superuser && !isMe ? (
+                      <button
+                        disabled={busyId === u.id}
+                        onClick={() => toggleActive(u)}
+                        style={{
+                          background: 'transparent',
+                          border: `1px solid ${u.active ? 'rgba(244,67,54,0.4)' : 'rgba(76,175,80,0.4)'}`,
+                          borderRadius: 6, padding: '4px 12px',
+                          color: u.active ? '#F44336' : '#4CAF50',
+                          fontSize: 11, cursor: busyId === u.id ? 'wait' : 'pointer',
+                        }}
+                      >{u.active ? 'Deactivate' : 'Reactivate'}</button>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)' }}>—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
 const PlatformSettings: React.FC = () => {
   const [defaultTier, setDefaultTier] = useState('Professional');
   const [achRate, setAchRate] = useState('0.8');
@@ -93,6 +289,7 @@ const PlatformSettings: React.FC = () => {
 
   return (
     <div>
+      <AdminUsersCard />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
         {/* Default Tier */}
         <div style={card}>

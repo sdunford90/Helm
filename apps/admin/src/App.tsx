@@ -11,6 +11,7 @@ import Analytics from './pages/Analytics';
 import Health from './pages/Health';
 import Support from './pages/Support';
 import PlatformSettings from './pages/PlatformSettings';
+import AdminActivity from './pages/AdminActivity';
 
 const App: React.FC = () => {
   return (
@@ -25,6 +26,7 @@ const App: React.FC = () => {
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/health" element={<Health />} />
         <Route path="/support" element={<Support />} />
+        <Route path="/activity" element={<AdminActivity />} />
         <Route path="/settings" element={<PlatformSettings />} />
       </Route>
     </Routes>

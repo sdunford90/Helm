@@ -27,6 +27,39 @@ enum UserRole {
   PORTAL_USER
 }
 
+// Sub-role on PLATFORM_ADMIN users that controls what they can do in the
+// admin console. Non-admin users have a NULL adminRole.
+//   SUPERUSER          — full access; only role allowed to change other
+//                        admins, request tenant exports, or delete tenants.
+//   BILLING_ADMIN      — manage SaaS billing (tiers, invoices, refunds),
+//                        impersonate, lock/unlock tenants. Cannot delete or
+//                        export, cannot manage other admins.
+//   READ_ONLY_SUPPORT  — read-only across the entire admin console; cannot
+//                        perform any mutating action (no lock, no refunds,
+//                        no impersonation, no role changes).
+enum AdminRole {
+  SUPERUSER
+  BILLING_ADMIN
+  READ_ONLY_SUPPORT
+}
+
+// Lifecycle of an asynchronous tenant data export request.
+enum TenantExportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// Lifecycle of a hard-delete request. PENDING entries become COMPLETED
+// (cascade-deleted) once the 24h grace period elapses unless cancelled.
+enum TenantDeletionStatus {
+  PENDING
+  CANCELLED
+  COMPLETED
+  FAILED
+}
+
 enum LeadStage {
   NEW
   CONTACTED
@@ -454,6 +487,10 @@ model User {
   tenantId     String
   email        String
   role         UserRole
+  // Sub-role for users whose `role` is PLATFORM_ADMIN. Null for everyone
+  // else. Defaults to READ_ONLY_SUPPORT for new platform admins so a
+  // mis-provisioned admin can never accidentally cause damage.
+  adminRole    AdminRole?
   firstName    String
   lastName     String
   clerkUserId  String?
@@ -2420,4 +2457,86 @@ model ScheduledReport {
   @@index([tenantId])
   @@index([tenantId, status])
   @@map("scheduled_reports")
+}
+
+// ==========================================================================
+//  ADMIN GOVERNANCE & COMPLIANCE
+// ==========================================================================
+
+// Records every action a platform admin performs in the admin console.
+// Separate from the per-tenant AuditLog so admin activity is queryable
+// without bleeding into operator-facing audit trails. The `targetTenantId`
+// is the tenant the action affected, when applicable. Some actions
+// (e.g. ROLE_CHANGE on another admin) have no target tenant.
+model AdminAuditLog {
+  id             String    @id @default(uuid())
+  actorUserId    String
+  actorEmail     String
+  actorName      String?
+  actorAdminRole String? // snapshot at the time of the action
+  action         String // TENANT_LOCK | TENANT_UNLOCK | TENANT_TIER_CHANGE | TENANT_IMPERSONATE_START | ...
+  targetTenantId String?
+  targetType     String? // optional secondary target (USER, SAAS_INVOICE, etc.)
+  targetId       String?
+  detailsJson    Json?
+  ipAddress      String?
+  createdAt      DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([actorUserId])
+  @@index([targetTenantId])
+  @@index([action])
+  @@map("admin_audit_logs")
+}
+
+// Async tenant data export request. The job worker walks the tenant's
+// rows table-by-table, writes CSVs to a ZIP archive, and either uploads
+// to R2 (when configured) or stores the buffer in `localBlob` so it can
+// be streamed back via the download endpoint.
+model TenantExport {
+  id              String             @id @default(uuid())
+  tenantId        String
+  requestedById   String
+  requestedByEmail String
+  status          TenantExportStatus @default(PENDING)
+  storageKey      String? // R2 object key when uploaded externally
+  downloadToken   String             @unique @default(uuid())
+  fileSizeBytes   Int?
+  rowCounts       Json? // per-table row counts captured during export
+  errorMsg        String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  expiresAt       DateTime? // download link expiration (typically +7 days)
+  createdAt       DateTime           @default(now())
+
+  // Local fallback storage when R2 is not configured. Stored as Bytes
+  // so the API can stream it directly to the requester. Cleared after
+  // expiresAt by a periodic job.
+  localBlob       Bytes?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("tenant_exports")
+}
+
+// Pending hard-delete request. Stays PENDING for 24 hours so a Superuser
+// can cancel before the cascade fires. The tenant lifecycle job promotes
+// PENDING -> COMPLETED (and runs the cascade) when scheduledFor <= now.
+model TenantDeletion {
+  id                String               @id @default(uuid())
+  tenantId          String               @unique
+  requestedById     String
+  requestedByEmail  String
+  scheduledFor      DateTime // requestedAt + 24h
+  status            TenantDeletionStatus @default(PENDING)
+  cancelledAt       DateTime?
+  cancelledById     String?
+  completedAt       DateTime?
+  errorMsg          String?
+  createdAt         DateTime             @default(now())
+
+  @@index([status, scheduledFor])
+  @@index([tenantId])
+  @@map("tenant_deletions")
 }

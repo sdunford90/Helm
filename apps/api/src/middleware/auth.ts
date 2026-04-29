@@ -11,6 +11,9 @@ declare global {
     interface Request {
       userId?: string;
       userRole?: string;
+      // Sub-role on PLATFORM_ADMIN users. `null` for non-admins. Set by
+      // requirePlatformAdmin and used by requireAdminRole gating.
+      userAdminRole?: string | null;
       userRecord?: {
         id: string;
         clerk_id: string;
@@ -25,6 +28,35 @@ declare global {
       allowedLocationIds?: string[] | null;
     }
   }
+}
+
+// --------------------------------------------------------------------------
+// Admin sub-role policy
+//
+// Each platform admin has one of three sub-roles. They form a strict
+// permission hierarchy enforced by `requireAdminRole` below.
+//
+//   READ_ONLY_SUPPORT — read-only across the entire admin console.
+//   BILLING_ADMIN     — can mutate billing + tenant lifecycle (lock,
+//                       unlock, tier change, refund, impersonate).
+//   SUPERUSER         — everything BILLING_ADMIN can do plus role
+//                       management, tenant export, tenant hard-delete.
+//
+// Helpers below define the allow-list per action class so admin route
+// handlers can opt in via `requireAdminRole("SUPERUSER")` or
+// `requireAdminRole("SUPERUSER", "BILLING_ADMIN")`.
+// --------------------------------------------------------------------------
+
+export type AdminRole = "SUPERUSER" | "BILLING_ADMIN" | "READ_ONLY_SUPPORT";
+
+export const ADMIN_ROLES: readonly AdminRole[] = [
+  "SUPERUSER",
+  "BILLING_ADMIN",
+  "READ_ONLY_SUPPORT",
+];
+
+export function isAdminRole(value: unknown): value is AdminRole {
+  return typeof value === "string" && (ADMIN_ROLES as readonly string[]).includes(value);
 }
 
 // Roles that bypass location scoping — they can act on every Location in
@@ -250,8 +282,29 @@ export function requireRole(...roles: string[]) {
 export function requirePlatformAdmin(): RequestHandler[] {
   if (isDevBypassEnabled()) {
     return [
-      async (_req: Request, _res: Response, next: NextFunction): Promise<void> => {
-        next();
+      async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+        try {
+          // Reuse a real PLATFORM_ADMIN if one exists so dev impersonation
+          // and admin-audit entries get a sensible actor identity.
+          const admin = await prisma.user.findFirst({
+            where: { role: "PLATFORM_ADMIN" },
+            orderBy: { createdAt: "asc" },
+          });
+          if (admin) {
+            req.userId = admin.id;
+            req.userRole = admin.role;
+            req.userAdminRole = admin.adminRole ?? "SUPERUSER";
+            req.userRecord = admin as unknown as Express.Request["userRecord"];
+          } else {
+            req.userId = "dev-admin";
+            req.userRole = "PLATFORM_ADMIN";
+            req.userAdminRole = "SUPERUSER";
+          }
+          req.allowedLocationIds = null;
+          next();
+        } catch (err) {
+          next(err);
+        }
       },
     ];
   }
@@ -278,6 +331,7 @@ export function requirePlatformAdmin(): RequestHandler[] {
           where: {
             clerkUserId,
             role: "PLATFORM_ADMIN",
+            active: true,
           },
         });
 
@@ -291,6 +345,9 @@ export function requirePlatformAdmin(): RequestHandler[] {
 
         req.userId = user.id;
         req.userRole = user.role;
+        // Admins without an explicit sub-role are treated as
+        // READ_ONLY_SUPPORT — fail safe.
+        req.userAdminRole = user.adminRole ?? "READ_ONLY_SUPPORT";
         req.userRecord = user as unknown as Express.Request["userRecord"];
         req.allowedLocationIds = null; // platform admins bypass
 
@@ -300,4 +357,30 @@ export function requirePlatformAdmin(): RequestHandler[] {
       }
     },
   ];
+}
+
+/**
+ * Admin sub-role guard — call AFTER requirePlatformAdmin in the route stack.
+ * Pass the admin sub-roles permitted to perform the action.
+ *
+ * Example: only Superusers may delete tenants:
+ *   router.post("/tenants/:id/delete", requireAdminRole("SUPERUSER"), ...);
+ *
+ * READ_ONLY_SUPPORT is always rejected from any list that does not include
+ * it explicitly, which is what we want for every mutating action.
+ */
+export function requireAdminRole(...allowed: AdminRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const role = req.userAdminRole;
+    if (!role || !allowed.includes(role as AdminRole)) {
+      res.status(403).json({
+        error: "Insufficient admin permissions",
+        code: "ADMIN_FORBIDDEN",
+        required: allowed,
+        actual: role,
+      });
+      return;
+    }
+    next();
+  };
 }

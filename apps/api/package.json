@@ -18,6 +18,8 @@
     "@clerk/express": "^1.7.77",
     "@prisma/client": "^6.19.2",
     "@sentry/node": "^8.55.1",
+    "@types/archiver": "^7.0.0",
+    "archiver": "^7.0.1",
     "bullmq": "^5.71.1",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",

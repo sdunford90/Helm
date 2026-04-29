@@ -1,6 +1,7 @@
 import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useUser, useClerk } from '@clerk/clerk-react';
+import { useAdminMe, adminRoleLabel } from '../hooks/useAdminMe';
 
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 
@@ -12,6 +13,7 @@ const NAV_ITEMS = [
   { path: '/analytics', label: 'Analytics', icon: '◈' },
   { path: '/health', label: 'Health', icon: '♥' },
   { path: '/support', label: 'Support', icon: '✉' },
+  { path: '/activity', label: 'Admin Activity', icon: '◷' },
   { path: '/settings', label: 'Platform Settings', icon: '⚙' },
 ];
 
@@ -99,12 +101,14 @@ const avatarStyle: React.CSSProperties = {
   fontWeight: 700,
 };
 
-const UserChip: React.FC<{ initials: string; name: string; email: string }> = ({ initials, name, email }) => (
+const UserChip: React.FC<{ initials: string; name: string; email: string; role?: string | null }> = ({ initials, name, email, role }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
     <div style={avatarStyle}>{initials}</div>
     <div>
       <div style={{ fontSize: 13, fontWeight: 500, color: '#FFF' }}>{name}</div>
-      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>{email || '—'}</div>
+      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+        {email || '—'}{role ? ` · ${role}` : ''}
+      </div>
     </div>
   </div>
 );
@@ -113,6 +117,7 @@ const UserChip: React.FC<{ initials: string; name: string; email: string }> = ({
 const ClerkUserControls: React.FC = () => {
   const { user, isLoaded } = useUser();
   const clerk = useClerk();
+  const { me } = useAdminMe();
 
   const handleSignOut = async () => {
     await clerk.signOut({ redirectUrl: '/' });
@@ -128,10 +133,11 @@ const ClerkUserControls: React.FC = () => {
     (user.primaryEmailAddress?.emailAddress?.[0] ?? '?').toUpperCase();
   const fullName = `${first} ${last}`.trim() || user.username || 'Platform Admin';
   const email = user.primaryEmailAddress?.emailAddress ?? '';
+  const roleLabel = me?.adminRole ? adminRoleLabel(me.adminRole) : null;
 
   return (
     <>
-      <UserChip initials={initials} name={fullName} email={email} />
+      <UserChip initials={initials} name={fullName} email={email} role={roleLabel} />
       <button
         onClick={handleSignOut}
         style={signOutBtn}
@@ -145,9 +151,11 @@ const ClerkUserControls: React.FC = () => {
 };
 
 // Dev-bypass user chip — no Clerk hooks, no sign-out.
-const DevBypassUserControls: React.FC = () => (
-  <UserChip initials="DV" name="Dev Bypass" email="auth bypass enabled" />
-);
+const DevBypassUserControls: React.FC = () => {
+  const { me } = useAdminMe();
+  const roleLabel = me?.adminRole ? adminRoleLabel(me.adminRole) : null;
+  return <UserChip initials="DV" name="Dev Bypass" email="auth bypass enabled" role={roleLabel} />;
+};
 
 const AdminLayout: React.FC = () => {
   const location = useLocation();

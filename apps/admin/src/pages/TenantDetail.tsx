@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApiFetch } from '../lib/api';
+import { useAdminMe, isSuperuser } from '../hooks/useAdminMe';
 
 const API = '/api/admin';
 
@@ -134,7 +135,46 @@ const fmtCents = (c: number) =>
 const fmtDate = (d: string) =>
   d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
-type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users';
+type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'export' | 'danger';
+
+interface TenantExportRow {
+  id: string;
+  status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  fileSizeBytes: number | null;
+  rowCounts: Record<string, number> | null;
+  errorMsg: string | null;
+  downloadToken: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  requestedByEmail: string | null;
+}
+
+interface TenantDeletionRow {
+  id: string;
+  status: 'PENDING' | 'CANCELLED' | 'COMPLETED' | 'FAILED';
+  scheduledFor: string;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  requestedByEmail: string | null;
+  errorMsg: string | null;
+}
+
+const fmtBytes = (n: number | null) => {
+  if (!n) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+
+const fmtDateTime = (iso: string | null) => {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+};
 
 interface AdminTier {
   id: string;
@@ -434,6 +474,8 @@ const TenantDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const apiFetch = useApiFetch();
+  const { me } = useAdminMe();
+  const superuser = isSuperuser(me);
 
   const [tenant, setTenant] = useState<TenantData | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -448,6 +490,18 @@ const TenantDetail: React.FC = () => {
   const [billingBusyLocId, setBillingBusyLocId] = useState<string | null>(null);
   const [billingMsg, setBillingMsg] = useState<{ locId: string; kind: 'ok' | 'err'; text: string } | null>(null);
   const [showPlanModal, setShowPlanModal] = useState(false);
+
+  const [exports, setExports] = useState<TenantExportRow[]>([]);
+  const [exportsLoading, setExportsLoading] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
+
+  const [deletion, setDeletion] = useState<TenantDeletionRow | null>(null);
+  const [deletionLoading, setDeletionLoading] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const fetchTenant = useCallback(async () => {
     if (!id) return;
@@ -487,6 +541,32 @@ const TenantDetail: React.FC = () => {
     }
   }, [apiFetch]);
 
+  const fetchExports = useCallback(async () => {
+    if (!id) return;
+    setExportsLoading(true);
+    try {
+      const data = (await apiFetch(`${API}/tenants/${id}/exports`)) as { items?: unknown };
+      setExports(Array.isArray(data?.items) ? (data.items as TenantExportRow[]) : []);
+    } catch (e) {
+      setExportError((e as Error).message);
+    } finally {
+      setExportsLoading(false);
+    }
+  }, [id]);
+
+  const fetchDeletion = useCallback(async () => {
+    if (!id) return;
+    setDeletionLoading(true);
+    try {
+      const data = await apiFetch(`${API}/tenants/${id}/deletion`);
+      setDeletion(data as TenantDeletionRow | null);
+    } catch {
+      // silent — endpoint returns null when no deletion
+    } finally {
+      setDeletionLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => { fetchTenant(); }, [fetchTenant]);
   useEffect(() => {
     if (tab === 'locations') {
@@ -494,6 +574,67 @@ const TenantDetail: React.FC = () => {
       fetchTiers();
     }
   }, [tab, fetchLocations, fetchTiers]);
+  useEffect(() => { if (tab === 'export') fetchExports(); }, [tab, fetchExports]);
+  useEffect(() => { fetchDeletion(); }, [fetchDeletion]);
+
+  const handleRunExport = async () => {
+    if (!id) return;
+    setExportBusy(true);
+    setExportError('');
+    try {
+      await apiFetch(`${API}/tenants/${id}/exports`, { method: 'POST' });
+      await fetchExports();
+    } catch (e) {
+      setExportError((e as Error).message);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadExport = (row: TenantExportRow) => {
+    if (!id || !row.downloadToken) return;
+    const url = `${API}/tenants/${id}/exports/${row.id}/download?token=${encodeURIComponent(row.downloadToken)}`;
+    window.open(url, '_blank');
+  };
+
+  const handleScheduleDeletion = async () => {
+    if (!id || !tenant) return;
+    setDeleteBusy(true);
+    setDeleteError('');
+    try {
+      const res = await fetch(`${API}/tenants/${id}/deletion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: deleteConfirm }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed (${res.status})`);
+      setDeletion(data as TenantDeletionRow);
+      setShowDeleteModal(false);
+      setDeleteConfirm('');
+    } catch (e) {
+      setDeleteError((e as Error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const handleCancelDeletion = async () => {
+    if (!id) return;
+    if (!window.confirm('Cancel the scheduled deletion?')) return;
+    setDeleteBusy(true);
+    setDeleteError('');
+    try {
+      const res = await fetch(`${API}/tenants/${id}/deletion`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed (${res.status})`);
+      setDeletion(data as TenantDeletionRow);
+    } catch (e) {
+      setDeleteError((e as Error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   const handleStartCheckout = async (loc: Location) => {
     const tierId = pickedTierByLoc[loc.id];
@@ -592,7 +733,11 @@ const TenantDetail: React.FC = () => {
     { key: 'usage', label: 'Usage' },
     { key: 'locations', label: `Locations${locations.length > 0 ? ` (${locations.length})` : ''}` },
     { key: 'users', label: `Users (${tenant.users.length})` },
+    { key: 'export', label: 'Export Data' },
+    { key: 'danger', label: 'Danger Zone' },
   ];
+
+  const pendingDeletion = deletion && deletion.status === 'PENDING' ? deletion : null;
 
   return (
     <div style={{
@@ -643,6 +788,43 @@ const TenantDetail: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Pending deletion banner — visible across all tabs */}
+      {pendingDeletion && (
+        <div style={{
+          background: 'rgba(244,67,54,0.08)',
+          border: '1px solid rgba(244,67,54,0.4)',
+          borderRadius: 8,
+          padding: 16,
+          marginBottom: 20,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 16,
+        }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#F44336', marginBottom: 4 }}>
+              ⚠ Hard-delete scheduled for {fmtDateTime(pendingDeletion.scheduledFor)}
+            </div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
+              Requested by {pendingDeletion.requestedByEmail ?? 'unknown'}. All tenant data will be
+              permanently destroyed unless cancelled before the scheduled time.
+            </div>
+          </div>
+          {superuser && (
+            <button
+              onClick={handleCancelDeletion}
+              disabled={deleteBusy}
+              style={{
+                padding: '8px 18px', background: '#FFF', border: 'none',
+                borderRadius: 6, color: '#0A2342', fontWeight: 700,
+                fontSize: 13, cursor: deleteBusy ? 'wait' : 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >Cancel Deletion</button>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)', marginBottom: 24 }}>
@@ -963,6 +1145,262 @@ const TenantDetail: React.FC = () => {
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {/* ── Export Data ── */}
+      {tab === 'export' && (
+        <div>
+          <div style={{ ...card, marginBottom: 16 }}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16,
+            }}>
+              <div style={{ maxWidth: 560 }}>
+                <div style={{
+                  fontSize: 14, fontWeight: 600, color: '#FFF', marginBottom: 6,
+                }}>Export Tenant Data</div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6 }}>
+                  Generates a single zip archive of CSV files for every primary table owned by this
+                  tenant: customers, vessels, slips, contracts, invoices, payments, and more.
+                  Exports are stored for 7 days and require a Superuser to download.
+                </div>
+              </div>
+              <button
+                onClick={handleRunExport}
+                disabled={!superuser || exportBusy}
+                title={!superuser ? 'Superuser only' : ''}
+                style={{
+                  padding: '10px 22px',
+                  background: !superuser ? 'rgba(255,255,255,0.05)' : '#00D4FF',
+                  border: 'none', borderRadius: 6,
+                  color: !superuser ? 'rgba(255,255,255,0.3)' : '#0A2342',
+                  fontWeight: 700, fontSize: 13,
+                  cursor: !superuser || exportBusy ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >{exportBusy ? 'Generating…' : '+ Run New Export'}</button>
+            </div>
+            {exportError && (
+              <div style={{
+                background: 'rgba(244,67,54,0.08)', border: '1px solid rgba(244,67,54,0.3)',
+                borderRadius: 6, padding: 12, color: '#F44336', fontSize: 13, marginTop: 12,
+              }}>{exportError}</div>
+            )}
+          </div>
+
+          <div style={card}>
+            <div style={{
+              fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+              textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16,
+            }}>Recent Exports</div>
+            {exportsLoading ? (
+              <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.4)' }}>
+                Loading exports…
+              </div>
+            ) : exports.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>
+                No exports yet. Click "Run New Export" to create one.
+              </div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Created', 'Status', 'Size', 'Requested By', 'Expires', ''].map((h) => (
+                      <th key={h} style={{
+                        textAlign: 'left', padding: '10px 12px', fontSize: 11,
+                        fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+                        textTransform: 'uppercase', letterSpacing: 0.5,
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                      }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {exports.map((row) => {
+                    const statusColor =
+                      row.status === 'COMPLETED' ? '#4CAF50' :
+                      row.status === 'FAILED' ? '#F44336' : '#FF9800';
+                    const expired = row.expiresAt && new Date(row.expiresAt) < new Date();
+                    return (
+                      <tr key={row.id}>
+                        <td style={{ padding: '12px', fontSize: 12, color: '#FFF', borderBottom: '1px solid rgba(255,255,255,0.04)', whiteSpace: 'nowrap' }}>
+                          {fmtDateTime(row.createdAt)}
+                        </td>
+                        <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <span style={{
+                            background: `${statusColor}22`, color: statusColor,
+                            padding: '2px 10px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                          }}>{row.status}</span>
+                          {row.errorMsg && (
+                            <div style={{ fontSize: 11, color: '#F44336', marginTop: 4 }}>{row.errorMsg}</div>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          {fmtBytes(row.fileSizeBytes)}
+                        </td>
+                        <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          {row.requestedByEmail ?? '—'}
+                        </td>
+                        <td style={{ padding: '12px', fontSize: 12, color: expired ? '#F44336' : 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)', whiteSpace: 'nowrap' }}>
+                          {expired ? 'Expired' : fmtDateTime(row.expiresAt)}
+                        </td>
+                        <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)', textAlign: 'right' }}>
+                          {row.status === 'COMPLETED' && !expired && row.downloadToken && superuser ? (
+                            <button onClick={() => handleDownloadExport(row)} style={{
+                              background: 'transparent', border: '1px solid rgba(0,212,255,0.4)',
+                              borderRadius: 6, color: '#00D4FF', cursor: 'pointer',
+                              padding: '4px 14px', fontSize: 12,
+                            }}>Download</button>
+                          ) : (
+                            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)' }}>—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Danger Zone ── */}
+      {tab === 'danger' && (
+        <div>
+          <div style={{
+            ...card, border: '1px solid rgba(244,67,54,0.3)', marginBottom: 16,
+          }}>
+            <div style={{
+              fontSize: 12, fontWeight: 600, color: '#F44336',
+              textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16,
+            }}>Danger Zone</div>
+
+            {deletionLoading && !deletion ? (
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>Loading deletion status…</div>
+            ) : pendingDeletion ? (
+              <div>
+                <div style={{ fontSize: 14, color: '#FFF', marginBottom: 8 }}>
+                  A deletion is already scheduled. See the banner above to cancel it.
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#FFF', marginBottom: 6 }}>
+                  Delete Tenant Permanently
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6, marginBottom: 16, maxWidth: 620 }}>
+                  Schedules a hard-delete of <strong>{tenant.name}</strong> and every record owned by it
+                  (customers, contracts, invoices, payments, locations, users, etc). The deletion
+                  will execute automatically <strong>24 hours</strong> after scheduling. A Superuser
+                  may cancel it at any time during the grace period from the banner above.
+                </div>
+                <button
+                  onClick={() => { setShowDeleteModal(true); setDeleteConfirm(''); setDeleteError(''); }}
+                  disabled={!superuser}
+                  title={!superuser ? 'Superuser only' : ''}
+                  style={{
+                    padding: '10px 22px',
+                    background: !superuser ? 'rgba(255,255,255,0.05)' : '#F44336',
+                    border: 'none', borderRadius: 6,
+                    color: !superuser ? 'rgba(255,255,255,0.3)' : '#FFF',
+                    fontWeight: 700, fontSize: 13,
+                    cursor: !superuser ? 'not-allowed' : 'pointer',
+                  }}
+                >Schedule Hard-Delete</button>
+              </div>
+            )}
+
+            {deletion && deletion.status !== 'PENDING' && (
+              <div style={{
+                marginTop: 16, padding: 12, borderRadius: 6,
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                fontSize: 12, color: 'rgba(255,255,255,0.6)',
+              }}>
+                <div style={{ marginBottom: 4 }}>
+                  <strong>Last deletion attempt:</strong> {deletion.status}
+                </div>
+                <div>Scheduled for {fmtDateTime(deletion.scheduledFor)}</div>
+                {deletion.completedAt && <div>Completed at {fmtDateTime(deletion.completedAt)}</div>}
+                {deletion.cancelledAt && <div>Cancelled at {fmtDateTime(deletion.cancelledAt)}</div>}
+                {deletion.errorMsg && <div style={{ color: '#F44336', marginTop: 4 }}>{deletion.errorMsg}</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && tenant && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+          }}
+          onClick={() => !deleteBusy && setShowDeleteModal(false)}
+        >
+          <div
+            style={{
+              background: '#0D1B2A', borderRadius: 12, padding: 28, width: 540,
+              border: '1px solid rgba(244,67,54,0.4)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 12px', color: '#F44336', fontSize: 18 }}>
+              ⚠ Schedule Hard-Delete
+            </h3>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.6, marginBottom: 16 }}>
+              This will permanently destroy <strong>{tenant.name}</strong> and every database record
+              owned by it. The deletion will run after a 24-hour grace period during which a
+              Superuser can cancel it.
+            </div>
+            <div style={{
+              background: 'rgba(244,67,54,0.08)', border: '1px solid rgba(244,67,54,0.3)',
+              borderRadius: 6, padding: 12, marginBottom: 16,
+            }}>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginBottom: 6 }}>
+                Type the tenant subdomain <strong style={{ color: '#FFF' }}>{tenant.subdomain}</strong> to confirm:
+              </div>
+              <input
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                placeholder={tenant.subdomain}
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: '#070E18', border: '1px solid rgba(255,255,255,0.15)',
+                  borderRadius: 6, padding: '10px 12px', color: '#FFF',
+                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                }}
+                autoFocus
+              />
+            </div>
+            {deleteError && (
+              <div style={{ color: '#F44336', fontSize: 13, marginBottom: 12 }}>{deleteError}</div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleteBusy}
+                style={{
+                  padding: '8px 20px', background: 'transparent',
+                  border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
+                  color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 13,
+                }}
+              >Cancel</button>
+              <button
+                onClick={handleScheduleDeletion}
+                disabled={deleteBusy || deleteConfirm !== tenant.subdomain}
+                style={{
+                  padding: '8px 20px',
+                  background: deleteConfirm === tenant.subdomain ? '#F44336' : 'rgba(244,67,54,0.3)',
+                  border: 'none', borderRadius: 6, color: '#FFF',
+                  fontWeight: 700, cursor: deleteBusy || deleteConfirm !== tenant.subdomain ? 'not-allowed' : 'pointer',
+                  fontSize: 13,
+                }}
+              >{deleteBusy ? 'Scheduling…' : 'Schedule Deletion'}</button>
+            </div>
+          </div>
         </div>
       )}
 

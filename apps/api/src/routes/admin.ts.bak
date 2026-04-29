@@ -1,6 +1,5 @@
-import { Router, type Request, type Response, type NextFunction } from "express";
+import { Router } from "express";
 import { randomUUID, createHmac } from "node:crypto";
-import { requireAuth, getAuth } from "@clerk/express";
 import {
   requirePlatformAdmin,
   requireAdminRole,
@@ -10,12 +9,6 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
 import { stripe } from "../lib/stripe.js";
-import { logAdminAction, logAdminActionDetached } from "../lib/admin-audit.js";
-import {
-  runTenantExport,
-  publicExportView,
-} from "../services/tenant-export.js";
-import { GRACE_PERIOD_MS } from "../services/tenant-deletion.js";
 import {
   getCohortsReport,
   getFunnelReport,
@@ -25,163 +18,45 @@ import {
   featureUsageToCsv,
   type AnalyticsRange,
 } from "../services/cross-tenant-analytics.js";
+import { logAdminAction, logAdminActionDetached } from "../lib/admin-audit.js";
 import {
-  BillingError,
-  BillingLocationSelect,
-  openPortalForLocation,
-  startCheckoutForLocation,
-} from "../services/saas-billing-service.js";
+  runTenantExport,
+  publicExportView,
+} from "../services/tenant-export.js";
+import { GRACE_PERIOD_MS } from "../services/tenant-deletion.js";
 
-import {
-  REFUND_REASONS,
-  type RefundReason,
-  applyPlanChange,
-  applyTrialExtensionToGrace,
-  computeCouponDiscount,
-  consumeCouponRedemption,
-  previewPlanChange,
-  saasInvoiceOutstandingCents,
-} from "../services/saas-billing-depth.js";
-import { sendEmail } from "../lib/email.js";
 const router: Router = Router();
 
-// --------------------------------------------------------------------------
-// GET /api/admin/me — returns whether the current Clerk user is a Platform
-// Admin. Mounted BEFORE requirePlatformAdmin so unauthorized users can call
-// it without getting a 403 — the admin SPA uses it to decide whether to
-// render the dashboard chrome or a "no access" screen.
-//
-// Honours ENABLE_AUTH_DEV_BYPASS the same way the rest of the auth stack
-// does so the admin SPA's own dev-bypass shortcut keeps working end-to-end.
-// --------------------------------------------------------------------------
-function isDevBypassEnabled(): boolean {
-  return (
-    process.env.ENABLE_AUTH_DEV_BYPASS === "true" &&
-    process.env.NODE_ENV !== "production"
-  );
-}
-
-if (isDevBypassEnabled()) {
-  router.get("/me", async (_req, res, next) => {
-    try {
-      const user = await prisma.user.findFirst({
-        where: { role: "PLATFORM_ADMIN" },
-        select: {
-          id: true,
-          email: true,
-          role: true,
-          adminRole: true,
-          firstName: true,
-          lastName: true,
-        },
-      });
-      // Surface adminRole at the top level so useAdminMe in the admin SPA
-      // can read it without unwrapping the user object.
-      res.json({
-        isPlatformAdmin: true,
-        user: user ?? null,
-        id: user?.id ?? null,
-        email: user?.email ?? null,
-        firstName: user?.firstName ?? null,
-        lastName: user?.lastName ?? null,
-        role: user?.role ?? null,
-        adminRole: user?.adminRole ?? "SUPERUSER",
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-} else {
-  router.get(
-    "/me",
-    requireAuth(),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const auth = getAuth(req);
-        const clerkUserId = auth.userId;
-        if (!clerkUserId) {
-          res
-            .status(401)
-            .json({ error: "Unauthorized", code: "UNAUTHORIZED" });
-          return;
-        }
-
-        // A Clerk user can theoretically map to multiple internal User rows
-        // (one per tenant). They count as a Platform Admin if any of those
-        // rows has the PLATFORM_ADMIN role — same predicate used by
-        // requirePlatformAdmin.
-        const adminUser = await prisma.user.findFirst({
-          where: { clerkUserId, role: "PLATFORM_ADMIN" },
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            adminRole: true,
-            firstName: true,
-            lastName: true,
-          },
-        });
-
-        if (adminUser) {
-          res.json({
-            isPlatformAdmin: true,
-            user: adminUser,
-            id: adminUser.id,
-            email: adminUser.email,
-            firstName: adminUser.firstName,
-            lastName: adminUser.lastName,
-            role: adminUser.role,
-            adminRole: adminUser.adminRole ?? "READ_ONLY_SUPPORT",
-          });
-          return;
-        }
-
-        // Not a Platform Admin — still surface basic identity so the
-        // "no access" screen can show who they're signed in as.
-        const anyUser = await prisma.user.findFirst({
-          where: { clerkUserId },
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            firstName: true,
-            lastName: true,
-          },
-        });
-
-        res.json({
-          isPlatformAdmin: false,
-          user: anyUser ?? null,
-          id: anyUser?.id ?? null,
-          email: anyUser?.email ?? null,
-          firstName: anyUser?.firstName ?? null,
-          lastName: anyUser?.lastName ?? null,
-          role: anyUser?.role ?? null,
-          adminRole: null,
-        });
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
-}
-
-// All other admin routes require platform_admin role
+// All admin routes require platform_admin role + populate userAdminRole
 router.use(...requirePlatformAdmin());
 
 // READ_ONLY_SUPPORT can read everything but mutate nothing. The two helpers
-// below are passed as middleware on every mutation handler that the
-// governance task introduces.
+// below are passed as middleware on every mutation handler.
 const allowAnyAdmin = requireAdminRole(...ADMIN_ROLES);
 const allowMutations = requireAdminRole("SUPERUSER", "BILLING_ADMIN");
 const allowSuperuserOnly = requireAdminRole("SUPERUSER");
 
+// Expose what role this admin has, so the UI can hide / disable controls
+// without making a separate /me round-trip on every navigation.
+router.get("/me", allowAnyAdmin, (req, res) => {
+  const record = req.userRecord as Record<string, unknown> | undefined;
+  res.json({
+    id: req.userId ?? null,
+    email: (record?.email as string | undefined) ?? null,
+    firstName: (record?.firstName as string | undefined) ?? null,
+    lastName: (record?.lastName as string | undefined) ?? null,
+    role: req.userRole ?? null,
+    adminRole: req.userAdminRole ?? null,
+  });
+});
+
 // --------------------------------------------------------------------------
 // POST /api/admin/queues/pause — pause every BullMQ queue
 // --------------------------------------------------------------------------
-router.post("/queues/pause", async (_req, res, next) => {
+router.post("/queues/pause", allowMutations, async (req, res, next) => {
   try {
     await Promise.all(Object.values(queues).map((q) => q.pause()));
+    await logAdminAction(req, { action: "QUEUES_PAUSE", details: { queues: Object.keys(queues) } });
     res.json({ status: "paused", queues: Object.keys(queues) });
   } catch (err) {
     next(err);
@@ -191,9 +66,10 @@ router.post("/queues/pause", async (_req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/queues/unpause — resume every BullMQ queue
 // --------------------------------------------------------------------------
-router.post("/queues/unpause", async (_req, res, next) => {
+router.post("/queues/unpause", allowMutations, async (req, res, next) => {
   try {
     await Promise.all(Object.values(queues).map((q) => q.resume()));
+    await logAdminAction(req, { action: "QUEUES_RESUME", details: { queues: Object.keys(queues) } });
     res.json({ status: "resumed", queues: Object.keys(queues) });
   } catch (err) {
     next(err);
@@ -562,9 +438,6 @@ router.get("/tenants/:id", async (req, res, next) => {
         stripe: !!tenant.stripeAccountId,
         quickbooks: !!tenant.qboRealmId,
       },
-      // Subscriptions now live on Location, but for back-compat we still
-      // surface the tenant's legacy default tier here so the existing UI
-      // doesn't break in one shot. The Locations tab is the source of truth.
       subscription: tenant.saasTier
         ? {
             tierId: tenant.saasTier.id,
@@ -593,66 +466,29 @@ router.get("/tenants/:id", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants — create a new tenant
 // --------------------------------------------------------------------------
-router.post("/tenants", async (req, res, next) => {
+router.post("/tenants", allowMutations, async (req, res, next) => {
   try {
-    const {
-      name,
-      subdomain,
-      adminEmail,
-      saasTierId,
-      initialLocation,
-    } = req.body as {
-      name?: string;
-      subdomain?: string;
-      adminEmail?: string;
-      saasTierId?: string | null;
-      initialLocation?: {
-        name?: string;
-        timezone?: string;
-        address?: string;
-        city?: string;
-        state?: string;
-        zip?: string;
-        phone?: string;
-      };
-    };
+    const { name, subdomain, adminEmail, saasTierId } = req.body;
 
-    // ── Validation ─────────────────────────────────────────────
     if (!name || !subdomain || !adminEmail) {
-      res.status(400).json({
-        error: "name, subdomain, and adminEmail are required",
-      });
+      res.status(400).json({ error: "name, subdomain, and adminEmail are required" });
       return;
     }
 
+    // Validate subdomain format
     if (!/^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(subdomain)) {
-      res.status(400).json({
-        error:
-          "Invalid subdomain. Use lowercase letters, numbers, and hyphens (3+ chars).",
-      });
+      res.status(400).json({ error: "Invalid subdomain format. Use lowercase alphanumeric and hyphens." });
       return;
     }
 
-    // Basic email shape check — full RFC validation is overkill here.
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
-      res.status(400).json({ error: "Invalid admin email address" });
-      return;
-    }
-
-    if (!initialLocation?.name || !initialLocation.name.trim()) {
-      res.status(400).json({
-        error:
-          "An initial location is required. A tenant with no locations cannot be billed or operated.",
-      });
-      return;
-    }
-
+    // Check uniqueness
     const existing = await prisma.tenant.findUnique({ where: { subdomain } });
     if (existing) {
       res.status(409).json({ error: "Subdomain already taken" });
       return;
     }
 
+    // Validate tier if provided
     if (saasTierId) {
       const tier = await prisma.saasTier.findUnique({ where: { id: saasTierId } });
       if (!tier) {
@@ -661,57 +497,34 @@ router.post("/tenants", async (req, res, next) => {
       }
     }
 
-    // ── Atomic create: tenant + initial location + initial owner user ──
-    const result = await prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.create({
-        data: { name, subdomain },
-      });
+    const tenant = await prisma.tenant.create({
+      data: {
+        name,
+        subdomain,
+        saasTierId: saasTierId ?? null,
+      },
+    });
 
-      const location = await tx.location.create({
-        data: {
-          tenantId: tenant.id,
-          name: initialLocation.name!.trim(),
-          timezone: initialLocation.timezone?.trim() || "America/New_York",
-          address: initialLocation.address?.trim() || null,
-          city: initialLocation.city?.trim() || null,
-          state: initialLocation.state?.trim() || null,
-          zip: initialLocation.zip?.trim() || null,
-          phone: initialLocation.phone?.trim() || null,
-          // Per the new model, the SaaS tier is attached to the location
-          // (= the marina that gets billed) rather than the tenant.
-          saasTierId: saasTierId ?? null,
-        },
-      });
-
-      await tx.user.create({
-        data: {
-          tenantId: tenant.id,
-          email: adminEmail,
-          role: "MARINA_OWNER",
-          firstName: "Admin",
-          lastName: "(Pending Setup)",
-        },
-      });
-
-      return { tenant, location };
+    // Create the initial admin user for this tenant
+    await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: adminEmail,
+        role: "MARINA_OWNER",
+        firstName: "Admin",
+        lastName: "(Pending Setup)",
+      },
     });
 
     await logAdminAction(req, {
       action: "TENANT_CREATE",
-      targetTenantId: result.tenant.id,
+      targetTenantId: tenant.id,
       targetType: "TENANT",
-      targetId: result.tenant.id,
-      details: {
-        name: result.tenant.name,
-        subdomain: result.tenant.subdomain,
-        initialLocationId: result.location.id,
-      },
+      targetId: tenant.id,
+      details: { name, subdomain, adminEmail, saasTierId: saasTierId ?? null },
     });
 
-    res.status(201).json({
-      ...result.tenant,
-      initialLocation: { id: result.location.id, name: result.location.name },
-    });
+    res.status(201).json(tenant);
   } catch (err) {
     next(err);
   }
@@ -720,7 +533,7 @@ router.post("/tenants", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // PUT /api/admin/tenants/:id — update tenant details
 // --------------------------------------------------------------------------
-router.put("/tenants/:id", async (req, res, next) => {
+router.put("/tenants/:id", allowMutations, async (req, res, next) => {
   try {
     const { status, saasTierId, customDomain, notes, name } = req.body;
 
@@ -747,6 +560,24 @@ router.put("/tenants/:id", async (req, res, next) => {
       include: { saasTier: true },
     });
 
+    // Tier-change is a notable enough event to emit its own audit row.
+    if (saasTierId !== undefined && saasTierId !== tenant.saasTierId) {
+      await logAdminAction(req, {
+        action: "TENANT_TIER_CHANGE",
+        targetTenantId: tenant.id,
+        targetType: "TENANT",
+        targetId: tenant.id,
+        details: { from: tenant.saasTierId, to: saasTierId },
+      });
+    }
+    await logAdminAction(req, {
+      action: "TENANT_UPDATE",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { updatedFields: Object.keys(data) },
+    });
+
     res.json(updated);
   } catch (err) {
     next(err);
@@ -756,7 +587,7 @@ router.put("/tenants/:id", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants/:id/impersonate — generate impersonation token
 // --------------------------------------------------------------------------
-router.post("/tenants/:id/impersonate", async (req, res, next) => {
+router.post("/tenants/:id/impersonate", allowMutations, async (req, res, next) => {
   try {
     const tenant = await prisma.tenant.findUnique({
       where: { id: req.params.id },
@@ -792,6 +623,14 @@ router.post("/tenants/:id/impersonate", async (req, res, next) => {
       .update(JSON.stringify({ ...payload, jti: tokenId }))
       .digest("hex");
 
+    await logAdminAction(req, {
+      action: "TENANT_IMPERSONATE_START",
+      targetTenantId: tenant.id,
+      targetType: "USER",
+      targetId: targetUser.id,
+      details: { tokenId, asUserEmail: targetUser.email, expiresIn: 3600 },
+    });
+
     res.json({
       token: `imp_${tokenId}.${signature}`,
       expiresIn: 3600,
@@ -807,7 +646,7 @@ router.post("/tenants/:id/impersonate", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants/:id/lock — lock tenant (e.g., after grace period)
 // --------------------------------------------------------------------------
-router.post("/tenants/:id/lock", async (req, res, next) => {
+router.post("/tenants/:id/lock", allowMutations, async (req, res, next) => {
   try {
     const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
     if (!tenant) {
@@ -824,6 +663,14 @@ router.post("/tenants/:id/lock", async (req, res, next) => {
       data: { status: "LOCKED", lockedAt: new Date() },
     });
 
+    await logAdminAction(req, {
+      action: "TENANT_LOCK",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { reason: req.body?.reason ?? null },
+    });
+
     res.json({ id: updated.id, status: updated.status, lockedAt: updated.lockedAt });
   } catch (err) {
     next(err);
@@ -833,7 +680,7 @@ router.post("/tenants/:id/lock", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants/:id/unlock — unlock tenant (e.g., after payment)
 // --------------------------------------------------------------------------
-router.post("/tenants/:id/unlock", async (req, res, next) => {
+router.post("/tenants/:id/unlock", allowMutations, async (req, res, next) => {
   try {
     const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
     if (!tenant) {
@@ -850,6 +697,14 @@ router.post("/tenants/:id/unlock", async (req, res, next) => {
       data: { status: "ACTIVE", lockedAt: null, gracePeriodStartedAt: null },
     });
 
+    await logAdminAction(req, {
+      action: "TENANT_UNLOCK",
+      targetTenantId: tenant.id,
+      targetType: "TENANT",
+      targetId: tenant.id,
+      details: { reason: req.body?.reason ?? null, previousStatus: tenant.status },
+    });
+
     res.json({ id: updated.id, status: updated.status });
   } catch (err) {
     next(err);
@@ -859,60 +714,6 @@ router.post("/tenants/:id/unlock", async (req, res, next) => {
 // ==========================================================================
 //  SAAS BILLING
 // ==========================================================================
-
-// --------------------------------------------------------------------------
-// POST /api/admin/locations/:locationId/billing/checkout
-// Platform admin starts a Stripe Checkout session for a location that does
-// not yet have a subscription. Returns the hosted Checkout URL which the
-// admin can copy and send to the marina owner (or open directly).
-// --------------------------------------------------------------------------
-router.post("/locations/:locationId/billing/checkout", async (req, res, next) => {
-  try {
-    const location = await prisma.location.findUnique({
-      where: { id: req.params.locationId },
-      select: BillingLocationSelect,
-    });
-    if (!location) {
-      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
-      return;
-    }
-    const result = await startCheckoutForLocation(location, req.body ?? {});
-    res.json(result);
-  } catch (err) {
-    if (err instanceof BillingError) {
-      res.status(err.status).json({ error: err.message, code: err.code });
-      return;
-    }
-    next(err);
-  }
-});
-
-// --------------------------------------------------------------------------
-// POST /api/admin/locations/:locationId/billing/portal
-// Platform admin generates a Stripe Customer Portal link for an existing
-// per-location subscription. Useful for support: admins can hand the link
-// to a marina owner who needs to update payment method or cancel.
-// --------------------------------------------------------------------------
-router.post("/locations/:locationId/billing/portal", async (req, res, next) => {
-  try {
-    const location = await prisma.location.findUnique({
-      where: { id: req.params.locationId },
-      select: BillingLocationSelect,
-    });
-    if (!location) {
-      res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
-      return;
-    }
-    const result = await openPortalForLocation(location);
-    res.json(result);
-  } catch (err) {
-    if (err instanceof BillingError) {
-      res.status(err.status).json({ error: err.message, code: err.code });
-      return;
-    }
-    next(err);
-  }
-});
 
 // --------------------------------------------------------------------------
 // GET /api/admin/billing/overview — platform revenue summary
@@ -1002,20 +803,9 @@ router.get("/billing/invoices", async (req, res, next) => {
       periodStart: inv.periodStart.toISOString(),
       periodEnd: inv.periodEnd.toISOString(),
       amountCents: inv.amountCents,
-      discountCents: inv.discountCents,
-      refundedCents: inv.refundedCents,
-      prorationCents: inv.prorationCents,
-      outstandingCents: saasInvoiceOutstandingCents(inv),
       status: inv.status,
       issuedAt: inv.issuedAt.toISOString(),
-      dueDate: inv.dueDate?.toISOString() ?? null,
       paidAt: inv.paidAt?.toISOString() ?? null,
-      failedAttempts: inv.failedAttempts,
-      lastAttemptAt: inv.lastAttemptAt?.toISOString() ?? null,
-      dunningPaused: inv.dunningPaused,
-      pausedUntil: inv.pausedUntil?.toISOString() ?? null,
-      writeOffAt: inv.writeOffAt?.toISOString() ?? null,
-      writeOffReason: inv.writeOffReason,
     }));
 
     res.json({
@@ -1030,7 +820,7 @@ router.get("/billing/invoices", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/billing/invoices/generate — generate monthly SaaS invoices
 // --------------------------------------------------------------------------
-router.post("/billing/invoices/generate", async (_req, res, next) => {
+router.post("/billing/invoices/generate", allowMutations, async (req, res, next) => {
   try {
     const activeTenants = await prisma.tenant.findMany({
       where: { status: "ACTIVE", saasTierId: { not: null } },
@@ -1040,66 +830,31 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-    const dueDate = new Date(now.getFullYear(), now.getMonth(), 15);
 
     const generated = [];
-    let skipped = 0;
-    let prorationLineCount = 0;
 
     for (const tenant of activeTenants) {
       if (!tenant.saasTier) continue;
 
+      // Skip if invoice already exists for this period
       const alreadyExists = await prisma.saasInvoice.findFirst({
         where: {
           tenantId: tenant.id,
           periodStart: { gte: periodStart, lte: periodStart },
         },
       });
-      if (alreadyExists) {
-        skipped++;
-        continue;
-      }
-
-      const baseAmount = tenant.saasTier.monthlyFeeCents;
-      const discount = await computeCouponDiscount(tenant.id, baseAmount);
-
-      // Aggregate any unbilled plan-change proration into THIS invoice
-      // as one line (sum of all pending change deltas). This is the
-      // "appears on the next SaaS invoice" semantic.
-      const pendingChanges = await prisma.saasPlanChange.findMany({
-        where: { tenantId: tenant.id, appliedToInvoiceId: null },
-      });
-      const prorationTotal = pendingChanges.reduce(
-        (sum, c) => sum + c.prorationCents,
-        0,
-      );
+      if (alreadyExists) continue;
 
       const invoice = await prisma.saasInvoice.create({
         data: {
           tenantId: tenant.id,
           periodStart,
           periodEnd,
-          dueDate,
-          amountCents: baseAmount,
-          prorationCents: prorationTotal,
-          discountCents: discount.discountCents,
-          couponRedemptionId: discount.redemptionId,
+          amountCents: tenant.saasTier.monthlyFeeCents,
           status: "issued",
         },
         include: { tenant: { select: { name: true } } },
       });
-
-      if (discount.redemptionId) {
-        await consumeCouponRedemption(discount.redemptionId, invoice.id);
-      }
-
-      if (pendingChanges.length > 0) {
-        await prisma.saasPlanChange.updateMany({
-          where: { id: { in: pendingChanges.map((c) => c.id) } },
-          data: { appliedToInvoiceId: invoice.id },
-        });
-        prorationLineCount += pendingChanges.length;
-      }
 
       generated.push({
         id: invoice.id,
@@ -1108,18 +863,20 @@ router.post("/billing/invoices/generate", async (_req, res, next) => {
         periodStart: invoice.periodStart.toISOString(),
         periodEnd: invoice.periodEnd.toISOString(),
         amountCents: invoice.amountCents,
-        discountCents: invoice.discountCents,
-        prorationCents: invoice.prorationCents,
         status: invoice.status,
         issuedAt: invoice.issuedAt.toISOString(),
         paidAt: null,
       });
     }
 
+    await logAdminAction(req, {
+      action: "SAAS_INVOICE_GENERATE",
+      details: { generated: generated.length, skipped: activeTenants.length - generated.length },
+    });
+
     res.status(201).json({
       generated: generated.length,
-      prorationLines: prorationLineCount,
-      skipped,
+      skipped: activeTenants.length - generated.length,
       invoices: generated,
     });
   } catch (err) {
@@ -1137,8 +894,8 @@ router.get("/billing/tiers", async (_req, res, next) => {
       orderBy: { monthlyFeeCents: "asc" },
     });
 
-    res.json({
-      tiers: tiers.map((t) => ({
+    res.json(
+      tiers.map((t) => ({
         id: t.id,
         name: t.name,
         monthlyFeeCents: t.monthlyFeeCents,
@@ -1148,7 +905,7 @@ router.get("/billing/tiers", async (_req, res, next) => {
         storageLimitGb: t.storageLimitGb,
         tenantCount: t._count.tenants,
       })),
-    });
+    );
   } catch (err) {
     next(err);
   }
@@ -1157,7 +914,7 @@ router.get("/billing/tiers", async (_req, res, next) => {
 // --------------------------------------------------------------------------
 // PUT /api/admin/billing/tiers/:id — update tier pricing
 // --------------------------------------------------------------------------
-router.put("/billing/tiers/:id", async (req, res, next) => {
+router.put("/billing/tiers/:id", allowMutations, async (req, res, next) => {
   try {
     const tier = await prisma.saasTier.findUnique({ where: { id: req.params.id } });
     if (!tier) {
@@ -1189,6 +946,13 @@ router.put("/billing/tiers/:id", async (req, res, next) => {
     const updated = await prisma.saasTier.update({
       where: { id: req.params.id },
       data,
+    });
+
+    await logAdminAction(req, {
+      action: "SAAS_TIER_UPDATE",
+      targetType: "SAAS_TIER",
+      targetId: tier.id,
+      details: { updatedFields: Object.keys(data) },
     });
 
     res.json(updated);
@@ -1508,7 +1272,7 @@ router.get("/support/tickets", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/support/tickets — create a support ticket (from tenant)
 // --------------------------------------------------------------------------
-router.post("/support/tickets", async (req, res, next) => {
+router.post("/support/tickets", allowMutations, async (req, res, next) => {
   try {
     const { tenantId, subject, description, priority = "medium" } = req.body;
     if (!tenantId || !subject || !description) {
@@ -1518,6 +1282,13 @@ router.post("/support/tickets", async (req, res, next) => {
     const ticket = await prisma.supportTicket.create({
       data: { tenantId, subject, description, priority, status: "open" },
       include: { tenant: { select: { name: true } } },
+    });
+    await logAdminAction(req, {
+      action: "SUPPORT_TICKET_CREATE",
+      targetTenantId: tenantId,
+      targetType: "SUPPORT_TICKET",
+      targetId: ticket.id,
+      details: { subject, priority },
     });
     res.status(201).json({
       id: ticket.id,
@@ -1539,7 +1310,7 @@ router.post("/support/tickets", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // PUT /api/admin/support/tickets/:id — update ticket status / priority
 // --------------------------------------------------------------------------
-router.put("/support/tickets/:id", async (req, res, next) => {
+router.put("/support/tickets/:id", allowMutations, async (req, res, next) => {
   try {
     const existing = await prisma.supportTicket.findUnique({ where: { id: req.params.id } });
     if (!existing) {
@@ -1569,6 +1340,14 @@ router.put("/support/tickets/:id", async (req, res, next) => {
       where: { id: req.params.id },
       data,
       include: { tenant: { select: { name: true } } },
+    });
+
+    await logAdminAction(req, {
+      action: "SUPPORT_TICKET_UPDATE",
+      targetTenantId: updated.tenantId,
+      targetType: "SUPPORT_TICKET",
+      targetId: updated.id,
+      details: { updatedFields: Object.keys(data) },
     });
 
     res.json({
@@ -2238,50 +2017,18 @@ router.post("/tenants/:id/save-play", async (req, res, next) => {
 // ==========================================================================
 
 // GET /api/admin/tenants/:id/locations
-//
-// Returns each location with its per-location SaaS subscription state (tier,
-// Stripe status, current period end). The platform admin's tenant detail
-// page renders this on the Locations tab — subscriptions live here, not
-// on the Tenant.
 router.get("/tenants/:id/locations", async (req, res, next) => {
   try {
     const locations = await prisma.location.findMany({
       where: { tenantId: req.params.id },
       orderBy: { name: "asc" },
-      include: { saasTier: true },
     });
-    res.json(
-      locations.map((l) => ({
-        id: l.id,
-        tenantId: l.tenantId,
-        name: l.name,
-        address: l.address,
-        city: l.city,
-        state: l.state,
-        zip: l.zip,
-        phone: l.phone,
-        timezone: l.timezone,
-        active: l.active,
-        subscription: {
-          tier: l.saasTier
-            ? {
-                id: l.saasTier.id,
-                name: l.saasTier.name,
-                monthlyFeeCents: l.saasTier.monthlyFeeCents,
-              }
-            : null,
-          status: l.subscriptionStatus,
-          stripeCustomerId: l.stripeCustomerId,
-          stripeSubscriptionId: l.stripeSubscriptionId,
-          gracePeriodStartedAt: l.gracePeriodStartedAt,
-        },
-      })),
-    );
+    res.json(locations);
   } catch (err) { next(err); }
 });
 
 // POST /api/admin/tenants/:id/locations
-router.post("/tenants/:id/locations", async (req, res, next) => {
+router.post("/tenants/:id/locations", allowMutations, async (req, res, next) => {
   try {
     const { name, address, city, state, zip, phone, timezone, active } = req.body;
     if (!name) {
@@ -2301,12 +2048,19 @@ router.post("/tenants/:id/locations", async (req, res, next) => {
         active: active !== false,
       },
     });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_CREATE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: location.id,
+      details: { name },
+    });
     res.status(201).json(location);
   } catch (err) { next(err); }
 });
 
 // PUT /api/admin/tenants/:id/locations/:locationId
-router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
+router.put("/tenants/:id/locations/:locationId", allowMutations, async (req, res, next) => {
   try {
     const { name, address, city, state, zip, phone, timezone, active } = req.body;
     const location = await prisma.location.update({
@@ -2322,14 +2076,27 @@ router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
         ...(active !== undefined && { active }),
       },
     });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_UPDATE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: location.id,
+      details: { updatedFields: Object.keys(req.body ?? {}) },
+    });
     res.json(location);
   } catch (err) { next(err); }
 });
 
 // DELETE /api/admin/tenants/:id/locations/:locationId
-router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
+router.delete("/tenants/:id/locations/:locationId", allowMutations, async (req, res, next) => {
   try {
     await prisma.location.delete({ where: { id: req.params.locationId } });
+    await logAdminAction(req, {
+      action: "TENANT_LOCATION_DELETE",
+      targetTenantId: req.params.id,
+      targetType: "LOCATION",
+      targetId: req.params.locationId,
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });
@@ -2702,14 +2469,83 @@ router.get("/health/system/failures", async (req, res, next) => {
   }
 });
 
+// ==========================================================================
+//  ADMIN ACTIVITY LOG (read-only across all admin sub-roles)
+// ==========================================================================
+
+// GET /api/admin/activity?actor=&action=&tenantId=&startDate=&endDate=&page=&limit=
+router.get("/activity", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const actor = (req.query.actor as string | undefined)?.trim();
+    const action = (req.query.action as string | undefined)?.trim();
+    const tenantId = (req.query.tenantId as string | undefined)?.trim();
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : null;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : null;
+
+    const where: Record<string, unknown> = {};
+    if (actor) {
+      where.OR = [
+        { actorEmail: { contains: actor, mode: "insensitive" } },
+        { actorName: { contains: actor, mode: "insensitive" } },
+        { actorUserId: actor },
+      ];
+    }
+    if (action) where.action = action;
+    if (tenantId) where.targetTenantId = tenantId;
+    if (startDate || endDate) {
+      const createdAt: Record<string, Date> = {};
+      if (startDate && !Number.isNaN(startDate.getTime())) createdAt.gte = startDate;
+      if (endDate && !Number.isNaN(endDate.getTime())) createdAt.lte = endDate;
+      where.createdAt = createdAt;
+    }
+
+    const [items, total] = await Promise.all([
+      prisma.adminAuditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.adminAuditLog.count({ where }),
+    ]);
+
+    // Hydrate target tenant names so the UI doesn't need a second call.
+    const tenantIds = [...new Set(items.map((i) => i.targetTenantId).filter(Boolean) as string[])];
+    const tenants = tenantIds.length
+      ? await prisma.tenant.findMany({
+          where: { id: { in: tenantIds } },
+          select: { id: true, name: true, subdomain: true },
+        })
+      : [];
+    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+
+    res.json({
+      items: items.map((i) => ({
+        ...i,
+        targetTenant: i.targetTenantId ? tenantMap.get(i.targetTenantId) ?? null : null,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --------------------------------------------------------------------------
-// GET /api/admin/health/stripe-connect — cross-tenant Stripe Connect status
+// GET /api/admin/health/stripe-connect u2014 cross-tenant Stripe Connect status
 //
 // Lists every connected Stripe account (per location, with tenant-level
 // fallback for legacy single-account marinas). Pulls cached capability
 // data from the most recent STRIPE_ACCOUNT_UPDATED audit log entry for
 // each account, plus the most recent successful Payment as a "last
-// activity" signal (we don't currently persist payout.paid events, so
+// activity" signal (we donu0027t currently persist payout.paid events, so
 // the latest captured payment is the closest readily-available proxy).
 // --------------------------------------------------------------------------
 router.get("/health/stripe-connect", async (_req, res, next) => {
@@ -2744,7 +2580,7 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
     };
 
     // Tenants whose stripeAccountId is also referenced by a location are
-    // legacy duplicates — surface only the per-location row to avoid double
+    // legacy duplicates u2014 surface only the per-location row to avoid double
     // counting.
     const locationAccountIds = new Set(
       locationRows.map((l) => l.stripeAccountId).filter(Boolean),
@@ -2779,7 +2615,7 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
         ),
     ];
 
-    // Capability cache — pull the most recent STRIPE_ACCOUNT_UPDATED audit
+    // Capability cache u2014 pull the most recent STRIPE_ACCOUNT_UPDATED audit
     // log per (tenant + scope) so we can show charges_enabled / details_submitted
     // without hitting Stripe on every render.
     const capabilityRows = await prisma.auditLog.findMany({
@@ -2812,8 +2648,8 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
       const j = (row.changedFieldsJson ?? {}) as Record<string, unknown>;
       capabilityByKey.set(key, {
         chargesEnabled: j.chargesEnabled === true,
-        // Older audit-log rows (pre-Health) didn't capture payoutsEnabled.
-        // Treat them as "unknown" by falling back to chargesEnabled — payouts
+        // Older audit-log rows (pre-Health) didnu0027t capture payoutsEnabled.
+        // Treat them as "unknown" by falling back to chargesEnabled u2014 payouts
         // generally trail charges, so this only over-reports on a small
         // number of legacy rows until the next webhook fires.
         payoutsEnabled:
@@ -2869,7 +2705,7 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
 
       // Missing requirements are anything we can flag from cached data.
       const missingRequirements: string[] = [];
-      // Tenant-scope accounts don't have a per-record onboarding flag in
+      // Tenant-scope accounts donu0027t have a per-record onboarding flag in
       // our schema (only Location.stripeOnboardingComplete exists), so
       // suppress this marker for tenant rows to avoid a permanently
       // misleading "onboarding_incomplete" tag once charges are live.
@@ -2883,7 +2719,7 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
       // Status: green only when both charges AND payouts are live (the
       // account can actually accept money and disburse it). Amber when the
       // account is technically onboarded but we have no fresh capability
-      // data, or charges work but payouts don't. Red otherwise.
+      // data, or charges work but payouts donu0027t. Red otherwise.
       const fullyLive = cap?.chargesEnabled && cap.payoutsEnabled;
       const partiallyLive = cap?.chargesEnabled && !cap.payoutsEnabled;
       const onboardedNoCap =
@@ -2938,6 +2774,84 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
   }
 });
 
+// GET /api/admin/activity/actions u2014 distinct action codes for filter dropdown
+router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const rows = await prisma.adminAuditLog.findMany({
+      distinct: ["action"],
+      select: { action: true },
+      orderBy: { action: "asc" },
+    });
+    res.json({ actions: rows.map((r) => r.action) });
+  } catch (err) { 
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  ADMIN USER MANAGEMENT (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/users u2014 list every PLATFORM_ADMIN user with their sub-role
+router.get("/users", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const admins = await prisma.user.findMany({
+      where: { role: "PLATFORM_ADMIN" },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        active: true,
+        adminRole: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { email: "asc" },
+    });
+    res.json({ items: admins });
+
+// GET /api/admin/activity/actions — distinct action codes for filter dropdown
+router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const rows = await prisma.adminAuditLog.findMany({
+      distinct: ["action"],
+      select: { action: true },
+      orderBy: { action: "asc" },
+    });
+    res.json({ actions: rows.map((r) => r.action) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  ADMIN USER MANAGEMENT (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/users — list every PLATFORM_ADMIN user with their sub-role
+router.get("/users", allowAnyAdmin, async (_req, res, next) => {
+  try {
+    const admins = await prisma.user.findMany({
+      where: { role: "PLATFORM_ADMIN" },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        active: true,
+        adminRole: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { email: "asc" },
+    });
+    res.json({ items: admins });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // POST /api/admin/health/stripe-connect/refresh
 //
@@ -2950,7 +2864,7 @@ router.post("/health/stripe-connect/refresh", async (req, res, next) => {
     const { stripeAccountId, scope, recordId, tenantId } = req.body ?? {};
     if (!stripeAccountId || !scope || !recordId || !tenantId) {
       res.status(400).json({
-        error: "stripeAccountId, scope ('location'|'tenant'), recordId and tenantId are required",
+        error: "stripeAccountId, scope (u0027locationu0027|u0027tenantu0027), recordId and tenantId are required",
       });
       return;
     }
@@ -2975,7 +2889,7 @@ router.post("/health/stripe-connect/refresh", async (req, res, next) => {
       payoutsEnabled = account.payouts_enabled === true;
       detailsSubmitted = account.details_submitted === true;
     } catch (err) {
-      // Fall back to v2 endpoint — Stripe SDK casts this off the typed surface.
+      // Fall back to v2 endpoint u2014 Stripe SDK casts this off the typed surface.
       try {
         const v2Accounts = (stripe as unknown as {
           v2?: {
@@ -3039,7 +2953,7 @@ router.post("/health/stripe-connect/refresh", async (req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
-// GET /api/admin/health/quickbooks — cross-tenant QBO connection health
+// GET /api/admin/health/quickbooks u2014 cross-tenant QBO connection health
 //
 // Per-location and per-tenant QBO connections, with token expiry, last
 // successful sync (the most recent of qboLastSyncAt / qboLastVendorPullAt
@@ -3169,7 +3083,7 @@ router.get("/health/quickbooks", async (req, res, next) => {
       }
     }
 
-    // Pending webhook deliveries — failed deliveries are functionally
+    // Pending webhook deliveries u2014 failed deliveries are functionally
     // "awaiting retry" until an operator replays them.
     const pendingWebhooks = await prisma.qboWebhookDelivery.groupBy({
       by: ["tenantId", "locationId"],
@@ -3189,7 +3103,7 @@ router.get("/health/quickbooks", async (req, res, next) => {
     const now = Date.now();
     const items = connections
       .map((c) => {
-        // qboLastSyncAt isn't a real Prisma field on Tenant — the existing
+        // qboLastSyncAt isnu0027t a real Prisma field on Tenant u2014 the existing
         // qbo-sync code only writes vendor/bill pull timestamps. Use those
         // as the canonical "last successful sync" signal.
         const lastSync = mostRecent(c.lastVendorPullAt, c.lastBillPullAt);
@@ -3252,12 +3166,281 @@ router.get("/health/quickbooks", async (req, res, next) => {
       warningCount: items.filter((i) => i.status === "warning").length,
       items,
     });
+        return;
+      }
+    }
+
+// --------------------------------------------------------------------------
+// Health helpers
+// --------------------------------------------------------------------------
+
+function bucketByHour(timestamps: number[], sinceMs: number): number[] {
+  // Always 24 buckets u2014 index 0 = oldest hour, index 23 = current hour.
+  const buckets = new Array(24).fill(0);
+  for (const t of timestamps) {
+    const idx = Math.min(23, Math.max(0, Math.floor((t - sinceMs) / (60 * 60 * 1000))));
+    buckets[idx] += 1;
+  }
+  return buckets;
+}
+
+function capabilityKey(recordType: string, recordId: string): string {
+  return `${recordType}:${recordId}`;
+}
+
+async function loadTenantNameMap(
+  ids: Array<string | null>,
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  if (unique.length === 0) return new Map();
+  const rows = await prisma.tenant.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, name: true },
+  });
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+function mostRecent(...dates: Array<Date | null | undefined>): Date | null {
+  let max: Date | null = null;
+  for (const d of dates) {
+    if (!d) continue;
+    if (!max || d > max) max = d;
+  }
+  return max;
+}
+
+function safeJsonPreview(value: unknown): unknown {
+  try {
+    const json = JSON.stringify(value);
+    if (json.length <= 500) return value;
+    return `${json.slice(0, 500)}u2026`;
+  } catch {
+    return null;
+  }
+}
+
+// PUT /api/admin/users/:id/active u2014 activate / deactivate a platform admin
+router.put("/users/:id/active", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const active = Boolean(req.body?.active);
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target || target.role !== "PLATFORM_ADMIN") {
+      res.status(404).json({ error: "Admin user not found" });
+      return;
+    }
+
+    if (!active && target.adminRole === "SUPERUSER") {
+      const remainingSuperusers = await prisma.user.count({
+        where: {
+          role: "PLATFORM_ADMIN",
+          adminRole: "SUPERUSER",
+          active: true,
+          NOT: { id: target.id },
+        },
+      });
+      if (remainingSuperusers === 0) {
+        res.status(409).json({
+          error: "Cannot deactivate the last active Superuser.",
+          code: "LAST_SUPERUSER",
+        });
+        return;
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: target.id },
+      data: { active },
+      select: {
+        id: true, email: true, firstName: true, lastName: true,
+        active: true, adminRole: true, createdAt: true, updatedAt: true,
+      },
+    });
+
+    await logAdminAction(req, {
+      action: active ? "ADMIN_INVITE" : "ADMIN_DEACTIVATE",
+      targetType: "USER",
+      targetId: target.id,
+      details: { email: target.email, active },
+    });
+
+    res.json(updated);
   } catch (err) {
     next(err);
   }
 });
 
-// --------------------------------------------------------------------------
+// ==========================================================================
+//  TENANT DATA EXPORT  (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/exports u2014 list past exports for a tenant
+router.get("/tenants/:id/exports", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const rows = await prisma.tenantExport.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      take: 25,
+    });
+    res.json({ items: rows.map((r) => publicExportView(r)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/exports u2014 create a tenant data export
+router.post("/tenants/:id/exports", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const record = req.userRecord as Record<string, unknown> | undefined;
+    const result = await runTenantExport({
+      tenantId: tenant.id,
+      requestedById: (req.userId as string) ?? "unknown",
+      requestedByEmail: (record?.email as string | undefined) ?? "unknown",
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_EXPORT_REQUEST",
+      targetTenantId: tenant.id,
+      targetType: "TENANT_EXPORT",
+      targetId: result.id,
+      details: {
+        status: result.status,
+        fileSizeBytes: result.fileSizeBytes,
+        rowCounts: result.rowCounts,
+      },
+    });
+
+    res.status(201).json(publicExportView(result));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/tenants/:id/exports/:exportId/download?token=
+//   Streams the zip back. The token check is in addition to admin auth so
+//   the link is still single-tenant-scoped and harder to misuse.
+router.get("/tenants/:id/exports/:exportId/download", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const exportRow = await prisma.tenantExport.findUnique({
+      where: { id: req.params.exportId },
+    });
+    if (!exportRow || exportRow.tenantId !== req.params.id) {
+      res.status(404).json({ error: "Export not found" });
+      return;
+    }
+    if (exportRow.status !== "COMPLETED") {
+      res.status(409).json({ error: `Export not ready (status=${exportRow.status})` });
+      return;
+    }
+    if (exportRow.expiresAt && exportRow.expiresAt < new Date()) {
+      res.status(410).json({ error: "Export download link expired" });
+      return;
+    }
+    const token = (req.query.token as string | undefined)?.trim();
+    if (!token || token !== exportRow.downloadToken) {
+      res.status(403).json({ error: "Invalid download token" });
+      return;
+    }
+    if (!exportRow.localBlob) {
+      res.status(500).json({ error: "Export bytes missing" });
+      return;
+    }
+
+    logAdminActionDetached(req, {
+      action: "TENANT_EXPORT_DOWNLOAD",
+      targetTenantId: exportRow.tenantId,
+      targetType: "TENANT_EXPORT",
+      targetId: exportRow.id,
+    });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="tenant-${exportRow.tenantId}-${exportRow.id}.zip"`,
+    );
+    res.send(Buffer.from(exportRow.localBlob));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  TENANT HARD-DELETE WITH 24H GRACE  (Superuser only)
+// ==========================================================================
+
+// GET /api/admin/tenants/:id/deletion u2014 current pending deletion (or null)
+router.get("/tenants/:id/deletion", allowAnyAdmin, async (req, res, next) => {
+  try {
+    const row = await prisma.tenantDeletion.findUnique({
+      where: { tenantId: req.params.id },
+    });
+    res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/deletion u2014 schedule a hard-delete
+//   Body: { confirmation: <subdomain> } u2014 must echo the subdomain so an
+//   accidental click cannot wipe a tenant.
+router.post("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (req.body?.confirmation !== tenant.subdomain) {
+      res.status(400).json({
+        error: `Confirmation must equal the tenant subdomain (u0027${tenant.subdomain}u0027)`,
+        code: "BAD_CONFIRMATION",
+      });
+      return;
+    }
+
+    const existing = await prisma.tenantDeletion.findUnique({
+      where: { tenantId: tenant.id },
+    });
+    if (existing && existing.status === "PENDING") {
+      res.status(409).json({
+        error: "A deletion is already pending for this tenant.",
+        code: "ALREADY_PENDING",
+        deletion: existing,
+      });
+      return;
+    }
+    if (existing && existing.status === "COMPLETED") {
+      res.status(409).json({
+        error: "This tenant has already been deleted.",
+        code: "ALREADY_DELETED",
+      });
+      return;
+    }
+
+    const record = req.userRecord as Record<string, unknown> | undefined;
+    const scheduledFor = new Date(Date.now() + GRACE_PERIOD_MS);
+    const data = {
+      tenantId: tenant.id,
+      requestedById: (req.userId as string) ?? "unknown",
+      requestedByEmail: (record?.email as string | undefined) ?? "unknown",
+      scheduledFor,
+      status: "PENDING" as const,
+      cancelledAt: null,
+      cancelledById: null,
+      completedAt: null,
+      errorMsg: null,
+    };
+
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Health helpers
 // --------------------------------------------------------------------------
 
@@ -3305,975 +3488,7 @@ function safeJsonPreview(value: unknown): unknown {
     return null;
   }
 }
-
-
-// ==========================================================================
-//  COUPONS & PROMO CODES (SaaS subscriptions)
-// ==========================================================================
-
-const COUPON_TYPES = ["PERCENT", "FIXED", "TRIAL_EXTENSION"] as const;
-const COUPON_DURATIONS = ["ONCE", "REPEATING"] as const;
-
-// GET /api/admin/billing/coupons — list with redemption counts
-router.get("/billing/coupons", async (_req, res, next) => {
-  try {
-    const coupons = await prisma.saasCoupon.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        redemptions: {
-          select: { id: true, tenantId: true, active: true, redeemedAt: true },
-        },
-      },
-    });
-
-    res.json(
-      coupons.map((c) => ({
-        id: c.id,
-        code: c.code,
-        name: c.name,
-        discountType: c.discountType,
-        discountValue: c.discountValue,
-        duration: c.duration,
-        durationCycles: c.durationCycles,
-        maxRedemptions: c.maxRedemptions,
-        active: c.active,
-        notes: c.notes,
-        redemptionCount: c.redemptions.length,
-        activeRedemptions: c.redemptions.filter((r) => r.active).length,
-        createdAt: c.createdAt.toISOString(),
-      })),
-    );
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/coupons — create
-router.post("/billing/coupons", async (req, res, next) => {
-  try {
-    const {
-      code,
-      name,
-      discountType,
-      discountValue,
-      duration = "ONCE",
-      durationCycles,
-      maxRedemptions,
-      notes,
-    } = req.body ?? {};
-
-    if (!code || !name) {
-      res.status(400).json({ error: "code and name are required" });
-      return;
-    }
-    if (!COUPON_TYPES.includes(discountType)) {
-      res.status(400).json({
-        error: `discountType must be one of: ${COUPON_TYPES.join(", ")}`,
-      });
-      return;
-    }
-    if (!COUPON_DURATIONS.includes(duration)) {
-      res.status(400).json({
-        error: `duration must be one of: ${COUPON_DURATIONS.join(", ")}`,
-      });
-      return;
-    }
-    if (typeof discountValue !== "number" || discountValue <= 0) {
-      res.status(400).json({ error: "discountValue must be a positive number" });
-      return;
-    }
-    if (duration === "REPEATING" && (typeof durationCycles !== "number" || durationCycles < 1)) {
-      res.status(400).json({
-        error: "durationCycles is required and must be ≥ 1 for REPEATING",
-      });
-      return;
-    }
-    if (discountType === "PERCENT" && discountValue > 10000) {
-      res.status(400).json({ error: "PERCENT discountValue is bps; max 10000 (100%)" });
-      return;
-    }
-
-    const normalizedCode = String(code).trim().toUpperCase();
-
-    const existing = await prisma.saasCoupon.findUnique({
-      where: { code: normalizedCode },
-    });
-    if (existing) {
-      res.status(409).json({ error: "Coupon code already exists" });
-      return;
-    }
-
-    const coupon = await prisma.saasCoupon.create({
-      data: {
-        code: normalizedCode,
-        name,
-        discountType,
-        discountValue,
-        duration,
-        durationCycles: duration === "REPEATING" ? durationCycles : null,
-        maxRedemptions: maxRedemptions ?? null,
-        notes: notes ?? null,
-      },
-    });
-
-    res.status(201).json(coupon);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// PUT /api/admin/billing/coupons/:id — edit
-router.put("/billing/coupons/:id", async (req, res, next) => {
-  try {
-    const existing = await prisma.saasCoupon.findUnique({
-      where: { id: req.params.id },
-    });
-    if (!existing) {
-      res.status(404).json({ error: "Coupon not found" });
-      return;
-    }
-
-    const data: Record<string, unknown> = {};
-    const { name, active, notes, maxRedemptions } = req.body ?? {};
-    if (name !== undefined) data.name = name;
-    if (active !== undefined) data.active = !!active;
-    if (notes !== undefined) data.notes = notes;
-    if (maxRedemptions !== undefined) data.maxRedemptions = maxRedemptions;
-
-    const updated = await prisma.saasCoupon.update({
-      where: { id: req.params.id },
-      data,
-    });
-    res.json(updated);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/coupons/:id/deactivate
-router.post("/billing/coupons/:id/deactivate", async (req, res, next) => {
-  try {
-    const updated = await prisma.saasCoupon.update({
-      where: { id: req.params.id },
-      data: { active: false },
-    });
-    res.json(updated);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/coupons/:id/apply — apply coupon to a tenant
-router.post("/billing/coupons/:id/apply", async (req, res, next) => {
-  try {
-    const { tenantId } = req.body ?? {};
-    if (!tenantId) {
-      res.status(400).json({ error: "tenantId is required" });
-      return;
-    }
-
-    const coupon = await prisma.saasCoupon.findUnique({
-      where: { id: req.params.id },
-      include: { _count: { select: { redemptions: true } } },
-    });
-    if (!coupon || !coupon.active) {
-      res.status(400).json({ error: "Coupon is inactive or not found" });
-      return;
-    }
-
-    if (
-      coupon.maxRedemptions !== null &&
-      coupon.maxRedemptions !== undefined &&
-      coupon._count.redemptions >= coupon.maxRedemptions
-    ) {
-      res.status(400).json({ error: "Coupon has reached max redemptions" });
-      return;
-    }
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { id: true, gracePeriodStartedAt: true },
-    });
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    // TRIAL_EXTENSION coupons mutate the tenant's grace period at apply
-    // time. They never appear as a discount on an invoice. We refuse to
-    // create the redemption when the tenant is not in a grace period —
-    // otherwise the operator would "use" the code with zero effect.
-    if (coupon.discountType === "TRIAL_EXTENSION") {
-      const newStart = await applyTrialExtensionToGrace(
-        tenantId,
-        coupon.discountValue,
-      );
-      if (!newStart) {
-        res.status(400).json({
-          error:
-            "Tenant is not currently in a grace period; trial extension cannot be applied.",
-        });
-        return;
-      }
-
-      const redemption = await prisma.saasCouponRedemption.upsert({
-        where: { couponId_tenantId: { couponId: coupon.id, tenantId } },
-        create: {
-          couponId: coupon.id,
-          tenantId,
-          cyclesRemaining: null,
-          active: false,
-          lastAppliedAt: new Date(),
-        },
-        update: {
-          active: false,
-          cyclesRemaining: null,
-          redeemedAt: new Date(),
-          lastAppliedAt: new Date(),
-        },
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          tenantId,
-          recordType: "Tenant",
-          recordId: tenantId,
-          action: "TRIAL_EXTENDED",
-          changedFieldsJson: {
-            couponCode: coupon.code,
-            days: coupon.discountValue,
-            newGracePeriodStartedAt: newStart.toISOString(),
-          },
-        },
-      });
-
-      res.status(201).json({ ...redemption, newGracePeriodStartedAt: newStart });
-      return;
-    }
-
-    const cyclesRemaining =
-      coupon.duration === "REPEATING" ? coupon.durationCycles : null;
-
-    const redemption = await prisma.saasCouponRedemption.upsert({
-      where: { couponId_tenantId: { couponId: coupon.id, tenantId } },
-      create: {
-        couponId: coupon.id,
-        tenantId,
-        cyclesRemaining,
-        active: true,
-      },
-      update: {
-        active: true,
-        cyclesRemaining,
-        redeemedAt: new Date(),
-      },
-    });
-
-    res.status(201).json(redemption);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET /api/admin/billing/coupons/:id/redemptions — see who used a code
-router.get("/billing/coupons/:id/redemptions", async (req, res, next) => {
-  try {
-    const redemptions = await prisma.saasCouponRedemption.findMany({
-      where: { couponId: req.params.id },
-      orderBy: { redeemedAt: "desc" },
-    });
-
-    const tenantIds = [...new Set(redemptions.map((r) => r.tenantId))];
-    const tenants = await prisma.tenant.findMany({
-      where: { id: { in: tenantIds } },
-      select: { id: true, name: true },
-    });
-    const tenantMap = new Map(tenants.map((t) => [t.id, t.name]));
-
-    res.json(
-      redemptions.map((r) => ({
-        id: r.id,
-        tenantId: r.tenantId,
-        tenantName: tenantMap.get(r.tenantId) ?? "—",
-        active: r.active,
-        cyclesRemaining: r.cyclesRemaining,
-        redeemedAt: r.redeemedAt.toISOString(),
-        lastAppliedAt: r.lastAppliedAt?.toISOString() ?? null,
-      })),
-    );
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ==========================================================================
-//  REFUNDS & CREDIT NOTES (SaaS invoices)
-// ==========================================================================
-
-// POST /api/admin/billing/invoices/:id/refund
-router.post("/billing/invoices/:id/refund", async (req, res, next) => {
-  try {
-    const { amountCents, reason, notes } = req.body ?? {};
-
-    if (typeof amountCents !== "number" || amountCents <= 0) {
-      res.status(400).json({ error: "amountCents must be a positive number" });
-      return;
-    }
-    if (!REFUND_REASONS.includes(reason as RefundReason)) {
-      res.status(400).json({
-        error: `reason must be one of: ${REFUND_REASONS.join(", ")}`,
-      });
-      return;
-    }
-
-    const invoice = await prisma.saasInvoice.findUnique({
-      where: { id: req.params.id },
-    });
-    if (!invoice) {
-      res.status(404).json({ error: "Invoice not found" });
-      return;
-    }
-
-    // Refunds may only be issued against an invoice that has been paid.
-    if (invoice.status !== "paid" || !invoice.paidAt) {
-      res.status(400).json({
-        error: "Only paid invoices can be refunded",
-      });
-      return;
-    }
-
-    const alreadyRefunded = invoice.refundedCents;
-    const refundable =
-      invoice.amountCents +
-      invoice.prorationCents -
-      invoice.discountCents -
-      alreadyRefunded;
-    if (amountCents > refundable) {
-      res.status(400).json({
-        error: `Refund exceeds refundable amount of ${refundable} cents`,
-      });
-      return;
-    }
-
-    const userId =
-      ((req as unknown as Record<string, unknown>).userId as string | undefined) ??
-      null;
-
-    const result = await prisma.$transaction(async (tx) => {
-      const refund = await tx.saasInvoiceRefund.create({
-        data: {
-          saasInvoiceId: invoice.id,
-          amountCents,
-          reason,
-          notes: notes ?? null,
-          createdBy: userId,
-        },
-      });
-      const updated = await tx.saasInvoice.update({
-        where: { id: invoice.id },
-        data: {
-          refundedCents: { increment: amountCents },
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          tenantId: invoice.tenantId,
-          userId,
-          recordType: "SaasInvoice",
-          recordId: invoice.id,
-          action: "REFUND_ISSUED",
-          changedFieldsJson: { amountCents, reason, refundId: refund.id },
-        },
-      });
-      return { refund, updated };
-    });
-
-    res.status(201).json({
-      refund: result.refund,
-      invoice: {
-        id: result.updated.id,
-        amountCents: result.updated.amountCents,
-        discountCents: result.updated.discountCents,
-        refundedCents: result.updated.refundedCents,
-        outstandingCents: saasInvoiceOutstandingCents(result.updated),
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET /api/admin/billing/invoices/:id/refunds
-router.get("/billing/invoices/:id/refunds", async (req, res, next) => {
-  try {
-    const refunds = await prisma.saasInvoiceRefund.findMany({
-      where: { saasInvoiceId: req.params.id },
-      orderBy: { createdAt: "desc" },
-    });
-    res.json(refunds);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ==========================================================================
-//  DUNNING CONSOLE
-// ==========================================================================
-
-// GET /api/admin/billing/dunning — list invoices with failed payments / overdue
-router.get("/billing/dunning", async (_req, res, next) => {
-  try {
-    const now = new Date();
-    const rows = await prisma.saasInvoice.findMany({
-      where: {
-        status: { in: ["past_due", "issued"] },
-        OR: [
-          { failedAttempts: { gt: 0 } },
-          { dueDate: { lt: now } },
-        ],
-        writeOffAt: null,
-      },
-      include: { tenant: { select: { id: true, name: true, gracePeriodStartedAt: true } } },
-      orderBy: [{ failedAttempts: "desc" }, { dueDate: "asc" }],
-    });
-
-    const items = rows
-      .filter((inv) => saasInvoiceOutstandingCents(inv) > 0)
-      .map((inv) => {
-        const due = inv.dueDate ?? inv.issuedAt;
-        const daysOverdue = Math.max(
-          0,
-          Math.floor((now.getTime() - due.getTime()) / (24 * 60 * 60 * 1000)),
-        );
-        // Auto-lock 30 days into grace period; show countdown.
-        const graceStart = inv.tenant.gracePeriodStartedAt;
-        const autoLockAt = graceStart
-          ? new Date(graceStart.getTime() + 30 * 24 * 60 * 60 * 1000)
-          : null;
-        const hoursUntilLock = autoLockAt
-          ? Math.max(
-              0,
-              Math.floor((autoLockAt.getTime() - now.getTime()) / (60 * 60 * 1000)),
-            )
-          : null;
-
-        return {
-          id: inv.id,
-          tenantId: inv.tenantId,
-          tenantName: inv.tenant.name,
-          amountCents: inv.amountCents,
-          discountCents: inv.discountCents,
-          refundedCents: inv.refundedCents,
-          outstandingCents: saasInvoiceOutstandingCents(inv),
-          status: inv.status,
-          dueDate: inv.dueDate?.toISOString() ?? null,
-          daysOverdue,
-          failedAttempts: inv.failedAttempts,
-          lastAttemptAt: inv.lastAttemptAt?.toISOString() ?? null,
-          nextRetryAt: inv.nextRetryAt?.toISOString() ?? null,
-          dunningPaused: inv.dunningPaused,
-          pausedUntil: inv.pausedUntil?.toISOString() ?? null,
-          autoLockAt: autoLockAt?.toISOString() ?? null,
-          hoursUntilLock,
-        };
-      });
-
-    res.json({ items, count: items.length });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/dunning/:invoiceId/retry — record a retry attempt
-router.post("/billing/dunning/:invoiceId/retry", async (req, res, next) => {
-  try {
-    const invoice = await prisma.saasInvoice.findUnique({
-      where: { id: req.params.invoiceId },
-    });
-    if (!invoice) {
-      res.status(404).json({ error: "Invoice not found" });
-      return;
-    }
-
-    // We don't attempt the actual Stripe charge here — Stripe Smart Retries
-    // owns the subscription invoice retry cadence. This endpoint records
-    // an operator-initiated retry intent so it shows up in the audit trail.
-    const updated = await prisma.saasInvoice.update({
-      where: { id: invoice.id },
-      data: {
-        failedAttempts: { increment: 1 },
-        lastAttemptAt: new Date(),
-        nextRetryAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        tenantId: invoice.tenantId,
-        recordType: "SaasInvoice",
-        recordId: invoice.id,
-        action: "DUNNING_RETRY",
-        changedFieldsJson: { triggeredBy: "platform_admin" },
-      },
-    });
-
-    res.json({
-      id: updated.id,
-      failedAttempts: updated.failedAttempts,
-      lastAttemptAt: updated.lastAttemptAt,
-      nextRetryAt: updated.nextRetryAt,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/dunning/:invoiceId/remind — send reminder email
-router.post("/billing/dunning/:invoiceId/remind", async (req, res, next) => {
-  try {
-    const invoice = await prisma.saasInvoice.findUnique({
-      where: { id: req.params.invoiceId },
-      include: { tenant: { select: { id: true, name: true } } },
-    });
-    if (!invoice) {
-      res.status(404).json({ error: "Invoice not found" });
-      return;
-    }
-
-    const owners = await prisma.user.findMany({
-      where: { tenantId: invoice.tenantId, role: "MARINA_OWNER", active: true },
-      select: { email: true },
-    });
-    const recipients = owners.map((u) => u.email).filter((e): e is string => !!e);
-
-    if (recipients.length === 0) {
-      res.status(400).json({ error: "No active owner email on file" });
-      return;
-    }
-
-    const outstanding = saasInvoiceOutstandingCents(invoice);
-    const amountStr = `$${(outstanding / 100).toFixed(2)}`;
-
-    let sent = false;
-    try {
-      await sendEmail({
-        to: recipients,
-        subject: `Reminder: payment due on your Helm subscription (${amountStr})`,
-        html: `<p>Hi ${invoice.tenant.name},</p>
-<p>Your Helm subscription payment of <strong>${amountStr}</strong> is past due. Please update your payment method to keep your account active.</p>
-<p><a href="${process.env.APP_URL ?? "https://gethelm.com"}/settings/billing">Update payment method</a></p>`,
-        tags: [{ name: "event", value: "saas_dunning_reminder" }],
-      });
-      sent = true;
-    } catch (err) {
-      console.warn("[dunning] reminder send failed:", err);
-    }
-
-    await prisma.auditLog.create({
-      data: {
-        tenantId: invoice.tenantId,
-        recordType: "SaasInvoice",
-        recordId: invoice.id,
-        action: "DUNNING_REMINDER_SENT",
-        changedFieldsJson: { recipients, sent },
-      },
-    });
-
-    res.json({ sent, recipients });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/dunning/:invoiceId/pause — pause auto-lock
-router.post("/billing/dunning/:invoiceId/pause", async (req, res, next) => {
-  try {
-    const { days = 7 } = req.body ?? {};
-    const invoice = await prisma.saasInvoice.findUnique({
-      where: { id: req.params.invoiceId },
-    });
-    if (!invoice) {
-      res.status(404).json({ error: "Invoice not found" });
-      return;
-    }
-
-    const pausedUntil = new Date(Date.now() + Number(days) * 24 * 60 * 60 * 1000);
-
-    const updated = await prisma.saasInvoice.update({
-      where: { id: invoice.id },
-      data: { dunningPaused: true, pausedUntil },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        tenantId: invoice.tenantId,
-        recordType: "SaasInvoice",
-        recordId: invoice.id,
-        action: "DUNNING_PAUSED",
-        changedFieldsJson: { days, pausedUntil: pausedUntil.toISOString() },
-      },
-    });
-
-    res.json({
-      id: updated.id,
-      dunningPaused: updated.dunningPaused,
-      pausedUntil: updated.pausedUntil,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/dunning/:invoiceId/resume — resume auto-lock
-router.post("/billing/dunning/:invoiceId/resume", async (req, res, next) => {
-  try {
-    const updated = await prisma.saasInvoice.update({
-      where: { id: req.params.invoiceId },
-      data: { dunningPaused: false, pausedUntil: null },
-    });
-    await prisma.auditLog.create({
-      data: {
-        tenantId: updated.tenantId,
-        recordType: "SaasInvoice",
-        recordId: updated.id,
-        action: "DUNNING_RESUMED",
-        changedFieldsJson: {},
-      },
-    });
-    res.json({ id: updated.id, dunningPaused: updated.dunningPaused });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// POST /api/admin/billing/dunning/:invoiceId/write-off — write off invoice
-router.post("/billing/dunning/:invoiceId/write-off", async (req, res, next) => {
-  try {
-    const { reason } = req.body ?? {};
-    if (!reason || typeof reason !== "string") {
-      res.status(400).json({ error: "reason is required" });
-      return;
-    }
-
-    const invoice = await prisma.saasInvoice.findUnique({
-      where: { id: req.params.invoiceId },
-    });
-    if (!invoice) {
-      res.status(404).json({ error: "Invoice not found" });
-      return;
-    }
-    if (invoice.writeOffAt) {
-      res.status(400).json({ error: "Invoice already written off" });
-      return;
-    }
-
-    const updated = await prisma.saasInvoice.update({
-      where: { id: invoice.id },
-      data: {
-        status: "written_off",
-        writeOffAt: new Date(),
-        writeOffReason: reason,
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        tenantId: invoice.tenantId,
-        recordType: "SaasInvoice",
-        recordId: invoice.id,
-        action: "WRITE_OFF",
-        changedFieldsJson: { reason },
-      },
-    });
-
-    res.json({
-      id: updated.id,
-      status: updated.status,
-      writeOffAt: updated.writeOffAt,
-      writeOffReason: updated.writeOffReason,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ==========================================================================
-//  PLAN CHANGES
-// ==========================================================================
-
-// POST /api/admin/tenants/:id/plan/preview — preview proration
-router.post("/tenants/:id/plan/preview", async (req, res, next) => {
-  try {
-    const { toTierId } = req.body ?? {};
-    if (!toTierId) {
-      res.status(400).json({ error: "toTierId is required" });
-      return;
-    }
-
-    const preview = await previewPlanChange(req.params.id, toTierId);
-    res.json(preview);
-  } catch (err) {
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      res.status(404).json({ error: err.message });
-      return;
-    }
-    next(err);
-  }
-});
-
-// POST /api/admin/tenants/:id/plan/change — apply plan change with proration
-router.post("/tenants/:id/plan/change", async (req, res, next) => {
-  try {
-    const { toTierId } = req.body ?? {};
-    if (!toTierId) {
-      res.status(400).json({ error: "toTierId is required" });
-      return;
-    }
-
-    const userId =
-      ((req as unknown as Record<string, unknown>).userId as string | undefined) ??
-      null;
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.params.id },
-      select: { saasTierId: true },
-    });
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-    if (tenant.saasTierId === toTierId) {
-      res.status(400).json({ error: "Tenant is already on this tier" });
-      return;
-    }
-
-    const preview = await previewPlanChange(req.params.id, toTierId);
-    const result = await applyPlanChange({
-      tenantId: req.params.id,
-      toTierId,
-      createdBy: userId,
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        tenantId: req.params.id,
-        userId,
-        recordType: "Tenant",
-        recordId: req.params.id,
-        action: "PLAN_CHANGED",
-        changedFieldsJson: {
-          fromTierName: preview.fromTierName,
-          toTierName: preview.toTierName,
-          prorationCents: result.prorationCents,
-        },
-      },
-    });
-
-    res.json({ ...preview, planChangeId: result.planChangeId });
-  } catch (err) {
-    if (err instanceof Error && /not found/i.test(err.message)) {
-      res.status(404).json({ error: err.message });
-      return;
-    }
-    next(err);
-  }
-});
-
-// GET /api/admin/tenants/:id/plan/changes — history
-router.get("/tenants/:id/plan/changes", async (req, res, next) => {
-  try {
-    const changes = await prisma.saasPlanChange.findMany({
-      where: { tenantId: req.params.id },
-      orderBy: { createdAt: "desc" },
-    });
-
-    const tierIds = [...new Set(changes.flatMap((c) => [c.fromTierId, c.toTierId].filter(Boolean) as string[]))];
-    const tiers = await prisma.saasTier.findMany({
-      where: { id: { in: tierIds } },
-      select: { id: true, name: true },
-    });
-    const tierMap = new Map(tiers.map((t) => [t.id, t.name]));
-
-    res.json(
-      changes.map((c) => ({
-        id: c.id,
-        fromTier: c.fromTierId ? tierMap.get(c.fromTierId) ?? null : null,
-        toTier: tierMap.get(c.toTierId) ?? null,
-        prorationCents: c.prorationCents,
-        effectiveAt: c.effectiveAt.toISOString(),
-        createdAt: c.createdAt.toISOString(),
-      })),
-    );
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ==========================================================================
-//  ADMIN ACTIVITY LOG (read-only across all admin sub-roles)
-// ==========================================================================
-
-// GET /api/admin/activity?actor=&action=&tenantId=&startDate=&endDate=&page=&limit=
-router.get("/activity", allowAnyAdmin, async (req, res, next) => {
-  try {
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
-    const actor = (req.query.actor as string | undefined)?.trim();
-    const action = (req.query.action as string | undefined)?.trim();
-    const tenantId = (req.query.tenantId as string | undefined)?.trim();
-    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : null;
-    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : null;
-
-    const where: Record<string, unknown> = {};
-    if (actor) {
-      where.OR = [
-        { actorEmail: { contains: actor, mode: "insensitive" } },
-        { actorName: { contains: actor, mode: "insensitive" } },
-        { actorUserId: actor },
-      ];
-    }
-    if (action) where.action = action;
-    if (tenantId) where.targetTenantId = tenantId;
-    if (startDate || endDate) {
-      const createdAt: Record<string, Date> = {};
-      if (startDate && !Number.isNaN(startDate.getTime())) createdAt.gte = startDate;
-      if (endDate && !Number.isNaN(endDate.getTime())) createdAt.lte = endDate;
-      where.createdAt = createdAt;
-    }
-
-    const [items, total] = await Promise.all([
-      prisma.adminAuditLog.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      prisma.adminAuditLog.count({ where }),
-    ]);
-
-    // Hydrate target tenant names so the UI doesn't need a second call.
-    const tenantIds = [...new Set(items.map((i) => i.targetTenantId).filter(Boolean) as string[])];
-    const tenants = tenantIds.length
-      ? await prisma.tenant.findMany({
-          where: { id: { in: tenantIds } },
-          select: { id: true, name: true, subdomain: true },
-        })
-      : [];
-    const tenantMap = new Map(tenants.map((t) => [t.id, t]));
-
-    res.json({
-      items: items.map((i) => ({
-        ...i,
-        targetTenant: i.targetTenantId ? tenantMap.get(i.targetTenantId) ?? null : null,
-      })),
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// GET /api/admin/activity/actions — distinct action codes for filter dropdown
-router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
-  try {
-    const rows = await prisma.adminAuditLog.findMany({
-      distinct: ["action"],
-      select: { action: true },
-      orderBy: { action: "asc" },
-    });
-    res.json({ actions: rows.map((r) => r.action) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ==========================================================================
-//  ADMIN USER MANAGEMENT (Superuser only)
-// ==========================================================================
-
-// GET /api/admin/users — list every PLATFORM_ADMIN user with their sub-role
-router.get("/users", allowAnyAdmin, async (_req, res, next) => {
-  try {
-    const admins = await prisma.user.findMany({
-      where: { role: "PLATFORM_ADMIN" },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        active: true,
-        adminRole: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-      orderBy: { email: "asc" },
-    });
-    res.json({ items: admins });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// PUT /api/admin/users/:id/role — change an admin's sub-role
-router.put("/users/:id/role", allowSuperuserOnly, async (req, res, next) => {
-  try {
-    const { adminRole } = req.body as { adminRole?: unknown };
-    if (!isAdminRole(adminRole)) {
-      res.status(400).json({
-        error: `adminRole must be one of: ${ADMIN_ROLES.join(", ")}`,
-      });
-      return;
-    }
-
-    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
-    if (!target || target.role !== "PLATFORM_ADMIN") {
-      res.status(404).json({ error: "Admin user not found" });
-      return;
-    }
-
-    // Don't let the last Superuser demote themselves — would lock everyone
-    // out of role management permanently.
-    if (target.adminRole === "SUPERUSER" && adminRole !== "SUPERUSER") {
-      const remainingSuperusers = await prisma.user.count({
-        where: {
-          role: "PLATFORM_ADMIN",
-          adminRole: "SUPERUSER",
-          active: true,
-          NOT: { id: target.id },
-        },
-      });
-      if (remainingSuperusers === 0) {
-        res.status(409).json({
-          error: "Cannot demote the last Superuser — promote another admin first.",
-          code: "LAST_SUPERUSER",
-        });
-        return;
-      }
-    }
-
-    const updated = await prisma.user.update({
-      where: { id: target.id },
-      data: { adminRole },
-      select: {
-        id: true, email: true, firstName: true, lastName: true,
-        active: true, adminRole: true, createdAt: true, updatedAt: true,
-      },
-    });
-
-    await logAdminAction(req, {
-      action: "ADMIN_ROLE_CHANGE",
-      targetType: "USER",
-      targetId: target.id,
-      details: { from: target.adminRole, to: adminRole, email: target.email },
-    });
-
-    res.json(updated);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// PUT /api/admin/users/:id/active — activate / deactivate a platform admin
+=======
 router.put("/users/:id/active", allowSuperuserOnly, async (req, res, next) => {
   try {
     const active = Boolean(req.body?.active);
@@ -4442,108 +3657,3 @@ router.get("/tenants/:id/deletion", allowAnyAdmin, async (req, res, next) => {
 // POST /api/admin/tenants/:id/deletion — schedule a hard-delete
 //   Body: { confirmation: <subdomain> } — must echo the subdomain so an
 //   accidental click cannot wipe a tenant.
-router.post("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next) => {
-  try {
-    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id } });
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-    if (req.body?.confirmation !== tenant.subdomain) {
-      res.status(400).json({
-        error: `Confirmation must equal the tenant subdomain ('${tenant.subdomain}')`,
-        code: "BAD_CONFIRMATION",
-      });
-      return;
-    }
-
-    const existing = await prisma.tenantDeletion.findUnique({
-      where: { tenantId: tenant.id },
-    });
-    if (existing && existing.status === "PENDING") {
-      res.status(409).json({
-        error: "A deletion is already pending for this tenant.",
-        code: "ALREADY_PENDING",
-        deletion: existing,
-      });
-      return;
-    }
-    if (existing && existing.status === "COMPLETED") {
-      res.status(409).json({
-        error: "This tenant has already been deleted.",
-        code: "ALREADY_DELETED",
-      });
-      return;
-    }
-
-    const record = req.userRecord as Record<string, unknown> | undefined;
-    const scheduledFor = new Date(Date.now() + GRACE_PERIOD_MS);
-    const data = {
-      tenantId: tenant.id,
-      requestedById: (req.userId as string) ?? "unknown",
-      requestedByEmail: (record?.email as string | undefined) ?? "unknown",
-      scheduledFor,
-      status: "PENDING" as const,
-      cancelledAt: null,
-      cancelledById: null,
-      completedAt: null,
-      errorMsg: null,
-    };
-    // Re-use the row if a previously-cancelled / failed deletion exists,
-    // since `tenantId` is unique.
-    const created = existing
-      ? await prisma.tenantDeletion.update({
-          where: { id: existing.id },
-          data,
-        })
-      : await prisma.tenantDeletion.create({ data });
-
-    await logAdminAction(req, {
-      action: "TENANT_DELETE_REQUEST",
-      targetTenantId: tenant.id,
-      targetType: "TENANT",
-      targetId: tenant.id,
-      details: { scheduledFor, deletionId: created.id },
-    });
-
-    res.status(201).json(created);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// DELETE /api/admin/tenants/:id/deletion — cancel a pending deletion
-router.delete("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next) => {
-  try {
-    const existing = await prisma.tenantDeletion.findUnique({
-      where: { tenantId: req.params.id },
-    });
-    if (!existing || existing.status !== "PENDING") {
-      res.status(404).json({ error: "No pending deletion to cancel" });
-      return;
-    }
-
-    const cancelled = await prisma.tenantDeletion.update({
-      where: { id: existing.id },
-      data: {
-        status: "CANCELLED",
-        cancelledAt: new Date(),
-        cancelledById: (req.userId as string) ?? null,
-      },
-    });
-
-    await logAdminAction(req, {
-      action: "TENANT_DELETE_CANCEL",
-      targetTenantId: req.params.id,
-      targetType: "TENANT",
-      targetId: req.params.id,
-      details: { deletionId: existing.id },
-    });
-
-    res.json(cancelled);
-  } catch (err) {
-    next(err);
-  }
-});
-
-export default router;

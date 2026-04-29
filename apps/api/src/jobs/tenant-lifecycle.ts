@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { queues } from '../lib/queue.js';
+import { executePendingDeletions } from '../services/tenant-deletion.js';
 
 // --------------------------------------------------------------------------
 // Tenant Lifecycle Enforcement Job
@@ -14,6 +15,8 @@ import { queues } from '../lib/queue.js';
 interface LifecycleResult {
   transitioned: number;
   notified: number;
+  hardDeleted: number;
+  hardDeleteFailed: number;
 }
 
 export async function runTenantLifecycleCheck(): Promise<LifecycleResult> {
@@ -242,11 +245,24 @@ export async function runTenantLifecycleCheck(): Promise<LifecycleResult> {
     }
   }
 
+  // ── 4. Execute pending hard-deletes whose grace period has elapsed ────────
+  // Each PENDING TenantDeletion has scheduledFor = requestedAt + 24h. The
+  // service cascades through every tenant-scoped table and finally drops
+  // the tenant row. Failures are recorded on the deletion row so an admin
+  // can retry without losing the audit trail.
+  const deletion = await executePendingDeletions(now);
+
   console.log(
-    `[tenant-lifecycle] Complete: ${transitioned} transitions, ${notified} notifications queued`,
+    `[tenant-lifecycle] Complete: ${transitioned} transitions, ${notified} notifications queued, ` +
+      `${deletion.succeeded.length} hard-deleted, ${deletion.failed.length} delete-failed`,
   );
 
-  return { transitioned, notified };
+  return {
+    transitioned,
+    notified,
+    hardDeleted: deletion.succeeded.length,
+    hardDeleteFailed: deletion.failed.length,
+  };
 }
 
 export function scheduleTenantLifecycle(): void {
