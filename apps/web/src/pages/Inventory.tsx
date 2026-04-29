@@ -712,10 +712,18 @@ export default function Inventory() {
 
   const handleSaveProduct = async (p: Product) => {
     try {
+      // productCategoryId is required server-side after the category-only
+      // GL collapse — both POST and PUT will 400 if it's missing. The form
+      // already enforces this client-side (canSave), so we send the value
+      // straight through; no `|| null` fallback that would just trigger a
+      // server-side rejection.
+      if (!p.productCategoryId) {
+        throw new Error('A category is required.');
+      }
       const payload = {
         name: p.name, sku: p.sku, barcode: p.barcode || null,
         category: p.category || null,
-        productCategoryId: p.productCategoryId || null,
+        productCategoryId: p.productCategoryId,
         costCents: p.costCents, priceCents: p.priceCents,
         // Empty taxClass means "use the category's default" — the server
         // resolves it via the tax helper in product-defaults.ts. Per-product
@@ -724,19 +732,28 @@ export default function Inventory() {
         reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
       };
       if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
-        await fetch(`/api/inventory/products/${p.id}`, {
+        const res = await fetch(`/api/inventory/products/${p.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        // Surface server-side rejections (400 from missing/invalid
+        // productCategoryId, 502 from a downstream sync error, etc.)
+        // BEFORE the optimistic local update so the UI doesn't show a
+        // stale "saved" state that contradicts what's persisted.
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error ?? `Save failed (HTTP ${res.status})`);
+        }
         setProducts((prev) => prev.map((x) => x.id === p.id ? p : x));
       } else {
         const created = await createProductApi(payload);
         if (created) setProducts((prev) => [toProduct(created as unknown as ApiProduct), ...prev]);
       }
       toast.success('Product saved', p.name + ' has been saved.');
-    } catch {
-      toast.error('Error', 'Failed to save product.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save product.';
+      toast.error('Error', msg);
     }
     setEditingProduct(null);
     setModal(null);

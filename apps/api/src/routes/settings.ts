@@ -2381,12 +2381,23 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
 
 // ─── PER-LOCATION GL MAPPINGS ────────────────────────────────────────────────
 //
-// Each catalog item (product, category, dockage rate, service fee) can have
-// a GlAccount mapping per location. These endpoints return one row per
-// location for the tenant: { locationId, locationName, override, effective }.
-// Effective resolution: per-location override → category default → tenant
-// legacy FK → null. Write endpoints validate that the chosen GL account
-// belongs to the same location.
+// Each catalog item (product category, dockage rate, service fee, rental
+// product) can have a GlAccount mapping per location. These endpoints
+// return one row per location for the tenant:
+//   { locationId, locationName, override, effective }
+//
+// Effective resolution by item type:
+//   - Product categories: per-(category, location) row → null. The legacy
+//     multi-rung chain (per-product override → category default → tenant
+//     FK) was collapsed in 20260429080000_inventory_category_only_gl;
+//     `effective` here is identical to `override`.
+//   - Dockage rates / service fees / rental products: per-location override
+//     → tenant-wide legacy FK → null (still multi-rung — those item types
+//     keep a tenant-wide GlAccount column for the single-chart fallback).
+//
+// Write endpoints validate that the chosen GL account belongs to the same
+// location (or to the tenant-wide chart, when the location is not QBO-
+// connected).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const productMappingPutSchema = z.object({
