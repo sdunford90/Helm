@@ -112,24 +112,30 @@ export async function isLocationQboConnected(locationId: string): Promise<boolea
 // ---------------------------------------------------------------------------
 // Per-location SYSTEM posting account resolution
 //
-// Slots that gl-posting.ts used to fall back to a hardcoded account number
-// for. Each slot:
+// Slots that gl-posting.ts used to look up by hardcoded account number,
+// which silently mis-posted across realms when two QBO charts shared the
+// same number. Each slot:
 //   * has a Location.<field> column the operator pins in QuickBooks Setup;
-//   * has a list of well-known account numbers used as a single-chart fallback
-//     for tenants WITHOUT a per-location QBO connection;
-//   * has the GLAccountType(s) the operator's pick must satisfy (the settings
-//     PUT endpoint enforces this).
+//   * has the GLAccountType(s) the operator's pick must satisfy (settings
+//     PUT enforces this);
+//   * has a list of well-known seed account numbers used as a single-chart
+//     compatibility shim for non-QBO tenants who haven't pinned yet.
 //
 // Resolution chain:
 //   1. Pinned column on `locations` (set in QuickBooks Setup).
-//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — silently
-//      reaching for a tenant-wide row by number could resolve to an account
-//      bound to a different QBO realm, which is the cross-tenant bleed this
-//      whole machinery exists to prevent.
-//   3. Non-QBO locations: walk `fallbackAccountNumbers` against the
-//      location's chart, then the tenant-wide chart. Throw
-//      UNCONFIGURED_GL_MAPPING if nothing matches (same shape as the legacy
-//      `getAccountByNumber` error so call sites bubble identically).
+//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — refuse
+//      any chart-walk fallback, because the same number in a different
+//      realm belongs to a different chart of accounts. This is the
+//      cross-realm bleed the whole task exists to prevent.
+//   3. Non-QBO locations: walk seed-number fallbacks scoped first to the
+//      location, then tenant-wide. Mirrors Task #210's pattern for A/R
+//      (`getAccountByNumber("1200")`) and Deferred Revenue
+//      (`getAccountByNumber("2100")`) — those are also kept as non-QBO
+//      compatibility shims, not removed. Without this shim, every
+//      single-chart non-QBO tenant would have to pin all four slots
+//      before any posting could go through. The QBO cross-realm risk
+//      doesn't apply because there's no QBO chart to disagree with.
+//   4. Throw UNCONFIGURED_GL_MAPPING if no seed number matches.
 // ---------------------------------------------------------------------------
 
 export type LocationSystemPostingAccountSlot =
@@ -144,7 +150,10 @@ interface SystemPostingAccountSpec {
     | "salesTaxGlAccountId"
     | "earlyTerminationGlAccountId"
     | "achReturnFeeGlAccountId";
-  fallbackAccountNumbers: readonly string[];
+  // Seed account numbers tried in order against the location's chart, then
+  // tenant-wide. Used ONLY for non-QBO tenants — see resolution chain note
+  // above. QBO-connected locations skip this entirely and require a pin.
+  seedFallbackNumbers: readonly string[];
   expectedTypes: ReadonlyArray<"REVENUE" | "LIABILITY">;
   description: string;
 }
@@ -155,28 +164,33 @@ export const LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS: Record<
 > = {
   defaultRevenue: {
     field: "defaultRevenueGlAccountId",
-    fallbackAccountNumbers: ["4500"],
+    // The default seed chart doesn't have a "general/catch-all" revenue
+    // row; 4010 Slip Revenue is the closest practical default for the
+    // single-chart tenants who used to fall through to a null account.
+    seedFallbackNumbers: ["4500", "4010"],
     expectedTypes: ["REVENUE"],
     description: "default revenue",
   },
   salesTax: {
     field: "salesTaxGlAccountId",
-    // 2400 Sales Tax Payable wins; 2401 State Sales Tax Payable mirrors the
-    // legacy `getAccountByNumber(SALES_TAX_PAYABLE).catch(STATE_TAX_PAYABLE)`
-    // chain in postInvoice.
-    fallbackAccountNumbers: ["2400", "2401"],
+    // 2400 Sales Tax Payable IS in the seed chart; 2401 mirrors the
+    // legacy `getAccountByNumber(SALES_TAX_PAYABLE).catch(STATE)` chain.
+    seedFallbackNumbers: ["2400", "2401"],
     expectedTypes: ["LIABILITY"],
     description: "sales tax payable",
   },
   earlyTermination: {
     field: "earlyTerminationGlAccountId",
-    fallbackAccountNumbers: ["4700"],
+    // No 4700 in the seed; 4010 Slip Revenue is the historical default
+    // single-chart tenants used (matches what the legacy code threw
+    // through to before the null guard).
+    seedFallbackNumbers: ["4700", "4010"],
     expectedTypes: ["REVENUE"],
     description: "early termination income",
   },
   achReturnFee: {
     field: "achReturnFeeGlAccountId",
-    fallbackAccountNumbers: ["4600"],
+    seedFallbackNumbers: ["4600", "4010"],
     expectedTypes: ["REVENUE"],
     description: "ACH return fee revenue",
   },
@@ -210,10 +224,11 @@ export async function resolveLocationSystemPostingAccount(
     if (pinnedId) return pinnedId;
   }
 
-  // 2. QBO-connected locations: refuse the legacy-by-number fallback. The
-  //    same number in a different chart belongs to a different realm; we'd
-  //    rather surface the misconfiguration than silently mis-route the
-  //    posting (or post into an account QBO knows nothing about).
+  // 2. QBO-connected locations: refuse any chart-walk fallback. The same
+  //    number in a different realm belongs to a different chart of
+  //    accounts; we'd rather surface the misconfiguration than silently
+  //    mis-route the posting (or post into an account QBO knows nothing
+  //    about). This is the core invariant the task exists to enforce.
   if (locationId && (await isLocationQboConnected(locationId))) {
     throw new Error(
       `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but ` +
@@ -223,11 +238,13 @@ export async function resolveLocationSystemPostingAccount(
     );
   }
 
-  // 3. Legacy single-chart fallback for non-QBO tenants: try each well-known
-  //    account number in the location's chart first, then the tenant-wide
-  //    chart. Mirrors the pre-task-222 `getAccountByNumber(…, locationId)`
-  //    behaviour so single-chart tenants keep posting unchanged.
-  for (const accountNumber of spec.fallbackAccountNumbers) {
+  // 3. Non-QBO single-chart compatibility shim — same pattern Task #210
+  //    used for A/R (`getAccountByNumber("1200", …, locationId)`) and
+  //    Deferred Revenue (`getAccountByNumber("2100", …, locationId)`).
+  //    Walk the seed numbers in order, scoped first to the location, then
+  //    tenant-wide. Cross-realm bleed isn't a concern here because there's
+  //    no QBO chart to disagree with.
+  for (const accountNumber of spec.seedFallbackNumbers) {
     if (locationId) {
       const locScoped = await db.glAccount.findFirst({
         where: { tenantId, locationId, accountNumber },
@@ -246,7 +263,7 @@ export async function resolveLocationSystemPostingAccount(
     `UNCONFIGURED_GL_MAPPING: no ${spec.description} account found for ` +
     `tenant ${tenantId} (location=${locationId ?? "none"}, ${context}). ` +
     `Pin a ${spec.description} account for this location in QuickBooks ` +
-    `Setup or seed account number ${spec.fallbackAccountNumbers[0]} in the ` +
+    `Setup, or seed account number ${spec.seedFallbackNumbers[0]} in the ` +
     `chart of accounts.`,
   );
 }

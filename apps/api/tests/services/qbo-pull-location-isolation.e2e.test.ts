@@ -51,9 +51,12 @@ interface LocationRow {
   qboRealmId: string | null;
   qboTokenExpiresAt: Date | null;
   qboLastChartOfAccountsSyncAt: Date | null;
-  // Per-location SYSTEM posting account pins (Task #222). Optional so the
+  // Pinned posting accounts (Tasks #210 + #222). All optional so the
   // existing tests don't need updating; the location.findUnique stub just
   // returns the whole row and the resolver tolerates undefined as "no pin".
+  arGlAccountId?: string | null;
+  undepositedFundsGlAccountId?: string | null;
+  deferredRevenueGlAccountId?: string | null;
   defaultRevenueGlAccountId?: string | null;
   salesTaxGlAccountId?: string | null;
   earlyTerminationGlAccountId?: string | null;
@@ -896,14 +899,14 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     // Pin each location's system posting slots — the operator workflow
     // after the chart pull. Also pin A/R + deferred so postInvoice and
     // postEarlyTermination route their non-system legs to the right rows.
-    locA.arGlAccountId = arA.id as any;
-    (locA as any).defaultRevenueGlAccountId = defRevA.id;
-    (locA as any).salesTaxGlAccountId = taxA.id;
-    (locA as any).earlyTerminationGlAccountId = termA.id;
-    locB.arGlAccountId = arB.id as any;
-    (locB as any).defaultRevenueGlAccountId = defRevB.id;
-    (locB as any).salesTaxGlAccountId = taxB.id;
-    (locB as any).earlyTerminationGlAccountId = termB.id;
+    locA.arGlAccountId = arA.id;
+    locA.defaultRevenueGlAccountId = defRevA.id;
+    locA.salesTaxGlAccountId = taxA.id;
+    locA.earlyTerminationGlAccountId = termA.id;
+    locB.arGlAccountId = arB.id;
+    locB.defaultRevenueGlAccountId = defRevB.id;
+    locB.salesTaxGlAccountId = taxB.id;
+    locB.earlyTerminationGlAccountId = termB.id;
 
     // ----- Invoice posting with a per-line revenue GL set explicitly
     // (mirrors the QBO operator workflow — the line carries the per-
@@ -1044,7 +1047,7 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     // connected locations and throws.
     const accountIdC1200 = accountFor(locC.id, '1200').id;
     const accountIdC4500 = accountFor(locC.id, '4500').id;
-    locC.arGlAccountId = accountIdC1200 as any;
+    locC.arGlAccountId = accountIdC1200;
     const invoiceC = {
       id: 'inv-sys-C',
       tenantId,
@@ -1111,7 +1114,7 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     };
     glAccounts.set(termC.id, termC);
     glAccounts.set(defrC.id, defrC);
-    (locC as any).earlyTerminationGlAccountId = termC.id;
+    locC.earlyTerminationGlAccountId = termC.id;
     // defaultRevenueGlAccountId still unpinned on C → washout must throw.
     await expect(
       postEarlyTermination(

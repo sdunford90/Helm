@@ -1019,12 +1019,18 @@ router.get(
 
       const qboConnected = await isLocationQboConnected(req.params.id);
       // Candidate accounts: QBO-connected locations must pick from their own
-      // chart so the IDs we send back to QBO match its file. Otherwise show
-      // the tenant-wide chart (legacy single chart of accounts).
+      // chart so the IDs we send back to QBO match its file. For non-QBO
+      // locations, the union of (this location's scoped accounts) ∪
+      // (tenant-wide accounts not bound to any location). Critically,
+      // accounts pinned to OTHER locations are excluded — pinning a sibling
+      // marina's chart row would post into a chart this location doesn't own.
       const candidates = await prisma.glAccount.findMany({
         where: qboConnected
           ? { tenantId, locationId: req.params.id }
-          : { tenantId },
+          : {
+              tenantId,
+              OR: [{ locationId: req.params.id }, { locationId: null }],
+            },
         orderBy: { accountNumber: "asc" },
         select: {
           id: true,
@@ -1132,6 +1138,17 @@ router.put(
           throw Object.assign(
             new Error(
               `GL account for ${field} must belong to this QBO-connected location`,
+            ),
+            { status: 400, code: "GL_ACCOUNT_WRONG_LOCATION" },
+          );
+        }
+        // Non-QBO locations: tenant-wide (locationId=null) is allowed, but
+        // a row bound to a sibling location is not — that would post into
+        // a chart this location doesn't own.
+        if (!qboConnected && acct.locationId !== null && acct.locationId !== locationId) {
+          throw Object.assign(
+            new Error(
+              `GL account for ${field} belongs to a different location and cannot be pinned here`,
             ),
             { status: 400, code: "GL_ACCOUNT_WRONG_LOCATION" },
           );
