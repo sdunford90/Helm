@@ -41,6 +41,41 @@ if [ "${HELM_PROD_FORCE_RESET:-}" = "yes" ]; then
     npx prisma migrate reset --force --skip-seed
   fi
 else
+  # One-shot recovery for migration 20260429060000_location_pos_ach_enabled.
+  # An earlier production deploy partially applied this migration: the column
+  # landed on the table, then prisma marked the migration as failed for an
+  # unrelated reason. Every subsequent deploy then crashes with P3009 because
+  # prisma refuses to apply new migrations while a failed row exists.
+  #
+  # The migration SQL has been made idempotent (ADD COLUMN IF NOT EXISTS), so
+  # if we just clear the failed marker, the next migrate deploy will re-run it
+  # successfully and life moves on. We scope the rollback to this single
+  # migration name so we never auto-clear a different operator-review-worthy
+  # failure.
+  STUCK_MIGRATION="20260429060000_location_pos_ach_enabled"
+  STUCK_FAILED=$(node -e "
+    const { PrismaClient } = require('@prisma/client');
+    (async () => {
+      const p = new PrismaClient();
+      try {
+        const rows = await p.\$queryRawUnsafe(
+          \`SELECT 1 FROM \"_prisma_migrations\" WHERE migration_name = '${STUCK_MIGRATION}' AND finished_at IS NULL\`
+        );
+        console.log(rows.length > 0 ? 'yes' : 'no');
+      } catch (e) {
+        console.log('no');
+      } finally {
+        await p.\$disconnect();
+      }
+    })();
+  " 2>/dev/null || echo no)
+
+  if [ "$STUCK_FAILED" = "yes" ]; then
+    echo "[deploy-run] detected failed migration ${STUCK_MIGRATION} — rolling it back so the (now-idempotent) SQL can re-run"
+    npx prisma migrate resolve --rolled-back "${STUCK_MIGRATION}" || \
+      echo "[deploy-run] WARNING: rolled-back resolve returned non-zero — proceeding to migrate deploy anyway"
+  fi
+
   echo "[deploy-run] applying pending migrations"
   npx prisma migrate deploy
 fi
