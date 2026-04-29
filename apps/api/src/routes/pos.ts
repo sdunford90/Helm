@@ -487,6 +487,20 @@ router.post(
       const cnpFallbackReason =
         cardRail === "CNP" ? data.cnpFallbackReason ?? null : null;
 
+      // GL contract note (Task #235 — inventory category-only GL collapse):
+      // POS sales record `posTransaction` rows + decrement inventory but
+      // do NOT post a journal entry to the GL ledger themselves. Any
+      // downstream aggregation that DOES post to the GL ledger (end-of-day
+      // settlement jobs, QBO inventory sync, ad-hoc adjustment journals)
+      // is required to resolve product GL accounts via
+      // `resolveProductGlAccountsStrict(..., ["revenue", "cogs",
+      // "inventoryAsset"])` so an absent per-(category, location)
+      // mapping fails loudly with the canonical
+      //   `MISSING_GL_MAPPING: Missing GL mapping for category "X" at location "Y"`
+      // wording. Sale time itself stays GL-free on purpose so cash sales
+      // can still complete in the offline/no-shift cases — the contract is
+      // re-asserted at the GL boundary, never silently fallen back to a
+      // tenant-wide default.
       const transaction = await prisma.posTransaction.create({
         data: {
           tenantId,
