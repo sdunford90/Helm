@@ -181,6 +181,25 @@ describe('POST /api/inventory/products', () => {
   });
 });
 
+describe('PUT /api/inventory/products/:id', () => {
+  it('rejects an update payload with no productCategoryId (mirrors POST behavior)', async () => {
+    // After the collapse, productCategoryId is REQUIRED on update too —
+    // not just on create. Leaving it optional would let callers silently
+    // mutate other fields without re-affirming the category that drives
+    // GL resolution. Schema validation must reject before any prisma write.
+    const res = await request(app)
+      .put('/api/inventory/products/prod-1')
+      .send({
+        name: 'Renamed Anchor',
+        priceCents: 1500,
+        // productCategoryId intentionally omitted
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockPrisma.product.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/inventory/products/:id/qbo-sync — strict GL mapping', () => {
   // Manual QBO push must surface the canonical
   //   `MISSING_GL_MAPPING: Missing GL mapping for category "{name}" at location "{name}"`

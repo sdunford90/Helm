@@ -238,10 +238,15 @@ const CreateProductSchema = z.object({
   locationId: z.string().optional().nullable(),
 });
 
-// Update keeps productCategoryId required-when-provided (no nulling allowed
-// since the column is NOT NULL after 20260429080000_inventory_category_only_gl).
+// Updates require productCategoryId in the request body — every other field
+// is optional, but category is the single source of truth for inventory GL
+// resolution and the column is NOT NULL after
+// 20260429080000_inventory_category_only_gl. Leaving it optional here would
+// let callers silently mutate a product without re-affirming its category
+// and silently break GL resolution if the existing category is later
+// deactivated; we surface that as a 400 instead.
 const UpdateProductSchema = CreateProductSchema.partial().extend({
-  productCategoryId: z.string().uuid().optional(),
+  productCategoryId: z.string().uuid(),
 });
 
 const CreateVendorSchema = z.object({
