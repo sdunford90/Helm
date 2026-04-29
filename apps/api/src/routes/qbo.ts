@@ -3,8 +3,6 @@ import { z } from "zod";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import {
   getAuthorizationUrl,
-  handleCallback,
-  handleCallbackForLocation,
   syncAll,
   syncCustomer,
   syncInvoice,
@@ -16,7 +14,7 @@ import {
   listDeliveries,
   replayDelivery,
 } from "../services/qbo-webhook-deliveries.js";
-import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
+import { issueOAuthState } from "../lib/oauth-state.js";
 
 const router: Router = Router();
 
@@ -44,52 +42,14 @@ router.get(
 );
 
 // --------------------------------------------------------------------------
-// GET /callback — Handle QBO OAuth callback
+// NOTE: The QBO OAuth callback (GET /api/qbo/callback) lives in
+// `qbo-callback.ts` and is mounted directly from `index.ts` BEFORE the
+// tenant + Clerk middleware. Intuit redirects the popup to that URL via a
+// top-level cross-origin navigation, so it cannot reliably carry our
+// Clerk session cookie. CSRF protection is provided by the HMAC-signed
+// `state` token (see `lib/oauth-state.ts`), which is the only thing
+// authorised to bind the resulting realmId to a tenant/location.
 // --------------------------------------------------------------------------
-
-router.get(
-  "/callback",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const CallbackSchema = z.object({
-        code: z.string(),
-        realmId: z.string(),
-        state: z.string(),
-      });
-
-      const { code, realmId, state } = CallbackSchema.parse(req.query);
-
-      // Verify the HMAC-signed state. Rejects expired, tampered, or forged
-      // tokens. The tenantId comes FROM the verified state, not from the
-      // query string — an attacker must not be able to choose which tenant
-      // the callback binds to.
-      let verified: { tenantId: string; locationId?: string };
-      try {
-        verified = verifyOAuthState(state);
-      } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : "Invalid state",
-        });
-        return;
-      }
-
-      const { tenantId, locationId: verifiedLocationId } = verified;
-
-      // Dispatch to location-level handler when the state carries a locationId
-      if (verifiedLocationId) {
-        await handleCallbackForLocation(code, realmId, verifiedLocationId, tenantId);
-      } else {
-        await handleCallback(code, realmId, tenantId);
-      }
-
-      const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
-      const locationParam = verifiedLocationId ? `&locationId=${verifiedLocationId}` : "";
-      res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true${locationParam}`);
-    } catch (err) {
-      next(err);
-    }
-  },
-);
 
 // --------------------------------------------------------------------------
 // POST /sync — Trigger full sync

@@ -48,6 +48,7 @@ import biApiRouter from "./routes/bi-api.js";
 import insuranceRouter from "./routes/insurance.js";
 import fuelRouter from "./routes/fuel.js";
 import qboRouter from "./routes/qbo.js";
+import qboCallbackRouter from "./routes/qbo-callback.js";
 import qboWebhookRouter from "./routes/webhooks-qbo.js";
 import storageRouter from "./routes/storage.js";
 import inventoryRouter from "./routes/inventory.js";
@@ -149,6 +150,14 @@ app.use(express.json());
 // so the JSON body is parsed, but before tenantMiddleware so it can be
 // reached from any tenant subdomain without a tenant lookup.
 app.use("/api/impersonation", impersonationRouter);
+
+// Public QBO OAuth callback. Intuit redirects the popup here via a
+// top-level cross-origin navigation that cannot reliably carry our Clerk
+// session cookie, so the route must NOT sit behind clerkAuth. CSRF
+// protection comes from the HMAC-signed `state` parameter, verified by
+// the handler. Mounted before tenantMiddleware because tenantId comes
+// from the verified state, not from the hostname.
+app.use("/api/qbo/callback", qboCallbackRouter);
 
 // Tenant resolution — attaches tenantId / tenant to every request
 // (bypasses /api/health, /api/admin, /api/onboarding, /api/auth/webhook,

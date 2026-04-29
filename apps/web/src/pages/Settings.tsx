@@ -1001,19 +1001,36 @@ export default function Settings() {
 
   const handleLocationStripeConnect = async () => {
     if (!selectedLocationId) return;
+    // Snapshot the location at click time so the popup-completion flow
+    // refreshes the location the user actually onboarded, even if they
+    // change selection while the OAuth popup is open.
+    const targetLocationId = selectedLocationId;
     setLocationStripeActing(true);
     try {
       const res = await fetch('/api/settings/stripe/connect', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ locationId: selectedLocationId }),
+        body: JSON.stringify({ locationId: targetLocationId }),
       });
       const body = await res.json();
       if (body.url) {
         openOAuthPopup(body.url, () => {
-          setTimeout(() => fetchLocationDetail(selectedLocationId), 800);
-          setSavedMsg('Stripe connected for this location');
-          setTimeout(() => setSavedMsg(null), 3000);
+          // Stripe Connect's `account.updated` webhook is the source of
+          // truth for `stripeOnboardingComplete`, but it can be delayed
+          // or unreachable. Pull the live account state from Stripe so
+          // the UI reflects "connected" as soon as the popup closes.
+          (async () => {
+            try {
+              await fetch('/api/settings/stripe/refresh-status', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ locationId: targetLocationId }),
+              });
+            } catch { /* fall through to the normal refresh */ }
+            await fetchLocationDetail(targetLocationId);
+            setSavedMsg('Stripe connected for this location');
+            setTimeout(() => setSavedMsg(null), 3000);
+          })();
         });
       }
     } finally {

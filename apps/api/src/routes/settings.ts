@@ -399,6 +399,137 @@ router.get("/stripe", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGE
 });
 
 // --------------------------------------------------------------------------
+// POST /api/settings/stripe/refresh-status  { locationId? }
+//
+// Pulls the latest Stripe Account capabilities for the location's (or
+// tenant's) connected account and reflects `charges_enabled` into
+// `Location.stripeOnboardingComplete`. Used by the web client when the
+// Stripe Connect onboarding popup closes, so the UI doesn't have to wait
+// for the `account.updated` webhook to flip the connected/incomplete flag.
+// The webhook (`handleAccountUpdated` in webhooks-stripe.ts) remains the
+// source of truth for ongoing capability changes.
+// --------------------------------------------------------------------------
+router.post("/stripe/refresh-status", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
+  try {
+    const { locationId } = req.body as { locationId?: string };
+
+    if (locationId) {
+      if (!requireLocationAccess(req, locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId: req.tenantId! },
+        select: { id: true, stripeAccountId: true, stripeOnboardingComplete: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+      if (!location.stripeAccountId) {
+        res.json({
+          connected: false,
+          onboardingComplete: false,
+          accountId: null,
+          dashboardUrl: null,
+        });
+        return;
+      }
+
+      let account: import("stripe").Stripe.Account;
+      try {
+        account = await requireStripe().accounts.retrieve(location.stripeAccountId);
+      } catch (err) {
+        console.error("[settings/stripe/refresh-status] retrieve failed", {
+          tenantId: req.tenantId,
+          locationId,
+          accountId: location.stripeAccountId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        res.status(502).json({ error: "Failed to retrieve Stripe account", code: "STRIPE_ERROR" });
+        return;
+      }
+
+      const chargesEnabled = account.charges_enabled ?? false;
+      const payoutsEnabled = account.payouts_enabled ?? false;
+      const detailsSubmitted = account.details_submitted ?? false;
+
+      // Mirror handleAccountUpdated: mark onboarding complete when the
+      // account can accept charges. Do not flip back to false here — the
+      // webhook owns ongoing capability state.
+      if (chargesEnabled && !location.stripeOnboardingComplete) {
+        await prisma.location.update({
+          where: { id: locationId },
+          data: { stripeOnboardingComplete: true },
+        });
+        await prisma.auditLog.create({
+          data: {
+            tenantId: req.tenantId!,
+            recordType: "Location",
+            recordId: locationId,
+            action: "STRIPE_ACCOUNT_UPDATED",
+            changedFieldsJson: {
+              source: "settings/stripe/refresh-status",
+              chargesEnabled,
+              payoutsEnabled,
+              detailsSubmitted,
+              locationId,
+            },
+          },
+        });
+      }
+
+      const onboardingComplete = chargesEnabled || !!location.stripeOnboardingComplete;
+      res.json({
+        connected: !!location.stripeAccountId && onboardingComplete,
+        onboardingComplete,
+        chargesEnabled,
+        payoutsEnabled,
+        detailsSubmitted,
+        accountId: `****${location.stripeAccountId.slice(-4)}`,
+        dashboardUrl: `https://dashboard.stripe.com/${location.stripeAccountId}`,
+      });
+      return;
+    }
+
+    // Tenant-level (legacy) — there is no `stripeOnboardingComplete`
+    // column on Tenant, so we just report current Stripe state without
+    // persisting anything.
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId! } });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
+      return;
+    }
+    if (!tenant.stripeAccountId) {
+      res.json({ connected: false, accountId: null, dashboardUrl: null });
+      return;
+    }
+    let account: import("stripe").Stripe.Account;
+    try {
+      account = await requireStripe().accounts.retrieve(tenant.stripeAccountId);
+    } catch (err) {
+      console.error("[settings/stripe/refresh-status] tenant retrieve failed", {
+        tenantId: req.tenantId,
+        accountId: tenant.stripeAccountId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(502).json({ error: "Failed to retrieve Stripe account", code: "STRIPE_ERROR" });
+      return;
+    }
+    res.json({
+      connected: !!tenant.stripeAccountId,
+      chargesEnabled: account.charges_enabled ?? false,
+      payoutsEnabled: account.payouts_enabled ?? false,
+      detailsSubmitted: account.details_submitted ?? false,
+      accountId: `****${tenant.stripeAccountId.slice(-4)}`,
+      dashboardUrl: `https://dashboard.stripe.com/${tenant.stripeAccountId}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
 // POST /api/settings/stripe/connect  { locationId? }
 // --------------------------------------------------------------------------
 router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {

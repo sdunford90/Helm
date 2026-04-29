@@ -377,20 +377,35 @@ router.post("/:tenantId/qbo", async (req, res, next) => {
 // GET /api/onboarding/:tenantId/qbo/callback — QBO OAuth callback
 // --------------------------------------------------------------------------
 router.get("/:tenantId/qbo/callback", async (req, res, next) => {
+  const frontendUrl = process.env.APP_URL ?? "http://localhost:5000";
+  const failRedirect = (reason: string, locationId?: string) => {
+    const params = new URLSearchParams({
+      provider: "qbo",
+      success: "false",
+      reason,
+    });
+    if (locationId) params.set("locationId", locationId);
+    res.redirect(`${frontendUrl}/oauth-complete?${params.toString()}`);
+  };
+
+  let stateLocationId: string | undefined;
   try {
     const { tenantId } = req.params;
     const { code, realmId, state } = req.query;
 
     if (!code || typeof code !== "string") {
-      res.status(400).json({ error: "Missing authorization code" });
+      console.error("[onboarding-qbo-callback] missing authorization code", { tenantId });
+      failRedirect("missing_code");
       return;
     }
     if (!realmId || typeof realmId !== "string") {
-      res.status(400).json({ error: "Missing realmId" });
+      console.error("[onboarding-qbo-callback] missing realmId", { tenantId });
+      failRedirect("missing_realm");
       return;
     }
     if (!state || typeof state !== "string") {
-      res.status(400).json({ error: "Missing state" });
+      console.error("[onboarding-qbo-callback] missing state", { tenantId });
+      failRedirect("missing_state");
       return;
     }
 
@@ -398,18 +413,23 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
     // sensitive. Rejects expired tokens, bad signatures, and state from a
     // different tenant's authorize call. Also extracts the optional
     // locationId so we can write the realmId to the right row.
-    let stateLocationId: string | undefined;
     try {
       const verified = verifyOAuthState(state);
       if (verified.tenantId !== tenantId) {
-        res.status(400).json({ error: "State does not match tenant" });
+        console.error("[onboarding-qbo-callback] state tenant mismatch", {
+          urlTenantId: tenantId,
+          stateTenantId: verified.tenantId,
+        });
+        failRedirect("tenant_mismatch");
         return;
       }
       stateLocationId = verified.locationId;
     } catch (err) {
-      res.status(400).json({
-        error: err instanceof Error ? err.message : "Invalid state",
+      console.error("[onboarding-qbo-callback] state verification failed", {
+        tenantId,
+        error: err instanceof Error ? err.message : String(err),
       });
+      failRedirect("invalid_state");
       return;
     }
 
@@ -420,7 +440,11 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
         select: { id: true },
       });
       if (!loc) {
-        res.status(400).json({ error: "Location no longer belongs to tenant" });
+        console.error("[onboarding-qbo-callback] location no longer belongs to tenant", {
+          tenantId,
+          locationId: stateLocationId,
+        });
+        failRedirect("location_mismatch", stateLocationId);
         return;
       }
     }
@@ -449,7 +473,13 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
 
     if (!tokenResponse.ok) {
       const errBody = await tokenResponse.text();
-      res.status(502).json({ error: "QBO token exchange failed", details: errBody });
+      console.error("[onboarding-qbo-callback] QBO token exchange failed", {
+        tenantId,
+        locationId: stateLocationId,
+        status: tokenResponse.status,
+        body: errBody,
+      });
+      failRedirect("token_exchange_failed", stateLocationId);
       return;
     }
 
@@ -467,10 +497,19 @@ router.get("/:tenantId/qbo/callback", async (req, res, next) => {
       });
     }
 
-    const frontendUrl = process.env.APP_URL ?? 'http://localhost:5000';
-    res.redirect(`${frontendUrl}/oauth-complete?provider=qbo&success=true`);
+    const params = new URLSearchParams({
+      provider: "qbo",
+      success: "true",
+    });
+    if (stateLocationId) params.set("locationId", stateLocationId);
+    res.redirect(`${frontendUrl}/oauth-complete?${params.toString()}`);
   } catch (err) {
-    next(err);
+    console.error("[onboarding-qbo-callback] unexpected error", err);
+    try {
+      failRedirect("unexpected_error", stateLocationId);
+    } catch {
+      next(err);
+    }
   }
 });
 
