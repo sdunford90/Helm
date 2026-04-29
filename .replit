@@ -114,6 +114,10 @@ QBO_REDIRECT_URI = "https://92c279c8-1036-4e43-940c-5e8c174d6713-00-gp3i4v467s4h
 
 [userenv.production]
 QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/qbo/callback"
+HELM_PLATFORM_ADMIN_EMAIL = "sdunford90@gmail.com"
+HELM_PLATFORM_ADMIN_FIRST_NAME = "S"
+HELM_PLATFORM_ADMIN_LAST_NAME = "Dunford"
+HELM_PLATFORM_ADMIN_CLERK_ID = "user_3CrlF1gin3W2m9tk5hjaeotnUmj"
 
 [postMerge]
 path = "scripts/post-merge.sh"
