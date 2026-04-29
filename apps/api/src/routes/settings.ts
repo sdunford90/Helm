@@ -413,7 +413,10 @@ router.get("/stripe", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGE
 // The webhook (`handleAccountUpdated` in webhooks-stripe.ts) remains the
 // source of truth for ongoing capability changes.
 // --------------------------------------------------------------------------
-router.post("/stripe/refresh-status", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
+// Marina managers also operate the customer-file Cards on File flow and need
+// to be able to clear stale onboarding flags when a location finishes Stripe
+// setup, so this endpoint is gated to OWNER+MANAGER (same as GET /stripe).
+router.post("/stripe/refresh-status", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
     const { locationId } = req.body as { locationId?: string };
 
@@ -898,6 +901,7 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         transientEnabled: true,
         rentalsEnabled: true,
         autoExecuteRenewals: true,
+        posAchEnabled: true,
         logoUrl: true,
         brandingJson: true,
         qboRealmId: true,
@@ -942,11 +946,11 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       return;
     }
 
-    const { name, address, city, state, zip, phone, timezone, active, transientEnabled, rentalsEnabled, autoExecuteRenewals, logoUrl } =
+    const { name, address, city, state, zip, phone, timezone, active, transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, logoUrl } =
       req.body as Partial<{
         name: string; address: string; city: string; state: string; zip: string; phone: string;
         timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-        autoExecuteRenewals: boolean; logoUrl: string;
+        autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
       }>;
 
     const updated = await prisma.location.update({
@@ -963,12 +967,13 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         ...(transientEnabled !== undefined && { transientEnabled }),
         ...(rentalsEnabled !== undefined && { rentalsEnabled }),
         ...(autoExecuteRenewals !== undefined && { autoExecuteRenewals }),
+        ...(posAchEnabled !== undefined && { posAchEnabled }),
         ...(logoUrl !== undefined && { logoUrl }),
       },
       select: {
         id: true, name: true, address: true, city: true, state: true, zip: true, phone: true,
         timezone: true, active: true, transientEnabled: true, rentalsEnabled: true,
-        autoExecuteRenewals: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
+        autoExecuteRenewals: true, posAchEnabled: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
       },
     });
 

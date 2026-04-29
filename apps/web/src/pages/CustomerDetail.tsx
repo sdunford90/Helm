@@ -310,6 +310,16 @@ interface ApiPaymentMethodsResponse {
   stripeConfigured: boolean;
   locationConnected: boolean;
   locationName: string | null;
+  // The location whose Stripe account was actually used for this lookup.
+  // null means we fell back to the tenant-level account or there is no
+  // Stripe account at all. The picker uses this to highlight the active row.
+  locationId?: string | null;
+  // All onboarded locations the operator could pick from when the customer
+  // doesn't have an obvious "home" location (e.g. multi-marina tenants).
+  // Empty when there's only one onboarded location. Shape mirrors the
+  // `StripeAccountCandidate` returned by the resolver in
+  // `apps/api/src/lib/stripe-account.ts` so the contract stays in lock-step.
+  candidates?: Array<{ locationId: string; locationName: string; stripeAccountId: string }>;
 }
 
 function mapApiBoat(b: ApiBoat): Boat {
@@ -1402,13 +1412,33 @@ export default function CustomerDetailPage() {
     `/api/customers/${id}/payment-history?skip=${paymentSkip}&take=${PAYMENT_PAGE_SIZE}`,
     { immediate: true },
   );
+  // Cards on File can resolve against more than one Stripe-onboarded
+  // location for a tenant. The picker below lets the operator switch
+  // which location is used for the lookup; null means "let the server
+  // decide" (default fallback chain).
+  const [pmLocationId, setPmLocationId] = useState<string | null>(null);
+  const pmPath = `/api/customers/${id}/payment-methods${
+    pmLocationId ? `?locationId=${encodeURIComponent(pmLocationId)}` : ''
+  }`;
   const { data: paymentMethods, execute: refetchPaymentMethods } = useApi<ApiPaymentMethodsResponse>(
     'get',
-    `/api/customers/${id}/payment-methods`,
+    pmPath,
     { immediate: true },
   );
+  // Re-fetch when the operator picks a different location so the displayed
+  // cards (and the "Stripe not set up" banner) reflect that location's
+  // Connect status. The initial mount is handled by `immediate: true`.
+  const pmDidMountRef = useRef(false);
+  useEffect(() => {
+    if (!pmDidMountRef.current) {
+      pmDidMountRef.current = true;
+      return;
+    }
+    void refetchPaymentMethods();
+  }, [pmLocationId, refetchPaymentMethods]);
   const [pmActionId, setPmActionId] = useState<string | null>(null);
   const [pmError, setPmError] = useState<string | null>(null);
+  const [pmRefreshingStripe, setPmRefreshingStripe] = useState(false);
   const [setupBusy, setSetupBusy] = useState<'card' | 'bank' | null>(null);
   const [autopayBusy, setAutopayBusy] = useState(false);
   // Optimistic flag: when set, overrides the displayed autopay value while
@@ -1897,9 +1927,19 @@ export default function CustomerDetailPage() {
       // Strip any existing ?tab so the return URL lands back on the Payments tab,
       // where Cards on File lives.
       const returnUrl = `${window.location.origin}/customers/${id}?tab=payments`;
+      // Pin the new card/bank to the location the operator is currently
+      // viewing in the picker (or whatever the resolver chose for them).
+      // Without this the SetupIntent could land on a *different* connected
+      // account than the one whose cards the UI just listed, and the new
+      // card would silently disappear from view.
+      const targetLocationId = pmLocationId ?? paymentMethods?.locationId ?? null;
       const resp = await api.post<{ url: string }>(
         `/api/customers/${id}/payment-methods/setup-session`,
-        { type, returnUrl },
+        {
+          type,
+          returnUrl,
+          ...(targetLocationId ? { locationId: targetLocationId } : {}),
+        },
         token,
       );
       if (resp.url) {
@@ -2487,6 +2527,66 @@ export default function CustomerDetailPage() {
             </div>
           )}
 
+          {paymentMethods && (paymentMethods.candidates?.length ?? 0) > 1 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '10px 12px', marginBottom: '10px',
+              backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0',
+              borderRadius: '6px', fontSize: '12px', color: '#475569',
+            }}>
+              <span style={{ fontWeight: 600 }}>Stripe location:</span>
+              <select
+                value={pmLocationId ?? paymentMethods.locationId ?? ''}
+                onChange={(e) => setPmLocationId(e.target.value || null)}
+                style={{
+                  padding: '4px 8px', border: '1px solid #CBD5E1',
+                  borderRadius: '4px', fontSize: '12px', background: '#FFFFFF',
+                  color: '#0F2E4D',
+                }}
+              >
+                {paymentMethods.candidates!.map((c) => (
+                  <option key={c.locationId} value={c.locationId}>{c.locationName}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={async () => {
+                  // Owner/Manager: re-pull capability/charges status from
+                  // Stripe and persist it. Uses the currently-displayed
+                  // location so the operator can fix a stale "not set up"
+                  // banner without leaving the customer page.
+                  setPmRefreshingStripe(true);
+                  setPmError(null);
+                  try {
+                    const token = await getToken();
+                    const targetLocationId = pmLocationId ?? paymentMethods.locationId ?? null;
+                    await api.post(
+                      '/api/settings/stripe/refresh-status',
+                      targetLocationId ? { locationId: targetLocationId } : {},
+                      token,
+                    );
+                    await refetchPaymentMethods();
+                  } catch (err) {
+                    setPmError(err instanceof Error ? err.message : 'Failed to refresh Stripe status');
+                  } finally {
+                    setPmRefreshingStripe(false);
+                  }
+                }}
+                disabled={pmRefreshingStripe}
+                style={{
+                  marginLeft: 'auto', padding: '4px 10px',
+                  background: '#FFFFFF', color: '#0F2E4D',
+                  border: '1px solid #0F2E4D', borderRadius: '4px',
+                  fontSize: '12px', fontWeight: 600,
+                  cursor: pmRefreshingStripe ? 'wait' : 'pointer',
+                }}
+                title="Re-check this location's Stripe Connect status"
+              >
+                {pmRefreshingStripe ? 'Refreshing…' : 'Refresh Stripe status'}
+              </button>
+            </div>
+          )}
+
           {paymentMethods && !paymentMethods.stripeConfigured ? (
             <div style={{
               display: 'flex', alignItems: 'flex-start', gap: '12px',
@@ -2495,11 +2595,44 @@ export default function CustomerDetailPage() {
               color: '#92400E', fontSize: '13px',
             }}>
               <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
-              <div>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, marginBottom: '4px' }}>
                   Stripe is not set up for {paymentMethods.locationName ? `${paymentMethods.locationName}` : 'this location'}.
                 </div>
-                <div>Connect a Stripe account from Settings → Locations to start saving cards on file.</div>
+                <div style={{ marginBottom: '8px' }}>Connect a Stripe account from Settings → Locations to start saving cards on file.</div>
+                {/* Single-button refresh for the common case where there is
+                    only one candidate (so no picker is shown) but Stripe was
+                    just connected and the cached status is stale. */}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setPmRefreshingStripe(true);
+                    setPmError(null);
+                    try {
+                      const token = await getToken();
+                      const targetLocationId = pmLocationId ?? paymentMethods.locationId ?? null;
+                      await api.post(
+                        '/api/settings/stripe/refresh-status',
+                        targetLocationId ? { locationId: targetLocationId } : {},
+                        token,
+                      );
+                      await refetchPaymentMethods();
+                    } catch (err) {
+                      setPmError(err instanceof Error ? err.message : 'Failed to refresh Stripe status');
+                    } finally {
+                      setPmRefreshingStripe(false);
+                    }
+                  }}
+                  disabled={pmRefreshingStripe}
+                  style={{
+                    padding: '4px 10px', background: '#FFFFFF',
+                    color: '#92400E', border: '1px solid #FFE082',
+                    borderRadius: '4px', fontSize: '12px', fontWeight: 600,
+                    cursor: pmRefreshingStripe ? 'wait' : 'pointer',
+                  }}
+                >
+                  {pmRefreshingStripe ? 'Refreshing…' : 'Refresh Stripe status'}
+                </button>
               </div>
             </div>
           ) : !paymentMethods ? (

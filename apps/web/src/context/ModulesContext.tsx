@@ -7,6 +7,10 @@ export interface ApiLocation {
   rentalsEnabled: boolean;
   rampEnabled: boolean;
   conciergeEnabled: boolean;
+  // Per-location toggle for the POS counter's ACH button. Defaults to false
+  // server-side; tolerated as optional here so older API responses (or any
+  // hand-rolled test fixtures) don't crash on missing field.
+  posAchEnabled?: boolean;
 }
 
 export interface ModulesConfig {

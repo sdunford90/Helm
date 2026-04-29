@@ -441,6 +441,11 @@ model Location {
   stripeAccountId          String?
   stripeOnboardingComplete Boolean @default(false)
 
+  // Per-location toggle for ACH at the in-house POS counter. Defaults off so a
+  // fresh marina/location only shows Cash, Card, and Charge to Slip until an
+  // admin explicitly opts in. Portal ACH is unaffected.
+  posAchEnabled Boolean @default(false)
+
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 

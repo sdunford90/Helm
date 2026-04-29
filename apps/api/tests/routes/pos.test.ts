@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { mockPrisma } from '../setup.js';
 import { buildPosProduct, buildPosTransaction, buildShift } from '../helpers.js';
+// Pull the mocked stripe module so direct-charge tests can assert how the
+// PaymentIntent was created (header vs. transfer_data).
+import * as stripeMod from '../../src/lib/stripe.js';
+const mockedStripe = stripeMod.stripe as unknown as {
+  paymentIntents: { create: ReturnType<typeof vi.fn> };
+};
 // tax-engine is module-mocked in setup.ts; pull the mocked fn so we can
 // inspect the calls POS makes into it and override per-test return values.
 import { calculateTax } from '../../src/services/tax-engine.js';
@@ -491,5 +497,82 @@ describe('GET /api/pos/reports/card-rail-mix', () => {
     expect(res.body.overall.cnpCount).toBe(0);
     expect(res.body.byLocation).toHaveLength(1);
     expect(res.body.byLocation[0].locationId).toBe('loc-A');
+  });
+});
+
+// Direct-charge migration: the POS keyed-in (CNP) path used to be a
+// destination charge with `transfer_data.destination`, which required the
+// `transfers` capability on the connected account. Onboarding only requests
+// `card_payments`, so those PIs were rejected by Stripe with the dreaded
+// "needs at least one of: transfers, crypto_transfers, legacy_payments"
+// error. We now do a direct charge on the connected account (header) with
+// `application_fee_amount` for the platform's slice — same model as
+// checkout/portal/terminal — so the existing onboarding capability set is
+// sufficient.
+describe('POST /api/pos/payments/cnp — direct charge', () => {
+  beforeEach(() => {
+    mockedStripe.paymentIntents.create.mockReset();
+    mockedStripe.paymentIntents.create.mockResolvedValue({
+      id: 'pi_cnp_1',
+      status: 'succeeded',
+      amount: 5000,
+    });
+  });
+
+  it('creates the PaymentIntent on the connected account via header (no transfer_data)', async () => {
+    // Resolve to a connected account via shift -> location lookup.
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: 'acct_marina' });
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      applicationFeePctBps: 50, // 0.5%
+      applicationFeeFixedCents: 30,
+    });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp')
+      .send({
+        amountCents: 5000,
+        paymentMethodId: 'pm_card_visa',
+        shiftId: 'shift-1',
+        description: 'Tank top',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'pi_cnp_1', status: 'succeeded' });
+    expect(mockedStripe.paymentIntents.create).toHaveBeenCalledTimes(1);
+
+    const [body, options] = mockedStripe.paymentIntents.create.mock.calls[0];
+    // Direct-charge: connected account is in the request *options*, not body.
+    expect(options).toEqual({ stripeAccount: 'acct_marina' });
+    // No destination charge — `transfer_data` would re-introduce the
+    // capability requirement we're trying to escape.
+    expect(body).not.toHaveProperty('transfer_data');
+    expect(body).not.toHaveProperty('on_behalf_of');
+    // Application fee = ceil(5000 * 50 / 10000) + 30 = 25 + 30 = 55.
+    expect(body.application_fee_amount).toBe(55);
+    expect(body).toMatchObject({
+      amount: 5000,
+      currency: 'usd',
+      payment_method: 'pm_card_visa',
+      confirm: true,
+    });
+  });
+
+  it('returns STRIPE_NOT_CONFIGURED when no Stripe account resolves', async () => {
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: null });
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: null });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp')
+      .send({
+        amountCents: 5000,
+        paymentMethodId: 'pm_card_visa',
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('STRIPE_NOT_CONFIGURED');
+    expect(mockedStripe.paymentIntents.create).not.toHaveBeenCalled();
   });
 });

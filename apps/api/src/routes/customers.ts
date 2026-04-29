@@ -1419,6 +1419,14 @@ router.get(
     try {
       const tenantId = req.tenantId!;
       const customerId = req.params.id;
+      // Optional ?locationId — used when the customer has multiple onboarded
+      // locations and staff explicitly picked which one's Stripe account to
+      // pull cards from. The resolver validates this against the tenant's
+      // candidates list.
+      const preferredLocationId =
+        typeof req.query.locationId === "string" && req.query.locationId
+          ? req.query.locationId
+          : undefined;
 
       const customer = await prisma.customer.findFirst({
         where: { id: customerId, tenantId },
@@ -1426,7 +1434,11 @@ router.get(
       });
       if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
 
-      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      const account = await getStripeAccountForCustomer(
+        customerId,
+        tenantId,
+        preferredLocationId,
+      );
 
       // No Stripe configured anywhere: surface a clear empty/no-config state.
       if (!account.stripeAccountId) {
@@ -1436,7 +1448,9 @@ router.get(
           autopay: false,
           stripeConfigured: false,
           locationConnected: account.locationConnected,
+          locationId: account.locationId,
           locationName: account.locationName,
+          candidates: account.candidates,
         });
         return;
       }
@@ -1450,7 +1464,9 @@ router.get(
           autopay: false,
           stripeConfigured: false,
           locationConnected: false,
+          locationId: account.locationId,
           locationName: account.locationName,
+          candidates: account.candidates,
         });
         return;
       }
@@ -1463,7 +1479,9 @@ router.get(
           autopay: false,
           stripeConfigured: true,
           locationConnected: true,
+          locationId: account.locationId,
           locationName: account.locationName,
+          candidates: account.candidates,
         });
         return;
       }
@@ -1525,7 +1543,9 @@ router.get(
         autopay,
         stripeConfigured: true,
         locationConnected: true,
+        locationId: account.locationId,
         locationName: account.locationName,
+        candidates: account.candidates,
       });
     } catch (err) {
       next(err);
@@ -1536,6 +1556,9 @@ router.get(
 const SetupSessionSchema = z.object({
   type: z.enum(["card", "bank"]).default("card"),
   returnUrl: z.string().url(),
+  // Optional: when staff explicitly picked a location via the picker, pin
+  // the setup session to that location's Stripe account.
+  locationId: z.string().optional(),
 });
 
 router.post(
@@ -1544,7 +1567,7 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const customerId = req.params.id;
-      const { type, returnUrl } = SetupSessionSchema.parse(req.body);
+      const { type, returnUrl, locationId } = SetupSessionSchema.parse(req.body);
 
       const customer = await prisma.customer.findFirst({
         where: { id: customerId, tenantId },
@@ -1552,7 +1575,11 @@ router.post(
       });
       if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
 
-      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      const account = await getStripeAccountForCustomer(
+        customerId,
+        tenantId,
+        locationId,
+      );
       if (!account.stripeAccountId || !account.locationConnected) {
         res.status(400).json({
           error: account.locationName

@@ -28,6 +28,10 @@ router.get("/", async (req: Request, res: Response) => {
       rentalsEnabled: true,
       rampEnabled: true,
       conciergeEnabled: true,
+      // Per-location POS toggles. Right now only ACH; the POS reads this
+      // to decide whether to show the ACH button alongside Cash, Card and
+      // Charge to Slip.
+      posAchEnabled: true,
     },
   });
 

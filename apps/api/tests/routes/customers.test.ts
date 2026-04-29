@@ -226,7 +226,9 @@ describe('PUT /api/customers/:id/autopay', () => {
   });
 
   function mockTenantWithStripe() {
-    // No invoices yet → falls back to tenant-level Stripe account.
+    // No onboarded locations and no invoices yet → resolver falls all the
+    // way back to the tenant-level Stripe account.
+    mockPrisma.location.findMany.mockResolvedValue([]);
     mockPrisma.invoice.findFirst.mockResolvedValue(null);
     mockPrisma.tenant.findUnique.mockResolvedValue({
       stripeAccountId: 'acct_test',
@@ -491,6 +493,7 @@ describe('PUT /api/customers/:id/autopay', () => {
       id: 'cust-1',
       stripeCustomerId: null,
     } as any);
+    mockPrisma.location.findMany.mockResolvedValue([]);
     mockPrisma.invoice.findFirst.mockResolvedValue(null);
     mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: null } as any);
 
@@ -705,6 +708,152 @@ describe('GET /api/customers/:id/payment-history', () => {
     // Payments with no refunds should still report 0 (not undefined) so
     // the UI never has to coerce missing values.
     expect(byId['pay-b'].refundCount).toBe(0);
+  });
+});
+
+// The Cards-on-File resolver used to declare a customer "Stripe not set up"
+// whenever the customer's most-recent-invoice location wasn't onboarded —
+// even when other locations on the same tenant were. The new resolver falls
+// back across onboarded locations (and finally the tenant Stripe account)
+// and exposes the candidate list so the UI can show a picker.
+describe('GET /api/customers/:id/payment-methods — resolver fallback', () => {
+  function setupCustomer() {
+    mockPrisma.customer.findFirst.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: null, // not yet a Stripe customer — short-circuits Stripe call
+    });
+  }
+
+  it('falls back to a fully-onboarded location when the customer has no invoices', async () => {
+    setupCustomer();
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Main Marina', stripeAccountId: 'acct_main' },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/customers/cust-1/payment-methods');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      stripeConfigured: true,
+      locationConnected: true,
+      locationId: 'loc-A',
+      locationName: 'Main Marina',
+    });
+    expect(res.body.candidates).toEqual([
+      { locationId: 'loc-A', locationName: 'Main Marina', stripeAccountId: 'acct_main' },
+    ]);
+  });
+
+  it('exposes every onboarded location as a candidate when there are multiple', async () => {
+    setupCustomer();
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Bayfront', stripeAccountId: 'acct_a' },
+      { id: 'loc-B', name: 'Riverside', stripeAccountId: 'acct_b' },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/customers/cust-1/payment-methods');
+    expect(res.status).toBe(200);
+    expect(res.body.stripeConfigured).toBe(true);
+    expect(res.body.candidates).toHaveLength(2);
+    // Resolver picks the first deterministically; UI renders the picker.
+    expect(res.body.locationId).toBe('loc-A');
+  });
+
+  it('honors the ?locationId= picker when staff explicitly choose an onboarded location', async () => {
+    setupCustomer();
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Bayfront', stripeAccountId: 'acct_a' },
+      { id: 'loc-B', name: 'Riverside', stripeAccountId: 'acct_b' },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    const res = await request(app).get(
+      '/api/customers/cust-1/payment-methods?locationId=loc-B',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.locationId).toBe('loc-B');
+    expect(res.body.locationName).toBe('Riverside');
+  });
+
+  it('returns candidates with the {locationId, locationName, stripeAccountId} contract the web UI consumes', async () => {
+    // Lock the field shape so a future rename in the resolver can't silently
+    // break the customer-file Stripe location picker (which reads
+    // `c.locationId`/`c.locationName`).
+    setupCustomer();
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Bayfront', stripeAccountId: 'acct_a' },
+      { id: 'loc-B', name: 'Riverside', stripeAccountId: 'acct_b' },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/customers/cust-1/payment-methods');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.candidates)).toBe(true);
+    for (const c of res.body.candidates) {
+      expect(c).toEqual(expect.objectContaining({
+        locationId: expect.any(String),
+        locationName: expect.any(String),
+        stripeAccountId: expect.any(String),
+      }));
+      // Catch a regression where someone copies the old `{id, name}` shape:
+      expect(c).not.toHaveProperty('id');
+      expect(c).not.toHaveProperty('name');
+    }
+  });
+
+  it('pins the SetupIntent to the operator-picked location when one is supplied', async () => {
+    // The web UI sends `locationId` from the picker so the new card lands
+    // on the same Connect account the staff is currently looking at — this
+    // test prevents the server from silently ignoring that field and
+    // dropping back to the resolver default (which would drop the new card
+    // onto a different connected account).
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: 'cust-1' });
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Bayfront', stripeAccountId: 'acct_a' },
+      { id: 'loc-B', name: 'Riverside', stripeAccountId: 'acct_b' },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+    mockPrisma.customer.update.mockResolvedValue({
+      id: 'cust-1',
+      stripeCustomerId: 'cus_pinned',
+    });
+
+    const stripeMod = await import('../../src/lib/stripe.js');
+    const checkout = (stripeMod.stripe as any).checkout.sessions
+      .create as ReturnType<typeof vi.fn>;
+    checkout.mockClear();
+
+    const res = await request(app)
+      .post('/api/customers/cust-1/payment-methods/setup-session')
+      .send({
+        type: 'card',
+        returnUrl: 'https://example.com/customers/cust-1?tab=payments',
+        locationId: 'loc-B',
+      });
+
+    expect(res.status).toBe(200);
+    expect(checkout).toHaveBeenCalledTimes(1);
+    const [, options] = checkout.mock.calls[0];
+    // Direct-charge: connected account is in the request *options*. With
+    // locationId=loc-B the server must use loc-B's Stripe account, not
+    // loc-A (the default first-candidate the resolver would have picked).
+    expect(options).toEqual({ stripeAccount: 'acct_b' });
+  });
+
+  it('reports "not configured" only when no onboarded location AND no tenant account exist', async () => {
+    setupCustomer();
+    mockPrisma.location.findMany.mockResolvedValue([]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: null });
+
+    const res = await request(app).get('/api/customers/cust-1/payment-methods');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      stripeConfigured: false,
+      locationConnected: false,
+      candidates: [],
+    });
   });
 });
 

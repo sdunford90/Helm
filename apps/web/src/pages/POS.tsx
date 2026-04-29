@@ -1448,15 +1448,18 @@ export default function POS() {
   const [recalledTxnData, setRecalledTxnData] = useState<Transaction | null>(null);
   const [refundLoading, setRefundLoading] = useState(false);
   const [refundDone, setRefundDone] = useState(false);
-  const [achEnabled, setAchEnabled] = useState(true);
-
-  useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('helm_payment_types') || '[]');
-      const achType = stored.find((t: { id: string; availPOS?: boolean }) => t.id === 'ach');
-      if (achType && achType.availPOS === false) setAchEnabled(false);
-    } catch { /* ignore */ }
-  }, []);
+  // ACH at the POS counter is now an opt-in per-location setting (Settings →
+  // Locations → "Show ACH on POS"). Default is **off** so ACH never appears
+  // unless an admin has explicitly enabled it for that location. The previous
+  // localStorage-driven flag was confusing because it was per-browser, not
+  // per-location, and defaulted to ON.
+  // In All-locations mode (no currentLocationId) we hide ACH — there's no
+  // single location to bill against, so the choice is moot.
+  const achEnabled = useMemo(() => {
+    if (!currentLocationId) return false;
+    const loc = locations.find((l) => l.id === currentLocationId);
+    return !!loc?.posAchEnabled;
+  }, [currentLocationId, locations]);
 
   const { data: apiProductsResp, loading: loadingProducts } = useApi<{ data: ApiProduct[]; pagination: unknown }>('get', '/api/pos/products', { immediate: true });
   const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', '/api/pos/transactions', { immediate: true });

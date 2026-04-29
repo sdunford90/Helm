@@ -346,6 +346,11 @@ const stripeMock = {
   paymentMethods: {
     list: vi.fn().mockResolvedValue({ data: [] }),
   },
+  checkout: {
+    sessions: {
+      create: vi.fn().mockResolvedValue({ id: 'cs_test', url: 'https://checkout.stripe.com/test' }),
+    },
+  },
 };
 vi.mock('../src/lib/stripe.js', () => ({
   stripe: stripeMock,
@@ -353,6 +358,14 @@ vi.mock('../src/lib/stripe.js', () => ({
   createPaymentIntent: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
   createCustomer: vi.fn().mockResolvedValue({ id: 'cus_test' }),
   processWebhook: vi.fn().mockResolvedValue(null),
+  // Mirror the real export. Tests for direct-charge routes (POS CNP) want
+  // to assert that `application_fee_amount` is computed and included in the
+  // `paymentIntents.create` call, so we use the real arithmetic instead of
+  // a constant — keeps tests honest without pulling in the real module.
+  calculateApplicationFee: (amountCents: number, pctBps: number, fixedCents: number) => {
+    const pct = Math.ceil((amountCents * pctBps) / 10_000);
+    return Math.max(0, pct + fixedCents);
+  },
 }));
 
 // Mock BullMQ queues

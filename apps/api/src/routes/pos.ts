@@ -1519,24 +1519,49 @@ router.post(
         return;
       }
 
-      const { stripe: stripeClient } = await import("../lib/stripe.js");
+      const stripeMod = await import("../lib/stripe.js");
+      const stripeClient = stripeMod.stripe;
       if (!stripeClient) {
         res.status(500).json({ error: "Stripe is not configured." });
         return;
       }
 
-      // Destination charge — platform owns the PaymentIntent, funds transfer to
-      // the connected account. No on_behalf_of so card_payments capability on
-      // the connected account is not required; only transfers is needed.
-      const intent = await stripeClient.paymentIntents.create({
-        amount: amountCents,
-        currency: "usd",
-        payment_method: paymentMethodId,
-        payment_method_types: ["card"],
-        confirm: true,
-        transfer_data: { destination: stripeAccountId },
-        description: description ?? "POS card-not-present payment",
+      // Direct charge on the connected account (mirrors checkout.ts,
+      // portal.ts and stripe-terminal.ts). The PaymentIntent is created
+      // directly on the connected account via the `stripeAccount` header,
+      // so the platform's slice is collected as `application_fee_amount`
+      // and Stripe only requires `card_payments` capability — the same
+      // capability onboarding already requests.
+      // The previous destination-charge model required `transfers`
+      // capability on the connected account, which onboarding doesn't
+      // request, and Stripe rejected those PIs with the
+      // "needs at least one of: transfers, crypto_transfers,
+      // legacy_payments" error.
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: {
+          applicationFeePctBps: true,
+          applicationFeeFixedCents: true,
+        },
       });
+      const applicationFee = stripeMod.calculateApplicationFee(
+        amountCents,
+        tenant?.applicationFeePctBps ?? 0,
+        tenant?.applicationFeeFixedCents ?? 0,
+      );
+
+      const intent = await stripeClient.paymentIntents.create(
+        {
+          amount: amountCents,
+          currency: "usd",
+          payment_method: paymentMethodId,
+          payment_method_types: ["card"],
+          confirm: true,
+          application_fee_amount: applicationFee,
+          description: description ?? "POS card-not-present payment",
+        },
+        { stripeAccount: stripeAccountId },
+      );
 
       res.json({ id: intent.id, status: intent.status, amount: intent.amount });
     } catch (err) {

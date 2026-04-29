@@ -735,7 +735,7 @@ export default function Settings() {
   interface LocationDetail {
     id: string; name: string; address: string; city: string; state: string; zip: string; phone: string;
     timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-    autoExecuteRenewals: boolean; logoUrl: string;
+    autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
     qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
     stripeConnected: boolean; stripeAccountId: string | null; stripeOnboardingComplete: boolean;
   }
@@ -1938,6 +1938,10 @@ export default function Settings() {
                     <label style={st.checkbox}>
                       <input type="checkbox" checked={!!locationForm.rentalsEnabled} onChange={(e) => handleLocationFormChange('rentalsEnabled', e.target.checked)} />
                       Rentals enabled
+                    </label>
+                    <label style={st.checkbox} title="Show the ACH (bank transfer) button in the POS counter for this location. Off by default — most marinas don't want ACH at the front desk.">
+                      <input type="checkbox" checked={!!locationForm.posAchEnabled} onChange={(e) => handleLocationFormChange('posAchEnabled', e.target.checked)} />
+                      Show ACH on POS
                     </label>
                   </div>
 
