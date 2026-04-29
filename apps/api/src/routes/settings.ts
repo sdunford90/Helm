@@ -453,6 +453,13 @@ router.post("/stripe/refresh-status", ...clerkAuth(), requireRole("MARINA_OWNER"
       const chargesEnabled = account.charges_enabled ?? false;
       const payoutsEnabled = account.payouts_enabled ?? false;
       const detailsSubmitted = account.details_submitted ?? false;
+      const requirements = {
+        currentlyDue: account.requirements?.currently_due ?? [],
+        pastDue: account.requirements?.past_due ?? [],
+        eventuallyDue: account.requirements?.eventually_due ?? [],
+        pendingVerification: account.requirements?.pending_verification ?? [],
+        disabledReason: account.requirements?.disabled_reason ?? null,
+      };
 
       // Mirror handleAccountUpdated: mark onboarding complete when the
       // account can accept charges. Do not flip back to false here — the
@@ -486,6 +493,7 @@ router.post("/stripe/refresh-status", ...clerkAuth(), requireRole("MARINA_OWNER"
         chargesEnabled,
         payoutsEnabled,
         detailsSubmitted,
+        requirements,
         accountId: `****${location.stripeAccountId.slice(-4)}`,
         dashboardUrl: `https://dashboard.stripe.com/${location.stripeAccountId}`,
       });

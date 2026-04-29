@@ -747,6 +747,36 @@ export default function Settings() {
   const [locationQboActing, setLocationQboActing] = useState(false);
   const [locationStripeActing, setLocationStripeActing] = useState(false);
 
+  // Live Stripe Connect status pulled from /stripe/refresh-status for
+  // the currently-selected location. Separate from
+  // `locationDetail.stripeOnboardingComplete` because the DB flag is
+  // webhook-driven and can lag, while this reflects what Stripe
+  // currently says — including the precise list of requirements they
+  // are still waiting on. Also distinct from the tenant-level
+  // `stripeStatus` declared above.
+  interface LocationStripeRefreshStatus {
+    // Stamp the response with the locationId it was fetched for so a
+    // late-arriving response from a previously-selected location can be
+    // ignored at render time (prevents wrong "Stripe still needs…" data
+    // bleeding across fast location switches).
+    locationId: string;
+    connected: boolean;
+    onboardingComplete: boolean;
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    requirements?: {
+      currentlyDue: string[];
+      pastDue: string[];
+      eventuallyDue: string[];
+      pendingVerification: string[];
+      disabledReason: string | null;
+    };
+    accountId: string | null;
+    dashboardUrl: string | null;
+  }
+  const [locationStripeStatus, setLocationStripeStatus] = useState<LocationStripeRefreshStatus | null>(null);
+
   // ── Tax Jurisdictions ──────────────────────────────────────────────────────
   interface TaxJurisdiction {
     id: string; code: string; name: string; kind: string;
@@ -858,15 +888,54 @@ export default function Settings() {
   };
   // ── End Tax Jurisdictions ──────────────────────────────────────────────────
 
+  // Pull live Stripe status (capabilities + outstanding requirements)
+  // for a location. Safe to call repeatedly; non-fatal if it fails since
+  // the cached `locationDetail.stripeOnboardingComplete` flag is the
+  // ultimate fallback for the basic Connected/Incomplete badge.
+  const refreshLocationStripeStatus = React.useCallback(async (id: string) => {
+    try {
+      const r = await fetch('/api/settings/stripe/refresh-status', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationId: id }),
+      });
+      if (!r.ok) return;
+      const body = (await r.json()) as Omit<LocationStripeRefreshStatus, 'locationId'>;
+      // Stamp the response with the locationId we asked about so the
+      // render guard can reject late responses from a previously-viewed
+      // location.
+      setLocationStripeStatus({ ...body, locationId: id });
+      // If Stripe now reports the account as connected (charges enabled),
+      // update the cached locationDetail immediately so the badge flips
+      // without waiting for another fetch.
+      if (body.connected) {
+        setLocationDetail((prev) =>
+          prev && prev.id === id
+            ? { ...prev, stripeConnected: true, stripeOnboardingComplete: true }
+            : prev,
+        );
+      }
+    } catch {
+      /* non-fatal background refresh */
+    }
+  }, []);
+
   const [locationLoadError, setLocationLoadError] = useState<string | null>(null);
   const fetchLocationDetail = React.useCallback(async (id: string) => {
     setLocationLoadError(null);
+    setLocationStripeStatus(null);
     try {
       const r = await fetch(`/api/settings/locations/${id}`, { credentials: 'include' });
       if (r.ok) {
         const body = await r.json();
         setLocationDetail(body.location);
         setLocationForm(body.location);
+        // If a Stripe account exists for this location, fetch live status
+        // from Stripe so we can show what (if anything) is still pending.
+        if (body.location?.stripeAccountId) {
+          void refreshLocationStripeStatus(id);
+        }
         return;
       }
       // Surface the failure so the user understands why the form stays empty,
@@ -1020,13 +1089,7 @@ export default function Settings() {
           // or unreachable. Pull the live account state from Stripe so
           // the UI reflects "connected" as soon as the popup closes.
           (async () => {
-            try {
-              await fetch('/api/settings/stripe/refresh-status', {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ locationId: targetLocationId }),
-              });
-            } catch { /* fall through to the normal refresh */ }
+            await refreshLocationStripeStatus(targetLocationId);
             await fetchLocationDetail(targetLocationId);
             setSavedMsg('Stripe connected for this location');
             setTimeout(() => setSavedMsg(null), 3000);
@@ -1971,43 +2034,26 @@ export default function Settings() {
                   </div>
                 )}
 
-                {/* QBO Webhook registration info — surface URL + realm ID
-                    so operators can register the endpoint in the Intuit
-                    developer console for this location's company file. */}
+                {/* QBO webhook note — Intuit webhooks are configured ONCE
+                    on the Helm Intuit app at the developer-console level
+                    and apply to every authorized realm. There is no
+                    per-location/per-realm registration step for the
+                    operator. We expose the realm ID below for support
+                    diagnostics only. */}
                 {locationDetail.qboConnected && (
-                  <div style={{ marginTop: '8px', padding: '14px 16px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '10px' }}>
+                  <div style={{ marginTop: '8px', padding: '12px 14px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
                       <Info size={14} style={{ color: '#64748B', marginTop: '2px', flexShrink: 0 }} />
                       <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5 }}>
-                        Register this webhook endpoint in your QuickBooks Online developer console (Webhooks → Endpoint URL) so this location's invoice and customer changes sync back into Helm.
+                        <strong style={{ color: '#0A2342' }}>Webhooks: managed centrally.</strong>{' '}
+                        QuickBooks delivers invoice and customer events for every connected company to one Helm endpoint, registered once at the platform level. No webhook setup is required in this location's QuickBooks account.
+                        {locationDetail.qboRealmId && (
+                          <span style={{ display: 'block', marginTop: '6px', color: '#94A3B8', fontSize: '11px' }}>
+                            Realm ID (for support): <code style={{ fontFamily: 'monospace', color: '#64748B' }}>{locationDetail.qboRealmId}</code>
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div style={{ marginBottom: '8px' }}>
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Webhook URL</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <code style={{ flex: 1, fontSize: '12px', padding: '8px 10px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', color: '#0A2342', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                          {`${window.location.origin}/api/qbo/webhook`}
-                        </code>
-                        <button
-                          type="button"
-                          style={{ ...st.outlineBtn, padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                          onClick={() => {
-                            void navigator.clipboard.writeText(`${window.location.origin}/api/qbo/webhook`);
-                          }}
-                          title="Copy webhook URL"
-                        >
-                          <Copy size={12} /> Copy URL
-                        </button>
-                      </div>
-                    </div>
-                    {locationDetail.qboRealmId && (
-                      <div>
-                        <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Realm ID (this location)</div>
-                        <code style={{ display: 'inline-block', fontSize: '12px', padding: '6px 10px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '6px', color: '#0A2342', fontFamily: 'monospace' }}>
-                          {locationDetail.qboRealmId}
-                        </code>
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -2057,6 +2103,74 @@ export default function Settings() {
                     )}
                   </div>
                 </div>
+
+                {/* Stripe requirements callout — when the location has a
+                    Stripe account but Stripe is not yet accepting charges,
+                    show exactly what Stripe is still waiting on so the
+                    operator knows what to finish in their Stripe dashboard.
+                    Driven by the live /stripe/refresh-status response. */}
+                {locationDetail.stripeAccountId
+                  && !locationDetail.stripeConnected
+                  && locationStripeStatus
+                  && locationStripeStatus.locationId === locationDetail.id
+                  && (() => {
+                  const req = locationStripeStatus.requirements;
+                  const allMissing = [
+                    ...(req?.pastDue ?? []),
+                    ...(req?.currentlyDue ?? []),
+                  ];
+                  const dedupedMissing = Array.from(new Set(allMissing));
+                  const pending = req?.pendingVerification ?? [];
+                  const disabledReason = req?.disabledReason ?? null;
+                  const nothingToShow = dedupedMissing.length === 0 && pending.length === 0 && !disabledReason;
+                  return (
+                    <div style={{ marginTop: '8px', padding: '14px 16px', background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: dedupedMissing.length || pending.length || disabledReason ? '10px' : 0 }}>
+                        <Info size={14} style={{ color: '#B45309', marginTop: '2px', flexShrink: 0 }} />
+                        <div style={{ fontSize: '12px', color: '#92400E', lineHeight: 1.5 }}>
+                          <strong style={{ color: '#78350F' }}>Stripe isn't accepting charges yet for this location.</strong>{' '}
+                          {nothingToShow
+                            ? 'Stripe is reviewing the account. This usually clears within a few minutes — use Refresh status below to re-check.'
+                            : 'Open Stripe and complete the items below, then click Refresh status.'}
+                        </div>
+                      </div>
+                      {dedupedMissing.length > 0 && (
+                        <div style={{ marginBottom: pending.length || disabledReason ? '8px' : 0 }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#78350F', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Stripe still needs</div>
+                          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#78350F', lineHeight: 1.6 }}>
+                            {dedupedMissing.map((code) => (
+                              <li key={code}><code style={{ fontFamily: 'monospace' }}>{code}</code></li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {pending.length > 0 && (
+                        <div style={{ marginBottom: disabledReason ? '8px' : 0 }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#78350F', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Pending Stripe verification</div>
+                          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#78350F', lineHeight: 1.6 }}>
+                            {pending.map((code) => (
+                              <li key={code}><code style={{ fontFamily: 'monospace' }}>{code}</code></li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {disabledReason && (
+                        <div style={{ fontSize: '12px', color: '#78350F' }}>
+                          <strong>Disabled reason:</strong> <code style={{ fontFamily: 'monospace' }}>{disabledReason}</code>
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                        <button
+                          type="button"
+                          style={{ ...st.outlineBtn, padding: '6px 10px', fontSize: '12px' }}
+                          onClick={() => { void refreshLocationStripeStatus(locationDetail.id); }}
+                        >
+                          Refresh status
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Stripe Connect webhook note — Stripe Connect uses a single
                     platform-wide webhook endpoint that's already registered
