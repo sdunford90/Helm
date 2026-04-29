@@ -539,46 +539,15 @@ export default function QuickBooksSetup() {
                   >
                     {(
                       [
-                        // Slots without a type filter accept any account
-                        // (matches the back-end validator, which only enforces
-                        // type for the four "system posting" slots below).
-                        { key: 'arGlAccountId', label: 'Accounts Receivable', types: null },
-                        {
-                          key: 'undepositedFundsGlAccountId',
-                          label: 'Cash / Undeposited Funds',
-                          types: null,
-                        },
-                        {
-                          key: 'deferredRevenueGlAccountId',
-                          label: 'Deferred Revenue',
-                          types: null,
-                        },
-                        // System posting accounts — replace the hardcoded
-                        // 4500 / 2400 / 4700 / 4600 fallbacks. The back-end
-                        // resolver throws UNCONFIGURED_GL_MAPPING for QBO-
-                        // connected locations that leave these blank.
-                        {
-                          key: 'defaultRevenueGlAccountId',
-                          label: 'Default Revenue (4500)',
-                          types: ['REVENUE'] as const,
-                        },
-                        {
-                          key: 'salesTaxGlAccountId',
-                          label: 'Sales Tax Payable (2400)',
-                          types: ['LIABILITY'] as const,
-                        },
-                        {
-                          key: 'earlyTerminationGlAccountId',
-                          label: 'Early Termination Income (4700)',
-                          types: ['REVENUE'] as const,
-                        },
-                        {
-                          key: 'achReturnFeeGlAccountId',
-                          label: 'ACH Return Fee Revenue (4600)',
-                          types: ['REVENUE'] as const,
-                        },
+                        { key: 'arGlAccountId', label: 'Accounts Receivable', types: null, system: false },
+                        { key: 'undepositedFundsGlAccountId', label: 'Cash / Undeposited Funds', types: null, system: false },
+                        { key: 'deferredRevenueGlAccountId', label: 'Deferred Revenue', types: null, system: false },
+                        { key: 'defaultRevenueGlAccountId', label: 'Default Revenue (4500)', types: ['REVENUE'] as const, system: true },
+                        { key: 'salesTaxGlAccountId', label: 'Sales Tax Payable (2400)', types: ['LIABILITY'] as const, system: true },
+                        { key: 'earlyTerminationGlAccountId', label: 'Early Termination Income (4700)', types: ['REVENUE'] as const, system: true },
+                        { key: 'achReturnFeeGlAccountId', label: 'ACH Return Fee Revenue (4600)', types: ['REVENUE'] as const, system: true },
                       ] as const
-                    ).map(({ key, label, types }) => {
+                    ).map(({ key, label, types, system }) => {
                       const filtered = types
                         ? posting.candidates.filter((c) =>
                             (types as ReadonlyArray<string>).includes(c.type),
@@ -608,7 +577,11 @@ export default function QuickBooksSetup() {
                               backgroundColor: '#FFFFFF',
                             }}
                           >
-                            <option value="">— Use tenant default —</option>
+                            <option value="">
+                              {system && posting.qboConnected
+                                ? '— Required: pin an account —'
+                                : '— Use tenant default —'}
+                            </option>
                             {filtered.length === 0 ? (
                               <option value="" disabled>
                                 No matching {types ? types.join('/') : ''} accounts in chart
