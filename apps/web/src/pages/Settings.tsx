@@ -858,12 +858,43 @@ export default function Settings() {
   };
   // ── End Tax Jurisdictions ──────────────────────────────────────────────────
 
+  const [locationLoadError, setLocationLoadError] = useState<string | null>(null);
   const fetchLocationDetail = React.useCallback(async (id: string) => {
-    const r = await fetch(`/api/settings/locations/${id}`, { credentials: 'include' });
-    if (r.ok) {
-      const body = await r.json();
-      setLocationDetail(body.location);
-      setLocationForm(body.location);
+    setLocationLoadError(null);
+    try {
+      const r = await fetch(`/api/settings/locations/${id}`, { credentials: 'include' });
+      if (r.ok) {
+        const body = await r.json();
+        setLocationDetail(body.location);
+        setLocationForm(body.location);
+        return;
+      }
+      // Surface the failure so the user understands why the form stays empty,
+      // instead of silently leaving the "Select a location to edit" placeholder
+      // up forever. The most common cause is a 403 because the signed-in user
+      // does not have a tenant-staff role on this tenant (e.g. a platform
+      // admin without a MARINA_OWNER role row).
+      let detail = '';
+      try {
+        const body = await r.json();
+        detail = body?.error || body?.code || '';
+      } catch {
+        /* not JSON */
+      }
+      const msg =
+        r.status === 403
+          ? `You don't have permission to view this location's settings (${detail || 'forbidden'}).`
+          : r.status === 404
+            ? 'Location not found.'
+            : `Couldn't load location settings (HTTP ${r.status}${detail ? ` — ${detail}` : ''}).`;
+      setLocationLoadError(msg);
+      setLocationDetail(null);
+      console.error('[settings] failed to load location', id, r.status, detail);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      setLocationLoadError(`Couldn't reach the server: ${msg}`);
+      setLocationDetail(null);
+      console.error('[settings] network error loading location', id, err);
     }
   }, []);
 
@@ -1668,7 +1699,9 @@ export default function Settings() {
           {/* Detail panel */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {!locationDetail ? (
-              <div style={{ ...st.card, color: '#94A3B8', textAlign: 'center', padding: '48px' }}>Select a location to edit its settings</div>
+              <div style={{ ...st.card, color: locationLoadError ? '#B91C1C' : '#94A3B8', textAlign: 'center', padding: '48px' }}>
+                {locationLoadError || 'Select a location to edit its settings'}
+              </div>
             ) : (
               <>
                 {/* Basic Info */}

@@ -264,6 +264,18 @@ export function clerkAuth(): RequestHandler[] {
  */
 export function requireRole(...roles: string[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // PLATFORM_ADMIN superusers bypass tenant-staff role gates so they can
+    // operate on any route for support/debugging purposes. clerkAuth above
+    // still requires the platform admin to have a user row in this tenant
+    // (or to be using impersonation), so this does not weaken cross-tenant
+    // isolation — it only lets a platform admin act inside a tenant where
+    // they are already a member without first being granted a tenant role
+    // like MARINA_OWNER. This matches the intent documented on
+    // LOCATION_BYPASS_ROLES above.
+    if (req.userRole === "PLATFORM_ADMIN") {
+      next();
+      return;
+    }
     if (!req.userRole || !roles.includes(req.userRole)) {
       res.status(403).json({
         error: "Insufficient permissions",
