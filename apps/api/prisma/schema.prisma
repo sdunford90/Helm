@@ -491,6 +491,7 @@ model Location {
   dockageRateGlMappings      DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
   serviceFeeGlMappings       ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
   rentalProductGlMappings    RentalProductGlMapping[]   @relation(name: "LocationRentalProductGlMappings")
+  securityDeposits           SecurityDeposit[]          @relation(name: "LocationSecurityDeposits")
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -1196,6 +1197,12 @@ model DeferredEntry {
 model SecurityDeposit {
   id                  String        @id @default(uuid())
   tenantId            String
+  // Originating marina (derived from contract.slip.locationId at creation time
+  // and frozen there). Required so postSecurityDeposit / releaseSecurityDeposit
+  // always credit/debit the originating marina's bank and security-deposits-held
+  // accounts under its per-location chart of accounts. Nullable only because
+  // legacy rows pre-dating this column may not have a derivable location.
+  locationId          String?
   customerId          String
   contractId          String?
   amountCents         Int
@@ -1207,8 +1214,10 @@ model SecurityDeposit {
 
   customer Customer      @relation(fields: [customerId], references: [id])
   contract SlipContract? @relation(fields: [contractId], references: [id])
+  location Location?     @relation(name: "LocationSecurityDeposits", fields: [locationId], references: [id])
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("security_deposits")
 }
 

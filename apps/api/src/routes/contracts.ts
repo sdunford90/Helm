@@ -599,11 +599,18 @@ router.post(
           });
         }
 
-        // Generate security deposit invoice if configured
+        // Generate security deposit invoice if configured.
+        // Stamp the originating marina (slip.locationId) onto the deposit row
+        // so postSecurityDeposit / releaseSecurityDeposit always credit/debit
+        // that marina's bank and security-deposits-held accounts under its
+        // per-location chart of accounts. Without this, multi-marina operators
+        // with separate QBO realms could see deposits land on the wrong
+        // marina's books.
         if (data.securityDepositCents && data.securityDepositCents > 0) {
           await tx.securityDeposit.create({
             data: {
               tenantId,
+              locationId: slip.locationId,
               customerId: data.customerId,
               contractId: newContract.id,
               amountCents: data.securityDepositCents,

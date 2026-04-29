@@ -44,7 +44,7 @@ export const mockPrisma = {
   conciergeVendor: { findMany: vi.fn().mockResolvedValue([]) },
   collectionsAccount: { findMany: vi.fn().mockResolvedValue([]) },
   deferredSchedule: { findMany: vi.fn().mockResolvedValue([]) },
-  securityDeposit: { findMany: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 }, _count: { id: 0 } }) },
+  securityDeposit: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }), aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 }, _count: { id: 0 } }) },
   chargeback: { findMany: vi.fn().mockResolvedValue([]) },
   glAccount: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
   vendor: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
