@@ -24,14 +24,18 @@ export async function createConnectionToken(connectedAccountId: string): Promise
 }
 
 /**
- * List registered WisePOS E readers for a connected marina account.
+ * List all registered Terminal readers for a connected marina account.
+ *
+ * No `device_type` filter is applied — Stripe's allowed device-type values
+ * have changed over time (e.g. the legacy `"wispos_e"` value is now invalid
+ * and causes the API to 400 the entire request, returning zero readers even
+ * for marinas that have a WisePOS E paired). The POS Settings → Terminal
+ * health view and the POS modal both work better with the unfiltered list,
+ * so we let Stripe return every reader registered to the connected account.
  */
 export async function listReaders(connectedAccountId: string): Promise<any[]> {
   const readers = await stripe.terminal.readers.list(
-    {
-      device_type: "wispos_e" as any,
-      limit: 100,
-    },
+    { limit: 100 },
     { stripeAccount: connectedAccountId },
   );
 

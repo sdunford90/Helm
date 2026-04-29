@@ -10,7 +10,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Package, Search, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag,
+  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
@@ -376,8 +376,8 @@ export default function Settings() {
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories'];
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'catalog' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'catalog', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal'];
   const tabFromUrl = searchParams.get('tab');
   // The Integrations tab was retired — Stripe Connect and QuickBooks are now
   // managed per-Location. Redirect any old deep-links to the Locations tab.
@@ -776,6 +776,103 @@ export default function Settings() {
     dashboardUrl: string | null;
   }
   const [locationStripeStatus, setLocationStripeStatus] = useState<LocationStripeRefreshStatus | null>(null);
+
+  // ── Per-location reader pairing health (POS Settings → Terminal) ───────────
+  // Each entry tracks the reader discovery result for one location so the
+  // Terminal tab can render an at-a-glance "is at least one reader paired
+  // and online?" status. We pull from the same `/api/pos/terminal/readers`
+  // endpoint the POS modal already uses (per-location Stripe wiring), so
+  // this view stays in sync with what cashiers actually see at checkout.
+  interface ReaderHealthEntry {
+    id: string;
+    label: string;
+    status: 'online' | 'offline' | 'unknown';
+    lastSeenAt: number | null;
+    deviceType: string;
+  }
+  type ReaderHealthState =
+    | { state: 'idle' }
+    | { state: 'loading' }
+    | { state: 'ok'; readers: ReaderHealthEntry[]; fetchedAt: number }
+    | { state: 'stripe_not_configured' }
+    | { state: 'forbidden' }
+    | { state: 'error'; message: string };
+  const [readerHealth, setReaderHealth] = useState<Record<string, ReaderHealthState>>({});
+
+  const fetchLocationReaderHealth = React.useCallback(async (locationId: string) => {
+    setReaderHealth((prev) => ({ ...prev, [locationId]: { state: 'loading' } }));
+    try {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(
+        `/api/pos/terminal/readers?locationId=${encodeURIComponent(locationId)}`,
+        { method: 'GET', headers },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const code = (body as any)?.error;
+        if (res.status === 400 && code === 'STRIPE_NOT_CONFIGURED') {
+          setReaderHealth((prev) => ({ ...prev, [locationId]: { state: 'stripe_not_configured' } }));
+          return;
+        }
+        if (res.status === 403) {
+          setReaderHealth((prev) => ({ ...prev, [locationId]: { state: 'forbidden' } }));
+          return;
+        }
+        setReaderHealth((prev) => ({
+          ...prev,
+          [locationId]: { state: 'error', message: typeof code === 'string' ? code : `HTTP ${res.status}` },
+        }));
+        return;
+      }
+      interface RawReader {
+        id: string;
+        label?: string | null;
+        serial_number?: string | null;
+        status?: string | null;
+        // Stripe documents `last_seen_at` on Terminal.Reader as milliseconds
+        // since epoch — explicitly called out as an exception to Stripe's
+        // usual seconds-based timestamps. We pass it straight to `new Date()`
+        // (which expects ms), so do NOT multiply by 1000 here.
+        last_seen_at?: number | null;
+        device_type?: string | null;
+      }
+      const json = await res.json() as { data?: RawReader[] };
+      const readers: ReaderHealthEntry[] = (json.data ?? []).map((r) => ({
+        id: String(r.id),
+        label: r.label || r.serial_number || 'Reader',
+        status: r.status === 'online' ? 'online' : r.status === 'offline' ? 'offline' : 'unknown',
+        lastSeenAt: typeof r.last_seen_at === 'number' ? r.last_seen_at : null,
+        deviceType: typeof r.device_type === 'string' ? r.device_type : '',
+      }));
+      setReaderHealth((prev) => ({
+        ...prev,
+        [locationId]: { state: 'ok', readers, fetchedAt: Date.now() },
+      }));
+    } catch (err) {
+      setReaderHealth((prev) => ({
+        ...prev,
+        [locationId]: { state: 'error', message: (err as Error).message ?? 'Request failed' },
+      }));
+    }
+  }, [getToken]);
+
+  // Auto-refresh reader health for every location when the Terminal tab is
+  // first opened (or the location list changes). Per-location refresh is
+  // also exposed on each row so operators can re-check after fixing a reader
+  // without leaving the page.
+  React.useEffect(() => {
+    if (tab !== 'terminal' || marinaLocations.length === 0) return;
+    marinaLocations.forEach((loc) => {
+      if (!readerHealth[loc.id]) void fetchLocationReaderHealth(loc.id);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, marinaLocations]);
+
+  const refreshAllReaderHealth = React.useCallback(() => {
+    marinaLocations.forEach((loc) => { void fetchLocationReaderHealth(loc.id); });
+  }, [marinaLocations, fetchLocationReaderHealth]);
 
   // ── Tax Jurisdictions ──────────────────────────────────────────────────────
   interface TaxJurisdiction {
@@ -1591,6 +1688,7 @@ export default function Settings() {
     { key: 'roles', label: 'Roles', icon: Shield },
     { key: 'tax', label: 'Tax', icon: Landmark },
     { key: 'categories', label: 'Categories', icon: Tag },
+    { key: 'terminal', label: 'Terminal', icon: Wifi },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
@@ -3611,6 +3709,177 @@ export default function Settings() {
       )}
 
       {tab === 'categories' && <CategoriesSettings />}
+
+      {tab === 'terminal' && (
+        <>
+          <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '8px', padding: '16px 20px', marginBottom: '20px', display: 'flex', gap: '12px' }}>
+            <Wifi size={20} style={{ color: '#1D4ED8', flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0A2342', marginBottom: '4px' }}>Card reader pairing health</div>
+              <div style={{ fontSize: '13px', color: '#1E3A8A', lineHeight: 1.5 }}>
+                Each location uses its own Stripe account, so card readers must be paired separately at every property. If a location has no online reader, card sales there fall back to manual keyed entry — which costs more in interchange and is slower for customers. Use this view to spot and fix unpaired locations before it shows up on your statement.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <div style={{ fontSize: '13px', color: '#64748B' }}>
+              Status comes from Stripe&apos;s reader heartbeat. Use <strong>Refresh</strong> to re-run discovery without leaving the page.
+            </div>
+            <button
+              type="button"
+              style={st.outlineBtn}
+              onClick={refreshAllReaderHealth}
+              disabled={marinaLocations.length === 0}
+            >
+              <RefreshCw size={14} /> Refresh all
+            </button>
+          </div>
+
+          {marinaLocations.length === 0 ? (
+            <div style={{ ...st.card, textAlign: 'center', color: '#94A3B8', padding: '48px' }}>
+              No locations configured yet.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {marinaLocations.map((loc) => {
+                const entry = readerHealth[loc.id] ?? { state: 'idle' as const };
+                const onlineReaders = entry.state === 'ok' ? entry.readers.filter((r) => r.status === 'online') : [];
+
+                let pillBg = '#F3F4F6';
+                let pillFg = '#64748B';
+                let pillIcon: React.ReactNode = <Info size={12} />;
+                let pillText = 'Checking…';
+                if (entry.state === 'loading' || entry.state === 'idle') {
+                  pillBg = '#F3F4F6'; pillFg = '#64748B';
+                  pillIcon = <RefreshCw size={12} />;
+                  pillText = entry.state === 'loading' ? 'Checking reader…' : 'Not checked yet';
+                } else if (entry.state === 'stripe_not_configured') {
+                  pillBg = '#F3F4F6'; pillFg = '#64748B';
+                  pillIcon = <Info size={12} />;
+                  pillText = 'Stripe not connected';
+                } else if (entry.state === 'forbidden') {
+                  pillBg = '#FEF3C7'; pillFg = '#92400E';
+                  pillIcon = <Lock size={12} />;
+                  pillText = 'No access';
+                } else if (entry.state === 'error') {
+                  pillBg = '#FEE2E2'; pillFg = '#991B1B';
+                  pillIcon = <AlertTriangle size={12} />;
+                  pillText = 'Could not check';
+                } else if (entry.state === 'ok') {
+                  if (entry.readers.length === 0) {
+                    pillBg = '#FEE2E2'; pillFg = '#991B1B';
+                    pillIcon = <AlertTriangle size={12} />;
+                    pillText = 'No reader paired';
+                  } else if (onlineReaders.length > 0) {
+                    pillBg = '#DEF7EC'; pillFg = '#03543F';
+                    pillIcon = <CheckCircle2 size={12} />;
+                    pillText = entry.readers.length > 1
+                      ? `${onlineReaders.length} of ${entry.readers.length} online`
+                      : 'Reader online';
+                  } else {
+                    pillBg = '#FEF3C7'; pillFg = '#92400E';
+                    pillIcon = <AlertTriangle size={12} />;
+                    pillText = entry.readers.length > 1 ? 'All readers offline' : 'Reader offline';
+                  }
+                }
+
+                return (
+                  <div key={loc.id} style={{ background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '16px 20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: 1 }}>
+                        <MapPin size={18} style={{ color: '#0A2342', flexShrink: 0 }} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>{loc.name}</div>
+                          <div style={{ marginTop: '6px', display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '999px', backgroundColor: pillBg, color: pillFg, fontSize: '12px', fontWeight: 600 }}>
+                            {pillIcon} {pillText}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        style={{ ...st.outlineBtn, padding: '6px 10px', fontSize: '12px' }}
+                        onClick={() => { void fetchLocationReaderHealth(loc.id); }}
+                        disabled={entry.state === 'loading'}
+                      >
+                        <RefreshCw size={12} />{entry.state === 'loading' ? ' Checking…' : ' Refresh'}
+                      </button>
+                    </div>
+
+                    {entry.state === 'stripe_not_configured' && (
+                      <div style={{ marginTop: '10px', fontSize: '12px', color: '#475569' }}>
+                        Connect Stripe for this location in <a href={`/settings?tab=locations&locationId=${encodeURIComponent(loc.id)}`} style={{ color: '#1D4ED8', textDecoration: 'underline' }}>Settings → Locations</a> before pairing a reader.
+                      </div>
+                    )}
+
+                    {entry.state === 'forbidden' && (
+                      <div style={{ marginTop: '10px', fontSize: '12px', color: '#92400E' }}>
+                        Your role doesn&apos;t have access to this location&apos;s payment settings.
+                      </div>
+                    )}
+
+                    {entry.state === 'error' && (
+                      <div style={{ marginTop: '10px', fontSize: '12px', color: '#991B1B' }}>
+                        {entry.message}
+                      </div>
+                    )}
+
+                    {entry.state === 'ok' && entry.readers.length === 0 && (
+                      <div style={{ marginTop: '10px', fontSize: '12px', color: '#475569' }}>
+                        No card reader is registered to this location&apos;s Stripe account. Card sales here will fall back to manually keyed entry.
+                      </div>
+                    )}
+
+                    {entry.state === 'ok' && entry.readers.length > 0 && (
+                      <div style={{ marginTop: '12px', borderTop: '1px solid #F1F5F9', paddingTop: '12px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94A3B8', marginBottom: '8px' }}>
+                          Registered readers
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {entry.readers.map((r) => {
+                            const isOnline = r.status === 'online';
+                            const dotColor = isOnline ? '#10B981' : r.status === 'offline' ? '#94A3B8' : '#CBD5E1';
+                            const lastSeen = r.lastSeenAt ? new Date(r.lastSeenAt) : null;
+                            return (
+                              <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '8px 12px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: dotColor, flexShrink: 0 }} />
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {r.label}
+                                    </div>
+                                    {r.deviceType && (
+                                      <div style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'monospace' }}>{r.deviceType}</div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#64748B', textAlign: 'right', flexShrink: 0 }}>
+                                  <div style={{ fontWeight: 600, color: isOnline ? '#03543F' : '#475569' }}>
+                                    {isOnline ? 'Online' : r.status === 'offline' ? 'Offline' : 'Unknown'}
+                                  </div>
+                                  <div style={{ marginTop: '2px' }}>
+                                    {lastSeen ? `Last seen ${lastSeen.toLocaleString()}` : 'Last seen —'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {entry.state === 'ok' && (
+                      <div style={{ marginTop: '10px', fontSize: '11px', color: '#94A3B8' }}>
+                        Checked {new Date(entry.fetchedAt).toLocaleTimeString()}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
