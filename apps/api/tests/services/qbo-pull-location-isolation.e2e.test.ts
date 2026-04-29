@@ -21,6 +21,7 @@ let resolveProductGlAccounts: typeof import('../../src/services/gl-account-resol
 let postInvoice: typeof import('../../src/services/gl-posting.js').postInvoice;
 let postPayment: typeof import('../../src/services/gl-posting.js').postPayment;
 let postRefund: typeof import('../../src/services/gl-posting.js').postRefund;
+let postEarlyTermination: typeof import('../../src/services/gl-posting.js').postEarlyTermination;
 
 // In-memory store backing the prisma mocks: enough Prisma fidelity
 // (notIn/not predicates, P2002 unique-conflict simulation, stateful
@@ -50,6 +51,13 @@ interface LocationRow {
   qboRealmId: string | null;
   qboTokenExpiresAt: Date | null;
   qboLastChartOfAccountsSyncAt: Date | null;
+  // Per-location SYSTEM posting account pins (Task #222). Optional so the
+  // existing tests don't need updating; the location.findUnique stub just
+  // returns the whole row and the resolver tolerates undefined as "no pin".
+  defaultRevenueGlAccountId?: string | null;
+  salesTaxGlAccountId?: string | null;
+  earlyTerminationGlAccountId?: string | null;
+  achReturnFeeGlAccountId?: string | null;
 }
 
 interface ProductGlMappingRow {
@@ -352,6 +360,7 @@ beforeEach(async () => {
   postInvoice = posting.postInvoice;
   postPayment = posting.postPayment;
   postRefund = posting.postRefund;
+  postEarlyTermination = posting.postEarlyTermination;
 });
 
 describe('end-to-end: QBO pull → per-location mapping → invoice posting keeps locations isolated', () => {
@@ -785,5 +794,331 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     expect(refundAccountsA.has(bankB.id)).toBe(false);
     expect(refundAccountsB.has(arA.id)).toBe(false);
     expect(refundAccountsB.has(bankA.id)).toBe(false);
+  });
+
+  it('per-location pinned SYSTEM posting accounts route default-revenue, sales-tax, and early-termination postings to each location\'s own chart row', async () => {
+    // Regression guard for Task #222: gl-posting.ts no longer falls back to
+    // hardcoded account numbers (4500 default revenue, 2400 sales tax,
+    // 4700 early termination, 4600 ACH return fee) for QBO-connected
+    // locations. Two QBO-connected locations whose pulled charts share
+    // those numbers but live in different realms must each post to their
+    // own pinned chart rows; a third QBO-connected location with NO pin
+    // must throw UNCONFIGURED_GL_MAPPING rather than silently picking
+    // whichever 4500/2400/4700 row Prisma returned first.
+    const tenantId = 'tenant-system-posting';
+    const inAnHour = new Date(Date.now() + 60 * 60 * 1000);
+
+    const locA: LocationRow = {
+      id: 'loc-sys-a',
+      tenantId,
+      name: 'Sys Marina A',
+      qboAccessToken: 'access-A',
+      qboRefreshToken: 'refresh-A',
+      qboRealmId: 'realm-A',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    const locB: LocationRow = {
+      id: 'loc-sys-b',
+      tenantId,
+      name: 'Sys Marina B',
+      qboAccessToken: 'access-B',
+      qboRefreshToken: 'refresh-B',
+      qboRealmId: 'realm-B',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    const locC: LocationRow = {
+      id: 'loc-sys-c',
+      tenantId,
+      name: 'Sys Marina C (no pins)',
+      qboAccessToken: 'access-C',
+      qboRefreshToken: 'refresh-C',
+      qboRealmId: 'realm-C',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    locations.set(locA.id, locA);
+    locations.set(locB.id, locB);
+    locations.set(locC.id, locC);
+
+    // Each realm exposes the same five account numbers but distinct QBO
+    // Ids and names. Numbers picked to exercise every system slot:
+    //   1200 A/R, 4500 default revenue, 2400 sales tax payable,
+    //   4700 early termination income, 2100 deferred revenue.
+    accountsByRealm['realm-A'] = [
+      { Id: 'a1',  Name: 'A/R — A',                   AcctNum: '1200', AccountType: 'Accounts Receivable',   Active: true },
+      { Id: 'a45', Name: 'Default Revenue — A',       AcctNum: '4500', AccountType: 'Income',                Active: true },
+      { Id: 'a24', Name: 'Sales Tax Payable — A',     AcctNum: '2400', AccountType: 'Other Current Liability', Active: true },
+      { Id: 'a47', Name: 'Early Termination Inc — A', AcctNum: '4700', AccountType: 'Income',                Active: true },
+      { Id: 'a21', Name: 'Deferred Revenue — A',      AcctNum: '2100', AccountType: 'Other Current Liability', Active: true },
+    ];
+    accountsByRealm['realm-B'] = [
+      { Id: 'b1',  Name: 'A/R — B',                   AcctNum: '1200', AccountType: 'Accounts Receivable',   Active: true },
+      { Id: 'b45', Name: 'Default Revenue — B',       AcctNum: '4500', AccountType: 'Income',                Active: true },
+      { Id: 'b24', Name: 'Sales Tax Payable — B',     AcctNum: '2400', AccountType: 'Other Current Liability', Active: true },
+      { Id: 'b47', Name: 'Early Termination Inc — B', AcctNum: '4700', AccountType: 'Income',                Active: true },
+      { Id: 'b21', Name: 'Deferred Revenue — B',      AcctNum: '2100', AccountType: 'Other Current Liability', Active: true },
+    ];
+    accountsByRealm['realm-C'] = [
+      { Id: 'c1',  Name: 'A/R — C',                   AcctNum: '1200', AccountType: 'Accounts Receivable',   Active: true },
+      { Id: 'c45', Name: 'Default Revenue — C',       AcctNum: '4500', AccountType: 'Income',                Active: true },
+    ];
+
+    await pullChartOfAccountsForLocation(locA.id, tenantId);
+    await pullChartOfAccountsForLocation(locB.id, tenantId);
+    await pullChartOfAccountsForLocation(locC.id, tenantId);
+
+    const accountFor = (locationId: string, acctNum: string) => {
+      const found = [...glAccounts.values()].find(
+        (a) => a.locationId === locationId && a.accountNumber === acctNum,
+      );
+      if (!found) throw new Error(`No account ${acctNum} for ${locationId}`);
+      return found;
+    };
+
+    // Mark deferred-revenue rows so getDeferredRevenueAccountId picks them
+    // (postEarlyTermination's washout branch needs this).
+    accountFor(locA.id, '2100').isDeferredRevenue = true;
+    accountFor(locB.id, '2100').isDeferredRevenue = true;
+
+    const arA = accountFor(locA.id, '1200');
+    const arB = accountFor(locB.id, '1200');
+    const defRevA = accountFor(locA.id, '4500');
+    const defRevB = accountFor(locB.id, '4500');
+    const taxA = accountFor(locA.id, '2400');
+    const taxB = accountFor(locB.id, '2400');
+    const termA = accountFor(locA.id, '4700');
+    const termB = accountFor(locB.id, '4700');
+    const defrA = accountFor(locA.id, '2100');
+    const defrB = accountFor(locB.id, '2100');
+
+    // Pin each location's system posting slots — the operator workflow
+    // after the chart pull. Also pin A/R + deferred so postInvoice and
+    // postEarlyTermination route their non-system legs to the right rows.
+    locA.arGlAccountId = arA.id as any;
+    (locA as any).defaultRevenueGlAccountId = defRevA.id;
+    (locA as any).salesTaxGlAccountId = taxA.id;
+    (locA as any).earlyTerminationGlAccountId = termA.id;
+    locB.arGlAccountId = arB.id as any;
+    (locB as any).defaultRevenueGlAccountId = defRevB.id;
+    (locB as any).salesTaxGlAccountId = taxB.id;
+    (locB as any).earlyTerminationGlAccountId = termB.id;
+
+    // ----- Invoice posting with a per-line revenue GL set explicitly
+    // (mirrors the QBO operator workflow — the line carries the per-
+    // product GL mapping) BUT a tax breakdown with NO rate-level
+    // glAccountId. The sales-tax credit must resolve through the
+    // location's pinned salesTax slot, never through a tenant-wide
+    // 2400/2401 lookup that could pick the other realm's row.
+    const invoiceA = {
+      id: 'inv-sys-A',
+      tenantId,
+      locationId: locA.id,
+      totalCents: 11000,
+      lineItems: [
+        {
+          id: 'li-sys-A',
+          extendedCents: 10000,
+          taxCents: 1000,
+          glAccountId: defRevA.id, // per-product GL mapping (set by operator)
+          isDeferred: false,
+        },
+      ],
+      taxBreakdowns: [
+        { glAccountId: null, taxCents: 1000 }, // forces salesTax resolution
+      ],
+    };
+    const invoiceB = {
+      id: 'inv-sys-B',
+      tenantId,
+      locationId: locB.id,
+      totalCents: 22000,
+      lineItems: [
+        {
+          id: 'li-sys-B',
+          extendedCents: 20000,
+          taxCents: 2000,
+          glAccountId: defRevB.id,
+          isDeferred: false,
+        },
+      ],
+      taxBreakdowns: [{ glAccountId: null, taxCents: 2000 }],
+    };
+
+    await postInvoice(invoiceA);
+    await postInvoice(invoiceB);
+
+    const entriesA = glEntries.filter((e) => e.sourceId === 'inv-sys-A');
+    const entriesB = glEntries.filter((e) => e.sourceId === 'inv-sys-B');
+
+    // Each invoice = A/R debit + revenue credit + sales-tax credit.
+    expect(entriesA).toHaveLength(3);
+    expect(entriesB).toHaveLength(3);
+
+    const accountIdsA = new Set(entriesA.map((e) => e.accountId));
+    const accountIdsB = new Set(entriesB.map((e) => e.accountId));
+
+    // A's invoice hits A's A/R + A's revenue + A's sales tax row — never
+    // B's, even though account numbers match.
+    expect(accountIdsA).toEqual(new Set([arA.id, defRevA.id, taxA.id]));
+    expect(accountIdsB).toEqual(new Set([arB.id, defRevB.id, taxB.id]));
+    expect(accountIdsA.has(taxB.id)).toBe(false);
+    expect(accountIdsB.has(taxA.id)).toBe(false);
+
+    // The sales-tax credit lands on each location's pinned sales-tax row.
+    const taxCreditA = entriesA.find((e) => e.accountId === taxA.id);
+    const taxCreditB = entriesB.find((e) => e.accountId === taxB.id);
+    expect(taxCreditA?.creditCents).toBe(1000);
+    expect(taxCreditB?.creditCents).toBe(2000);
+
+    // ----- Early termination: penalty leg uses the earlyTermination pin,
+    // washout leg uses defaultRevenue.
+    await postEarlyTermination(
+      { id: 'contract-sys-A', tenantId, locationId: locA.id },
+      5000,
+      3000,
+    );
+    await postEarlyTermination(
+      { id: 'contract-sys-B', tenantId, locationId: locB.id },
+      7000,
+      4000,
+    );
+
+    // postEarlyTermination posts two journals per contract with distinct
+    // sourceTypes: 'EARLY_TERMINATION' (penalty) and 'DEFERRED_WASHOUT'
+    // (washout). Capture both.
+    const termEntriesA = glEntries.filter(
+      (e) =>
+        e.sourceId === 'contract-sys-A' &&
+        (e.sourceType === 'EARLY_TERMINATION' || e.sourceType === 'DEFERRED_WASHOUT'),
+    );
+    const termEntriesB = glEntries.filter(
+      (e) =>
+        e.sourceId === 'contract-sys-B' &&
+        (e.sourceType === 'EARLY_TERMINATION' || e.sourceType === 'DEFERRED_WASHOUT'),
+    );
+
+    // Each contract: 1 penalty journal (A/R debit + termination-income
+    // credit) + 1 washout journal (deferred-revenue debit + default-
+    // revenue credit) = 4 entries.
+    expect(termEntriesA).toHaveLength(4);
+    expect(termEntriesB).toHaveLength(4);
+
+    // Penalty income credits land on each location's pinned earlyTermination
+    // row — never the other location's, never the legacy 4700 lookup.
+    const penaltyCreditA = termEntriesA.find((e) => e.accountId === termA.id);
+    const penaltyCreditB = termEntriesB.find((e) => e.accountId === termB.id);
+    expect(penaltyCreditA?.creditCents).toBe(5000);
+    expect(penaltyCreditB?.creditCents).toBe(7000);
+    expect(termEntriesA.some((e) => e.accountId === termB.id)).toBe(false);
+    expect(termEntriesB.some((e) => e.accountId === termA.id)).toBe(false);
+
+    // Washout revenue credits land on each location's pinned default-
+    // revenue row.
+    const washoutCreditA = termEntriesA.find(
+      (e) => e.accountId === defRevA.id && e.creditCents > 0,
+    );
+    const washoutCreditB = termEntriesB.find(
+      (e) => e.accountId === defRevB.id && e.creditCents > 0,
+    );
+    expect(washoutCreditA?.creditCents).toBe(3000);
+    expect(washoutCreditB?.creditCents).toBe(4000);
+
+    // Washout deferred debits hit each location's own deferred-revenue row.
+    const washoutDebitA = termEntriesA.find(
+      (e) => e.accountId === defrA.id && e.debitCents > 0,
+    );
+    const washoutDebitB = termEntriesB.find(
+      (e) => e.accountId === defrB.id && e.debitCents > 0,
+    );
+    expect(washoutDebitA?.debitCents).toBe(3000);
+    expect(washoutDebitB?.debitCents).toBe(4000);
+
+    // ----- Negative case: location C is QBO-connected but has NO system
+    // posting pins. The resolver MUST throw UNCONFIGURED_GL_MAPPING
+    // instead of silently posting to the wrong realm's chart row.
+    //
+    // Sales-tax slot: post an invoice on C with a tax breakdown that has
+    // no rate-level glAccountId. The resolver hits step (2) for QBO-
+    // connected locations and throws.
+    const accountIdC1200 = accountFor(locC.id, '1200').id;
+    const accountIdC4500 = accountFor(locC.id, '4500').id;
+    locC.arGlAccountId = accountIdC1200 as any;
+    const invoiceC = {
+      id: 'inv-sys-C',
+      tenantId,
+      locationId: locC.id,
+      totalCents: 5500,
+      lineItems: [
+        {
+          id: 'li-sys-C',
+          extendedCents: 5000,
+          taxCents: 500,
+          glAccountId: accountIdC4500, // line-level mapping is set; only the tax breakdown is missing
+          isDeferred: false,
+        },
+      ],
+      taxBreakdowns: [{ glAccountId: null, taxCents: 500 }],
+    };
+    await expect(postInvoice(invoiceC)).rejects.toThrow(
+      /UNCONFIGURED_GL_MAPPING.*sales tax payable/,
+    );
+
+    // Early-termination slot: postEarlyTermination on C without an
+    // earlyTermination pin must throw — never silently routing the
+    // penalty to the wrong realm's 4700 row.
+    await expect(
+      postEarlyTermination(
+        { id: 'contract-sys-C', tenantId, locationId: locC.id },
+        1000,
+        0,
+      ),
+    ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*early termination income/);
+
+    // Default-revenue slot: post a washout-only early termination on C.
+    // We pin earlyTermination + add a flagged deferred-revenue row so the
+    // penalty + deferred lookups succeed; defaultRevenue stays unpinned,
+    // and the washout's revenue resolution must throw rather than silently
+    // pick the wrong realm's 4500 row.
+    const termC: GlAccountRow = {
+      id: nextId('gl'),
+      tenantId,
+      locationId: locC.id,
+      accountNumber: '4700',
+      name: 'Early Term Inc — C',
+      type: 'Income',
+      subType: null,
+      qboAccountId: 'c47',
+      source: 'QBO',
+      isActive: true,
+      active: true,
+      isDeferredRevenue: false,
+    };
+    const defrC: GlAccountRow = {
+      id: nextId('gl'),
+      tenantId,
+      locationId: locC.id,
+      accountNumber: '2100',
+      name: 'Deferred Revenue — C',
+      type: 'Other Current Liability',
+      subType: null,
+      qboAccountId: 'c21',
+      source: 'QBO',
+      isActive: true,
+      active: true,
+      isDeferredRevenue: true,
+    };
+    glAccounts.set(termC.id, termC);
+    glAccounts.set(defrC.id, defrC);
+    (locC as any).earlyTerminationGlAccountId = termC.id;
+    // defaultRevenueGlAccountId still unpinned on C → washout must throw.
+    await expect(
+      postEarlyTermination(
+        { id: 'contract-sys-C-washout', tenantId, locationId: locC.id },
+        0,
+        2000,
+      ),
+    ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*default revenue/);
   });
 });

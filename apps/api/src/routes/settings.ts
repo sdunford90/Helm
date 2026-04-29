@@ -1005,6 +1005,10 @@ router.get(
           arGlAccountId: true,
           undepositedFundsGlAccountId: true,
           deferredRevenueGlAccountId: true,
+          defaultRevenueGlAccountId: true,
+          salesTaxGlAccountId: true,
+          earlyTerminationGlAccountId: true,
+          achReturnFeeGlAccountId: true,
           qboRealmId: true,
         },
       });
@@ -1039,6 +1043,10 @@ router.get(
           arGlAccountId: location.arGlAccountId,
           undepositedFundsGlAccountId: location.undepositedFundsGlAccountId,
           deferredRevenueGlAccountId: location.deferredRevenueGlAccountId,
+          defaultRevenueGlAccountId: location.defaultRevenueGlAccountId,
+          salesTaxGlAccountId: location.salesTaxGlAccountId,
+          earlyTerminationGlAccountId: location.earlyTerminationGlAccountId,
+          achReturnFeeGlAccountId: location.achReturnFeeGlAccountId,
         },
         candidates,
       });
@@ -1084,18 +1092,35 @@ router.put(
         arGlAccountId?: string | null;
         undepositedFundsGlAccountId?: string | null;
         deferredRevenueGlAccountId?: string | null;
+        defaultRevenueGlAccountId?: string | null;
+        salesTaxGlAccountId?: string | null;
+        earlyTerminationGlAccountId?: string | null;
+        achReturnFeeGlAccountId?: string | null;
       };
 
       const qboConnected = await isLocationQboConnected(locationId);
 
+      // Each system-posting slot expects a particular GLAccountType. We
+      // enforce that here so operators can't pin (say) a LIABILITY row to
+      // the default-revenue slot from the UI and have postings silently
+      // book the wrong side of the ledger. Mirrors
+      // LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS in gl-account-resolver.ts.
+      const SYSTEM_SLOT_TYPES: Record<string, ReadonlyArray<string>> = {
+        defaultRevenueGlAccountId: ["REVENUE"],
+        salesTaxGlAccountId: ["LIABILITY"],
+        earlyTerminationGlAccountId: ["REVENUE"],
+        achReturnFeeGlAccountId: ["REVENUE"],
+      };
+
       // Validate each provided id against the same constraint the catalog
       // helper uses (QBO-connected ⇒ must belong to this location;
-      // otherwise ⇒ tenant-scoped). null clears the pin and is always OK.
+      // otherwise ⇒ tenant-scoped) plus the per-slot type expectation.
+      // null clears the pin and is always OK.
       async function validate(id: string | null | undefined, field: string) {
         if (id === undefined || id === null) return;
         const acct = await prisma.glAccount.findFirst({
           where: { id, tenantId },
-          select: { id: true, locationId: true },
+          select: { id: true, locationId: true, type: true },
         });
         if (!acct) {
           throw Object.assign(
@@ -1111,6 +1136,15 @@ router.put(
             { status: 400, code: "GL_ACCOUNT_WRONG_LOCATION" },
           );
         }
+        const expected = SYSTEM_SLOT_TYPES[field];
+        if (expected && !expected.includes(acct.type)) {
+          throw Object.assign(
+            new Error(
+              `GL account for ${field} must be of type ${expected.join("/")} (got ${acct.type})`,
+            ),
+            { status: 400, code: "GL_ACCOUNT_WRONG_TYPE" },
+          );
+        }
       }
 
       try {
@@ -1118,6 +1152,10 @@ router.put(
           validate(body.arGlAccountId, "arGlAccountId"),
           validate(body.undepositedFundsGlAccountId, "undepositedFundsGlAccountId"),
           validate(body.deferredRevenueGlAccountId, "deferredRevenueGlAccountId"),
+          validate(body.defaultRevenueGlAccountId, "defaultRevenueGlAccountId"),
+          validate(body.salesTaxGlAccountId, "salesTaxGlAccountId"),
+          validate(body.earlyTerminationGlAccountId, "earlyTerminationGlAccountId"),
+          validate(body.achReturnFeeGlAccountId, "achReturnFeeGlAccountId"),
         ]);
       } catch (e: any) {
         res
@@ -1136,12 +1174,28 @@ router.put(
           ...(body.deferredRevenueGlAccountId !== undefined && {
             deferredRevenueGlAccountId: body.deferredRevenueGlAccountId,
           }),
+          ...(body.defaultRevenueGlAccountId !== undefined && {
+            defaultRevenueGlAccountId: body.defaultRevenueGlAccountId,
+          }),
+          ...(body.salesTaxGlAccountId !== undefined && {
+            salesTaxGlAccountId: body.salesTaxGlAccountId,
+          }),
+          ...(body.earlyTerminationGlAccountId !== undefined && {
+            earlyTerminationGlAccountId: body.earlyTerminationGlAccountId,
+          }),
+          ...(body.achReturnFeeGlAccountId !== undefined && {
+            achReturnFeeGlAccountId: body.achReturnFeeGlAccountId,
+          }),
         },
         select: {
           id: true,
           arGlAccountId: true,
           undepositedFundsGlAccountId: true,
           deferredRevenueGlAccountId: true,
+          defaultRevenueGlAccountId: true,
+          salesTaxGlAccountId: true,
+          earlyTerminationGlAccountId: true,
+          achReturnFeeGlAccountId: true,
         },
       });
 
@@ -1151,6 +1205,10 @@ router.put(
           arGlAccountId: updated.arGlAccountId,
           undepositedFundsGlAccountId: updated.undepositedFundsGlAccountId,
           deferredRevenueGlAccountId: updated.deferredRevenueGlAccountId,
+          defaultRevenueGlAccountId: updated.defaultRevenueGlAccountId,
+          salesTaxGlAccountId: updated.salesTaxGlAccountId,
+          earlyTerminationGlAccountId: updated.earlyTerminationGlAccountId,
+          achReturnFeeGlAccountId: updated.achReturnFeeGlAccountId,
         },
       });
     } catch (err) {

@@ -55,6 +55,10 @@ export interface LocationPostingAccounts {
   ar: LocationPostingAccount | null;
   undepositedFunds: LocationPostingAccount | null;
   deferredRevenue: LocationPostingAccount | null;
+  defaultRevenue: LocationPostingAccount | null;
+  salesTax: LocationPostingAccount | null;
+  earlyTermination: LocationPostingAccount | null;
+  achReturnFee: LocationPostingAccount | null;
 }
 
 export async function getLocationPostingAccounts(
@@ -72,12 +76,28 @@ export async function getLocationPostingAccounts(
       deferredRevenueGlAccount: {
         select: { id: true, accountNumber: true, name: true, qboAccountId: true },
       },
+      defaultRevenueGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+      salesTaxGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+      earlyTerminationGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+      achReturnFeeGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
     },
   });
   return {
     ar: loc?.arGlAccount ?? null,
     undepositedFunds: loc?.undepositedFundsGlAccount ?? null,
     deferredRevenue: loc?.deferredRevenueGlAccount ?? null,
+    defaultRevenue: loc?.defaultRevenueGlAccount ?? null,
+    salesTax: loc?.salesTaxGlAccount ?? null,
+    earlyTermination: loc?.earlyTerminationGlAccount ?? null,
+    achReturnFee: loc?.achReturnFeeGlAccount ?? null,
   };
 }
 
@@ -87,6 +107,148 @@ export async function isLocationQboConnected(locationId: string): Promise<boolea
     select: { qboAccessToken: true, qboRealmId: true },
   });
   return !!(loc?.qboAccessToken && loc?.qboRealmId);
+}
+
+// ---------------------------------------------------------------------------
+// Per-location SYSTEM posting account resolution
+//
+// Slots that gl-posting.ts used to fall back to a hardcoded account number
+// for. Each slot:
+//   * has a Location.<field> column the operator pins in QuickBooks Setup;
+//   * has a list of well-known account numbers used as a single-chart fallback
+//     for tenants WITHOUT a per-location QBO connection;
+//   * has the GLAccountType(s) the operator's pick must satisfy (the settings
+//     PUT endpoint enforces this).
+//
+// Resolution chain:
+//   1. Pinned column on `locations` (set in QuickBooks Setup).
+//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — silently
+//      reaching for a tenant-wide row by number could resolve to an account
+//      bound to a different QBO realm, which is the cross-tenant bleed this
+//      whole machinery exists to prevent.
+//   3. Non-QBO locations: walk `fallbackAccountNumbers` against the
+//      location's chart, then the tenant-wide chart. Throw
+//      UNCONFIGURED_GL_MAPPING if nothing matches (same shape as the legacy
+//      `getAccountByNumber` error so call sites bubble identically).
+// ---------------------------------------------------------------------------
+
+export type LocationSystemPostingAccountSlot =
+  | "defaultRevenue"
+  | "salesTax"
+  | "earlyTermination"
+  | "achReturnFee";
+
+interface SystemPostingAccountSpec {
+  field:
+    | "defaultRevenueGlAccountId"
+    | "salesTaxGlAccountId"
+    | "earlyTerminationGlAccountId"
+    | "achReturnFeeGlAccountId";
+  fallbackAccountNumbers: readonly string[];
+  expectedTypes: ReadonlyArray<"REVENUE" | "LIABILITY">;
+  description: string;
+}
+
+export const LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS: Record<
+  LocationSystemPostingAccountSlot,
+  SystemPostingAccountSpec
+> = {
+  defaultRevenue: {
+    field: "defaultRevenueGlAccountId",
+    fallbackAccountNumbers: ["4500"],
+    expectedTypes: ["REVENUE"],
+    description: "default revenue",
+  },
+  salesTax: {
+    field: "salesTaxGlAccountId",
+    // 2400 Sales Tax Payable wins; 2401 State Sales Tax Payable mirrors the
+    // legacy `getAccountByNumber(SALES_TAX_PAYABLE).catch(STATE_TAX_PAYABLE)`
+    // chain in postInvoice.
+    fallbackAccountNumbers: ["2400", "2401"],
+    expectedTypes: ["LIABILITY"],
+    description: "sales tax payable",
+  },
+  earlyTermination: {
+    field: "earlyTerminationGlAccountId",
+    fallbackAccountNumbers: ["4700"],
+    expectedTypes: ["REVENUE"],
+    description: "early termination income",
+  },
+  achReturnFee: {
+    field: "achReturnFeeGlAccountId",
+    fallbackAccountNumbers: ["4600"],
+    expectedTypes: ["REVENUE"],
+    description: "ACH return fee revenue",
+  },
+};
+
+type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+export async function resolveLocationSystemPostingAccount(
+  tenantId: string,
+  locationId: string | null | undefined,
+  slot: LocationSystemPostingAccountSlot,
+  context: string,
+  tx?: TxClient,
+): Promise<string> {
+  const spec = LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS[slot];
+  const db = (tx ?? prisma) as typeof prisma;
+
+  // 1. Honour the explicit per-location pin first — set in QuickBooks Setup
+  //    and enforced as type-correct by the settings PUT endpoint.
+  if (locationId) {
+    const loc = await db.location.findUnique({
+      where: { id: locationId },
+      select: {
+        defaultRevenueGlAccountId: true,
+        salesTaxGlAccountId: true,
+        earlyTerminationGlAccountId: true,
+        achReturnFeeGlAccountId: true,
+      },
+    });
+    const pinnedId = loc ? (loc[spec.field] as string | null) : null;
+    if (pinnedId) return pinnedId;
+  }
+
+  // 2. QBO-connected locations: refuse the legacy-by-number fallback. The
+  //    same number in a different chart belongs to a different realm; we'd
+  //    rather surface the misconfiguration than silently mis-route the
+  //    posting (or post into an account QBO knows nothing about).
+  if (locationId && (await isLocationQboConnected(locationId))) {
+    throw new Error(
+      `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but ` +
+      `has no ${spec.description} account pinned (${context}). Pin a ` +
+      `${spec.description} account for this location in QuickBooks Setup ` +
+      `before posting.`,
+    );
+  }
+
+  // 3. Legacy single-chart fallback for non-QBO tenants: try each well-known
+  //    account number in the location's chart first, then the tenant-wide
+  //    chart. Mirrors the pre-task-222 `getAccountByNumber(…, locationId)`
+  //    behaviour so single-chart tenants keep posting unchanged.
+  for (const accountNumber of spec.fallbackAccountNumbers) {
+    if (locationId) {
+      const locScoped = await db.glAccount.findFirst({
+        where: { tenantId, locationId, accountNumber },
+        select: { id: true },
+      });
+      if (locScoped) return locScoped.id;
+    }
+    const tenantWide = await db.glAccount.findFirst({
+      where: { tenantId, locationId: null, accountNumber },
+      select: { id: true },
+    });
+    if (tenantWide) return tenantWide.id;
+  }
+
+  throw new Error(
+    `UNCONFIGURED_GL_MAPPING: no ${spec.description} account found for ` +
+    `tenant ${tenantId} (location=${locationId ?? "none"}, ${context}). ` +
+    `Pin a ${spec.description} account for this location in QuickBooks ` +
+    `Setup or seed account number ${spec.fallbackAccountNumbers[0]} in the ` +
+    `chart of accounts.`,
+  );
 }
 
 export async function resolveProductGlAccounts(

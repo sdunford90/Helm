@@ -1,6 +1,9 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
-import { isLocationQboConnected } from "./gl-account-resolver.js";
+import {
+  isLocationQboConnected,
+  resolveLocationSystemPostingAccount,
+} from "./gl-account-resolver.js";
 
 // Look up the location-pinned posting accounts (AR / undeposited funds /
 // deferred revenue). Returns nulls when the location has nothing pinned;
@@ -130,37 +133,27 @@ async function getAccountByNumber(
 }
 
 // Well-known account numbers (convention).
-// Note: DEFERRED_REVENUE is the legacy fallback only — at runtime we prefer
-// resolving whichever account the tenant has flagged isDeferredRevenue = true
-// in their chart of accounts (see getDeferredRevenueAccountId below).
+//
+// Only the four accounts that still flow through `getAccountByNumber` /
+// `resolveLocationScopedAccountByNumber` live here; the four "system"
+// posting accounts that used to fall back by number — default revenue
+// (4500), sales tax payable (2400), early-termination income (4700), and
+// ACH return fee (4600) — have moved into per-location pinned slots
+// (Location.{defaultRevenue,salesTax,earlyTermination,achReturnFee}-
+// GlAccountId) resolved by `resolveLocationSystemPostingAccount` in
+// gl-account-resolver.ts.
+//
+// Note: DEFERRED_REVENUE_FALLBACK is the legacy fallback only — at runtime
+// we prefer resolving whichever account the tenant has flagged
+// isDeferredRevenue = true in their chart of accounts (see
+// `getDeferredRevenueAccountId` below).
 const ACCOUNTS = {
   ACCOUNTS_RECEIVABLE: "1200",
   CASH: "1000",
   BANK: "1010",
   DEFERRED_REVENUE_FALLBACK: "2100",
-  SALES_TAX_PAYABLE: "2400",
-  STATE_TAX_PAYABLE: "2401",
-  COUNTY_TAX_PAYABLE: "2402",
-  CITY_TAX_PAYABLE: "2403",
   SECURITY_DEPOSITS_HELD: "2300",
-  SLIP_RENTAL_REVENUE: "4000",
-  ELECTRICITY_REVENUE: "4100",
-  GENERAL_REVENUE: "4500",
-  ACH_RETURN_FEE_REVENUE: "4600",
-  TERMINATION_INCOME: "4700",
 } as const;
-
-/**
- * Emits a warning when a GL account must be resolved from a hardcoded fallback
- * account number rather than from a product's configured GL account mapping.
- * This helps operators identify unconfigured revenue accounts.
- */
-function warnGlFallback(tenantId: string, accountNumber: string, context: string): void {
-  console.warn(
-    `[gl-posting] UNCONFIGURED_GL_MAPPING tenantId=${tenantId} account=${accountNumber} context="${context}" — ` +
-    `Revenue is posting to the hardcoded fallback account. Configure a GL account mapping in Settings > Products & Revenue to silence this warning.`,
-  );
-}
 
 /**
  * Resolve a well-known account by number for a posting that has an
@@ -368,8 +361,16 @@ export async function postInvoice(
             `mapping for this product before issuing the invoice.`,
           );
         } else {
-          warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id}`);
-          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
+          // Non-QBO tenant: defer to the location's pinned default revenue
+          // slot, else the legacy chart-of-accounts lookup by account
+          // number 4500.
+          revenueAccountId = await resolveLocationSystemPostingAccount(
+            tenantId,
+            locationId,
+            "defaultRevenue",
+            `invoice=${invoice.id} lineItem=${li.id}`,
+            tx,
+          );
         }
         lines.push({
           accountId: revenueAccountId,
@@ -396,9 +397,16 @@ export async function postInvoice(
         // TaxRate has a specific GL account configured
         taxAccountId = glAccountId;
       } else {
-        // Fall back to 2400 Sales Tax Payable
-        taxAccountId = await getAccountByNumber(tenantId, ACCOUNTS.SALES_TAX_PAYABLE, tx, locationId).catch(async () =>
-          getAccountByNumber(tenantId, ACCOUNTS.STATE_TAX_PAYABLE, tx, locationId),
+        // No rate-level GL account: defer to the location's pinned sales-tax
+        // payable slot. QBO-connected locations REQUIRE the pin — silently
+        // posting to the legacy 2400/2401 row would route the liability to
+        // a different realm's chart.
+        taxAccountId = await resolveLocationSystemPostingAccount(
+          tenantId,
+          locationId,
+          "salesTax",
+          `invoice=${invoice.id} sales tax`,
+          tx,
         );
       }
 
@@ -434,8 +442,13 @@ export async function postInvoice(
             `mapping for this product before issuing the invoice.`,
           );
         } else {
-          warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id} (legacy path)`);
-          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
+          revenueAccountId = await resolveLocationSystemPostingAccount(
+            tenantId,
+            locationId,
+            "defaultRevenue",
+            `invoice=${invoice.id} lineItem=${li.id} (legacy path)`,
+            tx,
+          );
         }
         lines.push({
           accountId: revenueAccountId,
@@ -931,7 +944,13 @@ export async function postDeferredRecognition(
   if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
   const revenueAccountId =
     entry.revenueAccountId ??
-    (await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId));
+    (await resolveLocationSystemPostingAccount(
+      tenantId,
+      locationId,
+      "defaultRevenue",
+      `deferred recognition ${entry.id}`,
+      tx,
+    ));
 
   return postEntries(
     tenantId,
@@ -981,7 +1000,13 @@ export async function postEarlyTermination(
     const arAccountId =
       pinned.arGlAccountId
       ?? (await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx, locationId));
-    const termIncomeAccountId = await getAccountByNumber(tenantId, ACCOUNTS.TERMINATION_INCOME, tx, locationId);
+    const termIncomeAccountId = await resolveLocationSystemPostingAccount(
+      tenantId,
+      locationId,
+      "earlyTermination",
+      `early termination penalty contract=${contract.id}`,
+      tx,
+    );
 
     const jid = await postEntries(
       tenantId,
@@ -1010,7 +1035,13 @@ export async function postEarlyTermination(
   if (remainingDeferredCents > 0) {
     const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx, locationId);
     if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
-    const revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
+    const revenueAccountId = await resolveLocationSystemPostingAccount(
+      tenantId,
+      locationId,
+      "defaultRevenue",
+      `early termination deferred washout contract=${contract.id}`,
+      tx,
+    );
 
     const jid = await postEntries(
       tenantId,
