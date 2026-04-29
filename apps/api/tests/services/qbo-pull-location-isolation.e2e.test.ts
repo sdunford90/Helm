@@ -22,6 +22,10 @@ let postInvoice: typeof import('../../src/services/gl-posting.js').postInvoice;
 let postPayment: typeof import('../../src/services/gl-posting.js').postPayment;
 let postRefund: typeof import('../../src/services/gl-posting.js').postRefund;
 let postEarlyTermination: typeof import('../../src/services/gl-posting.js').postEarlyTermination;
+let postAchReturn: typeof import('../../src/services/gl-posting.js').postAchReturn;
+let postSecurityDeposit: typeof import('../../src/services/gl-posting.js').postSecurityDeposit;
+let releaseSecurityDeposit: typeof import('../../src/services/gl-posting.js').releaseSecurityDeposit;
+let rollbackReservedRefund: typeof import('../../src/services/payment-refund.js').rollbackReservedRefund;
 
 // In-memory store backing the prisma mocks: enough Prisma fidelity
 // (notIn/not predicates, P2002 unique-conflict simulation, stateful
@@ -364,6 +368,11 @@ beforeEach(async () => {
   postPayment = posting.postPayment;
   postRefund = posting.postRefund;
   postEarlyTermination = posting.postEarlyTermination;
+  postAchReturn = posting.postAchReturn;
+  postSecurityDeposit = posting.postSecurityDeposit;
+  releaseSecurityDeposit = posting.releaseSecurityDeposit;
+  const refund = await import('../../src/services/payment-refund.js');
+  rollbackReservedRefund = refund.rollbackReservedRefund;
 });
 
 describe('end-to-end: QBO pull → per-location mapping → invoice posting keeps locations isolated', () => {
@@ -1114,5 +1123,395 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
         2000,
       ),
     ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*default revenue/);
+  });
+
+  // -----------------------------------------------------------------------
+  // Helpers: spin up two QBO-connected locations whose pulled charts share
+  // account numbers (1200 A/R, 1010 Bank, 2300 Security Deposits Held) but
+  // resolve to *different* GlAccount rows.  Used by the three sibling tests
+  // below — postAchReturn, rollbackReservedRefund, and the security-deposit
+  // pair — so each one can focus on the location-routing assertions instead
+  // of re-seeding the chart of accounts.
+  // -----------------------------------------------------------------------
+  async function seedTwoQboLocations(
+    tenantId: string,
+    locAId: string,
+    locBId: string,
+    extras: Array<{ Id: string; Name: string; AcctNum: string; AccountType: string; Active?: boolean }> = [],
+  ) {
+    const inAnHour = new Date(Date.now() + 60 * 60 * 1000);
+    const locA: LocationRow = {
+      id: locAId,
+      tenantId,
+      name: `Marina A (${locAId})`,
+      qboAccessToken: 'access-A',
+      qboRefreshToken: 'refresh-A',
+      qboRealmId: 'realm-A',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    const locB: LocationRow = {
+      id: locBId,
+      tenantId,
+      name: `Marina B (${locBId})`,
+      qboAccessToken: 'access-B',
+      qboRefreshToken: 'refresh-B',
+      qboRealmId: 'realm-B',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    locations.set(locA.id, locA);
+    locations.set(locB.id, locB);
+
+    accountsByRealm['realm-A'] = [
+      { Id: '1', Name: 'A/R — Marina A', AcctNum: '1200', AccountType: 'Accounts Receivable', Active: true },
+      { Id: '2', Name: 'Operating Bank — Marina A', AcctNum: '1010', AccountType: 'Bank', Active: true },
+      ...extras.map((e) => ({ ...e, Id: `A-${e.Id}`, Name: `${e.Name} — Marina A` })),
+    ];
+    accountsByRealm['realm-B'] = [
+      { Id: '11', Name: 'A/R — Marina B', AcctNum: '1200', AccountType: 'Accounts Receivable', Active: true },
+      { Id: '12', Name: 'Operating Bank — Marina B', AcctNum: '1010', AccountType: 'Bank', Active: true },
+      ...extras.map((e) => ({ ...e, Id: `B-${e.Id}`, Name: `${e.Name} — Marina B` })),
+    ];
+
+    await pullChartOfAccountsForLocation(locA.id, tenantId);
+    await pullChartOfAccountsForLocation(locB.id, tenantId);
+
+    const accountFor = (locationId: string, acctNum: string) => {
+      const found = [...glAccounts.values()].find(
+        (a) => a.locationId === locationId && a.accountNumber === acctNum,
+      );
+      if (!found) throw new Error(`No account ${acctNum} for ${locationId}`);
+      return found;
+    };
+    return { locA, locB, accountFor };
+  }
+
+  it("postAchReturn reverses each location's own bank + A/R rows when account numbers overlap", async () => {
+    // Regression guard for the cross-location GL bleed in postAchReturn.
+    // The forward payment posted into per-location 1010/1200 rows; the
+    // ACH return reversal must hit the *same* per-location rows or the
+    // marina's books quietly drift while the other marina's bank shows
+    // a phantom debit.
+    const tenantId = 'tenant-ach-return';
+    const { locA, locB, accountFor } = await seedTwoQboLocations(
+      tenantId,
+      'loc-ach-a',
+      'loc-ach-b',
+    );
+    expect(glAccounts.size).toBe(4);
+
+    const arA = accountFor(locA.id, '1200');
+    const arB = accountFor(locB.id, '1200');
+    const bankA = accountFor(locA.id, '1010');
+    const bankB = accountFor(locB.id, '1010');
+
+    await postAchReturn({
+      id: 'ach-A',
+      tenantId,
+      paymentId: 'pay-A',
+      amountCents: 50000,
+      locationId: locA.id,
+    });
+    await postAchReturn({
+      id: 'ach-B',
+      tenantId,
+      paymentId: 'pay-B',
+      amountCents: 75000,
+      locationId: locB.id,
+    });
+
+    const entriesA = glEntries.filter(
+      (e) => e.sourceType === 'ACH_RETURN' && e.sourceId === 'ach-A',
+    );
+    const entriesB = glEntries.filter(
+      (e) => e.sourceType === 'ACH_RETURN' && e.sourceId === 'ach-B',
+    );
+    expect(entriesA).toHaveLength(2);
+    expect(entriesB).toHaveLength(2);
+
+    // Marina A's ACH return: debit Marina A's A/R (reinstated), credit
+    // Marina A's bank (cash leaves) — never Marina B's rows.
+    const debitA = entriesA.find((e) => e.debitCents > 0);
+    const creditA = entriesA.find((e) => e.creditCents > 0);
+    expect(debitA?.accountId).toBe(arA.id);
+    expect(debitA?.debitCents).toBe(50000);
+    expect(creditA?.accountId).toBe(bankA.id);
+    expect(creditA?.creditCents).toBe(50000);
+
+    const debitB = entriesB.find((e) => e.debitCents > 0);
+    const creditB = entriesB.find((e) => e.creditCents > 0);
+    expect(debitB?.accountId).toBe(arB.id);
+    expect(debitB?.debitCents).toBe(75000);
+    expect(creditB?.accountId).toBe(bankB.id);
+    expect(creditB?.creditCents).toBe(75000);
+
+    // Cross-pollination guard.
+    const accountsA = new Set(entriesA.map((e) => e.accountId));
+    const accountsB = new Set(entriesB.map((e) => e.accountId));
+    expect(accountsA.has(arB.id)).toBe(false);
+    expect(accountsA.has(bankB.id)).toBe(false);
+    expect(accountsB.has(arA.id)).toBe(false);
+    expect(accountsB.has(bankA.id)).toBe(false);
+  });
+
+  it("rollbackReservedRefund's inverse posting hits each location's own A/R + bank rows", async () => {
+    // Regression guard for the cross-location GL bleed via reversePostRefund.
+    // When Phase 2 of a refund (Stripe call) fails, rollbackReservedRefund
+    // must invert the Phase 1 entries on the *same* per-location rows the
+    // forward postRefund touched.  Otherwise the inverse lands on another
+    // marina's accounts and silently leaves both books unbalanced.
+    const tenantId = 'tenant-rollback';
+    const { locA, locB, accountFor } = await seedTwoQboLocations(
+      tenantId,
+      'loc-rb-a',
+      'loc-rb-b',
+    );
+
+    const arA = accountFor(locA.id, '1200');
+    const arB = accountFor(locB.id, '1200');
+    const bankA = accountFor(locA.id, '1010');
+    const bankB = accountFor(locB.id, '1010');
+
+    // Minimal payment + invoice + paymentRefund stubs.  rollbackReservedRefund
+    // calls payment.update with `{ refundedCents: { decrement: N } }` then
+    // payment.findUniqueOrThrow to recompute status; same shape on invoice.
+    interface PaymentRow {
+      id: string;
+      refundedCents: number;
+      status: string;
+    }
+    interface InvoiceRow {
+      id: string;
+      balanceCents: number;
+      status: string;
+    }
+    const payments = new Map<string, PaymentRow>();
+    const invoices = new Map<string, InvoiceRow>();
+    payments.set('pay-A', { id: 'pay-A', refundedCents: 20000, status: 'PARTIALLY_REFUNDED' });
+    payments.set('pay-B', { id: 'pay-B', refundedCents: 30000, status: 'PARTIALLY_REFUNDED' });
+    invoices.set('inv-A', { id: 'inv-A', balanceCents: 20000, status: 'PAID' });
+    invoices.set('inv-B', { id: 'inv-B', balanceCents: 30000, status: 'PAID' });
+
+    (mockPrisma as any).payment = {
+      update: vi.fn(async ({ where, data }: any) => {
+        const row = payments.get(where.id);
+        if (!row) throw new Error(`No payment ${where.id}`);
+        if (data.refundedCents?.decrement !== undefined) {
+          row.refundedCents -= data.refundedCents.decrement;
+        }
+        if (typeof data.status === 'string') row.status = data.status;
+        return row;
+      }),
+      findUniqueOrThrow: vi.fn(async ({ where }: any) => {
+        const row = payments.get(where.id);
+        if (!row) throw new Error(`No payment ${where.id}`);
+        return row;
+      }),
+    };
+    (mockPrisma as any).invoice = {
+      update: vi.fn(async ({ where, data }: any) => {
+        const row = invoices.get(where.id);
+        if (!row) throw new Error(`No invoice ${where.id}`);
+        if (data.balanceCents?.decrement !== undefined) {
+          row.balanceCents -= data.balanceCents.decrement;
+        }
+        if (typeof data.status === 'string') row.status = data.status;
+        return row;
+      }),
+      findUniqueOrThrow: vi.fn(async ({ where }: any) => {
+        const row = invoices.get(where.id);
+        if (!row) throw new Error(`No invoice ${where.id}`);
+        return row;
+      }),
+    };
+    (mockPrisma as any).paymentRefund = {
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+    };
+
+    await rollbackReservedRefund({
+      paymentId: 'pay-A',
+      tenantId,
+      paymentMethod: 'CARD',
+      paymentAmountCents: 50000,
+      refundAmountCents: 20000,
+      invoiceId: 'inv-A',
+      locationId: locA.id,
+      paymentRefundId: 'refund-A',
+    });
+    await rollbackReservedRefund({
+      paymentId: 'pay-B',
+      tenantId,
+      paymentMethod: 'CARD',
+      paymentAmountCents: 75000,
+      refundAmountCents: 30000,
+      invoiceId: 'inv-B',
+      locationId: locB.id,
+      paymentRefundId: 'refund-B',
+    });
+
+    const reversalsA = glEntries.filter(
+      (e) => e.sourceType === 'REFUND_REVERSAL' && e.sourceId === 'pay-A',
+    );
+    const reversalsB = glEntries.filter(
+      (e) => e.sourceType === 'REFUND_REVERSAL' && e.sourceId === 'pay-B',
+    );
+    expect(reversalsA).toHaveLength(2);
+    expect(reversalsB).toHaveLength(2);
+
+    // Marina A's reversal: debit Marina A's bank (cash returns), credit
+    // Marina A's A/R (receivable goes back down) — never Marina B's rows.
+    const debitA = reversalsA.find((e) => e.debitCents > 0);
+    const creditA = reversalsA.find((e) => e.creditCents > 0);
+    expect(debitA?.accountId).toBe(bankA.id);
+    expect(debitA?.debitCents).toBe(20000);
+    expect(creditA?.accountId).toBe(arA.id);
+    expect(creditA?.creditCents).toBe(20000);
+
+    const debitB = reversalsB.find((e) => e.debitCents > 0);
+    const creditB = reversalsB.find((e) => e.creditCents > 0);
+    expect(debitB?.accountId).toBe(bankB.id);
+    expect(debitB?.debitCents).toBe(30000);
+    expect(creditB?.accountId).toBe(arB.id);
+    expect(creditB?.creditCents).toBe(30000);
+
+    // Cross-pollination guard.
+    const accountsA = new Set(reversalsA.map((e) => e.accountId));
+    const accountsB = new Set(reversalsB.map((e) => e.accountId));
+    expect(accountsA.has(bankB.id)).toBe(false);
+    expect(accountsA.has(arB.id)).toBe(false);
+    expect(accountsB.has(bankA.id)).toBe(false);
+    expect(accountsB.has(arA.id)).toBe(false);
+  });
+
+  it("postSecurityDeposit + releaseSecurityDeposit each hit their own location's bank + deposit-liability rows", async () => {
+    // Regression guard for the cross-location GL bleed in the
+    // security-deposit pair.  Both the receive-deposit posting and its
+    // release (whether refunded to customer OR applied to an invoice)
+    // must resolve to the originating location's own 1010 Bank, 2300
+    // Security Deposits Held, and 1200 A/R rows.  A bleed here would
+    // route customer cash + liability between marinas.
+    const tenantId = 'tenant-deposit';
+    const { locA, locB, accountFor } = await seedTwoQboLocations(
+      tenantId,
+      'loc-dep-a',
+      'loc-dep-b',
+      [
+        {
+          Id: '3',
+          Name: 'Security Deposits Held',
+          AcctNum: '2300',
+          AccountType: 'Other Current Liability',
+          Active: true,
+        },
+      ],
+    );
+    expect(glAccounts.size).toBe(6);
+
+    const arA = accountFor(locA.id, '1200');
+    const arB = accountFor(locB.id, '1200');
+    const bankA = accountFor(locA.id, '1010');
+    const bankB = accountFor(locB.id, '1010');
+    const depA = accountFor(locA.id, '2300');
+    const depB = accountFor(locB.id, '2300');
+
+    // 1. Receive a deposit at each location.
+    await postSecurityDeposit({
+      id: 'dep-A',
+      tenantId,
+      amountCents: 30000,
+      locationId: locA.id,
+    });
+    await postSecurityDeposit({
+      id: 'dep-B',
+      tenantId,
+      amountCents: 45000,
+      locationId: locB.id,
+    });
+
+    const recvA = glEntries.filter(
+      (e) => e.sourceType === 'SECURITY_DEPOSIT' && e.sourceId === 'dep-A',
+    );
+    const recvB = glEntries.filter(
+      (e) => e.sourceType === 'SECURITY_DEPOSIT' && e.sourceId === 'dep-B',
+    );
+    expect(recvA).toHaveLength(2);
+    expect(recvB).toHaveLength(2);
+
+    // Marina A's deposit debits Marina A's bank + credits Marina A's
+    // deposit liability — same for B with its own rows.
+    const recvDebitA = recvA.find((e) => e.debitCents > 0);
+    const recvCreditA = recvA.find((e) => e.creditCents > 0);
+    expect(recvDebitA?.accountId).toBe(bankA.id);
+    expect(recvCreditA?.accountId).toBe(depA.id);
+
+    const recvDebitB = recvB.find((e) => e.debitCents > 0);
+    const recvCreditB = recvB.find((e) => e.creditCents > 0);
+    expect(recvDebitB?.accountId).toBe(bankB.id);
+    expect(recvCreditB?.accountId).toBe(depB.id);
+
+    // Cross-pollination guard on the receive leg.
+    const recvAccountsA = new Set(recvA.map((e) => e.accountId));
+    const recvAccountsB = new Set(recvB.map((e) => e.accountId));
+    expect(recvAccountsA.has(bankB.id)).toBe(false);
+    expect(recvAccountsA.has(depB.id)).toBe(false);
+    expect(recvAccountsB.has(bankA.id)).toBe(false);
+    expect(recvAccountsB.has(depA.id)).toBe(false);
+
+    // 2. Release Marina A's deposit by *refunding to the customer* —
+    //    debit liability, credit bank.  Both rows must be Marina A's.
+    await releaseSecurityDeposit({
+      id: 'dep-A',
+      tenantId,
+      amountCents: 30000,
+      appliedToInvoiceId: null,
+      locationId: locA.id,
+    });
+    // 3. Release Marina B's deposit by *applying to an invoice* —
+    //    debit liability, credit A/R.  Both rows must be Marina B's.
+    await releaseSecurityDeposit({
+      id: 'dep-B',
+      tenantId,
+      amountCents: 45000,
+      appliedToInvoiceId: 'inv-B',
+      locationId: locB.id,
+    });
+
+    const relA = glEntries.filter(
+      (e) => e.sourceType === 'DEPOSIT_RELEASE' && e.sourceId === 'dep-A',
+    );
+    const relB = glEntries.filter(
+      (e) => e.sourceType === 'DEPOSIT_RELEASE' && e.sourceId === 'dep-B',
+    );
+    expect(relA).toHaveLength(2);
+    expect(relB).toHaveLength(2);
+
+    // Refund-to-customer release: debit Marina A's liability, credit
+    // Marina A's bank.
+    const relDebitA = relA.find((e) => e.debitCents > 0);
+    const relCreditA = relA.find((e) => e.creditCents > 0);
+    expect(relDebitA?.accountId).toBe(depA.id);
+    expect(relDebitA?.debitCents).toBe(30000);
+    expect(relCreditA?.accountId).toBe(bankA.id);
+    expect(relCreditA?.creditCents).toBe(30000);
+
+    // Apply-to-invoice release: debit Marina B's liability, credit
+    // Marina B's A/R — never Marina A's.
+    const relDebitB = relB.find((e) => e.debitCents > 0);
+    const relCreditB = relB.find((e) => e.creditCents > 0);
+    expect(relDebitB?.accountId).toBe(depB.id);
+    expect(relDebitB?.debitCents).toBe(45000);
+    expect(relCreditB?.accountId).toBe(arB.id);
+    expect(relCreditB?.creditCents).toBe(45000);
+
+    // Cross-pollination guard on the release leg.
+    const relAccountsA = new Set(relA.map((e) => e.accountId));
+    const relAccountsB = new Set(relB.map((e) => e.accountId));
+    expect(relAccountsA.has(depB.id)).toBe(false);
+    expect(relAccountsA.has(bankB.id)).toBe(false);
+    expect(relAccountsA.has(arB.id)).toBe(false);
+    expect(relAccountsB.has(depA.id)).toBe(false);
+    expect(relAccountsB.has(arA.id)).toBe(false);
+    expect(relAccountsB.has(bankA.id)).toBe(false);
   });
 });
