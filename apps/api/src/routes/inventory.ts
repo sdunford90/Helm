@@ -547,6 +547,20 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
     const query = ListProductsQuerySchema.parse(req.query);
     const tenantId = getTenantId(req);
 
+    // Validate locationId belongs to the caller's tenant before we use it
+    // anywhere downstream (filtering, batchResolveEffectiveGl). Without this
+    // check a foreign locationId could influence QBO suppression in the
+    // effective-GL fallback resolver and leak existence metadata.
+    if (query.locationId) {
+      const owned = await prisma.location.findFirst({
+        where: { id: query.locationId, tenantId },
+        select: { id: true },
+      });
+      if (!owned) {
+        return res.status(404).json({ error: "Location not found" });
+      }
+    }
+
     const where: any = { active: true };
     if (query.category) where.category = query.category;
     if (query.search) {

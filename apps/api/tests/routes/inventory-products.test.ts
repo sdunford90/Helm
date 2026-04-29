@@ -39,6 +39,12 @@ const buildProduct = (overrides: any = {}) => ({
 });
 
 describe('GET /api/inventory/products', () => {
+  beforeEach(() => {
+    // Default: any locationId the route validates is owned by the test
+    // tenant. Individual tests override this to exercise the 404 path.
+    mockPrisma.location.findFirst.mockResolvedValue({ id: 'loc-1' } as any);
+  });
+
   it('returns products without effective GL fields when no locationId', async () => {
     mockPrisma.product.findMany.mockResolvedValue([buildProduct()]);
     mockPrisma.product.count.mockResolvedValue(1);
@@ -170,6 +176,20 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveRevenueGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveCogsGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBeNull();
+  });
+
+  it('returns 404 when locationId belongs to another tenant', async () => {
+    // Override the default findFirst mock so the tenant-scoped lookup
+    // returns no row -- simulating a foreign locationId. The route must
+    // refuse before any product/effective-GL queries fire.
+    mockPrisma.location.findFirst.mockResolvedValue(null as any);
+
+    const res = await request(app).get('/api/inventory/products?locationId=loc-other-tenant');
+
+    expect(res.status).toBe(404);
+    expect(mockPrisma.product.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.productGlMapping.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.location.findUnique).not.toHaveBeenCalled();
   });
 
   it('also suppresses legacy productCategory.default* on QBO-connected locations', async () => {
