@@ -149,6 +149,52 @@ export async function resolveProductGlAccounts(
   return { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId, source };
 }
 
+export async function resolveRentalProductGlAccounts(
+  tenantId: string,
+  rentalProductId: string,
+  locationId: string | null,
+): Promise<ResolvedProductGl> {
+  const product = await prisma.rentalProduct.findFirst({
+    where: { id: rentalProductId, tenantId },
+    select: { id: true, glAccountId: true },
+  });
+  if (!product) {
+    return {
+      revenueGlAccountId: null,
+      cogsGlAccountId: null,
+      inventoryAssetGlAccountId: null,
+      source: "unmapped",
+    };
+  }
+  let pOver: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  } | null = null;
+  if (locationId) {
+    pOver = await prisma.rentalProductGlMapping.findFirst({
+      where: { tenantId, rentalProductId, locationId },
+      select: {
+        revenueGlAccountId: true,
+        cogsGlAccountId: true,
+        inventoryAssetGlAccountId: true,
+      },
+    });
+  }
+  const qboConnected = locationId ? await isLocationQboConnected(locationId) : false;
+  const legacyRevenue = qboConnected ? null : product.glAccountId;
+  const revenueGlAccountId = pick(pOver?.revenueGlAccountId, legacyRevenue);
+  const cogsGlAccountId = pick(pOver?.cogsGlAccountId);
+  const inventoryAssetGlAccountId = pick(pOver?.inventoryAssetGlAccountId);
+  let source: ResolvedProductGl["source"] = "unmapped";
+  if (pOver && (pOver.revenueGlAccountId || pOver.cogsGlAccountId || pOver.inventoryAssetGlAccountId)) {
+    source = "product_override";
+  } else if (legacyRevenue) {
+    source = "legacy_product_fk";
+  }
+  return { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId, source };
+}
+
 export async function resolveDockageRateGlAccount(
   tenantId: string,
   dockageRateId: string,
@@ -200,11 +246,11 @@ export async function resolveServiceFeeGlAccount(
 // ---------------------------------------------------------------------------
 
 export interface MissingGlMappingItem {
-  kind: "product" | "category" | "dockage_rate" | "service_fee";
+  kind: "product" | "category" | "dockage_rate" | "service_fee" | "rental_product";
   id: string;
   name: string;
   // Which slots are missing — for products/categories there are 3 slots, for
-  // the others there's just 1.
+  // the others there's just 1. Rental products only need a revenue mapping.
   missing: Array<"revenue" | "cogs" | "inventoryAsset" | "glAccount">;
 }
 
@@ -346,6 +392,31 @@ export async function getMissingGlAccountWarnings(
           id: f.id,
           name: f.name,
           missing: ["glAccount"],
+        });
+      }
+    }
+
+    // Rental products — tenant-wide entities, so each one needs an explicit
+    // revenue mapping for every QBO-connected location. Tenant-level legacy
+    // FK is intentionally ignored here because it may point at the wrong
+    // QBO realm.
+    const rentalProducts = await prisma.rentalProduct.findMany({
+      where: { tenantId, active: true },
+      select: { id: true, name: true },
+    });
+    const rpMappings = await prisma.rentalProductGlMapping.findMany({
+      where: { tenantId, locationId: loc.id },
+      select: { rentalProductId: true, revenueGlAccountId: true },
+    });
+    const rpByProduct = new Map<string, string | null>();
+    for (const m of rpMappings) rpByProduct.set(m.rentalProductId, m.revenueGlAccountId);
+    for (const p of rentalProducts) {
+      if (!rpByProduct.get(p.id)) {
+        items.push({
+          kind: "rental_product",
+          id: p.id,
+          name: p.name,
+          missing: ["revenue"],
         });
       }
     }

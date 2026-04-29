@@ -13,7 +13,7 @@ interface GlAccount {
   id: string;
   accountNumber: string;
   name: string;
-  type: string;
+  type: 'REVENUE' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY' | string;
   locationId?: string | null;
 }
 
@@ -43,16 +43,38 @@ interface ServiceFee {
   location: { name: string };
 }
 
+interface RentalProductPerLocationRow {
+  locationId: string;
+  locationName: string;
+  override: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+  effective: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+}
+
 interface RentalProduct {
   id: string;
   name: string;
   category: string;
   glAccountId?: string | null;
   active: boolean;
+  perLocation?: RentalProductPerLocationRow[];
+}
+
+interface LocationLite {
+  id: string;
+  name: string;
+  qboConnected: boolean;
 }
 
 interface MissingItem {
-  kind: 'product' | 'category' | 'dockage_rate' | 'service_fee';
+  kind: 'product' | 'category' | 'dockage_rate' | 'service_fee' | 'rental_product';
   id: string;
   name: string;
   missing: string[];
@@ -69,6 +91,7 @@ interface ProductsSummary {
   dockageRates: DockageRate[];
   serviceFees: ServiceFee[];
   rentalProducts: RentalProduct[];
+  locations?: LocationLite[];
   glAccounts: GlAccount[];
   unconfiguredCount: number;
   hasGlAccounts: boolean;
@@ -195,10 +218,14 @@ function GlAccountCell({
   // showing tenant-wide options once a location has its own accounts would
   // produce save failures.
   const filtered = (() => {
-    if (!locationId) return glAccounts;
-    const locScoped = glAccounts.filter((a) => a.locationId === locationId);
+    // GlAccountCell is used for revenue mappings only (dockage & service
+    // fees). Drop any non-revenue accounts that the catalog summary may
+    // include for the rental-product editor.
+    const revenue = glAccounts.filter((a) => a.type === 'REVENUE');
+    if (!locationId) return revenue;
+    const locScoped = revenue.filter((a) => a.locationId === locationId);
     if (locScoped.length > 0) return locScoped;
-    return glAccounts.filter((a) => a.locationId == null);
+    return revenue.filter((a) => a.locationId == null);
   })();
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState(currentId ?? '');
@@ -266,6 +293,238 @@ function GlAccountCell({
   );
 }
 
+/* ── Rental product row with per-location GL editor ─────── */
+
+function RentalProductRow({
+  product,
+  glAccounts,
+  locations,
+  onSavePerLocation,
+}: {
+  product: RentalProduct;
+  glAccounts: GlAccount[];
+  locations: LocationLite[];
+  onSavePerLocation: (
+    locationId: string,
+    override: RentalProductPerLocationRow['override'],
+  ) => Promise<void>;
+}) {
+  const locById = new Map(locations.map((l) => [l.id, l]));
+  const [expanded, setExpanded] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, RentalProductPerLocationRow['override']>>({});
+  const [savingLoc, setSavingLoc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const perLocation = product.perLocation ?? [];
+  // Once mappings exist for a location, the legacy tenant-wide FK is no
+  // longer the source of truth there; show only locations that lack an
+  // effective revenue account in the badge.
+  const missingCount = product.active
+    ? perLocation.length === 0
+      ? (product.glAccountId ? 0 : 1)
+      : perLocation.filter((row) => !row.effective.revenueGlAccountId).length
+    : 0;
+
+  // Filter the master GL list to accounts available to the location for the
+  // requested type. Mirrors the backend `validateGlAccountForLocation` policy:
+  //   - QBO-connected location  -> only that location's accounts are valid
+  //   - non-QBO location        -> location-scoped accounts AND tenant-wide
+  //                                accounts (locationId === null) are both
+  //                                offered (union, not exclusive fallback)
+  const accountsForLocation = (locationId: string, type: GlAccount['type']) => {
+    const loc = locById.get(locationId);
+    const qboConnected = !!loc?.qboConnected;
+    const ofType = glAccounts.filter((a) => a.type === type);
+    if (qboConnected) {
+      return ofType.filter((a) => a.locationId === locationId);
+    }
+    return ofType.filter(
+      (a) => a.locationId === locationId || a.locationId == null,
+    );
+  };
+
+  const draftFor = (row: RentalProductPerLocationRow): RentalProductPerLocationRow['override'] =>
+    drafts[row.locationId] ?? row.override;
+
+  const updateDraft = (
+    locationId: string,
+    field: keyof RentalProductPerLocationRow['override'],
+    value: string | null,
+    current: RentalProductPerLocationRow['override'],
+  ) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [locationId]: { ...current, [field]: value },
+    }));
+  };
+
+  const handleSave = async (row: RentalProductPerLocationRow) => {
+    setSavingLoc(row.locationId);
+    setError(null);
+    try {
+      await onSavePerLocation(row.locationId, draftFor(row));
+      setDrafts((prev) => {
+        const copy = { ...prev };
+        delete copy[row.locationId];
+        return copy;
+      });
+    } catch (e: any) {
+      setError(e?.response?.data?.error ?? e?.message ?? 'Failed to save mapping');
+    } finally {
+      setSavingLoc(null);
+    }
+  };
+
+  const fieldDef: Array<{
+    field: keyof RentalProductPerLocationRow['override'];
+    label: string;
+    type: GlAccount['type'];
+  }> = [
+    { field: 'revenueGlAccountId', label: 'Revenue', type: 'REVENUE' },
+    { field: 'cogsGlAccountId', label: 'COGS', type: 'EXPENSE' },
+    { field: 'inventoryAssetGlAccountId', label: 'Inventory Asset', type: 'ASSET' },
+  ];
+
+  return (
+    <div style={{
+      border: '1px solid #E2E8F0', borderRadius: '8px',
+      marginBottom: '12px', background: '#FFFFFF',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 16px', cursor: 'pointer',
+      }}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <ChevronDown
+            size={16}
+            style={{
+              transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+              transition: 'transform 120ms ease-out', color: '#475569',
+            }}
+          />
+          <div style={{ fontWeight: 600, color: '#0A2342' }}>{product.name}</div>
+          <span style={{ ...s.badge, backgroundColor: '#FFF7ED', color: '#C2410C' }}>
+            {product.category || 'Uncategorized'}
+          </span>
+          <span style={{
+            ...s.badge,
+            backgroundColor: product.active ? '#DCFCE7' : '#F1F5F9',
+            color: product.active ? '#15803D' : '#64748B',
+          }}>
+            {product.active ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+        <div>
+          {missingCount > 0 ? (
+            <span style={s.noGlTag}>
+              <AlertTriangle size={11} />
+              {missingCount} location{missingCount !== 1 ? 's' : ''} unmapped
+            </span>
+          ) : (
+            <span style={{ ...s.glTag, backgroundColor: '#DCFCE7', color: '#15803D' }}>
+              <Check size={11} /> All locations mapped
+            </span>
+          )}
+        </div>
+      </div>
+
+      {expanded ? (
+        <div style={{ borderTop: '1px solid #E2E8F0', padding: '12px 16px', background: '#F8FAFC' }}>
+          <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '10px' }}>
+            Pick a revenue, COGS, and inventory account for each location.
+            QuickBooks-connected locations require an account from their own
+            chart of accounts; other locations may use the tenant-wide chart.
+          </div>
+          {error ? (
+            <div style={{
+              background: '#FEF2F2', color: '#991B1B', borderRadius: '6px',
+              padding: '8px 12px', marginBottom: '10px', fontSize: '12px',
+            }}>
+              {error}
+            </div>
+          ) : null}
+          {perLocation.length === 0 ? (
+            <div style={{ fontSize: '13px', color: '#64748B' }}>
+              No locations configured for this tenant.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '10px' }}>
+              {perLocation.map((row) => {
+                const draft = draftFor(row);
+                const dirty = drafts[row.locationId] !== undefined;
+                const missingRevenue = !draft.revenueGlAccountId && !product.glAccountId;
+                return (
+                  <div key={row.locationId} style={{
+                    background: '#FFFFFF', border: '1px solid #E2E8F0',
+                    borderRadius: '6px', padding: '10px 12px',
+                  }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      marginBottom: '8px',
+                    }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>
+                        {row.locationName}
+                      </div>
+                      <button
+                        style={{
+                          padding: '4px 12px', borderRadius: '6px', border: 'none',
+                          cursor: dirty && savingLoc !== row.locationId ? 'pointer' : 'default',
+                          backgroundColor: dirty ? '#0A2342' : '#E2E8F0',
+                          color: dirty ? '#FFFFFF' : '#94A3B8',
+                          fontSize: '12px', fontWeight: 600,
+                        }}
+                        disabled={!dirty || savingLoc === row.locationId}
+                        onClick={() => handleSave(row)}
+                      >
+                        {savingLoc === row.locationId ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                    {fieldDef.map(({ field, label, type }) => {
+                      const accounts = accountsForLocation(row.locationId, type);
+                      return (
+                        <div key={field} style={{
+                          display: 'grid', gridTemplateColumns: '120px 1fr',
+                          gap: '8px', alignItems: 'center', marginBottom: '4px',
+                        }}>
+                          <label style={{ fontSize: '12px', color: '#475569' }}>{label}</label>
+                          <select
+                            style={{ ...s.select, padding: '6px 10px', fontSize: '12px', minWidth: 0 }}
+                            value={draft[field] ?? ''}
+                            onChange={(e) => updateDraft(row.locationId, field, e.target.value || null, draft)}
+                          >
+                            <option value="">
+                              {field === 'revenueGlAccountId' && product.glAccountId
+                                ? '— Inherit tenant-wide default —'
+                                : '— Not mapped —'}
+                            </option>
+                            {accounts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.accountNumber} · {a.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                    {missingRevenue ? (
+                      <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
+                        No effective revenue account — invoices for this location will fall back
+                        to the General Revenue account.
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /* ── Main component ─────────────────────────────────────── */
 
 export default function SettingsProducts() {
@@ -288,6 +547,24 @@ export default function SettingsProducts() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Recalculate the unconfigured-count badge after any mapping changes. Per-
+  // location overrides take precedence over the tenant-wide legacy FK; an
+  // active rental product counts as one gap for every location that has
+  // neither an override nor a usable legacy fallback.
+  const recountUnconfigured = (next: ProductsSummary): number => {
+    const drGaps = next.dockageRates.filter((r) => !r.glAccountId).length;
+    const sfGaps = next.serviceFees.filter((f) => !f.glAccountId).length;
+    const rpGaps = next.rentalProducts
+      .filter((p) => p.active)
+      .reduce((acc, p) => {
+        if (!p.perLocation || p.perLocation.length === 0) {
+          return acc + (p.glAccountId ? 0 : 1);
+        }
+        return acc + p.perLocation.filter((row) => !row.effective.revenueGlAccountId).length;
+      }, 0);
+    return drGaps + sfGaps + rpGaps;
+  };
+
   const saveDockageRateGl = async (rateId: string, glAccountId: string | null) => {
     const rate = data?.dockageRates.find((r) => r.id === rateId);
     if (!rate) return;
@@ -298,14 +575,8 @@ export default function SettingsProducts() {
     setData((prev) => {
       if (!prev) return prev;
       const rates = prev.dockageRates.map((r) => r.id === rateId ? { ...r, glAccountId } : r);
-      return {
-        ...prev,
-        dockageRates: rates,
-        unconfiguredCount:
-          rates.filter((r) => !r.glAccountId).length +
-          prev.serviceFees.filter((f) => !f.glAccountId).length +
-          prev.rentalProducts.filter((p) => p.active && !p.glAccountId).length,
-      };
+      const next = { ...prev, dockageRates: rates };
+      return { ...next, unconfiguredCount: recountUnconfigured(next) };
     });
   };
 
@@ -319,30 +590,52 @@ export default function SettingsProducts() {
     setData((prev) => {
       if (!prev) return prev;
       const fees = prev.serviceFees.map((f) => f.id === feeId ? { ...f, glAccountId } : f);
-      return {
-        ...prev,
-        serviceFees: fees,
-        unconfiguredCount:
-          prev.dockageRates.filter((r) => !r.glAccountId).length +
-          fees.filter((f) => !f.glAccountId).length +
-          prev.rentalProducts.filter((p) => p.active && !p.glAccountId).length,
-      };
+      const next = { ...prev, serviceFees: fees };
+      return { ...next, unconfiguredCount: recountUnconfigured(next) };
     });
   };
 
-  const saveRentalProductGl = async (productId: string, glAccountId: string | null) => {
-    await api.put(`/api/settings/catalog/rental-products/${productId}/gl-account`, { glAccountId });
+  const saveRentalProductPerLocationGl = async (
+    productId: string,
+    locationId: string,
+    override: RentalProductPerLocationRow['override'],
+  ) => {
+    await api.put(
+      `/api/settings/catalog/rental-products/${productId}/gl-mappings/${locationId}`,
+      {
+        revenueGlAccountId: override.revenueGlAccountId,
+        cogsGlAccountId: override.cogsGlAccountId,
+        inventoryAssetGlAccountId: override.inventoryAssetGlAccountId,
+      },
+    );
     setData((prev) => {
       if (!prev) return prev;
-      const products = prev.rentalProducts.map((p) => p.id === productId ? { ...p, glAccountId } : p);
-      return {
-        ...prev,
-        rentalProducts: products,
-        unconfiguredCount:
-          prev.dockageRates.filter((r) => !r.glAccountId).length +
-          prev.serviceFees.filter((f) => !f.glAccountId).length +
-          products.filter((p) => p.active && !p.glAccountId).length,
-      };
+      // Mirror the backend resolver: once a location is QBO-connected the
+      // tenant-wide RentalProduct.glAccountId is no longer a valid revenue
+      // fallback (it points outside that location's chart). Honoring that
+      // here keeps the badge / unconfigured count in sync with the warning
+      // banner without waiting for a refetch.
+      const loc = prev.locations?.find((l) => l.id === locationId);
+      const qboConnected = !!loc?.qboConnected;
+      const products = prev.rentalProducts.map((p) => {
+        if (p.id !== productId) return p;
+        const legacyRevenue = qboConnected ? null : p.glAccountId ?? null;
+        const perLocation = (p.perLocation ?? []).map((row) => {
+          if (row.locationId !== locationId) return row;
+          return {
+            ...row,
+            override,
+            effective: {
+              revenueGlAccountId: override.revenueGlAccountId ?? legacyRevenue,
+              cogsGlAccountId: override.cogsGlAccountId ?? null,
+              inventoryAssetGlAccountId: override.inventoryAssetGlAccountId ?? null,
+            },
+          };
+        });
+        return { ...p, perLocation };
+      });
+      const next = { ...prev, rentalProducts: products };
+      return { ...next, unconfiguredCount: recountUnconfigured(next) };
     });
   };
 
@@ -596,52 +889,25 @@ export default function SettingsProducts() {
             <Settings size={13} /> Manage products
           </Link>
         </div>
-        <table style={s.table}>
-          <thead>
-            <tr>
-              <th style={s.th}>Product Name</th>
-              <th style={s.th}>Category</th>
-              <th style={s.th}>Status</th>
-              <th style={s.th}>GL Account (Revenue)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rentalProducts.length === 0 ? (
-              <tr>
-                <td colSpan={4} style={s.emptyRow}>
-                  No rental products configured. Add them in Settings → Catalog.
-                </td>
-              </tr>
-            ) : (
-              rentalProducts.map((product) => (
-                <tr key={product.id}>
-                  <td style={s.td}>{product.name}</td>
-                  <td style={s.td}>
-                    <span style={{ ...s.badge, backgroundColor: '#FFF7ED', color: '#C2410C' }}>
-                      {product.category}
-                    </span>
-                  </td>
-                  <td style={s.td}>
-                    <span style={{
-                      ...s.badge,
-                      backgroundColor: product.active ? '#DCFCE7' : '#F1F5F9',
-                      color: product.active ? '#15803D' : '#64748B',
-                    }}>
-                      {product.active ? 'Active' : 'Inactive'}
-                    </span>
-                  </td>
-                  <td style={s.td}>
-                    <GlAccountCell
-                      currentId={product.glAccountId}
-                      glAccounts={glAccounts}
-                      onSave={(id) => saveRentalProductGl(product.id, id)}
-                    />
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+        {rentalProducts.length === 0 ? (
+          <div style={s.emptyRow}>
+            No rental products configured. Add them in Settings → Catalog.
+          </div>
+        ) : (
+          <div style={{ padding: '8px 16px 16px 16px' }}>
+            {rentalProducts.map((product) => (
+              <RentalProductRow
+                key={product.id}
+                product={product}
+                glAccounts={glAccounts}
+                locations={data?.locations ?? []}
+                onSavePerLocation={(locationId, override) =>
+                  saveRentalProductPerLocationGl(product.id, locationId, override)
+                }
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Info footer ── */}

@@ -43,6 +43,14 @@ beforeEach(async () => {
     findFirst: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
   };
+  (mockPrisma as any).rentalProduct = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+  };
+  (mockPrisma as any).rentalProductGlMapping = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+  };
 });
 
 describe('resolveProductGlAccounts', () => {

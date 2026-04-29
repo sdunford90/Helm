@@ -471,6 +471,7 @@ model Location {
   productCategoryGlMappings  ProductCategoryGlMapping[] @relation(name: "LocationProductCategoryGlMappings")
   dockageRateGlMappings      DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
   serviceFeeGlMappings       ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
+  rentalProductGlMappings    RentalProductGlMapping[]   @relation(name: "LocationRentalProductGlMappings")
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -1223,6 +1224,9 @@ model GlAccount {
   productsInventoryAsset Product[]         @relation(name: "ProductInventoryAssetGlAccount")
   productsRevenue        Product[]         @relation(name: "ProductRevenueGlAccount")
   rentalProducts         RentalProduct[]   @relation(name: "RentalProductGlAccount")
+  rentalProductGlMappingsRevenue        RentalProductGlMapping[] @relation(name: "RentalProductGlMappingRevenue")
+  rentalProductGlMappingsCogs           RentalProductGlMapping[] @relation(name: "RentalProductGlMappingCogs")
+  rentalProductGlMappingsInventoryAsset RentalProductGlMapping[] @relation(name: "RentalProductGlMappingInventoryAsset")
   productCategoriesRevenue        ProductCategory[] @relation(name: "ProductCategoryRevenueGlAccount")
   productCategoriesCogs           ProductCategory[] @relation(name: "ProductCategoryCogsGlAccount")
   productCategoriesInventoryAsset ProductCategory[] @relation(name: "ProductCategoryInventoryAssetGlAccount")
@@ -1331,6 +1335,29 @@ model ServiceFeeGlMapping {
   @@index([tenantId])
   @@index([locationId])
   @@map("service_fee_gl_mappings")
+}
+
+model RentalProductGlMapping {
+  id                        String   @id @default(uuid())
+  tenantId                  String
+  rentalProductId           String
+  locationId                String
+  revenueGlAccountId        String?
+  cogsGlAccountId           String?
+  inventoryAssetGlAccountId String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @default(now()) @updatedAt
+
+  rentalProduct           RentalProduct @relation(fields: [rentalProductId], references: [id], onDelete: Cascade)
+  location                Location      @relation(name: "LocationRentalProductGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  revenueGlAccount        GlAccount?    @relation(name: "RentalProductGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
+  cogsGlAccount           GlAccount?    @relation(name: "RentalProductGlMappingCogs", fields: [cogsGlAccountId], references: [id])
+  inventoryAssetGlAccount GlAccount?    @relation(name: "RentalProductGlMappingInventoryAsset", fields: [inventoryAssetGlAccountId], references: [id])
+
+  @@unique([rentalProductId, locationId])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("rental_product_gl_mappings")
 }
 
 model GlEntry {
@@ -1520,6 +1547,7 @@ model RentalProduct {
   algorithmicSuggestions AlgorithmicSuggestion[]
   reservations           Reservation[]
   units                  RentalUnit[]
+  glMappings             RentalProductGlMapping[]
 
   @@index([tenantId])
   @@map("rental_products")

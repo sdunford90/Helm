@@ -1934,7 +1934,7 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
     const where: any = { tenantId };
     if (locationId) where.locationId = locationId;
 
-    const [dockageRates, serviceFees, rentalProducts, glAccounts, drMappings, sfMappings] =
+    const [dockageRates, serviceFees, rentalProducts, glAccounts, drMappings, sfMappings, rpMappings, locationsForRentals] =
       await Promise.all([
         prisma.dockageRate.findMany({
           where,
@@ -1952,12 +1952,45 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
           select: { id: true, name: true, category: true, glAccountId: true, active: true },
         }),
         prisma.glAccount.findMany({
-          where: { tenantId, active: true, isActive: true, type: "REVENUE" },
-          select: { id: true, accountNumber: true, name: true, locationId: true },
+          // Include REVENUE, EXPENSE, and ASSET so the rental-product per-
+          // location editor can populate Revenue / COGS / Inventory dropdowns.
+          // Other product editors filter the list down by `type` on the
+          // client side.
+          where: {
+            tenantId,
+            active: true,
+            isActive: true,
+            type: { in: ["REVENUE", "EXPENSE", "ASSET"] },
+          },
+          select: { id: true, accountNumber: true, name: true, type: true, locationId: true },
           orderBy: [{ locationId: "asc" }, { accountNumber: "asc" }],
         }),
         prisma.dockageRateGlMapping.findMany({ where: { tenantId } }),
         prisma.serviceFeeGlMapping.findMany({ where: { tenantId } }),
+        prisma.rentalProductGlMapping.findMany({
+          where: { tenantId },
+          select: {
+            rentalProductId: true,
+            locationId: true,
+            revenueGlAccountId: true,
+            cogsGlAccountId: true,
+            inventoryAssetGlAccountId: true,
+          },
+        }),
+        prisma.location.findMany({
+          where: { tenantId },
+          orderBy: { name: "asc" },
+          // qboAccessToken/qboRealmId are needed to mirror the resolver's
+          // QBO-gating rule: once a location is QBO-connected the legacy
+          // tenant-wide RentalProduct.glAccountId is *not* a valid
+          // fallback, so the badge / `effective` view must not honor it.
+          select: {
+            id: true,
+            name: true,
+            qboAccessToken: true,
+            qboRealmId: true,
+          },
+        }),
       ]);
 
     // Overlay per-location mapping onto the legacy FK so the UI sees the
@@ -1979,21 +2012,92 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
       return { ...f, glAccountId: override !== undefined ? override : f.glAccountId };
     });
 
-    // Count unconfigured items (no GL account)
+    // Build per-location mapping rows for each rental product. The legacy
+    // tenant-wide RentalProduct.glAccountId fills the revenue slot when no
+    // explicit override exists. Each row carries an `effective` revenue
+    // account so the UI can decide whether to flag it as unconfigured.
+    const rpMapByPair = new Map<
+      string,
+      {
+        revenueGlAccountId: string | null;
+        cogsGlAccountId: string | null;
+        inventoryAssetGlAccountId: string | null;
+      }
+    >();
+    for (const m of rpMappings) {
+      rpMapByPair.set(`${m.rentalProductId}|${m.locationId}`, {
+        revenueGlAccountId: m.revenueGlAccountId,
+        cogsGlAccountId: m.cogsGlAccountId,
+        inventoryAssetGlAccountId: m.inventoryAssetGlAccountId,
+      });
+    }
+    const rentalProductsEnriched = rentalProducts.map((p) => {
+      const perLocation = locationsForRentals.map((l) => {
+        const mm = rpMapByPair.get(`${p.id}|${l.id}`);
+        // Mirror resolver/warning behavior: once a location is QBO-
+        // connected the tenant-wide legacy `RentalProduct.glAccountId`
+        // is not a valid fallback (it points at an account that lives
+        // outside that location's chart). Suppressing it here keeps the
+        // unconfigured badge in agreement with the warnings banner.
+        const qboConnected = !!(l.qboAccessToken && l.qboRealmId);
+        const legacyRevenue = qboConnected ? null : p.glAccountId ?? null;
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          override: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+          effective: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? legacyRevenue,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+        };
+      });
+      return { ...p, perLocation };
+    });
+
+    // Don't leak QBO tokens/realm IDs to the client — strip them down to a
+    // boolean `qboConnected` flag the UI can use for option-filtering and
+    // optimistic recomputation.
+    const locationsForRentalsPublic = locationsForRentals.map((l) => ({
+      id: l.id,
+      name: l.name,
+      qboConnected: !!(l.qboAccessToken && l.qboRealmId),
+    }));
+
+    // Count unconfigured items (no effective revenue mapping). For rental
+    // products this means *any* location that lacks an effective revenue
+    // mapping counts toward the warning total — once a tenant has multiple
+    // locations a single tenant-wide FK is no longer enough.
+    const rentalUnconfigured = rentalProductsEnriched
+      .filter((p) => p.active)
+      .reduce((acc, p) => {
+        const gaps = locationsForRentals.length === 0
+          ? (p.glAccountId ? 0 : 1)
+          : p.perLocation.filter((row) => !row.effective.revenueGlAccountId).length;
+        return acc + gaps;
+      }, 0);
     const unconfiguredCount =
       dockageRatesEnriched.filter((r) => !r.glAccountId).length +
       serviceFeesEnriched.filter((f) => !f.glAccountId).length +
-      rentalProducts.filter((p) => p.active && !p.glAccountId).length;
+      rentalUnconfigured;
 
     const warnings = await getMissingGlAccountWarnings(tenantId);
     res.json({
       data: {
         dockageRates: dockageRatesEnriched,
         serviceFees: serviceFeesEnriched,
-        rentalProducts,
+        rentalProducts: rentalProductsEnriched,
+        locations: locationsForRentalsPublic,
         glAccounts,
         unconfiguredCount,
-        hasGlAccounts: glAccounts.length > 0,
+        // The "no GL accounts configured" banner is about *revenue*
+        // accounts; the EXPENSE/ASSET rows we now include are only for
+        // populating COGS/inventory dropdowns on rental products.
+        hasGlAccounts: glAccounts.some((a) => a.type === "REVENUE"),
         missingMappingWarnings: warnings,
       },
     });
@@ -2496,6 +2600,132 @@ router.get(
       });
       res.json({ data });
     } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// GET /api/settings/catalog/rental-products/:id/gl-mappings
+//
+// Returns one row per location for the tenant: { locationId, locationName,
+// qboConnected, override, effective }. Override is the per-location mapping
+// row if any. Effective resolution chain (first non-null wins):
+//   1. Per-location override (RentalProductGlMapping)
+//   2. Tenant-level legacy FK (RentalProduct.glAccountId) for the revenue
+//      slot only — but only when the location is NOT QBO-connected (a
+//      QBO-connected location must use a per-location mapping or it cannot
+//      post safely).
+router.get(
+  "/catalog/rental-products/:id/gl-mappings",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const product = await prisma.rentalProduct.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true, glAccountId: true },
+      });
+      if (!product) {
+        res.status(404).json({ error: "Rental product not found" });
+        return;
+      }
+      const [locs, mappings] = await Promise.all([
+        listLocations(tenantId),
+        prisma.rentalProductGlMapping.findMany({
+          where: { tenantId, rentalProductId: req.params.id },
+        }),
+      ]);
+      const qboFlags = await Promise.all(
+        locs.map((l) => isLocationQboConnected(l.id)),
+      );
+      const data = locs.map((l, i) => {
+        const mm = mappings.find((m) => m.locationId === l.id);
+        const qboConnected = qboFlags[i];
+        const legacyRevenue = qboConnected ? null : product.glAccountId ?? null;
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          qboConnected,
+          override: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+          effective: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? legacyRevenue,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+        };
+      });
+      res.json({ data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/settings/catalog/rental-products/:id/gl-mappings/:locationId
+router.put(
+  "/catalog/rental-products/:id/gl-mappings/:locationId",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = productMappingPutSchema.parse(req.body);
+      const { id, locationId } = req.params;
+      const [product, location] = await Promise.all([
+        prisma.rentalProduct.findFirst({
+          where: { id, tenantId },
+          select: { id: true },
+        }),
+        prisma.location.findFirst({
+          where: { id: locationId, tenantId },
+          select: { id: true },
+        }),
+      ]);
+      if (!product) {
+        res.status(404).json({ error: "Rental product not found" });
+        return;
+      }
+      if (!location) {
+        res.status(404).json({ error: "Location not found" });
+        return;
+      }
+      await Promise.all([
+        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
+        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
+        validateGlAccountForLocation(
+          tenantId,
+          locationId,
+          body.inventoryAssetGlAccountId,
+        ),
+      ]);
+      const data = {
+        revenueGlAccountId: body.revenueGlAccountId ?? null,
+        cogsGlAccountId: body.cogsGlAccountId ?? null,
+        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+      };
+      const result = await prisma.rentalProductGlMapping.upsert({
+        where: {
+          rentalProductId_locationId: { rentalProductId: id, locationId },
+        },
+        create: { tenantId, rentalProductId: id, locationId, ...data },
+        update: data,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not found") || msg.includes("different location")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
       next(err);
     }
   },
