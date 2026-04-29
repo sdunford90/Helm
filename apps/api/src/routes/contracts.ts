@@ -4,6 +4,10 @@ import crypto from "node:crypto";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "../lib/email.js";
+import {
+  postSecurityDeposit,
+  releaseSecurityDeposit,
+} from "../services/gl-posting.js";
 
 const router: Router = Router();
 
@@ -607,7 +611,7 @@ router.post(
         // with separate QBO realms could see deposits land on the wrong
         // marina's books.
         if (data.securityDepositCents && data.securityDepositCents > 0) {
-          await tx.securityDeposit.create({
+          const deposit = await tx.securityDeposit.create({
             data: {
               tenantId,
               locationId: slip.locationId,
@@ -617,6 +621,21 @@ router.post(
               status: "HELD",
             },
           });
+
+          // Book the deposit to the GL inside the same transaction so the
+          // SecurityDeposit row and its balanced bank/2300-liability journal
+          // either both land or both roll back. The deposit's locationId
+          // scopes the chart-of-accounts lookups to the originating
+          // marina's bank and security-deposits-held rows.
+          await postSecurityDeposit(
+            {
+              id: deposit.id,
+              tenantId,
+              amountCents: deposit.amountCents,
+              locationId: deposit.locationId,
+            },
+            tx,
+          );
         }
 
         return newContract;
@@ -781,6 +800,30 @@ router.post(
           where: { id: contract.slipId },
           data: { status: "VACANT" },
         });
+
+        // Release any held security deposits back to the originating marina's
+        // books. Each deposit's frozen locationId scopes the reversal to the
+        // same per-location bank and security-deposits-held rows the original
+        // postSecurityDeposit touched, even on multi-marina operators with
+        // separate QBO realms. We mark the deposit RELEASED and post the
+        // reversing journal in the same transaction so the row state and the
+        // ledger stay in lockstep.
+        for (const heldDeposit of contract.securityDeposits) {
+          await tx.securityDeposit.update({
+            where: { id: heldDeposit.id },
+            data: { status: "RELEASED", releasedAt: effectiveDate },
+          });
+          await releaseSecurityDeposit(
+            {
+              id: heldDeposit.id,
+              tenantId,
+              amountCents: heldDeposit.amountCents,
+              appliedToInvoiceId: heldDeposit.appliedToInvoiceId ?? null,
+              locationId: heldDeposit.locationId ?? null,
+            },
+            tx,
+          );
+        }
 
         // Post penalty GL entry if applicable
         if (penaltyCents > 0 && glAccountId) {

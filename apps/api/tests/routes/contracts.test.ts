@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { mockPrisma } from '../setup.js';
 import { buildContract, buildSlip, buildCustomer } from '../helpers.js';
+import * as glPosting from '../../src/services/gl-posting.js';
 
 let app: any;
 
@@ -64,7 +65,11 @@ describe('POST /api/contracts', () => {
       const tx = {
         slipContract: { create: vi.fn().mockResolvedValue(contract) },
         slip: { update: vi.fn().mockResolvedValue(slip) },
-        securityDeposit: { create: vi.fn() },
+        securityDeposit: {
+          create: vi.fn().mockImplementation(({ data }: any) =>
+            Promise.resolve({ id: 'dep-1', ...data }),
+          ),
+        },
       };
       return fn(tx);
     });
@@ -97,6 +102,96 @@ describe('POST /api/contracts', () => {
 
     expect(res.status).toBe(404);
   });
+
+  it('books a security deposit to the originating marina’s GL when one is configured', async () => {
+    // When a contract is signed with a security deposit, the route must
+    // call postSecurityDeposit inside the create transaction so the
+    // deposit lands on the originating marina's bank + 2300 liability
+    // (the deposit row carries the slip's locationId, which scopes
+    // both lookups to the per-location chart of accounts).  Without
+    // this step the SecurityDeposit row would exist but no GL entries
+    // would be produced — the deposit would never appear in the
+    // marina's books.
+    const SLIP_ID = '00000000-1111-0000-0000-000000000010';
+    const CUST_ID = '00000000-2222-0000-0000-000000000020';
+    const LOC_ID = '00000000-3333-0000-0000-000000000030';
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({
+      slipId: SLIP_ID,
+      customerId: CUST_ID,
+      status: 'ACTIVE',
+    });
+
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { create: vi.fn().mockResolvedValue(contract) },
+        slip: { update: vi.fn().mockResolvedValue(slip) },
+        securityDeposit: {
+          create: vi.fn().mockImplementation(({ data }: any) =>
+            Promise.resolve({ id: 'dep-from-create', ...data }),
+          ),
+        },
+      };
+      return fn(tx);
+    });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2025-01-01',
+        rateCents: 150000,
+        securityDepositCents: 50000,
+      });
+
+    expect(res.status).toBe(201);
+    expect(glPosting.postSecurityDeposit).toHaveBeenCalledTimes(1);
+    expect(glPosting.postSecurityDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'dep-from-create',
+        tenantId: 'test-tenant-id',
+        amountCents: 50000,
+        locationId: LOC_ID,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('does not post a security deposit GL entry when none is configured', async () => {
+    const SLIP_ID = '00000000-1111-0000-0000-000000000011';
+    const CUST_ID = '00000000-2222-0000-0000-000000000021';
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: 'loc-1' });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({ slipId: SLIP_ID, customerId: CUST_ID });
+
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { create: vi.fn().mockResolvedValue(contract) },
+        slip: { update: vi.fn() },
+        securityDeposit: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2025-01-01',
+        rateCents: 150000,
+      });
+
+    expect(res.status).toBe(201);
+    expect(glPosting.postSecurityDeposit).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/contracts/:id/terminate', () => {
@@ -116,6 +211,7 @@ describe('POST /api/contracts/:id/terminate', () => {
       const tx = {
         slipContract: { update: vi.fn() },
         slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
         glEntry: { create: vi.fn() },
         deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
         auditLog: { create: vi.fn() },
@@ -148,5 +244,234 @@ describe('POST /api/contracts/:id/terminate', () => {
       .send({});
 
     expect(res.status).toBe(400);
+  });
+
+  it('releases held security deposits to the originating marina’s GL on termination', async () => {
+    // On termination, every HELD deposit must be marked RELEASED *and*
+    // a reversing GL entry posted on the originating marina's books.
+    // The deposit's frozen locationId scopes the reversal to the same
+    // per-location bank + 2300 liability rows the original
+    // postSecurityDeposit touched, so multi-marina operators with
+    // separate QBO realms see the credit unwind on the correct realm.
+    const contract = buildContract({ status: 'ACTIVE' });
+    const heldDeposit = {
+      id: 'dep-held-1',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 75000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+
+    const securityDepositUpdate = vi.fn();
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: securityDepositUpdate },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({ reason: 'Relocating' });
+
+    expect(res.status).toBe(200);
+    // The deposit row itself must transition to RELEASED in the same
+    // transaction so the row state and the ledger stay in lockstep.
+    expect(securityDepositUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'dep-held-1' },
+        data: expect.objectContaining({ status: 'RELEASED' }),
+      }),
+    );
+    expect(glPosting.releaseSecurityDeposit).toHaveBeenCalledTimes(1);
+    expect(glPosting.releaseSecurityDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'dep-held-1',
+        tenantId: 'test-tenant-id',
+        amountCents: 75000,
+        locationId: 'loc-marina-A',
+        appliedToInvoiceId: null,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('forwards the deposit’s appliedToInvoiceId so release routes through A/R, not bank', async () => {
+    // When a held deposit was previously earmarked against a specific
+    // invoice (appliedToInvoiceId set), termination must forward that
+    // ID to releaseSecurityDeposit so the GL service debits the 2300
+    // liability and credits A/R — instead of refunding it back to the
+    // marina's bank. The route is the only place this metadata flows
+    // from, so we lock it in with a test.
+    const contract = buildContract({ status: 'ACTIVE' });
+    const heldDeposit = {
+      id: 'dep-held-2',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 30000,
+      status: 'HELD',
+      appliedToInvoiceId: 'inv-final-99',
+      releasedAt: null,
+    };
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({ reason: 'Moving out — apply to final invoice' });
+
+    expect(res.status).toBe(200);
+    expect(glPosting.releaseSecurityDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'dep-held-2',
+        amountCents: 30000,
+        locationId: 'loc-marina-A',
+        appliedToInvoiceId: 'inv-final-99',
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: route → real gl-posting service
+// ---------------------------------------------------------------------------
+// The gl-posting service has its own per-location unit tests. Here we
+// rewire the contracts route on top of the *real* service to assert that
+// creating a contract with a security deposit produces a balanced
+// debit/credit pair against the originating marina's bank (1010) and
+// security-deposits-held (2300) chart rows — i.e. the deposit actually
+// hits the marina's books, not just a SecurityDeposit row.
+
+describe('POST /api/contracts (security deposit GL — end to end)', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    // Replace the global gl-posting mock with the real implementation
+    // so the route's call to postSecurityDeposit exercises the real
+    // chart-of-accounts lookups + glEntry.createMany write.
+    vi.doMock('../../src/services/gl-posting.js', async (importOriginal) => {
+      return await importOriginal();
+    });
+    const mod = await import('../../src/index.js');
+    app = mod.default;
+  });
+
+  it('writes balanced GL entries against the marina’s bank and 2300 liability', async () => {
+    const SLIP_ID = '00000000-1111-0000-0000-000000000040';
+    const CUST_ID = '00000000-2222-0000-0000-000000000041';
+    const LOC_ID = 'loc-marina-A';
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({
+      slipId: SLIP_ID,
+      customerId: CUST_ID,
+      status: 'ACTIVE',
+    });
+
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+
+    // Per-location chart of accounts for marina A. The strict
+    // postSecurityDeposit lookup path requires the originating marina
+    // to be QBO-connected so location.findUnique must return a tokened
+    // realm; otherwise resolution falls through to the tenant-wide
+    // chart and we lose the per-location guarantee.
+    mockPrisma.location.findUnique.mockImplementation(async ({ where }: any) => ({
+      id: where.id,
+      qboAccessToken: 'tok',
+      qboRealmId: `realm-${where.id}`,
+    }));
+    const CHART: Record<string, string> = {
+      '1010': 'acct-A-bank',
+      '2300': 'acct-A-deposits',
+    };
+    mockPrisma.glAccount.findFirst.mockImplementation(async ({ where }: any) => {
+      if (where?.locationId !== LOC_ID) return null;
+      const id = CHART[where.accountNumber as string];
+      return id ? { id } : null;
+    });
+
+    const createMany = vi.fn().mockResolvedValue({ count: 2 });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { create: vi.fn().mockResolvedValue(contract) },
+        slip: { update: vi.fn().mockResolvedValue(slip) },
+        securityDeposit: {
+          create: vi.fn().mockImplementation(({ data }: any) =>
+            Promise.resolve({ id: 'dep-e2e-1', ...data }),
+          ),
+        },
+        // The real gl-posting service writes through tx.glEntry / tx.glAccount /
+        // tx.location when a transaction client is provided. Mirror them onto
+        // the same mocks the test set up above.
+        glEntry: { createMany },
+        glAccount: mockPrisma.glAccount,
+        location: mockPrisma.location,
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2025-01-01',
+        rateCents: 150000,
+        securityDepositCents: 50000,
+      });
+
+    expect(res.status).toBe(201);
+    expect(createMany).toHaveBeenCalledTimes(1);
+
+    const entries = createMany.mock.calls[0][0].data as Array<{
+      accountId: string;
+      debitCents: number;
+      creditCents: number;
+    }>;
+
+    // Balanced
+    const totalDebits = entries.reduce((s, e) => s + e.debitCents, 0);
+    const totalCredits = entries.reduce((s, e) => s + e.creditCents, 0);
+    expect(totalDebits).toBe(50000);
+    expect(totalCredits).toBe(50000);
+
+    // Booked against marina A's bank (debit) and 2300 liability (credit)
+    const debit = entries.find((e) => e.debitCents > 0);
+    const credit = entries.find((e) => e.creditCents > 0);
+    expect(debit?.accountId).toBe(CHART['1010']);
+    expect(credit?.accountId).toBe(CHART['2300']);
   });
 });

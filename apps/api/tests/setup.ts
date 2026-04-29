@@ -397,6 +397,8 @@ vi.mock('../src/services/gl-posting.js', () => ({
   postRefund: vi.fn().mockResolvedValue(undefined),
   reversePostRefund: vi.fn().mockResolvedValue(undefined),
   postManualJournalEntry: vi.fn().mockResolvedValue('je-test-id'),
+  postSecurityDeposit: vi.fn().mockResolvedValue('je-deposit-id'),
+  releaseSecurityDeposit: vi.fn().mockResolvedValue('je-deposit-release-id'),
 }));
 
 vi.mock('../src/services/deferred-revenue.js', () => ({
