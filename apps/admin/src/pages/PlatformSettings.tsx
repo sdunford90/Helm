@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useAdminMe, isSuperuser, adminRoleLabel, AdminRole } from '../hooks/useAdminMe';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useApiFetch } from '../lib/api';
+import { useAdminMe, isSuperuser, canMutate, adminRoleLabel, AdminRole } from '../hooks/useAdminMe';
 
 const card: React.CSSProperties = {
   background: '#0D1B2A',
@@ -39,16 +40,17 @@ const inputStyle: React.CSSProperties = {
   textAlign: 'right',
 };
 
-const toggleStyle = (on: boolean): React.CSSProperties => ({
+const toggleStyle = (on: boolean, disabled = false): React.CSSProperties => ({
   width: 44,
   height: 24,
   borderRadius: 12,
   background: on ? '#00D4FF' : 'rgba(255,255,255,0.1)',
   position: 'relative',
-  cursor: 'pointer',
+  cursor: disabled ? 'not-allowed' : 'pointer',
   transition: 'background 0.2s',
   border: 'none',
   padding: 0,
+  opacity: disabled ? 0.6 : 1,
 });
 
 const toggleKnob = (on: boolean): React.CSSProperties => ({
@@ -257,39 +259,149 @@ const AdminUsersCard: React.FC = () => {
   );
 };
 
+interface PlatformSettings {
+  defaultTier: string | null;
+  trialDurationDays: number;
+  gracePeriodDays: number;
+  autoLockAfterGrace: boolean;
+  achFeeRatePct: number;
+  cardFeeRatePct: number;
+  stripeConnectFeePct: number;
+  feeCapCents: number;
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+  featureFlagsJson: Record<string, boolean>;
+  updatedAt?: string;
+  updatedBy?: string | null;
+}
+
+const DEFAULT_FEATURE_FLAGS: Record<string, boolean> = {
+  multiCurrency: false,
+  advancedAnalytics: true,
+  apiAccess: true,
+  whiteLabel: true,
+  waitlistManagement: true,
+  mobileApp: false,
+  ssoIntegration: false,
+  bulkOperations: true,
+};
+
+const TIER_OPTIONS = [
+  { label: 'Starter', value: 'Starter' },
+  { label: 'Professional', value: 'Professional' },
+  { label: 'Enterprise', value: 'Enterprise' },
+];
+
 const PlatformSettings: React.FC = () => {
-  const [defaultTier, setDefaultTier] = useState('Professional');
-  const [achRate, setAchRate] = useState('0.8');
-  const [cardRate, setCardRate] = useState('2.9');
-  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const apiFetch = useApiFetch();
+  const { me } = useAdminMe();
+  const allowedToMutate = canMutate(me);
 
-  const [features, setFeatures] = useState({
-    multiCurrency: false,
-    advancedAnalytics: true,
-    apiAccess: true,
-    whiteLabel: true,
-    waitlistManagement: true,
-    mobileApp: false,
-    ssoIntegration: false,
-    bulkOperations: true,
-  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
 
-  const [emailTemplates] = useState([
-    { name: 'Welcome Email', subject: 'Welcome to Helm!', lastEdited: '2026-02-15', status: 'active' },
-    { name: 'Trial Expiring', subject: 'Your trial ends in 3 days', lastEdited: '2026-02-20', status: 'active' },
-    { name: 'Payment Failed', subject: 'Action required: Payment failed', lastEdited: '2026-01-10', status: 'active' },
-    { name: 'Account Locked', subject: 'Your account has been suspended', lastEdited: '2026-01-10', status: 'active' },
-    { name: 'Monthly Summary', subject: 'Your monthly Helm summary', lastEdited: '2026-03-01', status: 'active' },
-    { name: 'Feature Update', subject: 'New features available in Helm', lastEdited: '2026-03-15', status: 'draft' },
-  ]);
+  const [serverSettings, setServerSettings] = useState<PlatformSettings | null>(null);
+  const [draft, setDraft] = useState<PlatformSettings | null>(null);
+
+  const fetchSettings = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiFetch<PlatformSettings>('/api/admin/platform-settings');
+      const flags = { ...DEFAULT_FEATURE_FLAGS, ...(data.featureFlagsJson ?? {}) };
+      const normalized: PlatformSettings = { ...data, featureFlagsJson: flags };
+      setServerSettings(normalized);
+      setDraft(normalized);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
+
+  useEffect(() => { fetchSettings(); }, [fetchSettings]);
+
+  const dirty = useMemo(() => {
+    if (!draft || !serverSettings) return false;
+    return JSON.stringify(draft) !== JSON.stringify(serverSettings);
+  }, [draft, serverSettings]);
+
+  const updateDraft = <K extends keyof PlatformSettings>(key: K, value: PlatformSettings[K]) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setSavedAt(null);
+  };
 
   const toggleFeature = (key: string) => {
-    setFeatures((prev) => ({ ...prev, [key]: !(prev as any)[key] }));
+    if (!draft || !allowedToMutate) return;
+    setDraft({
+      ...draft,
+      featureFlagsJson: { ...draft.featureFlagsJson, [key]: !draft.featureFlagsJson[key] },
+    });
+    setSavedAt(null);
   };
+
+  const handleSave = async () => {
+    if (!draft || !allowedToMutate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await apiFetch<PlatformSettings>('/api/admin/platform-settings', {
+        method: 'PUT',
+        body: JSON.stringify(draft),
+      });
+      const flags = { ...DEFAULT_FEATURE_FLAGS, ...(updated.featureFlagsJson ?? {}) };
+      const normalized = { ...updated, featureFlagsJson: flags };
+      setServerSettings(normalized);
+      setDraft(normalized);
+      setSavedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (!serverSettings) return;
+    setDraft(serverSettings);
+    setSavedAt(null);
+  };
+
+  if (loading || !draft) {
+    return (
+      <div>
+        <AdminUsersCard />
+        <div style={{ ...card, textAlign: 'center', color: 'rgba(255,255,255,0.4)', padding: 40 }}>
+          {error ? `Couldn't load settings: ${error}` : 'Loading platform settings…'}
+        </div>
+      </div>
+    );
+  }
+
+  const lockedNote = !allowedToMutate
+    ? 'Read-only mode — Superuser or Billing Admin role required to change settings.'
+    : null;
 
   return (
     <div>
       <AdminUsersCard />
+
+      {error && (
+        <div style={{
+          background: 'rgba(244,67,54,0.08)', border: '1px solid rgba(244,67,54,0.2)',
+          borderRadius: 6, padding: 12, color: '#F44336', fontSize: 13, marginBottom: 16,
+        }}>{error}</div>
+      )}
+
+      {lockedNote && (
+        <div style={{
+          background: 'rgba(255,152,0,0.08)', border: '1px solid rgba(255,152,0,0.2)',
+          borderRadius: 6, padding: 12, color: '#FF9800', fontSize: 13, marginBottom: 16,
+        }}>{lockedNote}</div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
         {/* Default Tier */}
         <div style={card}>
@@ -297,27 +409,45 @@ const PlatformSettings: React.FC = () => {
           <div style={fieldRow}>
             <span style={fieldLabel}>Default tier for new signups</span>
             <select
-              value={defaultTier}
-              onChange={(e) => setDefaultTier(e.target.value)}
+              value={draft.defaultTier ?? ''}
+              disabled={!allowedToMutate}
+              onChange={(e) => updateDraft('defaultTier', e.target.value || null)}
               style={inputStyle}
             >
-              <option value="Starter">Starter — $299/mo</option>
-              <option value="Professional">Professional — $499/mo</option>
-              <option value="Enterprise">Enterprise — $999/mo</option>
+              <option value="">— none —</option>
+              {TIER_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
             </select>
           </div>
           <div style={fieldRow}>
-            <span style={fieldLabel}>Trial duration</span>
-            <input type="text" defaultValue="14 days" style={inputStyle} />
+            <span style={fieldLabel}>Trial duration (days)</span>
+            <input
+              type="number" min={1} max={365}
+              value={draft.trialDurationDays}
+              disabled={!allowedToMutate}
+              onChange={(e) => updateDraft('trialDurationDays', Number(e.target.value))}
+              style={inputStyle}
+            />
           </div>
           <div style={fieldRow}>
-            <span style={fieldLabel}>Grace period</span>
-            <input type="text" defaultValue="7 days" style={inputStyle} />
+            <span style={fieldLabel}>Grace period (days)</span>
+            <input
+              type="number" min={0} max={90}
+              value={draft.gracePeriodDays}
+              disabled={!allowedToMutate}
+              onChange={(e) => updateDraft('gracePeriodDays', Number(e.target.value))}
+              style={inputStyle}
+            />
           </div>
           <div style={{ ...fieldRow, borderBottom: 'none' }}>
             <span style={fieldLabel}>Auto-lock after grace period</span>
-            <button style={toggleStyle(true)} disabled>
-              <div style={toggleKnob(true)} />
+            <button
+              style={toggleStyle(draft.autoLockAfterGrace, !allowedToMutate)}
+              disabled={!allowedToMutate}
+              onClick={() => updateDraft('autoLockAfterGrace', !draft.autoLockAfterGrace)}
+            >
+              <div style={toggleKnob(draft.autoLockAfterGrace)} />
             </button>
           </div>
         </div>
@@ -331,7 +461,13 @@ const PlatformSettings: React.FC = () => {
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Applied to bank transfer payments</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <input value={achRate} onChange={(e) => setAchRate(e.target.value)} style={{ ...inputStyle, width: 80 }} />
+              <input
+                type="number" step="0.1" min={0}
+                value={draft.achFeeRatePct}
+                disabled={!allowedToMutate}
+                onChange={(e) => updateDraft('achFeeRatePct', Number(e.target.value))}
+                style={{ ...inputStyle, width: 80 }}
+              />
               <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>%</span>
             </div>
           </div>
@@ -341,7 +477,13 @@ const PlatformSettings: React.FC = () => {
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Applied to credit/debit card payments</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <input value={cardRate} onChange={(e) => setCardRate(e.target.value)} style={{ ...inputStyle, width: 80 }} />
+              <input
+                type="number" step="0.1" min={0}
+                value={draft.cardFeeRatePct}
+                disabled={!allowedToMutate}
+                onChange={(e) => updateDraft('cardFeeRatePct', Number(e.target.value))}
+                style={{ ...inputStyle, width: 80 }}
+              />
               <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>%</span>
             </div>
           </div>
@@ -350,49 +492,34 @@ const PlatformSettings: React.FC = () => {
               <div style={fieldLabel}>Stripe Connect Fee</div>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Platform application fee</div>
             </div>
-            <input type="text" defaultValue="0.5" style={{ ...inputStyle, width: 80 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input
+                type="number" step="0.1" min={0}
+                value={draft.stripeConnectFeePct}
+                disabled={!allowedToMutate}
+                onChange={(e) => updateDraft('stripeConnectFeePct', Number(e.target.value))}
+                style={{ ...inputStyle, width: 80 }}
+              />
+              <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>%</span>
+            </div>
           </div>
           <div style={{ ...fieldRow, borderBottom: 'none' }}>
             <div>
               <div style={fieldLabel}>Fee Cap per Transaction</div>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Maximum fee amount</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Maximum fee amount (USD)</div>
             </div>
-            <input type="text" defaultValue="$50.00" style={{ ...inputStyle, width: 100 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>$</span>
+              <input
+                type="number" step="1" min={0}
+                value={(draft.feeCapCents / 100).toFixed(2)}
+                disabled={!allowedToMutate}
+                onChange={(e) => updateDraft('feeCapCents', Math.round(Number(e.target.value) * 100))}
+                style={{ ...inputStyle, width: 100 }}
+              />
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* Email Templates */}
-      <div style={{ ...card, marginBottom: 20 }}>
-        <div style={cardTitle}>Email Templates</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              {['Template Name', 'Subject Line', 'Last Edited', 'Status', ''].map((h) => (
-                <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {emailTemplates.map((t) => (
-              <tr key={t.name}>
-                <td style={{ padding: '12px', fontSize: 13, fontWeight: 500, color: '#FFF', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.name}</td>
-                <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.5)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.subject}</td>
-                <td style={{ padding: '12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{t.lastEdited}</td>
-                <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  <span style={{
-                    background: t.status === 'active' ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
-                    color: t.status === 'active' ? '#4CAF50' : '#FF9800',
-                    padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                  }}>{t.status}</span>
-                </td>
-                <td style={{ padding: '12px', borderBottom: '1px solid rgba(255,255,255,0.04)', textAlign: 'right' }}>
-                  <button style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, padding: '4px 12px', color: 'rgba(255,255,255,0.5)', fontSize: 11, cursor: 'pointer' }}>Edit</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
@@ -406,11 +533,15 @@ const PlatformSettings: React.FC = () => {
                 When enabled, all tenant apps show a maintenance page. Admin portal remains accessible.
               </div>
             </div>
-            <button style={toggleStyle(maintenanceMode)} onClick={() => setMaintenanceMode(!maintenanceMode)}>
-              <div style={toggleKnob(maintenanceMode)} />
+            <button
+              style={toggleStyle(draft.maintenanceMode, !allowedToMutate)}
+              disabled={!allowedToMutate}
+              onClick={() => updateDraft('maintenanceMode', !draft.maintenanceMode)}
+            >
+              <div style={toggleKnob(draft.maintenanceMode)} />
             </button>
           </div>
-          {maintenanceMode && (
+          {draft.maintenanceMode && (
             <div style={{ background: 'rgba(244,67,54,0.08)', border: '1px solid rgba(244,67,54,0.2)', borderRadius: 6, padding: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#F44336', marginBottom: 4 }}>Maintenance Mode Active</div>
               <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>All tenant-facing applications are currently showing the maintenance page.</div>
@@ -419,7 +550,9 @@ const PlatformSettings: React.FC = () => {
           <div style={{ marginTop: 16 }}>
             <label style={{ display: 'block', fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 6 }}>Maintenance Message</label>
             <textarea
-              defaultValue="We're performing scheduled maintenance. We'll be back shortly. Thank you for your patience."
+              value={draft.maintenanceMessage}
+              disabled={!allowedToMutate}
+              onChange={(e) => updateDraft('maintenanceMessage', e.target.value)}
               style={{ width: '100%', background: '#070E18', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '10px 12px', color: '#FFF', fontSize: 13, outline: 'none', resize: 'vertical', minHeight: 80, boxSizing: 'border-box', fontFamily: 'inherit' }}
             />
           </div>
@@ -429,13 +562,17 @@ const PlatformSettings: React.FC = () => {
         <div style={card}>
           <div style={cardTitle}>Feature Flags</div>
           <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', marginBottom: 16 }}>Global feature toggles that affect all tenants</div>
-          {Object.entries(features).map(([key, val]) => (
+          {Object.entries(draft.featureFlagsJson).map(([key, val]) => (
             <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
               <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>
                 {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}
               </span>
-              <button style={toggleStyle(val)} onClick={() => toggleFeature(key)}>
-                <div style={toggleKnob(val)} />
+              <button
+                style={toggleStyle(!!val, !allowedToMutate)}
+                disabled={!allowedToMutate}
+                onClick={() => toggleFeature(key)}
+              >
+                <div style={toggleKnob(!!val)} />
               </button>
             </div>
           ))}
@@ -443,9 +580,33 @@ const PlatformSettings: React.FC = () => {
       </div>
 
       {/* Save Button */}
-      <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-        <button style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '10px 24px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Reset to Defaults</button>
-        <button style={{ background: '#0A2342', border: '1px solid #00D4FF', borderRadius: 6, padding: '10px 24px', color: '#00D4FF', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Save All Changes</button>
+      <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 12, alignItems: 'center' }}>
+        {savedAt && !dirty && (
+          <span style={{ fontSize: 12, color: '#4CAF50' }}>Saved at {savedAt}</span>
+        )}
+        {dirty && (
+          <span style={{ fontSize: 12, color: '#FF9800' }}>Unsaved changes</span>
+        )}
+        <button
+          onClick={handleReset}
+          disabled={!dirty || saving}
+          style={{
+            background: 'transparent', border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 6, padding: '10px 24px', color: 'rgba(255,255,255,0.6)',
+            fontSize: 13, cursor: dirty ? 'pointer' : 'not-allowed', opacity: dirty ? 1 : 0.5,
+          }}
+        >Discard Changes</button>
+        <button
+          onClick={handleSave}
+          disabled={!dirty || saving || !allowedToMutate}
+          style={{
+            background: '#0A2342', border: '1px solid #00D4FF',
+            borderRadius: 6, padding: '10px 24px', color: '#00D4FF',
+            fontSize: 13, fontWeight: 600,
+            cursor: !dirty || !allowedToMutate ? 'not-allowed' : (saving ? 'wait' : 'pointer'),
+            opacity: !dirty || !allowedToMutate ? 0.5 : 1,
+          }}
+        >{saving ? 'Saving…' : 'Save All Changes'}</button>
       </div>
     </div>
   );

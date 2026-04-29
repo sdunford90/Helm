@@ -1479,6 +1479,187 @@ router.get("/analytics/feature-usage", async (req, res, next) => {
   }
 });
 
+// ==========================================================================
+//  DASHBOARD SUMMARY
+//
+// Aggregate KPIs the admin Dashboard renders at the top of the page. The
+// admin SPA used to render hard-coded numbers here; this endpoint is the
+// single source of truth so the dashboard reflects real platform state.
+// All values are computed from the live DB so a fresh prod install starts
+// with all-zeros instead of inventing fake activity.
+// ==========================================================================
+
+router.get("/dashboard/summary", async (_req, res, next) => {
+  try {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      tenants,
+      tiers,
+      slipCount,
+      openTickets,
+      monthPayments,
+      monthPos,
+      monthTransient,
+      monthRamp,
+    ] = await Promise.all([
+      prisma.tenant.findMany({
+        select: { id: true, status: true, saasTierId: true },
+      }),
+      prisma.saasTier.findMany({ select: { id: true, monthlyFeeCents: true } }),
+      prisma.slip.count(),
+      prisma.supportTicket.count({
+        where: { status: { in: ["open", "in_progress", "waiting_on_customer"] } },
+      }),
+      prisma.payment.aggregate({
+        where: { status: "COMPLETED", createdAt: { gte: monthStart } },
+        _sum: { amountCents: true },
+      }),
+      prisma.posTransaction.aggregate({
+        where: { status: "completed", createdAt: { gte: monthStart } },
+        _sum: { totalCents: true },
+      }),
+      prisma.transientBooking.aggregate({
+        where: { createdAt: { gte: monthStart } },
+        _sum: { totalCents: true },
+      }),
+      prisma.rampTicket.aggregate({
+        where: { createdAt: { gte: monthStart } },
+        _sum: { amountCents: true },
+      }),
+    ]);
+
+    const tierMap = new Map(tiers.map((t) => [t.id, t.monthlyFeeCents]));
+
+    const byStatus: Record<string, number> = {
+      TRIAL: 0, ACTIVE: 0, GRACE_PERIOD: 0, LOCKED: 0,
+    };
+    let mrrCents = 0;
+    for (const t of tenants) {
+      byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
+      if (t.status === "ACTIVE" && t.saasTierId) {
+        mrrCents += tierMap.get(t.saasTierId) ?? 0;
+      }
+    }
+
+    const platformGmvMonthCents =
+      (monthPayments._sum.amountCents ?? 0) +
+      (monthPos._sum.totalCents ?? 0) +
+      (monthTransient._sum.totalCents ?? 0) +
+      (monthRamp._sum.amountCents ?? 0);
+
+    res.json({
+      tenants: {
+        total: tenants.length,
+        byStatus,
+      },
+      mrrCents,
+      platformGmvMonthCents,
+      // Platform fee revenue = the SaaS revenue we collect from active
+      // tenants this month (= MRR for the active tier mix). Until per-
+      // transaction Stripe Connect fees land on a ledger, this is the
+      // best signal we have for "platform fee revenue".
+      platformFeeRevenueMonthCents: mrrCents,
+      slipsManaged: slipCount,
+      openSupportTickets: openTickets,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
+//  PLATFORM SETTINGS
+//
+// Single-row config table powering the admin Platform Settings page. GET
+// returns the current values (and a fresh row if none has been seeded
+// yet); PUT updates them with a partial payload. Both require an admin
+// session; PUT additionally requires SUPERUSER or BILLING_ADMIN so
+// READ_ONLY_SUPPORT can browse without changing anything.
+// ==========================================================================
+
+const PLATFORM_SETTINGS_ID = "singleton";
+
+async function getOrCreatePlatformSettings() {
+  const existing = await prisma.platformSetting.findUnique({
+    where: { id: PLATFORM_SETTINGS_ID },
+  });
+  if (existing) return existing;
+  return prisma.platformSetting.create({
+    data: { id: PLATFORM_SETTINGS_ID },
+  });
+}
+
+router.get("/platform-settings", async (_req, res, next) => {
+  try {
+    const settings = await getOrCreatePlatformSettings();
+    res.json(settings);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/platform-settings", allowMutations, async (req, res, next) => {
+  try {
+    // Whitelist + coerce so a stray field can't sneak into the table and
+    // a string from the form can't blow up Prisma's number column.
+    const b = req.body ?? {};
+    const data: Record<string, unknown> = {};
+
+    const setStr = (k: string) => {
+      if (typeof b[k] === "string") data[k] = b[k];
+      else if (b[k] === null) data[k] = null;
+    };
+    const setNum = (k: string) => {
+      if (b[k] === undefined || b[k] === null) return;
+      const n = typeof b[k] === "number" ? b[k] : Number(b[k]);
+      if (Number.isFinite(n)) data[k] = n;
+    };
+    const setBool = (k: string) => {
+      if (typeof b[k] === "boolean") data[k] = b[k];
+    };
+
+    setStr("defaultTier");
+    setNum("trialDurationDays");
+    setNum("gracePeriodDays");
+    setBool("autoLockAfterGrace");
+    setNum("achFeeRatePct");
+    setNum("cardFeeRatePct");
+    setNum("stripeConnectFeePct");
+    setNum("feeCapCents");
+    setBool("maintenanceMode");
+    setStr("maintenanceMessage");
+    if (b.featureFlagsJson && typeof b.featureFlagsJson === "object") {
+      data.featureFlagsJson = b.featureFlagsJson;
+    }
+
+    if (req.userId) data.updatedBy = req.userId;
+
+    // Make sure the singleton row exists so update() can target it; this
+    // avoids a noisy 404 on a fresh DB where the seed migration row was
+    // somehow missed.
+    await getOrCreatePlatformSettings();
+
+    const updated = await prisma.platformSetting.update({
+      where: { id: PLATFORM_SETTINGS_ID },
+      data,
+    });
+
+    logAdminActionDetached(req, {
+      action: "PLATFORM_SETTINGS_UPDATE",
+      targetType: "platform_settings",
+      targetId: PLATFORM_SETTINGS_ID,
+      details: { fields: Object.keys(data) },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ==========================================================================
 //  SUPPORT
 
 // --------------------------------------------------------------------------
@@ -1530,7 +1711,7 @@ router.get("/support/tickets", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/support/tickets — create a support ticket (from tenant)
 // --------------------------------------------------------------------------
-router.post("/support/tickets", async (req, res, next) => {
+router.post("/support/tickets", allowMutations, async (req, res, next) => {
   try {
     const { tenantId, subject, description, priority = "medium" } = req.body;
     if (!tenantId || !subject || !description) {
@@ -1561,7 +1742,7 @@ router.post("/support/tickets", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // PUT /api/admin/support/tickets/:id — update ticket status / priority
 // --------------------------------------------------------------------------
-router.put("/support/tickets/:id", async (req, res, next) => {
+router.put("/support/tickets/:id", allowMutations, async (req, res, next) => {
   try {
     const existing = await prisma.supportTicket.findUnique({ where: { id: req.params.id } });
     if (!existing) {
@@ -4973,6 +5154,10 @@ router.put("/users/:id/active", allowSuperuserOnly, async (req, res, next) => {
 
     res.json(updated);
   } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/admin/billing/dunning/:invoiceId/remind — send reminder email
 router.post("/billing/dunning/:invoiceId/remind", async (req, res, next) => {
   try {
@@ -5363,8 +5548,14 @@ router.get("/tenants/:id/exports/:exportId/download", allowSuperuserOnly, async 
       `attachment; filename="tenant-${exportRow.tenantId}-${exportRow.id}.zip"`,
     );
     res.send(Buffer.from(exportRow.localBlob));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/tenants/:id/plan/changes — history
 router.get("/tenants/:id/plan/changes", async (req, res, next) => {
+  try {
     const changes = await prisma.saasPlanChange.findMany({
       where: { tenantId: req.params.id },
       orderBy: { createdAt: "desc" },
@@ -5504,6 +5695,11 @@ router.delete("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next
     });
 
     res.json(cancelled);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants/bulk/announce — send an in-app announcement to
 // each selected tenant. Reuses the per-tenant Announcement table so the

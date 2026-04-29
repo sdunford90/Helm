@@ -42,7 +42,9 @@ export type AdminAuditAction =
   | "QUEUES_RESUME"
   // Support tickets
   | "SUPPORT_TICKET_CREATE"
-  | "SUPPORT_TICKET_UPDATE";
+  | "SUPPORT_TICKET_UPDATE"
+  // Platform settings
+  | "PLATFORM_SETTINGS_UPDATE";
 
 interface LogEntry {
   action: AdminAuditAction | string;

@@ -2585,3 +2585,31 @@ model TenantDeletion {
   @@index([tenantId])
   @@map("tenant_deletions")
 }
+
+// ==========================================================================
+//  PLATFORM SETTINGS
+//
+// Single-row table holding platform-wide tunables surfaced by the admin
+// Platform Settings page. Always identified by the literal id 'singleton'
+// so reads + writes don't need to pick a row. Only PLATFORM_ADMIN may
+// read or write it.
+// ==========================================================================
+
+model PlatformSetting {
+  id                  String   @id @default("singleton")
+  defaultTier         String?
+  trialDurationDays   Int      @default(14)
+  gracePeriodDays     Int      @default(7)
+  autoLockAfterGrace  Boolean  @default(true)
+  achFeeRatePct       Float    @default(0.8)
+  cardFeeRatePct      Float    @default(2.9)
+  stripeConnectFeePct Float    @default(0.5)
+  feeCapCents         Int      @default(5000)
+  maintenanceMode     Boolean  @default(false)
+  maintenanceMessage  String   @default("We're performing scheduled maintenance. We'll be back shortly. Thank you for your patience.")
+  featureFlagsJson    Json     @default("{}")
+  updatedAt           DateTime @updatedAt
+  updatedBy           String?
+
+  @@map("platform_settings")
+}

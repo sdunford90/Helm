@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { seedTiers } from './seed/tiers.js';
 import { seedTenantAndUsers } from './seed/tenant.js';
+import { seedPlatformAdmin } from './seed/platform-admin.js';
 import { seedGlAccounts } from './seed/gl-accounts.js';
 import { seedLocations } from './seed/locations.js';
 import { seedSlips } from './seed/slips.js';
@@ -14,7 +15,60 @@ import { seedOperations } from './seed/operations.js';
 
 const prisma = new PrismaClient();
 
+// --------------------------------------------------------------------------
+// Production safety guard
+//
+// The seed pipeline TRUNCATEs every user-data table. Running it against a
+// populated production DB would erase real customer data, so when
+// NODE_ENV=production we refuse to run unless either:
+//
+//   (a) the DB is genuinely empty (no tenants AND no users), or
+//   (b) the operator passed an explicit override:
+//       HELM_PROD_SEED_CONFIRM=yes
+//
+// This check runs BEFORE we touch any table — the guard cannot itself be
+// the thing that nukes prod.
+// --------------------------------------------------------------------------
+async function assertProdSeedAllowed(): Promise<void> {
+  if (process.env.NODE_ENV !== 'production') return;
+
+  const override = process.env.HELM_PROD_SEED_CONFIRM === 'yes';
+  if (override) {
+    console.warn(
+      '⚠️  HELM_PROD_SEED_CONFIRM=yes set — running prod seed against a non-empty database is destructive.',
+    );
+    return;
+  }
+
+  const [tenantCount, userCount] = await Promise.all([
+    prisma.tenant.count(),
+    prisma.user.count(),
+  ]);
+
+  if (tenantCount === 0 && userCount === 0) {
+    console.log('🟢 Empty production database detected — proceeding with first-run seed.');
+    return;
+  }
+
+  console.error(
+    [
+      '',
+      '🛑 Refusing to seed: NODE_ENV=production and the database is not empty.',
+      `   Found ${tenantCount} tenant(s) and ${userCount} user(s).`,
+      '   The seed pipeline truncates all user-data tables, so running it here',
+      '   would destroy real customer data.',
+      '',
+      '   To proceed anyway (this WILL wipe everything), re-run with:',
+      '       HELM_PROD_SEED_CONFIRM=yes pnpm db:seed:prod',
+      '',
+    ].join('\n'),
+  );
+  process.exit(1);
+}
+
 async function main() {
+  await assertProdSeedAllowed();
+
   console.log('🚢 Seeding Helm database...\n');
 
   // Order matters for foreign keys
@@ -24,6 +78,12 @@ async function main() {
   const { tenant, users } = await seedTenantAndUsers(prisma, tiers[1].id);
   console.log(`  ✓ Tenant: ${tenant.name}`);
   console.log(`  ✓ ${users.length} staff users`);
+
+  // Platform Admin lives outside the demo tenant's role hierarchy and is
+  // what we sign in as on the admin app. Seeding here so the user shows
+  // up under requirePlatformAdmin in every environment, including prod.
+  const platformAdmin = await seedPlatformAdmin(prisma, tenant.id);
+  console.log(`  ✓ Platform admin: ${platformAdmin.email}`);
 
   const glAccounts = await seedGlAccounts(prisma, tenant.id);
   console.log(`  ✓ ${glAccounts.length} GL accounts`);

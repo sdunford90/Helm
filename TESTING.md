@@ -28,14 +28,63 @@ Run this once (or any time you want a clean slate):
 pnpm --filter @helm/api run seed
 ```
 
-This creates the **Bayshore Marina** tenant with:
+This creates the **Demo Marina** tenant (subdomain `demo`, `@demomarina.example`) with:
 
 - **3 locations:** Main Marina, North Dock, South Cove
 - **6 staff users** (see roles below)
 - Slips, customers, leads, contracts, invoices, waitlist entries, rentals, POS items, inventory, ramp tickets, and dock-walk records spread across all three locations
 - 42 invoices (15 Main Marina / 15 South Cove / 12 North Dock)
+- A platform admin user (default `admin@helm.local`, `PLATFORM_ADMIN` + `SUPERUSER`) for the admin panel — see Section 1.6
 
-Seeding is idempotent — re-running it wipes existing data and starts fresh.
+Seeding is idempotent — re-running it wipes existing data and starts fresh
+(the `platform_settings` singleton row is preserved so configured fees/flags survive re-seeds).
+
+### 1.2.1 Production seed (one-time prod bootstrap)
+
+For a fresh production database, use:
+
+```bash
+pnpm db:seed:prod
+```
+
+This runs `prisma migrate deploy` followed by the seed. The seed includes a
+production-safe guard:
+
+- If `NODE_ENV=production` and the DB already has tenants or users, the seed
+  refuses to run unless you also set `HELM_PROD_SEED_CONFIRM=yes`. This
+  prevents accidentally wiping a live database.
+- An empty production DB seeds without confirmation so the very first deploy
+  can bootstrap itself.
+
+The platform admin user is configurable via env vars:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `HELM_PLATFORM_ADMIN_EMAIL` | `admin@helm.local` | Used as the user's email |
+| `HELM_PLATFORM_ADMIN_FIRST_NAME` | `Platform` | |
+| `HELM_PLATFORM_ADMIN_LAST_NAME` | `Admin` | |
+| `HELM_PLATFORM_ADMIN_CLERK_ID` | _(none)_ | Set this to the Clerk user ID so the prod admin can sign in via Clerk |
+
+The admin user is **upserted** by email — re-running the seed will not create
+duplicates and will pick up Clerk-ID changes from env.
+
+### 1.6 Signing in to the Admin Panel
+
+The admin SPA runs at port **3003** (`Admin App` workflow).
+
+**Development (auth bypass on):** the API automatically authenticates the
+seeded platform admin. Just open the admin URL — no sign-in required.
+
+**Production:** Clerk is required. Steps:
+
+1. Create the admin user in Clerk (or have the user sign up).
+2. Copy their Clerk user ID from the Clerk dashboard.
+3. Set `HELM_PLATFORM_ADMIN_CLERK_ID=<clerk_user_id>` and re-run
+   `pnpm db:seed:prod` (idempotent — only updates the existing admin row).
+4. The admin can now sign in at `admin.<your-domain>` with their Clerk
+   credentials. The API checks that `user.role === 'PLATFORM_ADMIN'` before
+   serving any `/api/admin/*` route, then enforces sub-roles
+   (`SUPERUSER` / `BILLING_ADMIN` / `READ_ONLY_SUPPORT`) on mutating routes.
 
 ### 1.3 Credentials status — everything is configured
 
@@ -75,7 +124,7 @@ Even though credentials are all in place, some features require completing a one
 
 | Feature | Setup step required |
 |---------|-------------------|
-| **Card payments / invoicing** | Settings → Stripe → Connect Stripe Account (Stripe Connect OAuth for the Bayshore Marina tenant) |
+| **Card payments / invoicing** | Settings → Stripe → Connect Stripe Account (Stripe Connect OAuth for the Demo Marina tenant) |
 | **Card reader (POS)** | Settings → POS Settings → Readers → Register Reader (enter pairing code from a Stripe Terminal device or simulator) |
 | **QuickBooks sync** | Full setup in Section 6 — requires the Intuit developer portal redirect URI step before the in-app connect |
 | **Email sending** | No setup needed — Resend is live |
@@ -86,8 +135,8 @@ Even though credentials are all in place, some features require completing a one
 ## 2. Seed Data Reference
 
 ### Tenant
-- **Name:** Bayshore Marina
-- **Subdomain:** `bayshore`
+- **Name:** Demo Marina
+- **Subdomain:** `demo`
 
 ### Locations
 | Location | Role in seed |
@@ -103,12 +152,12 @@ The dev bypass automatically signs you in as Sarah (MARINA_OWNER). To test role-
 
 | Email | Role |
 |-------|------|
-| sarah@bayshoremarina.com | MARINA_OWNER |
-| jake@bayshoremarina.com | MARINA_MANAGER |
-| maria@bayshoremarina.com | DOCK_STAFF |
-| tom@bayshoremarina.com | POS_CASHIER |
-| lisa@bayshoremarina.com | ACCOUNTING |
-| robert@bayshoremarina.com | DOCK_STAFF |
+| sarah@demomarina.example | MARINA_OWNER |
+| jake@demomarina.example | MARINA_MANAGER |
+| maria@demomarina.example | DOCK_STAFF |
+| tom@demomarina.example | POS_CASHIER |
+| lisa@demomarina.example | ACCOUNTING |
+| robert@demomarina.example | DOCK_STAFF |
 
 ---
 
@@ -321,7 +370,7 @@ To test disconnect:
 The dev bypass handles authentication automatically for most testing. To test role-based access or Clerk-specific features:
 
 1. Go to [dashboard.clerk.com](https://dashboard.clerk.com) → Users → Create User
-2. Use the email `sarah@bayshoremarina.com` and set a password
+2. Use the email `sarah@demomarina.example` and set a password
 3. In Replit Secrets, set `VITE_ENABLE_AUTH_DEV_BYPASS` and `ENABLE_AUTH_DEV_BYPASS` both to `false` (or delete them from the development env)
 4. Restart both the **API Server** and **Start application** workflows
 5. Sign in at the app with those Clerk credentials — the API matches the Clerk ID to Sarah's seeded database record

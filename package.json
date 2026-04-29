@@ -18,7 +18,9 @@
     "db:migrate:deploy": "cd apps/api && npx prisma migrate deploy",
     "db:migrate:status": "cd apps/api && npx prisma migrate status",
     "db:migrate:all": "ts-node tools/migrate-all.ts",
-    "db:studio": "cd apps/api && npx prisma studio"
+    "db:studio": "cd apps/api && npx prisma studio",
+    "db:seed": "cd apps/api && npx prisma db seed",
+    "db:seed:prod": "cd apps/api && pnpm run db:seed:prod"
   },
   "devDependencies": {
     "@types/node": "^22.19.15",
