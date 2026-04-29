@@ -7,7 +7,11 @@ import { postInvoice, postVoid } from "../services/gl-posting.js";
 import { voidQboInvoice } from "../services/qbo-sync.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
 import { resolveProductTaxCategory } from "../services/product-defaults.js";
-import { resolveProductGlAccounts, isLocationQboConnected } from "../services/gl-account-resolver.js";
+import {
+  resolveProductGlAccounts,
+  resolveProductGlAccountsStrict,
+  isLocationQboConnected,
+} from "../services/gl-account-resolver.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
 import puppeteer from "puppeteer";
@@ -55,11 +59,24 @@ const LineItemSchema = z.object({
 });
 
 /**
- * Batch-resolve per-line revenue GL accounts using per-location overrides.
- * Returns `null` for lines without a product hint or whose product has no
- * mapping for this location (when QBO-connected) — the caller decides
- * whether to keep the client-provided glAccountId or leave it null so the
- * missing-mapping warning surfaces it.
+ * Batch-resolve per-line revenue GL accounts using the per-(category,
+ * location) ProductCategoryGlMapping table.
+ *
+ * Behaviour for each line:
+ *   - If the caller already pinned `glAccountId`, that wins; this returns
+ *     `null` for that slot and the caller falls back to the pin.
+ *   - If the line has a productId (either explicit or via
+ *     sourceType=PRODUCT) AND the invoice has a locationId, runs the
+ *     STRICT resolver which throws `MISSING_GL_MAPPING: Missing GL mapping
+ *     for category "{name}" at location "{name}"` when the per-(category,
+ *     location) row is absent. This is the loud-failure contract every
+ *     posting consumer (POS, invoice, COGS, adjustments, QBO sync) shares
+ *     — there is no tenant-wide fallback for inventory products in the
+ *     post-collapse model.
+ *   - Lines without a productId (ad-hoc revenue: manual line items,
+ *     contract overflow, fee-only invoices) get `null` here and the
+ *     downstream `postInvoice` falls back to the location's pinned
+ *     defaultRevenue slot.
  */
 async function resolveLineItemRevenueGl(
   tenantId: string,
@@ -68,29 +85,41 @@ async function resolveLineItemRevenueGl(
     productId?: string | null;
     sourceType?: string | null;
     sourceId?: string | null;
+    glAccountId?: string | null;
   }>,
 ): Promise<(string | null)[]> {
-  const productIds = lineItems.map((li) => {
-    return (
-      li.productId ??
-      (li.sourceType?.toUpperCase() === "PRODUCT" ? li.sourceId ?? null : null)
-    );
-  });
   const out: (string | null)[] = new Array(lineItems.length).fill(null);
-  const uniqueIds = Array.from(
-    new Set(productIds.filter((p): p is string => !!p)),
-  );
-  if (uniqueIds.length === 0) return out;
-  const resolved = new Map<string, string | null>();
-  await Promise.all(
-    uniqueIds.map(async (pid) => {
-      const r = await resolveProductGlAccounts(tenantId, pid, locationId);
-      resolved.set(pid, r.revenueGlAccountId);
-    }),
-  );
+  // Cache so duplicate productIds in the same invoice only hit the strict
+  // resolver once (it's three queries per call).
+  const cache = new Map<string, string>();
+
   for (let i = 0; i < lineItems.length; i++) {
-    const pid = productIds[i];
-    if (pid) out[i] = resolved.get(pid) ?? null;
+    const li = lineItems[i];
+    // Client-pinned GL wins — skip resolution; caller uses li.glAccountId.
+    if (li.glAccountId) continue;
+    const productId =
+      li.productId ??
+      (li.sourceType?.toUpperCase() === "PRODUCT" ? li.sourceId ?? null : null);
+    if (!productId) continue;
+    // No locationId yet → leave glAccountId null on the draft. The hard
+    // failure is enforced at finalize time inside `postInvoice`, which is
+    // where a missing per-(category, location) mapping actually breaks
+    // posting. Drafts are routinely created before a location is assigned
+    // (e.g. when the invoice is built from an unrouted contract import).
+    if (!locationId) continue;
+    const cached = cache.get(productId);
+    if (cached) {
+      out[i] = cached;
+      continue;
+    }
+    const r = await resolveProductGlAccountsStrict(
+      tenantId,
+      productId,
+      locationId,
+      ["revenue"],
+    );
+    cache.set(productId, r.revenueGlAccountId);
+    out[i] = r.revenueGlAccountId;
   }
   return out;
 }
@@ -498,6 +527,15 @@ router.post(
         subtotalCents += extendedCents;
         totalTaxCents += taxCents;
 
+        // When the caller passes a bare `productId` (no explicit sourceType),
+        // persist it as sourceType=PRODUCT + sourceId so the row at posting
+        // time still carries the "this is a product line" signal that
+        // `postInvoice` keys off to enforce the per-(category, location)
+        // mapping requirement. Without this, productId-only inputs would
+        // lose their inventory-line provenance once the row is written.
+        const sourceType = li.sourceType ?? (li.productId ? "PRODUCT" : null);
+        const sourceId = li.sourceId ?? (li.productId ?? null);
+
         return {
           id: uuid(),
           description: li.description,
@@ -509,8 +547,8 @@ router.post(
           extendedCents,
           glAccountId: li.glAccountId ?? resolvedRevenueIds[idx] ?? null,
           isDeferred: li.isDeferred,
-          sourceType: li.sourceType ?? null,
-          sourceId: li.sourceId ?? null,
+          sourceType,
+          sourceId,
         };
       });
 
@@ -632,6 +670,11 @@ router.put(
           subtotalCents += extendedCents;
           totalTaxCents += taxCents;
 
+          // Mirror create-path: persist productId as sourceType=PRODUCT so
+          // posting-time strictness can detect inventory lines.
+          const sourceType = li.sourceType ?? (li.productId ? "PRODUCT" : null);
+          const sourceId = li.sourceId ?? (li.productId ?? null);
+
           return {
             id: uuid(),
             description: li.description,
@@ -643,8 +686,8 @@ router.put(
             extendedCents,
             glAccountId: li.glAccountId ?? resolvedRevenueIds[idx] ?? null,
             isDeferred: li.isDeferred,
-            sourceType: li.sourceType ?? null,
-            sourceId: li.sourceId ?? null,
+            sourceType,
+            sourceId,
           };
         });
 

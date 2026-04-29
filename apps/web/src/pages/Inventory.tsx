@@ -618,19 +618,43 @@ export default function Inventory() {
     return m;
   }, [singleLocAccounts]);
 
-  const renderGlCell = (id: string | null | undefined) => {
+  // GL accounts are owned by the per-(category, location) mapping after the
+  // category-only-GL collapse. Every cell deep-links operators to the
+  // category editor for the row's category so they can fix unmapped slots
+  // or change the assignment without leaving the row.
+  const renderGlCell = (
+    id: string | null | undefined,
+    productCategoryId: string | null | undefined,
+  ) => {
+    const editLink = productCategoryId ? (
+      <Link
+        to={`/settings/categories?edit=${productCategoryId}`}
+        title="Edit GL mappings on this category"
+        style={{ fontSize: '10px', color: '#0066CC', textDecoration: 'underline', whiteSpace: 'nowrap' }}
+      >
+        Edit on category →
+      </Link>
+    ) : null;
     if (!id) {
       return (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#856404' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#856404' }}>
           <AlertTriangle size={11} /> Not assigned
+          {editLink}
         </span>
       );
     }
     const a = accountById.get(id);
-    if (!a) {
-      return <span style={{ ...st.mono, fontSize: '11px', color: '#64748B' }}>{id.slice(0, 8)}…</span>;
-    }
-    return <span style={{ ...st.mono, fontSize: '11px' }}>{a.accountNumber} · {a.name}</span>;
+    const label = a ? (
+      <span style={{ ...st.mono, fontSize: '11px' }}>{a.accountNumber} · {a.name}</span>
+    ) : (
+      <span style={{ ...st.mono, fontSize: '11px', color: '#64748B' }}>{id.slice(0, 8)}…</span>
+    );
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        {label}
+        {editLink}
+      </span>
+    );
   };
 
   const { data: posData, loading: posLoading } = useApi<{ data: ApiPurchaseOrder[]; total: number }>(
@@ -836,9 +860,9 @@ export default function Inventory() {
                     <td style={st.td}><span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span></td>
                     {currentLocationId ? (
                       <>
-                        <td style={st.td}>{renderGlCell(p.effectiveRevenueGlAccountId)}</td>
-                        <td style={st.td}>{renderGlCell(p.effectiveCogsGlAccountId)}</td>
-                        <td style={st.td}>{renderGlCell(p.effectiveInventoryAssetGlAccountId)}</td>
+                        <td style={st.td}>{renderGlCell(p.effectiveRevenueGlAccountId, p.productCategoryId)}</td>
+                        <td style={st.td}>{renderGlCell(p.effectiveCogsGlAccountId, p.productCategoryId)}</td>
+                        <td style={st.td}>{renderGlCell(p.effectiveInventoryAssetGlAccountId, p.productCategoryId)}</td>
                       </>
                     ) : null}
                     <td style={st.td}>

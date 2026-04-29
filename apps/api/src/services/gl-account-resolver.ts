@@ -217,6 +217,85 @@ export async function resolveLocationSystemPostingAccount(
   );
 }
 
+/**
+ * Strict variant of `resolveProductGlAccounts` for posting consumers
+ * (invoice creation, POS checkout, COGS, inventory adjustments, QBO sync).
+ * Throws a `MISSING_GL_MAPPING` error in the exact form
+ *   `Missing GL mapping for category "{name}" at location "{name}"`
+ * when the resolver would have returned `unmapped` (no per-(category,
+ * location) row) OR when the requested slot itself is null on an existing
+ * row. The exact wording is part of our operator-facing error contract — UI
+ * code keys off the prefix to deep-link operators to the category editor.
+ *
+ * `requireSlots` defaults to `["revenue"]` because that's the minimum every
+ * posting flow needs. POS / COGS / inventory adjustments pass `["revenue",
+ * "cogs", "inventoryAsset"]` for tracked items so they fail before posting
+ * a half-mapped journal entry.
+ */
+export async function resolveProductGlAccountsStrict(
+  tenantId: string,
+  productId: string,
+  locationId: string,
+  requireSlots: ReadonlyArray<"revenue" | "cogs" | "inventoryAsset"> = ["revenue"],
+): Promise<ResolvedProductGl & { revenueGlAccountId: string }> {
+  const product = await prisma.product.findFirst({
+    where: { id: productId, tenantId },
+    select: {
+      id: true,
+      productCategoryId: true,
+      productCategory: { select: { name: true } },
+    },
+  });
+  if (!product) {
+    throw new Error(
+      `MISSING_GL_MAPPING: product ${productId} not found in tenant ${tenantId}`,
+    );
+  }
+  const loc = await prisma.location.findFirst({
+    where: { id: locationId, tenantId },
+    select: { name: true },
+  });
+  const locationName = loc?.name ?? locationId;
+  const categoryName = product.productCategory?.name ?? "(uncategorized)";
+
+  const cOver = await prisma.productCategoryGlMapping.findFirst({
+    where: {
+      tenantId,
+      productCategoryId: product.productCategoryId,
+      locationId,
+    },
+    select: {
+      revenueGlAccountId: true,
+      cogsGlAccountId: true,
+      inventoryAssetGlAccountId: true,
+    },
+  });
+
+  const slotValue = (slot: "revenue" | "cogs" | "inventoryAsset"): string | null => {
+    if (!cOver) return null;
+    if (slot === "revenue") return cOver.revenueGlAccountId;
+    if (slot === "cogs") return cOver.cogsGlAccountId;
+    return cOver.inventoryAssetGlAccountId;
+  };
+
+  for (const slot of requireSlots) {
+    if (!slotValue(slot)) {
+      throw new Error(
+        `MISSING_GL_MAPPING: Missing GL mapping for category "${categoryName}" ` +
+        `at location "${locationName}". Configure the ${slot} GL account in ` +
+        `Settings → Categories → Per-location mappings.`,
+      );
+    }
+  }
+
+  return {
+    revenueGlAccountId: slotValue("revenue") as string,
+    cogsGlAccountId: slotValue("cogs"),
+    inventoryAssetGlAccountId: slotValue("inventoryAsset"),
+    source: "category_default",
+  };
+}
+
 export async function resolveProductGlAccounts(
   tenantId: string,
   productId: string,

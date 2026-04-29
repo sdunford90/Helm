@@ -5,6 +5,58 @@ import {
   resolveLocationSystemPostingAccount,
 } from "./gl-account-resolver.js";
 
+/**
+ * Loud-failure guard for posting consumers: when a stored line item carries a
+ * product provenance (`sourceType === "PRODUCT"`) but no `glAccountId`, the
+ * per-(category, location) ProductCategoryGlMapping is missing for that
+ * inventory line. Throws the operator-facing `MISSING_GL_MAPPING` error in
+ * the canonical wording so UIs can deep-link to Settings → Categories instead
+ * of silently posting the credit to a tenant-wide fallback account.
+ *
+ * Applied uniformly to BOTH QBO-connected and non-QBO contexts — the
+ * post-collapse model has no tenant-wide fallback for inventory products.
+ * Non-product (ad-hoc) lines fall through and the legacy resolver chain
+ * still applies.
+ */
+async function assertProductLineGlMappedOrThrow(
+  tenantId: string,
+  invoiceId: string,
+  locationId: string | null,
+  li: {
+    id: string;
+    glAccountId?: string | null;
+    sourceType?: string | null;
+    sourceId?: string | null;
+  },
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<void> {
+  if (li.glAccountId) return;
+  if (li.sourceType?.toUpperCase() !== "PRODUCT") return;
+  const productId = li.sourceId ?? null;
+  if (!productId) return;
+  const db = tx ?? prisma;
+  const product = await (db as typeof prisma).product.findFirst({
+    where: { id: productId, tenantId },
+    select: {
+      productCategory: { select: { name: true } },
+    },
+  });
+  const categoryName = product?.productCategory?.name ?? "(uncategorized)";
+  const loc = locationId
+    ? await (db as typeof prisma).location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { name: true },
+      })
+    : null;
+  const locationName = loc?.name ?? locationId ?? "(no location)";
+  throw new Error(
+    `MISSING_GL_MAPPING: Missing GL mapping for category "${categoryName}" ` +
+    `at location "${locationName}". Configure the revenue GL account in ` +
+    `Settings → Categories → Per-location mappings before issuing this ` +
+    `invoice (invoice=${invoiceId} lineItem=${li.id}).`,
+  );
+}
+
 // Look up the location-pinned posting accounts (AR / undeposited funds /
 // deferred revenue). Returns nulls when the location has nothing pinned;
 // callers fall back to account-number lookup. Kept in this module so the
@@ -271,6 +323,12 @@ export async function postInvoice(
       taxCents: number;
       glAccountId?: string | null;
       isDeferred: boolean;
+      /** Source signals used to detect product-backed lines so we can
+       *  fail loudly when an inventory line is missing its per-(category,
+       *  location) GL mapping instead of silently posting to a tenant-wide
+       *  fallback. Either may be set independently. */
+      sourceType?: string | null;
+      sourceId?: string | null;
     }[];
     /** Per-jurisdiction tax breakdowns from the tax engine. When provided,
      *  revenue and tax are posted to separate accounts.  When absent (old
@@ -349,21 +407,31 @@ export async function postInvoice(
         let revenueAccountId: string;
         if (li.glAccountId) {
           revenueAccountId = li.glAccountId;
-        } else if (qboConnected) {
-          // Per-location QBO charts must not fall back to a hardcoded
-          // tenant-wide account number — that account belongs to a
-          // different chart of accounts. Surface the misconfiguration
-          // so operators map it explicitly in Settings > Products & Revenue.
-          throw new Error(
-            `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
-            `has no revenue GL account and the originating location is ` +
-            `connected to QuickBooks. Configure a per-location revenue ` +
-            `mapping for this product before issuing the invoice.`,
-          );
         } else {
-          // Non-QBO tenant: defer to the location's pinned default revenue
-          // slot, else the legacy chart-of-accounts lookup by account
-          // number 4500.
+          // Inventory product lines must have their per-(category, location)
+          // mapping resolved upstream — fail loudly with the operator-facing
+          // wording instead of silently posting to a tenant-wide fallback.
+          // Applies uniformly to QBO and non-QBO contexts.
+          await assertProductLineGlMappedOrThrow(
+            tenantId,
+            invoice.id,
+            locationId,
+            li,
+            tx,
+          );
+          if (qboConnected) {
+            // QBO-connected, non-product line (ad-hoc revenue) — still must
+            // be mapped explicitly because tenant-wide accounts cross realms.
+            throw new Error(
+              `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
+              `has no revenue GL account and the originating location is ` +
+              `connected to QuickBooks. Configure a per-location revenue ` +
+              `mapping for this product before issuing the invoice.`,
+            );
+          }
+          // Non-QBO, non-product (ad-hoc) line: defer to the location's
+          // pinned default revenue slot, else the legacy chart-of-accounts
+          // lookup by account number 4500.
           revenueAccountId = await resolveLocationSystemPostingAccount(
             tenantId,
             locationId,
@@ -434,14 +502,24 @@ export async function postInvoice(
         let revenueAccountId: string;
         if (li.glAccountId) {
           revenueAccountId = li.glAccountId;
-        } else if (qboConnected) {
-          throw new Error(
-            `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
-            `has no revenue GL account and the originating location is ` +
-            `connected to QuickBooks. Configure a per-location revenue ` +
-            `mapping for this product before issuing the invoice.`,
-          );
         } else {
+          // Same loud-failure rule as the per-jurisdiction path: inventory
+          // product lines must be mapped per (category, location).
+          await assertProductLineGlMappedOrThrow(
+            tenantId,
+            invoice.id,
+            locationId,
+            li,
+            tx,
+          );
+          if (qboConnected) {
+            throw new Error(
+              `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
+              `has no revenue GL account and the originating location is ` +
+              `connected to QuickBooks. Configure a per-location revenue ` +
+              `mapping for this product before issuing the invoice.`,
+            );
+          }
           revenueAccountId = await resolveLocationSystemPostingAccount(
             tenantId,
             locationId,
