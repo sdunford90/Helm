@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ChevronRight, Settings, Package, Zap,
+  AlertTriangle, ChevronRight, Settings, Package,
   Anchor, DollarSign, Edit2, Check, X, ExternalLink,
-  Info, Plus, ChevronDown,
+  Info, ChevronDown,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -205,27 +206,40 @@ function GlAccountCell({
   glAccounts,
   onSave,
   locationId,
+  accountType = 'REVENUE',
+  qboConnected,
 }: {
   currentId: string | null | undefined;
   glAccounts: GlAccount[];
   onSave: (glAccountId: string | null) => Promise<void>;
   locationId?: string | null;
+  // Defaults to REVENUE for backwards compatibility (dockage/service-fee
+  // cells are revenue-only). Single-location rental editors pass EXPENSE
+  // for COGS and ASSET for inventory.
+  accountType?: GlAccount['type'];
+  // When known, mirrors backend `validateGlAccountForLocation`: QBO-connected
+  // locations may *only* select location-scoped accounts; non-QBO locations
+  // may select location-scoped OR tenant-wide accounts as a union.
+  qboConnected?: boolean;
 }) {
-  // For per-location mappings, prefer location-scoped accounts. Tenant-wide
-  // accounts (locationId == null) are only allowed as a fallback when the
-  // location has no per-location chart of accounts pulled yet (i.e. is not
-  // QBO-connected). The backend mapping validator enforces the same rule, so
-  // showing tenant-wide options once a location has its own accounts would
-  // produce save failures.
   const filtered = (() => {
-    // GlAccountCell is used for revenue mappings only (dockage & service
-    // fees). Drop any non-revenue accounts that the catalog summary may
-    // include for the rental-product editor.
-    const revenue = glAccounts.filter((a) => a.type === 'REVENUE');
-    if (!locationId) return revenue;
-    const locScoped = revenue.filter((a) => a.locationId === locationId);
+    const ofType = glAccounts.filter((a) => a.type === accountType);
+    if (!locationId) return ofType;
+    if (qboConnected === true) {
+      return ofType.filter((a) => a.locationId === locationId);
+    }
+    if (qboConnected === false) {
+      return ofType.filter(
+        (a) => a.locationId === locationId || a.locationId == null,
+      );
+    }
+    // Legacy fallback for callers (dockage/service-fee) that don't know
+    // QBO state: prefer location-scoped accounts; only show tenant-wide
+    // accounts if the location has none of its own. Matches the prior
+    // behavior so existing call sites don't change semantics.
+    const locScoped = ofType.filter((a) => a.locationId === locationId);
     if (locScoped.length > 0) return locScoped;
-    return revenue.filter((a) => a.locationId == null);
+    return ofType.filter((a) => a.locationId == null);
   })();
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState(currentId ?? '');
@@ -525,9 +539,114 @@ function RentalProductRow({
   );
 }
 
+/* ── Single-location flat rental row ───────────────────── */
+
+// Renders a single rental product as one row with three inline GL cells
+// (Revenue / COGS / Inventory Asset) for the currently-selected location.
+// Used only when the operator has picked a single location in the top-right
+// switcher; the cross-location grid editor (RentalProductRow) is preserved
+// for the All-locations view.
+function FlatRentalProductRow({
+  product,
+  glAccounts,
+  locationId,
+  qboConnected,
+  onSavePerLocation,
+}: {
+  product: RentalProduct;
+  glAccounts: GlAccount[];
+  locationId: string;
+  qboConnected: boolean;
+  onSavePerLocation: (
+    locationId: string,
+    override: RentalProductPerLocationRow['override'],
+  ) => Promise<void>;
+}) {
+  // The API in single-location mode narrows perLocation to exactly one
+  // entry for the requested location. Fall back to an empty override if
+  // the entry is missing (e.g. a product that has never been mapped).
+  const row =
+    product.perLocation?.find((r) => r.locationId === locationId) ??
+    ({
+      locationId,
+      locationName: '',
+      override: {
+        revenueGlAccountId: null,
+        cogsGlAccountId: null,
+        inventoryAssetGlAccountId: null,
+      },
+      effective: {
+        revenueGlAccountId: null,
+        cogsGlAccountId: null,
+        inventoryAssetGlAccountId: null,
+      },
+    } as RentalProductPerLocationRow);
+
+  // Each cell saves the merged override (preserving the other two fields)
+  // because the per-location PUT endpoint is whole-record, not partial.
+  const saveField = (
+    field: keyof RentalProductPerLocationRow['override'],
+  ) => async (id: string | null) => {
+    await onSavePerLocation(locationId, { ...row.override, [field]: id });
+  };
+
+  return (
+    <tr>
+      <td style={s.td}>
+        <div style={{ fontWeight: 600, color: '#0A2342' }}>{product.name}</div>
+      </td>
+      <td style={s.td}>
+        <span style={{ ...s.badge, backgroundColor: '#FFF7ED', color: '#C2410C' }}>
+          {product.category || 'Uncategorized'}
+        </span>
+      </td>
+      <td style={s.td}>
+        <span style={{
+          ...s.badge,
+          backgroundColor: product.active ? '#DCFCE7' : '#F1F5F9',
+          color: product.active ? '#15803D' : '#64748B',
+        }}>
+          {product.active ? 'Active' : 'Inactive'}
+        </span>
+      </td>
+      <td style={s.td}>
+        <GlAccountCell
+          currentId={row.effective.revenueGlAccountId}
+          glAccounts={glAccounts}
+          locationId={locationId}
+          qboConnected={qboConnected}
+          accountType="REVENUE"
+          onSave={saveField('revenueGlAccountId')}
+        />
+      </td>
+      <td style={s.td}>
+        <GlAccountCell
+          currentId={row.effective.cogsGlAccountId}
+          glAccounts={glAccounts}
+          locationId={locationId}
+          qboConnected={qboConnected}
+          accountType="EXPENSE"
+          onSave={saveField('cogsGlAccountId')}
+        />
+      </td>
+      <td style={s.td}>
+        <GlAccountCell
+          currentId={row.effective.inventoryAssetGlAccountId}
+          glAccounts={glAccounts}
+          locationId={locationId}
+          qboConnected={qboConnected}
+          accountType="ASSET"
+          onSave={saveField('inventoryAssetGlAccountId')}
+        />
+      </td>
+    </tr>
+  );
+}
+
 /* ── Main component ─────────────────────────────────────── */
 
 export default function SettingsProducts() {
+  const { currentLocationId } = useModules();
   const [data, setData] = useState<ProductsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -536,14 +655,17 @@ export default function SettingsProducts() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get<{ data: ProductsSummary }>('/api/settings/catalog/products-summary');
+      const url = currentLocationId
+        ? `/api/settings/catalog/products-summary?locationId=${encodeURIComponent(currentLocationId)}`
+        : '/api/settings/catalog/products-summary';
+      const res = await api.get<{ data: ProductsSummary }>(url);
       setData(res.data);
     } catch (e: any) {
       setError(e?.response?.data?.error ?? 'Failed to load product catalog');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentLocationId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -893,6 +1015,38 @@ export default function SettingsProducts() {
           <div style={s.emptyRow}>
             No rental products configured. Add them in Settings → Catalog.
           </div>
+        ) : currentLocationId ? (
+          // Single-location mode: flat one-row-per-product table with three
+          // inline GL cells. Each cell saves a merged override so the other
+          // two fields are preserved on the per-location PUT.
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>Product</th>
+                <th style={s.th}>Category</th>
+                <th style={s.th}>Status</th>
+                <th style={s.th}>Revenue GL</th>
+                <th style={s.th}>COGS GL</th>
+                <th style={s.th}>Inventory Asset GL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rentalProducts.map((product) => (
+                <FlatRentalProductRow
+                  key={product.id}
+                  product={product}
+                  glAccounts={glAccounts}
+                  locationId={currentLocationId}
+                  qboConnected={
+                    !!data?.locations?.find((l) => l.id === currentLocationId)?.qboConnected
+                  }
+                  onSavePerLocation={(locationId, override) =>
+                    saveRentalProductPerLocationGl(product.id, locationId, override)
+                  }
+                />
+              ))}
+            </tbody>
+          </table>
         ) : (
           <div style={{ padding: '8px 16px 16px 16px' }}>
             {rentalProducts.map((product) => (

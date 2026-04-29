@@ -2287,8 +2287,17 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
         inventoryAssetGlAccountId: m.inventoryAssetGlAccountId,
       });
     }
+    // When a single locationId is provided, narrow the per-location
+    // expansion to just that location so the rental-products section can
+    // render as a flat one-row-per-product table instead of a grid.
+    // Tenant-wide mode (no locationId param) keeps the full per-location
+    // expansion across every location.
+    const rentalLocations = locationId
+      ? locationsForRentals.filter((l) => l.id === locationId)
+      : locationsForRentals;
+
     const rentalProductsEnriched = rentalProducts.map((p) => {
-      const perLocation = locationsForRentals.map((l) => {
+      const perLocation = rentalLocations.map((l) => {
         const mm = rpMapByPair.get(`${p.id}|${l.id}`);
         // Mirror resolver/warning behavior: once a location is QBO-
         // connected the tenant-wide legacy `RentalProduct.glAccountId`
@@ -2317,7 +2326,10 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
 
     // Don't leak QBO tokens/realm IDs to the client — strip them down to a
     // boolean `qboConnected` flag the UI can use for option-filtering and
-    // optimistic recomputation.
+    // optimistic recomputation. Always return the *full* set of locations
+    // so the UI can populate any location-aware controls (e.g. the GL
+    // dropdown's tenant-wide vs location-scoped split) regardless of which
+    // location is currently selected.
     const locationsForRentalsPublic = locationsForRentals.map((l) => ({
       id: l.id,
       name: l.name,
@@ -2327,11 +2339,13 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
     // Count unconfigured items (no effective revenue mapping). For rental
     // products this means *any* location that lacks an effective revenue
     // mapping counts toward the warning total — once a tenant has multiple
-    // locations a single tenant-wide FK is no longer enough.
+    // locations a single tenant-wide FK is no longer enough. In single-
+    // location mode the gap count is naturally narrowed because
+    // `perLocation` now only contains that one location.
     const rentalUnconfigured = rentalProductsEnriched
       .filter((p) => p.active)
       .reduce((acc, p) => {
-        const gaps = locationsForRentals.length === 0
+        const gaps = rentalLocations.length === 0
           ? (p.glAccountId ? 0 : 1)
           : p.perLocation.filter((row) => !row.effective.revenueGlAccountId).length;
         return acc + gaps;
@@ -2341,7 +2355,13 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
       serviceFeesEnriched.filter((f) => !f.glAccountId).length +
       rentalUnconfigured;
 
-    const warnings = await getMissingGlAccountWarnings(tenantId);
+    // In single-location mode, narrow missing-mapping warnings to that
+    // location so the banner doesn't list other marinas the operator
+    // isn't currently looking at.
+    const allWarnings = await getMissingGlAccountWarnings(tenantId);
+    const warnings = locationId
+      ? allWarnings.filter((w) => w.locationId === locationId)
+      : allWarnings;
     res.json({
       data: {
         dockageRates: dockageRatesEnriched,

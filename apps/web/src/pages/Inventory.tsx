@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
+import { useModules } from '../context/ModulesContext';
+import { api } from '../lib/api';
+import { useAuth } from '@clerk/clerk-react';
 import {
   Package, Search, Plus, X, Download, Truck,
   AlertTriangle, ClipboardCheck, BarChart3, Edit2,
@@ -15,6 +18,12 @@ interface Product {
   costCents: number; priceCents: number; taxClass: string; qoh: number;
   reorderPoint: number;
   glRevenue: string; glCogs: string; glInventoryAsset: string;
+  // Effective per-location resolutions, populated only in single-location
+  // mode (when the request was scoped via `?locationId=`). Resolved
+  // server-side via the per-location → category-default → legacy chain.
+  effectiveRevenueGlAccountId?: string | null;
+  effectiveCogsGlAccountId?: string | null;
+  effectiveInventoryAssetGlAccountId?: string | null;
   trackInventory: boolean; active: boolean;
   qboItemId: string | null; qboItemSyncedAt: string | null;
   qboItemSyncError: string | null; qboItemSyncErrorAt: string | null;
@@ -57,6 +66,9 @@ interface ApiProduct {
   reorderPoint: number;
   cogsGlAccountId: string | null; revenueGlAccountId: string | null;
   inventoryAssetGlAccountId: string | null;
+  effectiveRevenueGlAccountId?: string | null;
+  effectiveCogsGlAccountId?: string | null;
+  effectiveInventoryAssetGlAccountId?: string | null;
   trackInventory: boolean; active: boolean;
   qboItemId?: string | null; qboItemSyncedAt?: string | null;
   qboItemSyncError?: string | null; qboItemSyncErrorAt?: string | null;
@@ -92,6 +104,9 @@ function toProduct(p: ApiProduct): Product {
     glRevenue: p.revenueGlAccountId ?? '',
     glCogs: p.cogsGlAccountId ?? '',
     glInventoryAsset: p.inventoryAssetGlAccountId ?? '',
+    effectiveRevenueGlAccountId: p.effectiveRevenueGlAccountId ?? null,
+    effectiveCogsGlAccountId: p.effectiveCogsGlAccountId ?? null,
+    effectiveInventoryAssetGlAccountId: p.effectiveInventoryAssetGlAccountId ?? null,
     trackInventory: p.trackInventory, active: p.active,
     qboItemId: p.qboItemId ?? null, qboItemSyncedAt: p.qboItemSyncedAt ?? null,
     qboItemSyncError: p.qboItemSyncError ?? null, qboItemSyncErrorAt: p.qboItemSyncErrorAt ?? null,
@@ -219,6 +234,7 @@ interface PerLocationMappingRow {
 
 function ProductPerLocationMappings({ productId }: { productId: string }) {
   const toast = useToast();
+  const { currentLocationId } = useModules();
   const [rows, setRows] = useState<PerLocationMappingRow[] | null>(null);
   const [accountsByLocation, setAccountsByLocation] = useState<Record<string, ApiGlAccount[]>>({});
   const [savingLoc, setSavingLoc] = useState<string | null>(null);
@@ -226,13 +242,25 @@ function ProductPerLocationMappings({ productId }: { productId: string }) {
 
   React.useEffect(() => {
     let cancelled = false;
+    // Re-set to a loading state when the scope changes so the editor
+    // doesn't briefly show stale rows from the previous location.
+    setRows(null);
+    setAccountsByLocation({});
+    setError(null);
     (async () => {
       try {
         const res = await fetch(`/api/settings/products/${productId}/gl-mappings`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         if (cancelled) return;
-        const data: PerLocationMappingRow[] = json.data ?? [];
+        const all: PerLocationMappingRow[] = json.data ?? [];
+        // In single-location mode, narrow the editor to just that location
+        // so the modal stays focused on the marina the operator picked in
+        // the top-right switcher. The All-locations view keeps the full
+        // grid editor across every location.
+        const data = currentLocationId
+          ? all.filter((r) => r.locationId === currentLocationId)
+          : all;
         setRows(data);
         // Pre-fetch this location's chart so the select is populated. We use
         // the existing /api/settings/gl-accounts?locationId=... endpoint —
@@ -252,7 +280,10 @@ function ProductPerLocationMappings({ productId }: { productId: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [productId]);
+    // currentLocationId must be a dep — when the operator flips the
+    // top-right switcher while the modal is open, the per-location editor
+    // needs to re-fetch and re-narrow so saves target the right scope.
+  }, [productId, currentLocationId]);
 
   const updateField = <K extends keyof PerLocationMappingRow['override']>(
     locationId: string,
@@ -797,11 +828,14 @@ type ModalType = 'addProduct' | 'editProduct' | 'createPO' | 'startCount' | 'adj
 
 export default function Inventory() {
   const toast = useToast();
+  const { currentLocationId } = useModules();
+  const { getToken } = useAuth();
   const [tab, setTab] = useState<Tab>('products');
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   const [lowOnly, setLowOnly] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [countSessions, setCountSessions] = useState<CountSession[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
@@ -809,9 +843,83 @@ export default function Inventory() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [receivingPO, setReceivingPO] = useState<PurchaseOrder | null>(null);
 
-  const { data: productsData, loading: productsLoading } = useApi<{ data: ApiProduct[]; total: number }>(
-    'get', '/api/inventory/products?take=100&sortBy=name&sortOrder=asc', { immediate: true },
-  );
+  // Manual fetch (instead of useApi) so we can re-run when the operator
+  // toggles the top-right location switcher. The base useApi hook only
+  // fires on mount, which would leave the table stale after a switch.
+  useEffect(() => {
+    let cancelled = false;
+    setProductsLoading(true);
+    (async () => {
+      try {
+        const token = await getToken();
+        const qs = new URLSearchParams({
+          take: '100', sortBy: 'name', sortOrder: 'asc',
+        });
+        if (currentLocationId) qs.set('locationId', currentLocationId);
+        const json = await api.get<{ data: ApiProduct[]; total: number }>(
+          `/api/inventory/products?${qs.toString()}`,
+          token,
+        );
+        if (cancelled) return;
+        setProducts(json.data.map(toProduct));
+      } catch {
+        if (!cancelled) setProducts([]);
+      } finally {
+        if (!cancelled) setProductsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentLocationId, getToken]);
+
+  // Fetch GL accounts (all three relevant types) when in single-location
+  // mode so we can render the effective Revenue/COGS/Inventory columns
+  // with account number + name labels rather than raw UUIDs.
+  const [singleLocAccounts, setSingleLocAccounts] = useState<ApiGlAccount[]>([]);
+  useEffect(() => {
+    if (!currentLocationId) { setSingleLocAccounts([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const [rev, exp, asset] = await Promise.all([
+          api.get<{ accounts: ApiGlAccount[] }>('/api/inventory/gl-accounts?type=REVENUE', token),
+          api.get<{ accounts: ApiGlAccount[] }>('/api/inventory/gl-accounts?type=EXPENSE', token),
+          api.get<{ accounts: ApiGlAccount[] }>('/api/inventory/gl-accounts?type=ASSET', token),
+        ]);
+        if (cancelled) return;
+        setSingleLocAccounts([
+          ...(rev.accounts ?? []),
+          ...(exp.accounts ?? []),
+          ...(asset.accounts ?? []),
+        ]);
+      } catch {
+        if (!cancelled) setSingleLocAccounts([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentLocationId, getToken]);
+
+  const accountById = useMemo(() => {
+    const m = new Map<string, ApiGlAccount>();
+    for (const a of singleLocAccounts) m.set(a.id, a);
+    return m;
+  }, [singleLocAccounts]);
+
+  const renderGlCell = (id: string | null | undefined) => {
+    if (!id) {
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#856404' }}>
+          <AlertTriangle size={11} /> Not assigned
+        </span>
+      );
+    }
+    const a = accountById.get(id);
+    if (!a) {
+      return <span style={{ ...st.mono, fontSize: '11px', color: '#64748B' }}>{id.slice(0, 8)}…</span>;
+    }
+    return <span style={{ ...st.mono, fontSize: '11px' }}>{a.accountNumber} · {a.name}</span>;
+  };
+
   const { data: posData, loading: posLoading } = useApi<{ data: ApiPurchaseOrder[]; total: number }>(
     'get', '/api/inventory/purchase-orders', { immediate: true },
   );
@@ -836,10 +944,6 @@ export default function Inventory() {
   }, [pageCategoriesData]);
   const displayCategory = (p: Product): string =>
     (p.productCategoryId && categoryNameById.get(p.productCategoryId)) || p.category || '';
-
-  React.useEffect(() => {
-    if (productsData?.data) setProducts(productsData.data.map(toProduct));
-  }, [productsData]);
 
   React.useEffect(() => {
     if (posData?.data) setPurchaseOrders(posData.data.map(toPurchaseOrder));
@@ -988,13 +1092,21 @@ export default function Inventory() {
             <thead><tr>
               <th style={st.th}>SKU</th><th style={st.th}>Barcode</th><th style={st.th}>Name</th><th style={st.th}>Category</th>
               <th style={st.th}>Cost</th><th style={st.th}>Price</th><th style={st.th}>Margin</th><th style={st.th}>QOH</th>
-              <th style={st.th}>Reorder</th><th style={st.th}>Status</th><th style={st.th}>QBO</th><th style={st.th}>Actions</th>
+              <th style={st.th}>Reorder</th><th style={st.th}>Status</th>
+              {currentLocationId ? (
+                <>
+                  <th style={st.th}>Revenue GL</th>
+                  <th style={st.th}>COGS GL</th>
+                  <th style={st.th}>Inventory GL</th>
+                </>
+              ) : null}
+              <th style={st.th}>QBO</th><th style={st.th}>Actions</th>
             </tr></thead>
             <tbody>
               {productsLoading ? (
-                <tr><td colSpan={12} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: '32px' }}>Loading inventory…</td></tr>
+                <tr><td colSpan={currentLocationId ? 15 : 12} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: '32px' }}>Loading inventory…</td></tr>
               ) : filteredProducts.length === 0 ? (
-                <tr><td colSpan={12} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '32px' }}>No products found. Add your first product using the button above.</td></tr>
+                <tr><td colSpan={currentLocationId ? 15 : 12} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '32px' }}>No products found. Add your first product using the button above.</td></tr>
               ) : filteredProducts.map((p, idx) => {
                 const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const ss = stockStatus(p); const margin = p.priceCents > 0 ? ((p.priceCents - p.costCents) / p.priceCents * 100).toFixed(0) : '0'; return (
                   <tr key={p.id}
@@ -1011,6 +1123,13 @@ export default function Inventory() {
                     <td style={{ ...st.td, ...st.mono, fontWeight: 700, color: p.qoh <= p.reorderPoint ? '#856404' : '#0A2342' }}>{p.qoh}</td>
                     <td style={{ ...st.td, ...st.mono }}>{p.reorderPoint}</td>
                     <td style={st.td}><span style={{ ...st.badge, backgroundColor: ss.bg, color: ss.color }}>{ss.label}</span></td>
+                    {currentLocationId ? (
+                      <>
+                        <td style={st.td}>{renderGlCell(p.effectiveRevenueGlAccountId)}</td>
+                        <td style={st.td}>{renderGlCell(p.effectiveCogsGlAccountId)}</td>
+                        <td style={st.td}>{renderGlCell(p.effectiveInventoryAssetGlAccountId)}</td>
+                      </>
+                    ) : null}
                     <td style={st.td}>
                       {!p.trackInventory ? (
                         <span style={{ fontSize: '11px', color: '#94A3B8' }}>—</span>

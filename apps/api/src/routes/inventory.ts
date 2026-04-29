@@ -193,6 +193,11 @@ const ListProductsQuerySchema = z.object({
   category: z.string().optional(),
   search: z.string().optional(),
   lowStockOnly: z.coerce.boolean().optional(),
+  // When provided, narrow the listing to products tied to this location
+  // (or to the tenant-wide pool with locationId=null). The response is
+  // also enriched with `effective*GlAccountId` fields resolved via the
+  // per-location → category-default → legacy chain.
+  locationId: z.string().optional(),
   skip: z.coerce.number().int().min(0).default(0),
   take: z.coerce.number().int().positive().max(100).default(25),
   sortBy: z.enum(["name", "sku", "category", "qoh", "createdAt"]).default("name"),
@@ -404,10 +409,143 @@ function shapePo(po: PoWithLines) {
 
 // ─── Products ─────────────────────────────────────────────────────────────────
 
+// Resolve effective per-location GL accounts for a batch of products in
+// three queries (productGlMapping + productCategoryGlMapping + the location
+// itself for QBO gating) instead of N calls to the per-product resolver.
+// Mirrors the chain in `resolveProductGlAccounts`.
+async function batchResolveEffectiveGl(
+  tenantId: string,
+  locationId: string,
+  products: Array<Pick<ProductRow, "id" | "productCategoryId" | "revenueGlAccountId" | "cogsGlAccountId" | "inventoryAssetGlAccountId">>,
+): Promise<Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>> {
+  const out = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
+  if (products.length === 0) return out;
+
+  const productIds = products.map((p) => p.id);
+  const categoryIds = Array.from(
+    new Set(products.map((p) => p.productCategoryId).filter((v): v is string => !!v)),
+  );
+
+  const [pMappings, cMappings, catDefaults, loc] = await Promise.all([
+    prisma.productGlMapping.findMany({
+      where: { tenantId, locationId, productId: { in: productIds } },
+      select: {
+        productId: true,
+        revenueGlAccountId: true,
+        cogsGlAccountId: true,
+        inventoryAssetGlAccountId: true,
+      },
+    }),
+    categoryIds.length > 0
+      ? prisma.productCategoryGlMapping.findMany({
+          where: { tenantId, locationId, productCategoryId: { in: categoryIds } },
+          select: {
+            productCategoryId: true,
+            revenueGlAccountId: true,
+            cogsGlAccountId: true,
+            inventoryAssetGlAccountId: true,
+          },
+        })
+      : Promise.resolve([] as Array<{
+          productCategoryId: string;
+          revenueGlAccountId: string | null;
+          cogsGlAccountId: string | null;
+          inventoryAssetGlAccountId: string | null;
+        }>),
+    // Legacy tenant-wide category defaults (productCategory.default*) are
+    // the final fallback in `resolveProductGlAccounts` after legacy
+    // product FKs. Loading them here keeps batch resolution at parity
+    // with the per-product resolver.
+    categoryIds.length > 0
+      ? prisma.productCategory.findMany({
+          where: { tenantId, id: { in: categoryIds } },
+          select: {
+            id: true,
+            defaultRevenueGlAccountId: true,
+            defaultCogsGlAccountId: true,
+            defaultInventoryAssetGlAccountId: true,
+          },
+        })
+      : Promise.resolve([] as Array<{
+          id: string;
+          defaultRevenueGlAccountId: string | null;
+          defaultCogsGlAccountId: string | null;
+          defaultInventoryAssetGlAccountId: string | null;
+        }>),
+    prisma.location.findUnique({
+      where: { id: locationId },
+      select: { qboAccessToken: true, qboRealmId: true },
+    }),
+  ]);
+
+  const pMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
+  for (const m of pMappings) {
+    pMap.set(m.productId, {
+      revenue: m.revenueGlAccountId,
+      cogs: m.cogsGlAccountId,
+      inv: m.inventoryAssetGlAccountId,
+    });
+  }
+  const cMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
+  for (const m of cMappings) {
+    cMap.set(m.productCategoryId, {
+      revenue: m.revenueGlAccountId,
+      cogs: m.cogsGlAccountId,
+      inv: m.inventoryAssetGlAccountId,
+    });
+  }
+  const catDefMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
+  for (const c of catDefaults) {
+    catDefMap.set(c.id, {
+      revenue: c.defaultRevenueGlAccountId,
+      cogs: c.defaultCogsGlAccountId,
+      inv: c.defaultInventoryAssetGlAccountId,
+    });
+  }
+
+  const qboConnected = !!(loc?.qboAccessToken && loc?.qboRealmId);
+
+  for (const p of products) {
+    const pOver = pMap.get(p.id);
+    const cOver = p.productCategoryId ? cMap.get(p.productCategoryId) : undefined;
+    const cDef = p.productCategoryId ? catDefMap.get(p.productCategoryId) : undefined;
+    // QBO-connected locations may not fall back to legacy tenant-wide FKs
+    // (per-product OR per-category): those FKs likely point at a different
+    // QBO realm's chart. Mirrors resolveProductGlAccounts' gating exactly.
+    const legacyProdRev = qboConnected ? null : p.revenueGlAccountId ?? null;
+    const legacyProdCogs = qboConnected ? null : p.cogsGlAccountId ?? null;
+    const legacyProdInv = qboConnected ? null : p.inventoryAssetGlAccountId ?? null;
+    const legacyCatRev = qboConnected ? null : cDef?.revenue ?? null;
+    const legacyCatCogs = qboConnected ? null : cDef?.cogs ?? null;
+    const legacyCatInv = qboConnected ? null : cDef?.inv ?? null;
+    out.set(p.id, {
+      revenue: pOver?.revenue ?? cOver?.revenue ?? legacyProdRev ?? legacyCatRev,
+      cogs: pOver?.cogs ?? cOver?.cogs ?? legacyProdCogs ?? legacyCatCogs,
+      inv: pOver?.inv ?? cOver?.inv ?? legacyProdInv ?? legacyCatInv,
+    });
+  }
+  return out;
+}
+
+function shapeProductWithEffective(
+  p: ProductRow,
+  effective?: { revenue: string | null; cogs: string | null; inv: string | null },
+) {
+  const base = shapeProduct(p);
+  if (!effective) return base;
+  return {
+    ...base,
+    effectiveRevenueGlAccountId: effective.revenue,
+    effectiveCogsGlAccountId: effective.cogs,
+    effectiveInventoryAssetGlAccountId: effective.inv,
+  };
+}
+
 // GET /products
 router.get("/products", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = ListProductsQuerySchema.parse(req.query);
+    const tenantId = getTenantId(req);
 
     const where: any = { active: true };
     if (query.category) where.category = query.category;
@@ -416,6 +554,19 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
         { name: { contains: query.search, mode: "insensitive" } },
         { sku: { contains: query.search, mode: "insensitive" } },
         { barcode: { contains: query.search } },
+      ];
+    }
+    // Single-location mode: include products tied to this location AND
+    // tenant-wide products (locationId IS NULL) so anything not yet
+    // assigned to a specific marina is still visible.
+    if (query.locationId) {
+      const locFilter = [
+        { locationId: query.locationId },
+        { locationId: null },
+      ];
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : []),
+        { OR: locFilter },
       ];
     }
 
@@ -433,8 +584,13 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
       });
       const total = sorted.length;
       const paged = sorted.slice(query.skip, query.skip + query.take);
+      const effectiveMap = query.locationId
+        ? await batchResolveEffectiveGl(tenantId, query.locationId, paged)
+        : null;
       return res.json({
-        data: paged.map(shapeProduct),
+        data: paged.map((p) =>
+          shapeProductWithEffective(p, effectiveMap?.get(p.id)),
+        ),
         total,
         skip: query.skip,
         take: query.take,
@@ -451,8 +607,14 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
       prisma.product.count({ where }),
     ]);
 
+    const effectiveMap = query.locationId
+      ? await batchResolveEffectiveGl(tenantId, query.locationId, results)
+      : null;
+
     res.json({
-      data: results.map(shapeProduct),
+      data: results.map((p) =>
+        shapeProductWithEffective(p, effectiveMap?.get(p.id)),
+      ),
       total,
       skip: query.skip,
       take: query.take,

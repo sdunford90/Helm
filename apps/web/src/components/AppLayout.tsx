@@ -457,7 +457,9 @@ export default function AppLayout() {
                 }}
               >
                 <MapPin size={14} style={{ color: 'var(--brand-secondary)' }} />
-                {selectedLocation?.name ?? 'Select location'}
+                {currentLocationId === null
+                  ? 'All locations'
+                  : (selectedLocation?.name ?? 'Select location')}
                 <ChevronDown size={14} style={{ color: '#64748B' }} />
               </button>
               {locationDropdownOpen && (
@@ -479,6 +481,29 @@ export default function AppLayout() {
                   <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
                     Switch Location
                   </div>
+                  <button
+                    key="__all__"
+                    onClick={() => { setCurrentLocationId(null); setLocationDropdownOpen(false); }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      padding: '10px 12px',
+                      fontSize: '14px',
+                      color: '#0A2342',
+                      background: currentLocationId === null ? '#F0FAFF' : '#FFFFFF',
+                      border: 'none',
+                      borderBottom: '1px solid #F2F4F6',
+                      cursor: 'pointer',
+                      textAlign: 'left' as const,
+                      fontWeight: currentLocationId === null ? 600 : 400,
+                    }}
+                  >
+                    <MapPin size={14} style={{ color: currentLocationId === null ? 'var(--brand-secondary)' : '#94A3B8' }} />
+                    All locations
+                    {currentLocationId === null && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
+                  </button>
                   {locations.map((loc) => (
                     <button
                       key={loc.id}
