@@ -4,29 +4,28 @@ import { prisma } from "../lib/prisma.js";
 // Per-location GL account resolution
 //
 // Each location has its own chart of accounts (pulled from QBO when the
-// location has a QBO connection). Mapping rows tell us which GL account a
-// product / category / dockage rate / service fee should post to *for that
-// location*. Resolution chain (first non-null wins):
+// location has a QBO connection). Inventory products resolve through ONE
+// rung: the per-location ProductCategoryGlMapping row for the product's
+// category at the target location. There are no legacy fallbacks (the
+// per-product, tenant-wide product, and tenant-wide category default fields
+// were retired in 20260429080000_inventory_category_only_gl). When no
+// mapping exists for the (category, location) pair the slot is null and
+// posting consumers MUST fail loudly with an UNCONFIGURED_GL_MAPPING error.
 //
-//   1. Per-location override (Product/CategoryGlMapping for the locationId)
-//   2. Per-location category default (ProductCategoryGlMapping for product's
-//      category + locationId)
-//   3. Tenant-level legacy FK on the product/category itself
-//   4. null (caller must fall back to a hardcoded account number — but only
-//      when the location is NOT QBO-connected; QBO-connected locations must
-//      always have explicit mappings or the posting is rejected upstream).
+// Dockage rates / service fees still keep a tenant-wide legacy fallback
+// because their per-location editor only fills the single glAccount slot
+// (and they're not yet on the same migration path as inventory).
 // ---------------------------------------------------------------------------
 
 export interface ResolvedProductGl {
   revenueGlAccountId: string | null;
   cogsGlAccountId: string | null;
   inventoryAssetGlAccountId: string | null;
-  source:
-    | "product_override"
-    | "category_default"
-    | "legacy_product_fk"
-    | "legacy_category_fk"
-    | "unmapped";
+  // "category_default" is set by inventory products (single rung, see
+  // resolveProductGlAccounts). "product_override" is set by rental products
+  // since rentals still resolve through a per-(rentalProduct, location)
+  // override row directly.
+  source: "category_default" | "product_override" | "unmapped";
 }
 
 function pick(...vals: (string | null | undefined)[]): string | null {
@@ -225,23 +224,9 @@ export async function resolveProductGlAccounts(
 ): Promise<ResolvedProductGl> {
   const product = await prisma.product.findFirst({
     where: { id: productId, tenantId },
-    select: {
-      id: true,
-      productCategoryId: true,
-      revenueGlAccountId: true,
-      cogsGlAccountId: true,
-      inventoryAssetGlAccountId: true,
-      productCategory: {
-        select: {
-          id: true,
-          defaultRevenueGlAccountId: true,
-          defaultCogsGlAccountId: true,
-          defaultInventoryAssetGlAccountId: true,
-        },
-      },
-    },
+    select: { id: true, productCategoryId: true },
   });
-  if (!product) {
+  if (!product || !locationId) {
     return {
       revenueGlAccountId: null,
       cogsGlAccountId: null,
@@ -250,79 +235,33 @@ export async function resolveProductGlAccounts(
     };
   }
 
-  type MappingSlots = {
-    revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
+  const cOver = await prisma.productCategoryGlMapping.findFirst({
+    where: {
+      tenantId,
+      productCategoryId: product.productCategoryId,
+      locationId,
+    },
+    select: {
+      revenueGlAccountId: true,
+      cogsGlAccountId: true,
+      inventoryAssetGlAccountId: true,
+    },
+  });
+
+  const hasAny =
+    !!cOver &&
+    !!(
+      cOver.revenueGlAccountId ||
+      cOver.cogsGlAccountId ||
+      cOver.inventoryAssetGlAccountId
+    );
+
+  return {
+    revenueGlAccountId: cOver?.revenueGlAccountId ?? null,
+    cogsGlAccountId: cOver?.cogsGlAccountId ?? null,
+    inventoryAssetGlAccountId: cOver?.inventoryAssetGlAccountId ?? null,
+    source: hasAny ? "category_default" : "unmapped",
   };
-  let pOver: MappingSlots | null = null;
-  let cOver: MappingSlots | null = null;
-  if (locationId) {
-    pOver = await prisma.productGlMapping.findFirst({
-      where: { tenantId, productId, locationId },
-      select: {
-        revenueGlAccountId: true,
-        cogsGlAccountId: true,
-        inventoryAssetGlAccountId: true,
-      },
-    });
-    if (product.productCategoryId) {
-      cOver = await prisma.productCategoryGlMapping.findFirst({
-        where: {
-          tenantId,
-          productCategoryId: product.productCategoryId,
-          locationId,
-        },
-        select: {
-          revenueGlAccountId: true,
-          cogsGlAccountId: true,
-          inventoryAssetGlAccountId: true,
-        },
-      });
-    }
-  }
-
-  // QBO-connected locations must use per-location mappings only — legacy
-  // tenant-level FKs may point at a different QBO realm's chart of accounts.
-  const qboConnected = locationId ? await isLocationQboConnected(locationId) : false;
-  const legacyProductRevenue = qboConnected ? null : product.revenueGlAccountId;
-  const legacyProductCogs = qboConnected ? null : product.cogsGlAccountId;
-  const legacyProductInv = qboConnected ? null : product.inventoryAssetGlAccountId;
-  const legacyCategoryRevenue = qboConnected ? null : product.productCategory?.defaultRevenueGlAccountId;
-  const legacyCategoryCogs = qboConnected ? null : product.productCategory?.defaultCogsGlAccountId;
-  const legacyCategoryInv = qboConnected ? null : product.productCategory?.defaultInventoryAssetGlAccountId;
-
-  const revenueGlAccountId = pick(
-    pOver?.revenueGlAccountId,
-    cOver?.revenueGlAccountId,
-    legacyProductRevenue,
-    legacyCategoryRevenue,
-  );
-  const cogsGlAccountId = pick(
-    pOver?.cogsGlAccountId,
-    cOver?.cogsGlAccountId,
-    legacyProductCogs,
-    legacyCategoryCogs,
-  );
-  const inventoryAssetGlAccountId = pick(
-    pOver?.inventoryAssetGlAccountId,
-    cOver?.inventoryAssetGlAccountId,
-    legacyProductInv,
-    legacyCategoryInv,
-  );
-
-  let source: ResolvedProductGl["source"] = "unmapped";
-  if (pOver && (pOver.revenueGlAccountId || pOver.cogsGlAccountId || pOver.inventoryAssetGlAccountId)) {
-    source = "product_override";
-  } else if (cOver && (cOver.revenueGlAccountId || cOver.cogsGlAccountId || cOver.inventoryAssetGlAccountId)) {
-    source = "category_default";
-  } else if (legacyProductRevenue || legacyProductCogs || legacyProductInv) {
-    source = "legacy_product_fk";
-  } else if (legacyCategoryRevenue || legacyCategoryCogs || legacyCategoryInv) {
-    source = "legacy_category_fk";
-  }
-
-  return { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId, source };
 }
 
 export async function resolveRentalProductGlAccounts(
@@ -460,46 +399,35 @@ export async function getMissingGlAccountWarnings(
         productCategoryId: true,
       },
     });
-    const [productMappings, categoryMappingsForProducts] = await Promise.all([
-      prisma.productGlMapping.findMany({
-        where: { tenantId, locationId: loc.id },
-        select: {
-          productId: true,
-          revenueGlAccountId: true,
-          cogsGlAccountId: true,
-          inventoryAssetGlAccountId: true,
-        },
-      }),
-      prisma.productCategoryGlMapping.findMany({
-        where: { tenantId, locationId: loc.id },
-        select: {
-          productCategoryId: true,
-          revenueGlAccountId: true,
-          cogsGlAccountId: true,
-          inventoryAssetGlAccountId: true,
-        },
-      }),
-    ]);
+    const categoryMappingsForProducts = await prisma.productCategoryGlMapping.findMany({
+      where: { tenantId, locationId: loc.id },
+      select: {
+        productCategoryId: true,
+        revenueGlAccountId: true,
+        cogsGlAccountId: true,
+        inventoryAssetGlAccountId: true,
+      },
+    });
     type SlotMapping = {
       revenueGlAccountId: string | null;
       cogsGlAccountId: string | null;
       inventoryAssetGlAccountId: string | null;
     };
-    const pmByProduct = new Map<string, SlotMapping>();
-    for (const m of productMappings) pmByProduct.set(m.productId, m);
     const cmByCat = new Map<string, SlotMapping>();
     for (const m of categoryMappingsForProducts) cmByCat.set(m.productCategoryId, m);
 
     for (const p of products) {
-      const m = pmByProduct.get(p.id);
+      // Resolution is single-rung now: the per-(category, location) mapping.
+      // Per-product overrides and tenant-wide legacy FKs were retired in
+      // 20260429080000_inventory_category_only_gl. productCategoryId is NOT
+      // NULL after that migration, but stay defensive in case the read
+      // races with a partial backfill.
       const cm = p.productCategoryId ? cmByCat.get(p.productCategoryId) : null;
       const isInventory = !!p.trackInventory;
       const missing: MissingGlMappingItem["missing"] = [];
-      // Effective resolution chain: per-product override -> category default
-      // (legacy FKs are intentionally ignored for QBO-connected locations).
-      const revenue = m?.revenueGlAccountId ?? cm?.revenueGlAccountId ?? null;
-      const cogs = m?.cogsGlAccountId ?? cm?.cogsGlAccountId ?? null;
-      const inv = m?.inventoryAssetGlAccountId ?? cm?.inventoryAssetGlAccountId ?? null;
+      const revenue = cm?.revenueGlAccountId ?? null;
+      const cogs = cm?.cogsGlAccountId ?? null;
+      const inv = cm?.inventoryAssetGlAccountId ?? null;
       if (!revenue) missing.push("revenue");
       if (isInventory) {
         if (!cogs) missing.push("cogs");

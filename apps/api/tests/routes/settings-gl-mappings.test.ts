@@ -21,10 +21,10 @@ beforeEach(async () => {
     ...(mockPrisma as any).glAccount,
     findFirst: vi.fn(),
   };
-  (mockPrisma as any).productGlMapping = {
-    findMany: vi.fn().mockResolvedValue([]),
-    upsert: vi.fn().mockResolvedValue({ id: 'pm-1' }),
-  };
+  // The legacy productGlMapping table + per-product PUT endpoint were
+  // dropped in 20260429080000_inventory_category_only_gl. All inventory
+  // GL editing now flows through the per-(category, location) mapping
+  // below.
   (mockPrisma as any).productCategoryGlMapping = {
     findMany: vi.fn().mockResolvedValue([]),
     upsert: vi.fn().mockResolvedValue({ id: 'pcm-1' }),
@@ -113,20 +113,6 @@ describe('PUT /api/settings/catalog/dockage-rates/:id/gl-mappings/:locationId', 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/different location/);
     expect((mockPrisma as any).dockageRateGlMapping.upsert).not.toHaveBeenCalled();
-  });
-
-  it('rejects when the locationId is not owned by the tenant (product mapping)', async () => {
-    (mockPrisma as any).product.findFirst.mockResolvedValue({ id: 'prod-1' });
-    // Location lookup returns null — locationId is not in this tenant.
-    (mockPrisma as any).location.findFirst.mockResolvedValue(null);
-
-    const res = await request(app)
-      .put('/api/settings/products/prod-1/gl-mappings/loc-other-tenant')
-      .send({ revenueGlAccountId: null });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toMatch(/Location not found/);
-    expect((mockPrisma as any).productGlMapping.upsert).not.toHaveBeenCalled();
   });
 
   it('accepts a tenant-wide GL account when the location is NOT QBO-connected', async () => {

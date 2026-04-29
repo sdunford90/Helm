@@ -15,7 +15,6 @@ import {
   PAYMENT_REFUND_SYNC_SOURCE_TYPE,
   type PoBillLineInput,
 } from "../services/qbo-sync.js";
-import { applyCategoryDefaultsToProductData } from "../services/product-defaults.js";
 
 const router: Router = Router();
 
@@ -48,11 +47,9 @@ async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
         priceCents: product.priceCents,
         costCents: product.costCents ?? 0,
         qoh: product.qoh,
-        incomeGlAccountId:
-          resolved.revenueGlAccountId ?? product.revenueGlAccountId,
-        inventoryAssetGlAccountId:
-          resolved.inventoryAssetGlAccountId ?? product.inventoryAssetGlAccountId,
-        cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
+        incomeGlAccountId: resolved.revenueGlAccountId,
+        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
+        cogsGlAccountId: resolved.cogsGlAccountId,
       },
       product.tenantId,
       product.locationId,
@@ -99,9 +96,8 @@ async function tryPushAdjustmentJournal(
         reason: adjustment.reason,
         quantityChange: adjustment.quantityChange,
         unitCostCents: product.costCents ?? 0,
-        inventoryAssetGlAccountId:
-          resolved.inventoryAssetGlAccountId ?? product.inventoryAssetGlAccountId,
-        cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
+        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
+        cogsGlAccountId: resolved.cogsGlAccountId,
         notes: adjustment.notes,
       },
       product.tenantId,
@@ -208,23 +204,24 @@ const CreateProductSchema = z.object({
   name: z.string().min(1),
   sku: z.string().min(1),
   barcode: z.string().optional().nullable(),
-  // Legacy free-text category — kept for backwards-compat.
+  // Legacy free-text category — kept for backwards-compat (UI tag only).
   category: z.string().optional().nullable(),
-  // New: links to ProductCategory whose defaults flow into the per-product
-  // GL/tax fields when those are left blank.
-  productCategoryId: z.string().uuid().optional().nullable(),
+  // Required: every product belongs to a ProductCategory; the category's
+  // per-location ProductCategoryGlMapping rows drive all GL postings.
+  productCategoryId: z.string().uuid(),
   costCents: z.number().int().min(0),
   priceCents: z.number().int().min(0),
   taxClass: z.string().optional().nullable(),
   reorderPoint: z.number().int().min(0).default(0),
   trackInventory: z.boolean().default(true),
-  cogsGlAccountId: z.string().optional().nullable(),
-  revenueGlAccountId: z.string().optional().nullable(),
-  inventoryAssetGlAccountId: z.string().optional().nullable(),
   locationId: z.string().optional().nullable(),
 });
 
-const UpdateProductSchema = CreateProductSchema.partial();
+// Update keeps productCategoryId required-when-provided (no nulling allowed
+// since the column is NOT NULL after 20260429080000_inventory_category_only_gl).
+const UpdateProductSchema = CreateProductSchema.partial().extend({
+  productCategoryId: z.string().uuid().optional(),
+});
 
 const CreateVendorSchema = z.object({
   name: z.string().min(1),
@@ -297,25 +294,6 @@ function getTenantId(req: Request): string {
   return (req as any).tenantId ?? (req as any).userRecord?.tenant_id ?? "default";
 }
 
-// Returns GL account IDs in `ids` that do not belong to `tenantId`.
-// GlAccount is not tenant-scoped via Prisma middleware, so callers must
-// invoke this before persisting GL FKs to block cross-tenant writes.
-async function findInvalidGlAccountIds(
-  tenantId: string,
-  ids: Array<string | null | undefined>,
-): Promise<string[]> {
-  const requested = Array.from(
-    new Set(ids.filter((v): v is string => typeof v === "string" && v.length > 0)),
-  );
-  if (requested.length === 0) return [];
-  const found = await prisma.glAccount.findMany({
-    where: { id: { in: requested }, tenantId },
-    select: { id: true },
-  });
-  const foundSet = new Set(found.map((r) => r.id));
-  return requested.filter((id) => !foundSet.has(id));
-}
-
 // Shape products for API responses — keeps the front-end fields stable
 // (priceCents/costCents always numbers, etc.)
 function shapeProduct(p: ProductRow) {
@@ -333,9 +311,6 @@ function shapeProduct(p: ProductRow) {
     reorderPoint: p.reorderPoint,
     trackInventory: p.trackInventory,
     qoh: p.qoh,
-    cogsGlAccountId: p.cogsGlAccountId,
-    revenueGlAccountId: p.revenueGlAccountId,
-    inventoryAssetGlAccountId: p.inventoryAssetGlAccountId,
     locationId: p.locationId,
     qboItemId: p.qboItemId,
     qboItemSyncedAt: p.qboItemSyncedAt ? p.qboItemSyncedAt.toISOString() : null,
@@ -409,83 +384,35 @@ function shapePo(po: PoWithLines) {
 
 // ─── Products ─────────────────────────────────────────────────────────────────
 
-// Resolve effective per-location GL accounts for a batch of products in
-// three queries (productGlMapping + productCategoryGlMapping + the location
-// itself for QBO gating) instead of N calls to the per-product resolver.
-// Mirrors the chain in `resolveProductGlAccounts`.
+// Resolve effective per-location GL accounts for a batch of products in a
+// single query against ProductCategoryGlMapping. Mirrors
+// `resolveProductGlAccounts`: the per-(category, location) row is the only
+// rung — there are no legacy fallbacks (those columns were retired in
+// 20260429080000_inventory_category_only_gl).
 async function batchResolveEffectiveGl(
   tenantId: string,
   locationId: string,
-  products: Array<Pick<ProductRow, "id" | "productCategoryId" | "revenueGlAccountId" | "cogsGlAccountId" | "inventoryAssetGlAccountId">>,
+  products: Array<Pick<ProductRow, "id" | "productCategoryId">>,
 ): Promise<Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>> {
   const out = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
   if (products.length === 0) return out;
 
-  const productIds = products.map((p) => p.id);
   const categoryIds = Array.from(
     new Set(products.map((p) => p.productCategoryId).filter((v): v is string => !!v)),
   );
 
-  const [pMappings, cMappings, catDefaults, loc] = await Promise.all([
-    prisma.productGlMapping.findMany({
-      where: { tenantId, locationId, productId: { in: productIds } },
-      select: {
-        productId: true,
-        revenueGlAccountId: true,
-        cogsGlAccountId: true,
-        inventoryAssetGlAccountId: true,
-      },
-    }),
-    categoryIds.length > 0
-      ? prisma.productCategoryGlMapping.findMany({
-          where: { tenantId, locationId, productCategoryId: { in: categoryIds } },
-          select: {
-            productCategoryId: true,
-            revenueGlAccountId: true,
-            cogsGlAccountId: true,
-            inventoryAssetGlAccountId: true,
-          },
-        })
-      : Promise.resolve([] as Array<{
-          productCategoryId: string;
-          revenueGlAccountId: string | null;
-          cogsGlAccountId: string | null;
-          inventoryAssetGlAccountId: string | null;
-        }>),
-    // Legacy tenant-wide category defaults (productCategory.default*) are
-    // the final fallback in `resolveProductGlAccounts` after legacy
-    // product FKs. Loading them here keeps batch resolution at parity
-    // with the per-product resolver.
-    categoryIds.length > 0
-      ? prisma.productCategory.findMany({
-          where: { tenantId, id: { in: categoryIds } },
-          select: {
-            id: true,
-            defaultRevenueGlAccountId: true,
-            defaultCogsGlAccountId: true,
-            defaultInventoryAssetGlAccountId: true,
-          },
-        })
-      : Promise.resolve([] as Array<{
-          id: string;
-          defaultRevenueGlAccountId: string | null;
-          defaultCogsGlAccountId: string | null;
-          defaultInventoryAssetGlAccountId: string | null;
-        }>),
-    prisma.location.findUnique({
-      where: { id: locationId },
-      select: { qboAccessToken: true, qboRealmId: true },
-    }),
-  ]);
+  const cMappings = categoryIds.length > 0
+    ? await prisma.productCategoryGlMapping.findMany({
+        where: { tenantId, locationId, productCategoryId: { in: categoryIds } },
+        select: {
+          productCategoryId: true,
+          revenueGlAccountId: true,
+          cogsGlAccountId: true,
+          inventoryAssetGlAccountId: true,
+        },
+      })
+    : [];
 
-  const pMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
-  for (const m of pMappings) {
-    pMap.set(m.productId, {
-      revenue: m.revenueGlAccountId,
-      cogs: m.cogsGlAccountId,
-      inv: m.inventoryAssetGlAccountId,
-    });
-  }
   const cMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
   for (const m of cMappings) {
     cMap.set(m.productCategoryId, {
@@ -494,34 +421,13 @@ async function batchResolveEffectiveGl(
       inv: m.inventoryAssetGlAccountId,
     });
   }
-  const catDefMap = new Map<string, { revenue: string | null; cogs: string | null; inv: string | null }>();
-  for (const c of catDefaults) {
-    catDefMap.set(c.id, {
-      revenue: c.defaultRevenueGlAccountId,
-      cogs: c.defaultCogsGlAccountId,
-      inv: c.defaultInventoryAssetGlAccountId,
-    });
-  }
-
-  const qboConnected = !!(loc?.qboAccessToken && loc?.qboRealmId);
 
   for (const p of products) {
-    const pOver = pMap.get(p.id);
     const cOver = p.productCategoryId ? cMap.get(p.productCategoryId) : undefined;
-    const cDef = p.productCategoryId ? catDefMap.get(p.productCategoryId) : undefined;
-    // QBO-connected locations may not fall back to legacy tenant-wide FKs
-    // (per-product OR per-category): those FKs likely point at a different
-    // QBO realm's chart. Mirrors resolveProductGlAccounts' gating exactly.
-    const legacyProdRev = qboConnected ? null : p.revenueGlAccountId ?? null;
-    const legacyProdCogs = qboConnected ? null : p.cogsGlAccountId ?? null;
-    const legacyProdInv = qboConnected ? null : p.inventoryAssetGlAccountId ?? null;
-    const legacyCatRev = qboConnected ? null : cDef?.revenue ?? null;
-    const legacyCatCogs = qboConnected ? null : cDef?.cogs ?? null;
-    const legacyCatInv = qboConnected ? null : cDef?.inv ?? null;
     out.set(p.id, {
-      revenue: pOver?.revenue ?? cOver?.revenue ?? legacyProdRev ?? legacyCatRev,
-      cogs: pOver?.cogs ?? cOver?.cogs ?? legacyProdCogs ?? legacyCatCogs,
-      inv: pOver?.inv ?? cOver?.inv ?? legacyProdInv ?? legacyCatInv,
+      revenue: cOver?.revenue ?? null,
+      cogs: cOver?.cogs ?? null,
+      inv: cOver?.inv ?? null,
     });
   }
   return out;
@@ -643,26 +549,24 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
-    const invalidGl = await findInvalidGlAccountIds(tenantId, [
-      body.revenueGlAccountId,
-      body.cogsGlAccountId,
-      body.inventoryAssetGlAccountId,
-    ]);
-    if (invalidGl.length > 0) {
+    // Validate the supplied category belongs to this tenant; pull its tax
+    // defaults so a blank taxClass inherits from the category at write time.
+    const category = await prisma.productCategory.findFirst({
+      where: { id: body.productCategoryId, tenantId },
+      select: { defaultTaxCategory: true, taxable: true },
+    });
+    if (!category) {
       return res.status(400).json({
-        error: "One or more GL account IDs do not belong to this tenant",
-        code: "INVALID_GL_ACCOUNT_ID",
-        invalid: invalidGl,
+        error: "Product category not found",
+        code: "PRODUCT_CATEGORY_NOT_FOUND",
       });
     }
-    // Resolve category defaults into per-product fields for QBO/reporting/tax.
-    const resolved = await applyCategoryDefaultsToProductData(tenantId, {
-      productCategoryId: body.productCategoryId ?? null,
-      revenueGlAccountId: body.revenueGlAccountId ?? null,
-      cogsGlAccountId: body.cogsGlAccountId ?? null,
-      inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
-      taxClass: body.taxClass ?? null,
-    });
+    let resolvedTaxClass: string | null = body.taxClass ?? null;
+    if (resolvedTaxClass == null) {
+      resolvedTaxClass = !category.taxable
+        ? "Tax Exempt"
+        : category.defaultTaxCategory ?? null;
+    }
     let product = await prisma.product.create({
       data: {
         tenantId,
@@ -670,16 +574,13 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         sku: body.sku,
         barcode: body.barcode ?? null,
         category: body.category ?? null,
-        productCategoryId: resolved.productCategoryId,
+        productCategoryId: body.productCategoryId,
         costCents: body.costCents,
         priceCents: body.priceCents,
-        taxClass: resolved.taxClass,
+        taxClass: resolvedTaxClass,
         reorderPoint: body.reorderPoint,
         trackInventory: body.trackInventory,
         qoh: 0,
-        cogsGlAccountId: resolved.cogsGlAccountId ?? null,
-        revenueGlAccountId: resolved.revenueGlAccountId ?? null,
-        inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId ?? null,
         locationId: body.locationId ?? null,
         active: true,
       } satisfies Prisma.ProductUncheckedCreateInput,
@@ -731,17 +632,22 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Product not found" });
 
-    const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
-      body.revenueGlAccountId,
-      body.cogsGlAccountId,
-      body.inventoryAssetGlAccountId,
-    ]);
-    if (invalidGl.length > 0) {
-      return res.status(400).json({
-        error: "One or more GL account IDs do not belong to this tenant",
-        code: "INVALID_GL_ACCOUNT_ID",
-        invalid: invalidGl,
+    // When the caller is moving the product to a new category, validate it
+    // belongs to this tenant. The taxClass back-fills from the new category
+    // when the caller didn't explicitly set one.
+    let categoryForTaxBackfill: { defaultTaxCategory: string | null; taxable: boolean } | null = null;
+    if (body.productCategoryId !== undefined && body.productCategoryId !== existing.productCategoryId) {
+      const cat = await prisma.productCategory.findFirst({
+        where: { id: body.productCategoryId, tenantId: existing.tenantId },
+        select: { defaultTaxCategory: true, taxable: true },
       });
+      if (!cat) {
+        return res.status(400).json({
+          error: "Product category not found",
+          code: "PRODUCT_CATEGORY_NOT_FOUND",
+        });
+      }
+      categoryForTaxBackfill = cat;
     }
 
     const data: Prisma.ProductUncheckedUpdateInput = {};
@@ -752,71 +658,20 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.productCategoryId !== undefined) data.productCategoryId = body.productCategoryId;
     if (body.costCents !== undefined) data.costCents = body.costCents;
     if (body.priceCents !== undefined) data.priceCents = body.priceCents;
-    if (body.taxClass !== undefined) data.taxClass = body.taxClass;
     if (body.reorderPoint !== undefined) data.reorderPoint = body.reorderPoint;
     if (body.trackInventory !== undefined) data.trackInventory = body.trackInventory;
-    if (body.cogsGlAccountId !== undefined) data.cogsGlAccountId = body.cogsGlAccountId;
-    if (body.revenueGlAccountId !== undefined) data.revenueGlAccountId = body.revenueGlAccountId;
-    if (body.inventoryAssetGlAccountId !== undefined) data.inventoryAssetGlAccountId = body.inventoryAssetGlAccountId;
     if (body.locationId !== undefined) data.locationId = body.locationId;
 
-    // When the caller switches to (or arrives in) a category, copy that
-    // category's defaults onto any per-product field that's still blank —
-    // both fields the caller explicitly nulled in this request and fields
-    // that were already null on the existing row. Per-product values that
-    // already exist (and weren't being changed) stay put.
-    const categoryChanged =
-      body.productCategoryId !== undefined &&
-      body.productCategoryId !== existing.productCategoryId;
-    const effectiveCategoryId =
-      body.productCategoryId !== undefined ? body.productCategoryId : existing.productCategoryId;
-
-    if (effectiveCategoryId) {
-      // Compute "would be after this update" for each per-product field, then
-      // hand the partial to the helper which fills in null fields from the
-      // category defaults. This preserves caller intent (explicit nulls when
-      // the category is changing) while back-filling untouched columns.
-      const after = {
-        productCategoryId: effectiveCategoryId,
-        revenueGlAccountId:
-          body.revenueGlAccountId !== undefined
-            ? body.revenueGlAccountId
-            : categoryChanged
-              ? null
-              : existing.revenueGlAccountId,
-        cogsGlAccountId:
-          body.cogsGlAccountId !== undefined
-            ? body.cogsGlAccountId
-            : categoryChanged
-              ? null
-              : existing.cogsGlAccountId,
-        inventoryAssetGlAccountId:
-          body.inventoryAssetGlAccountId !== undefined
-            ? body.inventoryAssetGlAccountId
-            : categoryChanged
-              ? null
-              : existing.inventoryAssetGlAccountId,
-        taxClass:
-          body.taxClass !== undefined
-            ? body.taxClass
-            : categoryChanged
-              ? null
-              : existing.taxClass,
-      };
-      const resolved = await applyCategoryDefaultsToProductData(existing.tenantId, after);
-      // Write the resolved value back whenever it differs from what's on the
-      // row today — including for fields the caller didn't mention.
-      if (resolved.revenueGlAccountId !== existing.revenueGlAccountId) {
-        data.revenueGlAccountId = resolved.revenueGlAccountId;
-      }
-      if (resolved.cogsGlAccountId !== existing.cogsGlAccountId) {
-        data.cogsGlAccountId = resolved.cogsGlAccountId;
-      }
-      if (resolved.inventoryAssetGlAccountId !== existing.inventoryAssetGlAccountId) {
-        data.inventoryAssetGlAccountId = resolved.inventoryAssetGlAccountId;
-      }
-      if (resolved.taxClass !== existing.taxClass) {
-        data.taxClass = resolved.taxClass;
+    // taxClass: explicit body value wins; otherwise, on a category change,
+    // back-fill from the new category's defaultTaxCategory / taxable flag.
+    if (body.taxClass !== undefined) {
+      data.taxClass = body.taxClass;
+    } else if (categoryForTaxBackfill) {
+      const newTaxClass = !categoryForTaxBackfill.taxable
+        ? "Tax Exempt"
+        : categoryForTaxBackfill.defaultTaxCategory ?? null;
+      if (newTaxClass !== existing.taxClass) {
+        data.taxClass = newTaxClass;
       }
     }
 
@@ -859,12 +714,9 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           priceCents: product.priceCents,
           costCents: product.costCents ?? 0,
           qoh: product.qoh,
-          incomeGlAccountId:
-            resolved.revenueGlAccountId ?? product.revenueGlAccountId,
-          inventoryAssetGlAccountId:
-            resolved.inventoryAssetGlAccountId ??
-            product.inventoryAssetGlAccountId,
-          cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
+          incomeGlAccountId: resolved.revenueGlAccountId,
+          inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
+          cogsGlAccountId: resolved.cogsGlAccountId,
         },
         product.tenantId,
         product.locationId,
@@ -912,15 +764,13 @@ router.delete("/products/:id", async (req: Request, res: Response, next: NextFun
 });
 
 // ─── Product Categories ──────────────────────────────────────────────────────
-// Categories own default GL accounts (revenue/COGS/inventory asset) and a
-// default tax category + taxable flag. Products can link to a category and
-// inherit those defaults; per-product fields override.
+// Categories own a default tax category + taxable flag, plus per-location
+// GL mappings via ProductCategoryGlMapping (managed under Settings →
+// Categories). The legacy tenant-wide default*GlAccountId columns were
+// dropped in 20260429080000_inventory_category_only_gl.
 
 const CategorySchema = z.object({
   name: z.string().min(1).max(120),
-  defaultRevenueGlAccountId: z.string().uuid().optional().nullable(),
-  defaultCogsGlAccountId: z.string().uuid().optional().nullable(),
-  defaultInventoryAssetGlAccountId: z.string().uuid().optional().nullable(),
   defaultTaxCategory: z.string().optional().nullable(),
   taxable: z.boolean().default(true),
   active: z.boolean().default(true),
@@ -945,18 +795,6 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
   try {
     const tenantId = getTenantId(req);
     const body = CategorySchema.parse(req.body);
-    const invalidGl = await findInvalidGlAccountIds(tenantId, [
-      body.defaultRevenueGlAccountId,
-      body.defaultCogsGlAccountId,
-      body.defaultInventoryAssetGlAccountId,
-    ]);
-    if (invalidGl.length > 0) {
-      return res.status(400).json({
-        error: "One or more GL account IDs do not belong to this tenant",
-        code: "INVALID_GL_ACCOUNT_ID",
-        invalid: invalidGl,
-      });
-    }
     // Reactivate a soft-deleted same-name row instead of 409'ing on the
     // (tenantId, name) unique index.
     const existing = await prisma.productCategory.findFirst({
@@ -967,9 +805,6 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
         where: { id: existing.id },
         data: {
           active: true,
-          defaultRevenueGlAccountId: body.defaultRevenueGlAccountId ?? null,
-          defaultCogsGlAccountId: body.defaultCogsGlAccountId ?? null,
-          defaultInventoryAssetGlAccountId: body.defaultInventoryAssetGlAccountId ?? null,
           defaultTaxCategory: body.defaultTaxCategory ?? null,
           taxable: body.taxable,
           updatedAt: new Date(),
@@ -981,9 +816,6 @@ router.post("/categories", async (req: Request, res: Response, next: NextFunctio
       data: {
         tenantId,
         name: body.name,
-        defaultRevenueGlAccountId: body.defaultRevenueGlAccountId ?? null,
-        defaultCogsGlAccountId: body.defaultCogsGlAccountId ?? null,
-        defaultInventoryAssetGlAccountId: body.defaultInventoryAssetGlAccountId ?? null,
         defaultTaxCategory: body.defaultTaxCategory ?? null,
         taxable: body.taxable,
         active: body.active,
@@ -1004,24 +836,8 @@ router.put("/categories/:id", async (req: Request, res: Response, next: NextFunc
     const existing = await prisma.productCategory.findFirst({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Category not found" });
 
-    const invalidGl = await findInvalidGlAccountIds(existing.tenantId, [
-      body.defaultRevenueGlAccountId,
-      body.defaultCogsGlAccountId,
-      body.defaultInventoryAssetGlAccountId,
-    ]);
-    if (invalidGl.length > 0) {
-      return res.status(400).json({
-        error: "One or more GL account IDs do not belong to this tenant",
-        code: "INVALID_GL_ACCOUNT_ID",
-        invalid: invalidGl,
-      });
-    }
-
     const data: Prisma.ProductCategoryUncheckedUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
-    if (body.defaultRevenueGlAccountId !== undefined) data.defaultRevenueGlAccountId = body.defaultRevenueGlAccountId;
-    if (body.defaultCogsGlAccountId !== undefined) data.defaultCogsGlAccountId = body.defaultCogsGlAccountId;
-    if (body.defaultInventoryAssetGlAccountId !== undefined) data.defaultInventoryAssetGlAccountId = body.defaultInventoryAssetGlAccountId;
     if (body.defaultTaxCategory !== undefined) data.defaultTaxCategory = body.defaultTaxCategory;
     if (body.taxable !== undefined) data.taxable = body.taxable;
     if (body.active !== undefined) data.active = body.active;

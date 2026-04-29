@@ -2433,176 +2433,10 @@ async function validateGlAccountForLocation(
   );
 }
 
-// GET /api/settings/products/:id/gl-mappings
-router.get(
-  "/products/:id/gl-mappings",
-  ...clerkAuth(),
-  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
-  async (req, res, next) => {
-    try {
-      const tenantId = req.tenantId!;
-      const product = await prisma.product.findFirst({
-        where: { id: req.params.id, tenantId },
-        select: {
-          id: true,
-          revenueGlAccountId: true,
-          cogsGlAccountId: true,
-          inventoryAssetGlAccountId: true,
-          productCategoryId: true,
-          productCategory: {
-            select: {
-              defaultRevenueGlAccountId: true,
-              defaultCogsGlAccountId: true,
-              defaultInventoryAssetGlAccountId: true,
-            },
-          },
-        },
-      });
-      if (!product) {
-        res.status(404).json({ error: "Product not found" });
-        return;
-      }
-      const [locs, mappings] = await Promise.all([
-        listLocations(tenantId),
-        prisma.productGlMapping.findMany({
-          where: { tenantId, productId: req.params.id },
-        }),
-      ]);
-      const cat = product.productCategoryId
-        ? await prisma.productCategoryGlMapping.findMany({
-            where: {
-              tenantId,
-              productCategoryId: product.productCategoryId,
-            },
-          })
-        : [];
-      const catByLoc = new Map<string, (typeof cat)[number]>();
-      for (const m of cat) catByLoc.set(m.locationId, m);
-      // Determine QBO-connected locations so the "effective" view stops
-      // falling back to tenant-level FKs once a location has its own chart.
-      // This keeps the client UI honest about unmapped state and matches the
-      // resolver behaviour used by gl-posting / qbo-sync.
-      const qboFlags = await Promise.all(
-        locs.map((l) => isLocationQboConnected(l.id)),
-      );
-      const data = locs.map((l, i) => {
-        const mm = mappings.find((m) => m.locationId === l.id);
-        const cm = catByLoc.get(l.id);
-        const qboConnected = qboFlags[i];
-        const legacy = qboConnected
-          ? {
-              revenueGlAccountId: null,
-              cogsGlAccountId: null,
-              inventoryAssetGlAccountId: null,
-            }
-          : {
-              revenueGlAccountId:
-                product.revenueGlAccountId ??
-                product.productCategory?.defaultRevenueGlAccountId ??
-                null,
-              cogsGlAccountId:
-                product.cogsGlAccountId ??
-                product.productCategory?.defaultCogsGlAccountId ??
-                null,
-              inventoryAssetGlAccountId:
-                product.inventoryAssetGlAccountId ??
-                product.productCategory?.defaultInventoryAssetGlAccountId ??
-                null,
-            };
-        return {
-          locationId: l.id,
-          locationName: l.name,
-          qboConnected,
-          override: {
-            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
-          },
-          effective: {
-            revenueGlAccountId:
-              mm?.revenueGlAccountId ??
-              cm?.revenueGlAccountId ??
-              legacy.revenueGlAccountId,
-            cogsGlAccountId:
-              mm?.cogsGlAccountId ??
-              cm?.cogsGlAccountId ??
-              legacy.cogsGlAccountId,
-            inventoryAssetGlAccountId:
-              mm?.inventoryAssetGlAccountId ??
-              cm?.inventoryAssetGlAccountId ??
-              legacy.inventoryAssetGlAccountId,
-          },
-        };
-      });
-      res.json({ data });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
-// PUT /api/settings/products/:id/gl-mappings/:locationId
-router.put(
-  "/products/:id/gl-mappings/:locationId",
-  ...clerkAuth(),
-  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
-  async (req, res, next) => {
-    try {
-      const tenantId = req.tenantId!;
-      const body = productMappingPutSchema.parse(req.body);
-      const { id, locationId } = req.params;
-      const [product, location] = await Promise.all([
-        prisma.product.findFirst({
-          where: { id, tenantId },
-          select: { id: true },
-        }),
-        prisma.location.findFirst({
-          where: { id: locationId, tenantId },
-          select: { id: true },
-        }),
-      ]);
-      if (!product) {
-        res.status(404).json({ error: "Product not found" });
-        return;
-      }
-      if (!location) {
-        res.status(404).json({ error: "Location not found" });
-        return;
-      }
-      await Promise.all([
-        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
-        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
-        validateGlAccountForLocation(
-          tenantId,
-          locationId,
-          body.inventoryAssetGlAccountId,
-        ),
-      ]);
-      const data = {
-        revenueGlAccountId: body.revenueGlAccountId ?? null,
-        cogsGlAccountId: body.cogsGlAccountId ?? null,
-        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
-      };
-      const result = await prisma.productGlMapping.upsert({
-        where: { productId_locationId: { productId: id, locationId } },
-        create: { tenantId, productId: id, locationId, ...data },
-        update: data,
-      });
-      res.json({ data: result });
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        res.status(400).json({ error: "Validation failed", details: err.errors });
-        return;
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("not found") || msg.includes("different location")) {
-        res.status(400).json({ error: msg });
-        return;
-      }
-      next(err);
-    }
-  },
-);
+// NOTE: per-product GL mapping endpoints (GET/PUT /products/:id/gl-mappings)
+// were removed in 20260429080000_inventory_category_only_gl. Inventory GL
+// resolves through the per-(category, location) row only — manage mappings
+// at /product-categories/:id/gl-mappings below.
 
 // GET /api/settings/product-categories/:id/gl-mappings
 router.get(
@@ -2614,12 +2448,7 @@ router.get(
       const tenantId = req.tenantId!;
       const cat = await prisma.productCategory.findFirst({
         where: { id: req.params.id, tenantId },
-        select: {
-          id: true,
-          defaultRevenueGlAccountId: true,
-          defaultCogsGlAccountId: true,
-          defaultInventoryAssetGlAccountId: true,
-        },
+        select: { id: true },
       });
       if (!cat) {
         res.status(404).json({ error: "Category not found" });
@@ -2646,18 +2475,12 @@ router.get(
             cogsGlAccountId: mm?.cogsGlAccountId ?? null,
             inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
+          // Effective == override now that legacy tenant-wide defaults are
+          // gone. The per-(category, location) row is the only source.
           effective: {
-            revenueGlAccountId:
-              mm?.revenueGlAccountId ??
-              (qboConnected ? null : cat.defaultRevenueGlAccountId ?? null),
-            cogsGlAccountId:
-              mm?.cogsGlAccountId ??
-              (qboConnected ? null : cat.defaultCogsGlAccountId ?? null),
-            inventoryAssetGlAccountId:
-              mm?.inventoryAssetGlAccountId ??
-              (qboConnected
-                ? null
-                : cat.defaultInventoryAssetGlAccountId ?? null),
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
         };
       });

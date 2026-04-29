@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
 import { useModules } from '../context/ModulesContext';
@@ -12,15 +13,16 @@ import {
 
 /* ── Types ─────────────────────────────────────────────── */
 
+// UI-side product shape used by the page + modal. As of the
+// 20260429080000_inventory_category_only_gl migration, products no longer
+// carry their own GL account ids; effective values come from the per-location
+// category mapping resolved server-side and surfaced via the
+// `effective*GlAccountId` fields below (single-location mode only).
 interface Product {
   id: string; sku: string; barcode: string; name: string; category: string;
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string; qoh: number;
   reorderPoint: number;
-  glRevenue: string; glCogs: string; glInventoryAsset: string;
-  // Effective per-location resolutions, populated only in single-location
-  // mode (when the request was scoped via `?locationId=`). Resolved
-  // server-side via the per-location → category-default → legacy chain.
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -29,11 +31,11 @@ interface Product {
   qboItemSyncError: string | null; qboItemSyncErrorAt: string | null;
 }
 
+// Categories no longer hold default GL accounts — those moved to the
+// per-location ProductCategoryGlMapping. Only tax fields survive on the
+// category itself (the form modal still uses them).
 interface ApiProductCategory {
   id: string; name: string;
-  defaultRevenueGlAccountId: string | null;
-  defaultCogsGlAccountId: string | null;
-  defaultInventoryAssetGlAccountId: string | null;
   defaultTaxCategory: string | null;
   taxable: boolean;
   active: boolean;
@@ -64,8 +66,6 @@ interface ApiProduct {
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string | null; qoh: number;
   reorderPoint: number;
-  cogsGlAccountId: string | null; revenueGlAccountId: string | null;
-  inventoryAssetGlAccountId: string | null;
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -100,10 +100,6 @@ function toProduct(p: ApiProduct): Product {
     productCategoryId: p.productCategoryId ?? null,
     costCents: p.costCents, priceCents: p.priceCents,
     taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
-    // GL fields hold the FK to GlAccount (UUID), not raw account numbers.
-    glRevenue: p.revenueGlAccountId ?? '',
-    glCogs: p.cogsGlAccountId ?? '',
-    glInventoryAsset: p.inventoryAssetGlAccountId ?? '',
     effectiveRevenueGlAccountId: p.effectiveRevenueGlAccountId ?? null,
     effectiveCogsGlAccountId: p.effectiveCogsGlAccountId ?? null,
     effectiveInventoryAssetGlAccountId: p.effectiveInventoryAssetGlAccountId ?? null,
@@ -216,232 +212,22 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Modals ─────────────────────────────────────────────── */
 
-interface PerLocationMappingRow {
-  locationId: string;
-  locationName: string;
-  qboConnected: boolean;
-  override: {
-    revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
-  };
-  effective: {
-    revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
-  };
-}
-
-function ProductPerLocationMappings({ productId }: { productId: string }) {
-  const toast = useToast();
-  const { currentLocationId } = useModules();
-  const [rows, setRows] = useState<PerLocationMappingRow[] | null>(null);
-  const [accountsByLocation, setAccountsByLocation] = useState<Record<string, ApiGlAccount[]>>({});
-  const [savingLoc, setSavingLoc] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    // Re-set to a loading state when the scope changes so the editor
-    // doesn't briefly show stale rows from the previous location.
-    setRows(null);
-    setAccountsByLocation({});
-    setError(null);
-    (async () => {
-      try {
-        const res = await fetch(`/api/settings/products/${productId}/gl-mappings`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (cancelled) return;
-        const all: PerLocationMappingRow[] = json.data ?? [];
-        // In single-location mode, narrow the editor to just that location
-        // so the modal stays focused on the marina the operator picked in
-        // the top-right switcher. The All-locations view keeps the full
-        // grid editor across every location.
-        const data = currentLocationId
-          ? all.filter((r) => r.locationId === currentLocationId)
-          : all;
-        setRows(data);
-        // Pre-fetch this location's chart so the select is populated. We use
-        // the existing /api/settings/gl-accounts?locationId=... endpoint —
-        // tenant-wide accounts are returned when locationId=TENANT.
-        const byLoc: Record<string, ApiGlAccount[]> = {};
-        await Promise.all(
-          data.map(async (r) => {
-            const accRes = await fetch(`/api/settings/gl-accounts?locationId=${r.locationId}`);
-            if (!accRes.ok) return;
-            const accJson = await accRes.json();
-            byLoc[r.locationId] = (accJson.data ?? []) as ApiGlAccount[];
-          }),
-        );
-        if (!cancelled) setAccountsByLocation(byLoc);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? 'Failed to load per-location mappings');
-      }
-    })();
-    return () => { cancelled = true; };
-    // currentLocationId must be a dep — when the operator flips the
-    // top-right switcher while the modal is open, the per-location editor
-    // needs to re-fetch and re-narrow so saves target the right scope.
-  }, [productId, currentLocationId]);
-
-  const updateField = <K extends keyof PerLocationMappingRow['override']>(
-    locationId: string,
-    field: K,
-    value: PerLocationMappingRow['override'][K],
-  ) => {
-    setRows((prev) =>
-      prev
-        ? prev.map((r) =>
-            r.locationId === locationId
-              ? { ...r, override: { ...r.override, [field]: value } }
-              : r,
-          )
-        : prev,
-    );
-  };
-
-  const save = async (row: PerLocationMappingRow) => {
-    setSavingLoc(row.locationId);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/settings/products/${productId}/gl-mappings/${row.locationId}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(row.override),
-        },
-      );
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error ?? `HTTP ${res.status}`);
-      }
-      toast.success('Saved', `Per-location mapping for ${row.locationName} updated.`);
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to save mapping');
-      toast.error('Error', e?.message ?? 'Failed to save mapping');
-    } finally {
-      setSavingLoc(null);
-    }
-  };
-
-  if (rows === null) {
-    return (
-      <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '16px', fontSize: '13px', color: '#64748B' }}>
-        Loading per-location GL mappings…
-      </div>
-    );
-  }
-
-  if (rows.length === 0) {
-    return null;
-  }
-
-  const accountsForLoc = (locId: string, type: ApiGlAccount['type']) =>
-    (accountsByLocation[locId] ?? []).filter((a) => a.type === type);
-
-  const labelFor = (a: ApiGlAccount) => `${a.accountNumber} — ${a.name}`;
-
-  return (
-    <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '16px' }}>
-      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>
-        Per-location GL mappings
-      </div>
-      <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '12px' }}>
-        Override the revenue, COGS, and inventory accounts used at each location.
-        Locations connected to QuickBooks must use accounts pulled from their
-        own QBO chart; other locations may use tenant-wide accounts.
-      </div>
-      {error ? (
-        <div style={{ background: '#FEF2F2', color: '#991B1B', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px', fontSize: '12px' }}>
-          {error}
-        </div>
-      ) : null}
-      <div style={{ display: 'grid', gap: '12px' }}>
-        {rows.map((r) => (
-          <div key={r.locationId} style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>
-                {r.locationName}
-                {r.qboConnected ? (
-                  <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: 600, color: '#0369A1', background: '#E0F2FE', padding: '2px 6px', borderRadius: '4px' }}>
-                    QuickBooks
-                  </span>
-                ) : null}
-              </div>
-              <button
-                style={{ ...st.saveBtn, padding: '4px 12px', fontSize: '12px' }}
-                disabled={savingLoc === r.locationId}
-                onClick={() => save(r)}
-              >
-                {savingLoc === r.locationId ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-            {(['revenueGlAccountId', 'cogsGlAccountId', 'inventoryAssetGlAccountId'] as const).map((field) => {
-              const type = field === 'revenueGlAccountId' ? 'REVENUE' : field === 'cogsGlAccountId' ? 'EXPENSE' : 'ASSET';
-              const labelText = field === 'revenueGlAccountId' ? 'Revenue' : field === 'cogsGlAccountId' ? 'COGS' : 'Inventory Asset';
-              const accounts = accountsForLoc(r.locationId, type as ApiGlAccount['type']);
-              const overrideId = r.override[field];
-              const effectiveId = r.effective[field];
-              const isMissing = !overrideId && !effectiveId;
-              return (
-                <div key={field} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
-                  <label style={{ fontSize: '12px', color: '#475569' }}>{labelText}</label>
-                  <select
-                    style={{ ...st.input, padding: '6px 10px', fontSize: '12px' }}
-                    value={overrideId ?? ''}
-                    onChange={(e) => updateField(r.locationId, field, e.target.value || null)}
-                  >
-                    <option value="">
-                      {effectiveId
-                        ? `— Inherit (effective via category/legacy) —`
-                        : `— Not mapped${r.qboConnected ? ' (required for QuickBooks)' : ''} —`}
-                    </option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>{labelFor(a)}</option>
-                    ))}
-                  </select>
-                  {isMissing ? (
-                    <div style={{ gridColumn: '2 / 3', fontSize: '11px', color: '#9B1C1C' }}>
-                      No effective account — invoices for this location will fail to post.
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
   const isEdit = !!product;
 
-  // Load reference data the dropdowns depend on. These endpoints are cheap
-  // (active categories, COA filtered by type) so we always fetch fresh.
+  // Load reference data the dropdowns depend on. Categories own GL & tax
+  // defaults now, so the form only needs the categories list and the tax
+  // categories vocabulary — per-product GL inputs were retired with the
+  // 20260429080000_inventory_category_only_gl migration.
   const { data: categoriesData } = useApi<{ categories: ApiProductCategory[] }>(
     'get', '/api/inventory/categories', { immediate: true },
-  );
-  const { data: revenueAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=REVENUE', { immediate: true },
-  );
-  const { data: cogsAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=EXPENSE', { immediate: true },
-  );
-  const { data: assetAccountsData } = useApi<{ accounts: ApiGlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=ASSET', { immediate: true },
   );
   const { data: taxCategoriesData } = useApi<{ categories: string[] }>(
     'get', '/api/inventory/tax-categories', { immediate: true },
   );
 
   const categoryList = categoriesData?.categories ?? [];
-  const revenueAccts = revenueAccountsData?.accounts ?? [];
-  const cogsAccts = cogsAccountsData?.accounts ?? [];
-  const assetAccts = assetAccountsData?.accounts ?? [];
   const taxCats = taxCategoriesData?.categories ?? ['general'];
 
   // For new products only, default to the first active category if one
@@ -461,9 +247,6 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
     taxClass: string;
     qoh: string;
     reorderPoint: string;
-    glRevenue: string;
-    glCogs: string;
-    glInventoryAsset: string;
   }>({
     sku: product?.sku ?? '',
     barcode: product?.barcode ?? '',
@@ -475,9 +258,6 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
     taxClass: product?.taxClass ?? '',
     qoh: product ? String(product.qoh) : '',
     reorderPoint: product ? String(product.reorderPoint) : '',
-    glRevenue: product?.glRevenue ?? '',
-    glCogs: product?.glCogs ?? '',
-    glInventoryAsset: product?.glInventoryAsset ?? '',
   });
 
   // When the categories list lands after the initial render, retro-fit the
@@ -493,68 +273,23 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
 
   const selectedCategory = categoryList.find((c) => c.id === form.productCategoryId) ?? null;
 
-  // Override toggle: when ON, the per-product GL/tax fields are sent to the
-  // server as overrides; when OFF, blanks are sent and the server applies the
-  // category defaults. Detecting initial state is tricky because the backend
-  // historically copied category defaults INTO per-product columns, so a
-  // populated field doesn't necessarily mean "override". The reliable signal
-  // is whether the per-product value DIFFERS from the selected category's
-  // default — only then is it a true override. For products without a
-  // category, fall back to "any per-product field is populated".
-  // Tax exempt is detected via the same set of legacy/canonical labels the
-  // server uses (Exempt / Tax Exempt, case-insensitive).
-  const isExemptLabel = (s: string | null | undefined) =>
-    !!s && ['exempt', 'tax exempt'].includes(s.trim().toLowerCase());
-  const [override, setOverride] = useState(false);
-  const overrideInitialized = React.useRef(false);
-  React.useEffect(() => {
-    if (!isEdit || overrideInitialized.current) return;
-    // Wait for both reference data and (if applicable) the selected category
-    // to be available so the comparison is meaningful.
-    if (categoryList.length === 0) return;
-    if (product?.productCategoryId && !selectedCategory) return;
-    let detected = false;
-    if (selectedCategory) {
-      const taxOverridden =
-        !!product?.taxClass &&
-        product.taxClass !== 'Standard' &&
-        product.taxClass !== (selectedCategory.defaultTaxCategory ?? null) &&
-        !(isExemptLabel(product.taxClass) && !selectedCategory.taxable);
-      detected =
-        (!!product?.glRevenue && product.glRevenue !== selectedCategory.defaultRevenueGlAccountId) ||
-        (!!product?.glCogs && product.glCogs !== selectedCategory.defaultCogsGlAccountId) ||
-        (!!product?.glInventoryAsset && product.glInventoryAsset !== selectedCategory.defaultInventoryAssetGlAccountId) ||
-        taxOverridden;
-    } else {
-      detected = !!(
-        product?.glRevenue ||
-        product?.glCogs ||
-        product?.glInventoryAsset ||
-        (product?.taxClass && product.taxClass !== 'Standard')
-      );
-    }
-    setOverride(detected);
-    overrideInitialized.current = true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEdit, categoryList.length, selectedCategory?.id]);
-
   const setField = <K extends keyof typeof form>(field: K, value: (typeof form)[K]) =>
     setForm((p) => ({ ...p, [field]: value }));
 
-  const labelFor = (a: ApiGlAccount) => `${a.accountNumber} — ${a.name}`;
-  const findAccount = (list: ApiGlAccount[], id: string | null) =>
-    id ? list.find((a) => a.id === id) ?? null : null;
-
-  // Effective values shown when the override toggle is OFF. These mirror the
-  // server-side resolveEffectiveValues helper: per-product wins, else category.
-  const effectiveRevenueId = override ? form.glRevenue : (form.glRevenue || selectedCategory?.defaultRevenueGlAccountId || '');
-  const effectiveCogsId = override ? form.glCogs : (form.glCogs || selectedCategory?.defaultCogsGlAccountId || '');
-  const effectiveAssetId = override ? form.glInventoryAsset : (form.glInventoryAsset || selectedCategory?.defaultInventoryAssetGlAccountId || '');
+  // Effective tax label preview: category-driven when taxable=false, else
+  // per-product taxClass overrides the category's default. GL accounts are
+  // intentionally omitted — they're now resolved per (category, location)
+  // and edited in Settings → Categories → Per-Location GL Mappings.
   const effectiveTaxLabel = !selectedCategory
     ? (form.taxClass || 'general')
     : !selectedCategory.taxable
     ? 'Tax Exempt (from category)'
     : (form.taxClass || selectedCategory.defaultTaxCategory || 'general');
+
+  // Block save when the product has no category — the API rejects this
+  // anyway since productCategoryId is NOT NULL, but checking client-side
+  // gives a clearer error than a 400 from Zod validation.
+  const canSave = !!form.sku.trim() && !!form.name.trim() && !!form.productCategoryId;
 
   return (
     <div style={st.overlay} onClick={onClose}>
@@ -582,12 +317,17 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
                 value={form.productCategoryId ?? ''}
                 onChange={(e) => setField('productCategoryId', e.target.value || null)}
               >
-                <option value="">— None —</option>
+                <option value="">— Select a category —</option>
                 {categoryList.map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
             )}
+            {!form.productCategoryId && categoryList.length > 0 ? (
+              <div style={{ fontSize: '12px', color: '#9B1C1C', marginTop: '4px' }}>
+                Category is required.
+              </div>
+            ) : null}
           </div>
 
           <div style={st.row2}>
@@ -599,89 +339,62 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
             <div style={st.field}><label style={st.label}>Reorder Point</label><input style={st.input} type="number" value={form.reorderPoint} onChange={(e) => setField('reorderPoint', e.target.value)} /></div>
           </div>
 
-          {/* Accounting + tax block — defaults from category, override per-product */}
+          {/* Tax + accounting summary — GL accounts are now category- and
+              location-driven; per-product GL inputs were retired. */}
           <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '8px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, color: '#0A2342', cursor: 'pointer', marginBottom: '12px' }}>
-              <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
-              Override category defaults (GL accounts &amp; tax)
-            </label>
-
-            {!override ? (
-              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', display: 'grid', gap: '6px' }}>
-                <div><strong>Revenue:</strong> {findAccount(revenueAccts, effectiveRevenueId) ? labelFor(findAccount(revenueAccts, effectiveRevenueId)!) : '—'}</div>
-                <div><strong>COGS:</strong> {findAccount(cogsAccts, effectiveCogsId) ? labelFor(findAccount(cogsAccts, effectiveCogsId)!) : '—'}</div>
-                <div><strong>Inventory Asset:</strong> {findAccount(assetAccts, effectiveAssetId) ? labelFor(findAccount(assetAccts, effectiveAssetId)!) : '—'}</div>
-                <div><strong>Tax:</strong> {effectiveTaxLabel}</div>
+            <div style={st.field}>
+              <label style={st.label}>Tax Category</label>
+              <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
+                <option value="">— Use category default —</option>
+                {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                <option value="Tax Exempt">Tax Exempt</option>
+              </select>
+            </div>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
+              <div><strong>Tax (effective):</strong> {effectiveTaxLabel}</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>
+                Revenue, COGS and inventory asset accounts are configured per
+                location on the product&apos;s category.{' '}
+                {selectedCategory ? (
+                  <Link
+                    to={`/settings/categories?edit=${selectedCategory.id}`}
+                    style={{ color: '#0A2342', fontWeight: 600 }}
+                  >
+                    Edit GL mappings for &ldquo;{selectedCategory.name}&rdquo; →
+                  </Link>
+                ) : (
+                  <span>Pick a category, then edit its per-location GL mappings in Settings → Categories.</span>
+                )}
               </div>
-            ) : (
-              <>
-                <div style={st.row2}>
-                  <div style={st.field}>
-                    <label style={st.label}>GL Revenue Account</label>
-                    <select style={st.input} value={form.glRevenue} onChange={(e) => setField('glRevenue', e.target.value)}>
-                      <option value="">— Use category default —</option>
-                      {revenueAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
-                    </select>
-                  </div>
-                  <div style={st.field}>
-                    <label style={st.label}>GL COGS Account</label>
-                    <select style={st.input} value={form.glCogs} onChange={(e) => setField('glCogs', e.target.value)}>
-                      <option value="">— Use category default —</option>
-                      {cogsAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div style={st.row2}>
-                  <div style={st.field}>
-                    <label style={st.label}>GL Inventory Asset Account</label>
-                    <select style={st.input} value={form.glInventoryAsset} onChange={(e) => setField('glInventoryAsset', e.target.value)}>
-                      <option value="">— Use category default —</option>
-                      {assetAccts.map((a) => <option key={a.id} value={a.id}>{labelFor(a)}</option>)}
-                    </select>
-                  </div>
-                  <div style={st.field}>
-                    <label style={st.label}>Tax Category</label>
-                    <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
-                      <option value="">— Use category default —</option>
-                      {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
-                      <option value="Tax Exempt">Tax Exempt</option>
-                    </select>
-                  </div>
-                </div>
-              </>
-            )}
+            </div>
           </div>
-
-          {isEdit && product?.id ? (
-            <ProductPerLocationMappings productId={product.id} />
-          ) : null}
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={() => {
-            onSave({
-              id: product?.id ?? String(Date.now()),
-              sku: form.sku, barcode: form.barcode, name: form.name,
-              category: form.legacyCategory,
-              productCategoryId: form.productCategoryId,
-              costCents: Math.round(parseFloat(form.costCents || '0') * 100),
-              priceCents: Math.round(parseFloat(form.priceCents || '0') * 100),
-              // When override is off we send blanks so the server applies
-              // category defaults and avoids stamping stale values.
-              taxClass: override ? form.taxClass : '',
-              qoh: parseInt(form.qoh || '0'),
-              reorderPoint: parseInt(form.reorderPoint || '0'),
-              glRevenue: override ? form.glRevenue : '',
-              glCogs: override ? form.glCogs : '',
-              glInventoryAsset: override ? form.glInventoryAsset : '',
-              trackInventory: true, active: true,
-              qboItemId: product?.qboItemId ?? null,
-              qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
-              qboItemSyncError: product?.qboItemSyncError ?? null,
-              qboItemSyncErrorAt: product?.qboItemSyncErrorAt ?? null,
-            });
-            onClose();
-          }}>{isEdit ? 'Save Changes' : 'Add Product'}</button>
+          <button
+            style={{ ...st.saveBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? 'pointer' : 'not-allowed' }}
+            disabled={!canSave}
+            onClick={() => {
+              if (!canSave) return;
+              onSave({
+                id: product?.id ?? String(Date.now()),
+                sku: form.sku, barcode: form.barcode, name: form.name,
+                category: form.legacyCategory,
+                productCategoryId: form.productCategoryId,
+                costCents: Math.round(parseFloat(form.costCents || '0') * 100),
+                priceCents: Math.round(parseFloat(form.priceCents || '0') * 100),
+                taxClass: form.taxClass,
+                qoh: parseInt(form.qoh || '0'),
+                reorderPoint: parseInt(form.reorderPoint || '0'),
+                trackInventory: true, active: true,
+                qboItemId: product?.qboItemId ?? null,
+                qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
+                qboItemSyncError: product?.qboItemSyncError ?? null,
+                qboItemSyncErrorAt: product?.qboItemSyncErrorAt ?? null,
+              });
+              onClose();
+            }}
+          >{isEdit ? 'Save Changes' : 'Add Product'}</button>
         </div>
       </div>
     </div>
@@ -980,13 +693,11 @@ export default function Inventory() {
         category: p.category || null,
         productCategoryId: p.productCategoryId || null,
         costCents: p.costCents, priceCents: p.priceCents,
-        // Empty strings here mean "fall back to category default" — send null
-        // so the server's applyCategoryDefaultsToProductData fills them in.
+        // Empty taxClass means "use the category's default" — the server
+        // resolves it via the tax helper in product-defaults.ts. Per-product
+        // GL inputs were dropped with the category-only GL migration.
         taxClass: p.taxClass || null,
         reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
-        revenueGlAccountId: p.glRevenue || null,
-        cogsGlAccountId: p.glCogs || null,
-        inventoryAssetGlAccountId: p.glInventoryAsset || null,
       };
       if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
         await fetch(`/api/inventory/products/${p.id}`, {

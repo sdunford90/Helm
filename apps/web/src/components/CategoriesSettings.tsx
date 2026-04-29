@@ -4,17 +4,15 @@ import { useApi } from '../hooks/useApi';
 import { useToast } from './Toast';
 import { api } from '../lib/api';
 
-// Product Category settings — owns default GL accounts (revenue, COGS,
-// inventory asset) and a default tax category + taxable flag for inventory
-// products. Products inherit these defaults via productCategoryId; the
-// per-product fields act as overrides.
+// Product Category settings — owns the per-location GL mappings (revenue,
+// COGS, inventory asset) plus the default tax category + taxable flag for
+// inventory products. As of the 20260429080000_inventory_category_only_gl
+// migration, GL accounts are configured exclusively per (category, location);
+// there are no tenant-wide defaults and no per-product overrides.
 
 interface ProductCategory {
   id: string;
   name: string;
-  defaultRevenueGlAccountId: string | null;
-  defaultCogsGlAccountId: string | null;
-  defaultInventoryAssetGlAccountId: string | null;
   defaultTaxCategory: string | null;
   taxable: boolean;
   active: boolean;
@@ -140,33 +138,6 @@ function LocationMappingsModal({
       await api.put(
         `/api/settings/product-categories/${category.id}/gl-mappings/${locationId}`,
         next,
-      );
-      setRows((prev) =>
-        prev.map((r) =>
-          r.locationId === locationId
-            ? {
-                ...r,
-                override: next,
-                effective: {
-                  revenueGlAccountId:
-                    next.revenueGlAccountId ??
-                    (r.qboConnected
-                      ? null
-                      : category.defaultRevenueGlAccountId ?? null),
-                  cogsGlAccountId:
-                    next.cogsGlAccountId ??
-                    (r.qboConnected
-                      ? null
-                      : category.defaultCogsGlAccountId ?? null),
-                  inventoryAssetGlAccountId:
-                    next.inventoryAssetGlAccountId ??
-                    (r.qboConnected
-                      ? null
-                      : category.defaultInventoryAssetGlAccountId ?? null),
-                },
-              }
-            : r,
-        ),
       );
       toast.success('Mapping saved', '');
     } catch (err) {
@@ -364,26 +335,17 @@ function LocationMappingRow({
 
 function CategoryModal({
   initial,
-  revenueAccts,
-  cogsAccts,
-  assetAccts,
   taxCategories,
   onClose,
   onSave,
 }: {
   initial: ProductCategory | null;
-  revenueAccts: GlAccount[];
-  cogsAccts: GlAccount[];
-  assetAccts: GlAccount[];
   taxCategories: string[];
   onClose: () => void;
   onSave: (payload: Partial<ProductCategory>) => Promise<void>;
 }) {
   const [form, setForm] = useState({
     name: initial?.name ?? '',
-    defaultRevenueGlAccountId: initial?.defaultRevenueGlAccountId ?? '',
-    defaultCogsGlAccountId: initial?.defaultCogsGlAccountId ?? '',
-    defaultInventoryAssetGlAccountId: initial?.defaultInventoryAssetGlAccountId ?? '',
     defaultTaxCategory: initial?.defaultTaxCategory ?? 'general',
     taxable: initial?.taxable ?? true,
     active: initial?.active ?? true,
@@ -396,9 +358,6 @@ function CategoryModal({
     try {
       await onSave({
         name: form.name.trim(),
-        defaultRevenueGlAccountId: form.defaultRevenueGlAccountId || null,
-        defaultCogsGlAccountId: form.defaultCogsGlAccountId || null,
-        defaultInventoryAssetGlAccountId: form.defaultInventoryAssetGlAccountId || null,
         defaultTaxCategory: form.defaultTaxCategory || null,
         taxable: form.taxable,
         active: form.active,
@@ -426,40 +385,10 @@ function CategoryModal({
             />
           </div>
 
-          <div style={stl.field}>
-            <label style={stl.label}>Default Revenue Account</label>
-            <select
-              style={stl.input}
-              value={form.defaultRevenueGlAccountId}
-              onChange={(e) => setForm((p) => ({ ...p, defaultRevenueGlAccountId: e.target.value }))}
-            >
-              <option value="">— None —</option>
-              {revenueAccts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}
-            </select>
-          </div>
-
-          <div style={stl.field}>
-            <label style={stl.label}>Default COGS Account</label>
-            <select
-              style={stl.input}
-              value={form.defaultCogsGlAccountId}
-              onChange={(e) => setForm((p) => ({ ...p, defaultCogsGlAccountId: e.target.value }))}
-            >
-              <option value="">— None —</option>
-              {cogsAccts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}
-            </select>
-          </div>
-
-          <div style={stl.field}>
-            <label style={stl.label}>Default Inventory Asset Account</label>
-            <select
-              style={stl.input}
-              value={form.defaultInventoryAssetGlAccountId}
-              onChange={(e) => setForm((p) => ({ ...p, defaultInventoryAssetGlAccountId: e.target.value }))}
-            >
-              <option value="">— None —</option>
-              {assetAccts.map((a) => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}
-            </select>
+          <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569' }}>
+            GL accounts (Revenue, COGS, Inventory Asset) are configured per
+            location. After saving, click the map-pin icon next to this
+            category to set them for each location you operate.
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'end' }}>
@@ -514,23 +443,14 @@ export default function CategoriesSettings() {
   const [adding, setAdding] = useState(false);
   const [mappingFor, setMappingFor] = useState<ProductCategory | null>(null);
 
-  // Reference data for the modal dropdowns. Filtered server-side by GL type.
-  const { data: revenueAccountsData } = useApi<{ accounts: GlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=REVENUE', { immediate: true },
-  );
-  const { data: cogsAccountsData } = useApi<{ accounts: GlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=EXPENSE', { immediate: true },
-  );
-  const { data: assetAccountsData } = useApi<{ accounts: GlAccount[] }>(
-    'get', '/api/inventory/gl-accounts?type=ASSET', { immediate: true },
-  );
+  // Reference data — only the tax-category vocabulary is needed at the
+  // category modal level. GL account dropdowns moved to the per-location
+  // mappings editor (LocationMappingsModal) where they're loaded per
+  // (category, location) pair.
   const { data: taxCategoriesData } = useApi<{ categories: string[] }>(
     'get', '/api/inventory/tax-categories', { immediate: true },
   );
 
-  const revenueAccts = revenueAccountsData?.accounts ?? [];
-  const cogsAccts = cogsAccountsData?.accounts ?? [];
-  const assetAccts = assetAccountsData?.accounts ?? [];
   const taxCategories = taxCategoriesData?.categories ?? ['general'];
 
   const refresh = async () => {
@@ -590,8 +510,9 @@ export default function CategoriesSettings() {
         <div>
           <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342', marginBottom: '4px' }}>Product Categories</div>
           <div style={{ fontSize: '13px', color: '#64748B' }}>
-            Categories own default GL accounts and tax settings. Products inherit these
-            defaults; per-product overrides win when set.
+            Each category owns a tax setting plus a per-location GL mapping
+            (Revenue / COGS / Inventory Asset). Click the map-pin icon to edit
+            mappings for a category.
           </div>
         </div>
         <button style={stl.addBtn} onClick={() => { setAdding(true); setEditing(null); }}>
@@ -613,9 +534,6 @@ export default function CategoriesSettings() {
             <thead>
               <tr style={{ background: '#F8FAFC' }}>
                 <th style={stl.th}>Name</th>
-                <th style={stl.th}>Revenue</th>
-                <th style={stl.th}>COGS</th>
-                <th style={stl.th}>Inv. Asset</th>
                 <th style={stl.th}>Tax</th>
                 <th style={stl.th}>Status</th>
                 <th style={{ ...stl.th, textAlign: 'right' as const }}>Actions</th>
@@ -625,9 +543,6 @@ export default function CategoriesSettings() {
               {categories.map((c) => (
                 <tr key={c.id}>
                   <td style={{ ...stl.td, fontWeight: 600 }}>{c.name}</td>
-                  <td style={stl.td}>{accountLabel(revenueAccts.find((a) => a.id === c.defaultRevenueGlAccountId))}</td>
-                  <td style={stl.td}>{accountLabel(cogsAccts.find((a) => a.id === c.defaultCogsGlAccountId))}</td>
-                  <td style={stl.td}>{accountLabel(assetAccts.find((a) => a.id === c.defaultInventoryAssetGlAccountId))}</td>
                   <td style={stl.td}>
                     {c.taxable
                       ? (c.defaultTaxCategory ?? 'general')
@@ -669,9 +584,6 @@ export default function CategoriesSettings() {
       {(adding || editing) && (
         <CategoryModal
           initial={editing}
-          revenueAccts={revenueAccts}
-          cogsAccts={cogsAccts}
-          assetAccts={assetAccts}
           taxCategories={taxCategories}
           onClose={() => { setAdding(false); setEditing(null); }}
           onSave={handleSave}

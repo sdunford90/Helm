@@ -34,6 +34,11 @@ const CreateProductSchema = z.object({
   sku: z.string().optional().nullable(),
   barcode: z.string().optional().nullable(),
   departmentId: z.string().optional().nullable(),
+  // Optional in the API: when omitted (POS create has no category picker),
+  // the route auto-resolves the tenant's "Uncategorized" category so
+  // Product.productCategoryId (NOT NULL since
+  // 20260429080000_inventory_category_only_gl) is always populated.
+  productCategoryId: z.string().uuid().optional().nullable(),
   costCents: z.number().int().optional().nullable(),
   priceCents: z.number().int().min(0),
   taxClass: z.string().optional().nullable(),
@@ -229,10 +234,26 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateProductSchema.parse(req.body);
 
+      // Resolve the tenant's "Uncategorized" category when the caller
+      // didn't supply one (the POS form has no category picker). The
+      // migration seeds this row for every existing tenant; we
+      // findOrCreate to cover tenants provisioned after the migration ran.
+      let productCategoryId = data.productCategoryId ?? null;
+      if (!productCategoryId) {
+        const uncategorized = await prisma.productCategory.upsert({
+          where: { tenantId_name: { tenantId, name: "Uncategorized" } },
+          create: { tenantId, name: "Uncategorized", taxable: true, active: true },
+          update: {},
+          select: { id: true },
+        });
+        productCategoryId = uncategorized.id;
+      }
+      const { productCategoryId: _ignored, ...rest } = data;
       const product = await prisma.product.create({
         data: {
           tenantId,
-          ...data,
+          productCategoryId,
+          ...rest,
         },
       });
 

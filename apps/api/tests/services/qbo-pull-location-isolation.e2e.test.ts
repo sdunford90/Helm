@@ -29,7 +29,10 @@ let rollbackReservedRefund: typeof import('../../src/services/payment-refund.js'
 
 // In-memory store backing the prisma mocks: enough Prisma fidelity
 // (notIn/not predicates, P2002 unique-conflict simulation, stateful
-// GlAccount/GlEntry/ProductGlMapping rows) to exercise the real services.
+// GlAccount/GlEntry/ProductCategoryGlMapping rows) to exercise the real
+// services. After 20260429080000_inventory_category_only_gl, inventory GL
+// resolution is single-rung through ProductCategoryGlMapping — the legacy
+// ProductGlMapping table is gone.
 
 interface GlAccountRow {
   id: string;
@@ -67,10 +70,10 @@ interface LocationRow {
   achReturnFeeGlAccountId?: string | null;
 }
 
-interface ProductGlMappingRow {
+interface ProductCategoryGlMappingRow {
   id: string;
   tenantId: string;
-  productId: string;
+  productCategoryId: string;
   locationId: string;
   revenueGlAccountId: string | null;
   cogsGlAccountId: string | null;
@@ -93,15 +96,12 @@ interface GlEntryRow {
 interface ProductRow {
   id: string;
   tenantId: string;
-  productCategoryId: string | null;
-  revenueGlAccountId: string | null;
-  cogsGlAccountId: string | null;
-  inventoryAssetGlAccountId: string | null;
+  productCategoryId: string;
 }
 
 const glAccounts = new Map<string, GlAccountRow>();
 const locations = new Map<string, LocationRow>();
-const productGlMappings: ProductGlMappingRow[] = [];
+const categoryGlMappings: ProductCategoryGlMappingRow[] = [];
 const glEntries: GlEntryRow[] = [];
 const products = new Map<string, ProductRow>();
 
@@ -246,41 +246,36 @@ function installPrismaStubs(): void {
     count: vi.fn().mockResolvedValue(locations.size),
   };
 
-  // ---- productGlMapping ----
-  (mockPrisma as any).productGlMapping = {
+  // ---- productCategoryGlMapping (single-rung resolver source) ----
+  (mockPrisma as any).productCategoryGlMapping = {
     findFirst: vi.fn(async ({ where }: any) => {
-      return productGlMappings.find((m) => matchRow(m, where)) ?? null;
+      return categoryGlMappings.find((m) => matchRow(m, where)) ?? null;
     }),
     findMany: vi.fn(async ({ where }: any = {}) => {
-      return productGlMappings.filter((m) => matchRow(m, where));
+      return categoryGlMappings.filter((m) => matchRow(m, where));
     }),
     create: vi.fn(async ({ data }: any) => {
-      const row: ProductGlMappingRow = {
-        id: data.id ?? nextId('pgm'),
+      const row: ProductCategoryGlMappingRow = {
+        id: data.id ?? nextId('cgm'),
         tenantId: data.tenantId,
-        productId: data.productId,
+        productCategoryId: data.productCategoryId,
         locationId: data.locationId,
         revenueGlAccountId: data.revenueGlAccountId ?? null,
         cogsGlAccountId: data.cogsGlAccountId ?? null,
         inventoryAssetGlAccountId: data.inventoryAssetGlAccountId ?? null,
       };
-      productGlMappings.push(row);
+      categoryGlMappings.push(row);
       return row;
     }),
   };
-  (mockPrisma as any).productCategoryGlMapping = {
-    findFirst: vi.fn().mockResolvedValue(null),
-    findMany: vi.fn().mockResolvedValue([]),
-  };
 
   // ---- product ----
+  // Resolver only selects `{id, productCategoryId}` now — no relation
+  // include — so there's no need to attach a productCategory shape.
   (mockPrisma as any).product = {
     findFirst: vi.fn(async ({ where }: any) => {
       for (const row of products.values()) {
-        if (matchRow(row, where)) {
-          // The resolver requests `productCategory` as a relation include.
-          return { ...row, productCategory: null };
-        }
+        if (matchRow(row, where)) return row;
       }
       return null;
     }),
@@ -342,7 +337,7 @@ beforeEach(async () => {
   fetchMock.mockReset();
   glAccounts.clear();
   locations.clear();
-  productGlMappings.length = 0;
+  categoryGlMappings.length = 0;
   glEntries.length = 0;
   products.clear();
   idCounter = 0;
@@ -458,34 +453,34 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     expect(revA.name).toContain('Marina A');
     expect(revB.name).toContain('Marina B');
 
-    // 4. Define one tenant-wide product and pin a per-location revenue
-    //    mapping for each location so the resolver picks each location's
-    //    own "4000 Slip Revenue" row.  This is the operator workflow
-    //    after the chart pull: open the catalog, set GL account per
-    //    location.
+    // 4. Define one tenant-wide product belonging to a single category,
+    //    then pin a per-(category, location) revenue mapping for each
+    //    location so the resolver picks each location's own "4000 Slip
+    //    Revenue" row. This is the operator workflow after the chart
+    //    pull: open Settings → Categories and set the GL account per
+    //    location for that category. (Per-product overrides were retired
+    //    in 20260429080000_inventory_category_only_gl.)
     const productId = 'product-slip-rental';
+    const categoryId = 'cat-slip';
     products.set(productId, {
       id: productId,
       tenantId,
-      productCategoryId: null,
-      revenueGlAccountId: null,
-      cogsGlAccountId: null,
-      inventoryAssetGlAccountId: null,
+      productCategoryId: categoryId,
     });
-    productGlMappings.push(
+    categoryGlMappings.push(
       {
-        id: nextId('pgm'),
+        id: nextId('cgm'),
         tenantId,
-        productId,
+        productCategoryId: categoryId,
         locationId: locA.id,
         revenueGlAccountId: revA.id,
         cogsGlAccountId: null,
         inventoryAssetGlAccountId: null,
       },
       {
-        id: nextId('pgm'),
+        id: nextId('cgm'),
         tenantId,
-        productId,
+        productCategoryId: categoryId,
         locationId: locB.id,
         revenueGlAccountId: revB.id,
         cogsGlAccountId: null,
@@ -497,9 +492,9 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     const resolvedA = await resolveProductGlAccounts(tenantId, productId, locA.id);
     const resolvedB = await resolveProductGlAccounts(tenantId, productId, locB.id);
     expect(resolvedA.revenueGlAccountId).toBe(revA.id);
-    expect(resolvedA.source).toBe('product_override');
+    expect(resolvedA.source).toBe('category_default');
     expect(resolvedB.revenueGlAccountId).toBe(revB.id);
-    expect(resolvedB.source).toBe('product_override');
+    expect(resolvedB.source).toBe('category_default');
     // Sanity: the resolver should NOT cross-pollinate.
     expect(resolvedA.revenueGlAccountId).not.toBe(revB.id);
     expect(resolvedB.revenueGlAccountId).not.toBe(revA.id);

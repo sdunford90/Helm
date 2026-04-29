@@ -116,7 +116,9 @@ describe('GET /api/settings/catalog/products-summary', () => {
         productCategoryId: null,
       },
     ]);
-    mockPrisma.productGlMapping.findMany.mockResolvedValue([]);
+    // Per-product GL mapping table was dropped by
+    // 20260429080000_inventory_category_only_gl. The resolver only queries
+    // productCategoryGlMapping now.
     mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([]);
     mockPrisma.productCategory.findMany.mockResolvedValue([]);
     mockPrisma.dockageRate.findMany.mockResolvedValue([]);

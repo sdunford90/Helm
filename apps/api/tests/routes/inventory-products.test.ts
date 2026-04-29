@@ -10,6 +10,10 @@ beforeEach(async () => {
   app = mod.default;
 });
 
+// Product fixture for the post-collapse schema. After
+// 20260429080000_inventory_category_only_gl, products no longer carry
+// per-product GL FKs — those columns and the ProductGlMapping table were
+// dropped. productCategoryId is now NOT NULL.
 const buildProduct = (overrides: any = {}) => ({
   id: 'prod-1',
   tenantId: 'test-tenant-id',
@@ -24,9 +28,6 @@ const buildProduct = (overrides: any = {}) => ({
   reorderPoint: 5,
   trackInventory: true,
   qoh: 25,
-  cogsGlAccountId: null,
-  revenueGlAccountId: null,
-  inventoryAssetGlAccountId: null,
   locationId: null,
   qboItemId: null,
   qboItemSyncedAt: null,
@@ -58,24 +59,17 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveRevenueGlAccountId).toBeUndefined();
     expect(res.body.data[0].effectiveCogsGlAccountId).toBeUndefined();
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBeUndefined();
-    // No per-location resolution should run when locationId is omitted.
-    expect(mockPrisma.productGlMapping.findMany).not.toHaveBeenCalled();
+    // No per-(category, location) resolution should run when locationId is omitted.
     expect(mockPrisma.productCategoryGlMapping.findMany).not.toHaveBeenCalled();
   });
 
-  it('filters by locationId (OR location/null) and attaches effective GL fields', async () => {
+  it('attaches effective GL fields from the per-(category, location) mapping', async () => {
     mockPrisma.product.findMany.mockResolvedValue([buildProduct()]);
     mockPrisma.product.count.mockResolvedValue(1);
 
-    // Per-location product override wins over the category default.
-    mockPrisma.productGlMapping.findMany.mockResolvedValue([
-      {
-        productId: 'prod-1',
-        revenueGlAccountId: 'gl-rev-loc',
-        cogsGlAccountId: null,
-        inventoryAssetGlAccountId: null,
-      },
-    ]);
+    // Single resolution rung now: category-per-location mapping. There is
+    // no per-product override anymore (table dropped), and no tenant-wide
+    // category default (columns dropped).
     mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([
       {
         productCategoryId: 'cat-1',
@@ -93,8 +87,7 @@ describe('GET /api/inventory/products', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
-    expect(res.body.data[0].effectiveRevenueGlAccountId).toBe('gl-rev-loc');
-    // Falls back to category mapping when no per-product override.
+    expect(res.body.data[0].effectiveRevenueGlAccountId).toBe('gl-rev-cat');
     expect(res.body.data[0].effectiveCogsGlAccountId).toBe('gl-cogs-cat');
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBe('gl-inv-cat');
 
@@ -103,71 +96,28 @@ describe('GET /api/inventory/products', () => {
     expect(JSON.stringify(findManyCall.where)).toContain('"locationId":"loc-1"');
     expect(JSON.stringify(findManyCall.where)).toContain('"locationId":null');
 
-    // Confirm the per-location resolver scoped its lookups correctly.
-    expect(mockPrisma.productGlMapping.findMany).toHaveBeenCalledWith(
+    // Confirm the per-location category resolver scoped its lookup correctly.
+    expect(mockPrisma.productCategoryGlMapping.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           tenantId: 'test-tenant-id',
           locationId: 'loc-1',
-          productId: { in: ['prod-1'] },
+          productCategoryId: { in: ['cat-1'] },
         }),
       }),
     );
   });
 
-  it('falls back to legacy productCategory.default* when no overrides exist (non-QBO location)', async () => {
-    // No per-product or per-category mappings; product has no legacy FKs;
-    // category has tenant-wide defaults. The route must surface those
-    // category defaults as the effective fields, matching the per-product
-    // resolver's chain.
-    const p = buildProduct({
-      productCategoryId: 'cat-1',
-      revenueGlAccountId: null,
-      cogsGlAccountId: null,
-      inventoryAssetGlAccountId: null,
-    });
-    mockPrisma.product.findMany.mockResolvedValue([p]);
+  it('returns null effective fields when the category has no per-location mapping', async () => {
+    // Product belongs to a category that hasn't been mapped at this
+    // location. The collapsed resolver has no fallback — surfacing null
+    // here is what drives the "Unconfigured GL" warning banners.
+    mockPrisma.product.findMany.mockResolvedValue([buildProduct()]);
     mockPrisma.product.count.mockResolvedValue(1);
-    mockPrisma.productGlMapping.findMany.mockResolvedValue([]);
     mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([]);
-    mockPrisma.productCategory.findMany.mockResolvedValue([
-      {
-        id: 'cat-1',
-        defaultRevenueGlAccountId: 'gl-rev-default',
-        defaultCogsGlAccountId: 'gl-cogs-default',
-        defaultInventoryAssetGlAccountId: 'gl-inv-default',
-      },
-    ] as any);
     mockPrisma.location.findUnique.mockResolvedValue({
       qboAccessToken: null,
       qboRealmId: null,
-    } as any);
-
-    const res = await request(app).get('/api/inventory/products?locationId=loc-1');
-
-    expect(res.status).toBe(200);
-    expect(res.body.data[0].effectiveRevenueGlAccountId).toBe('gl-rev-default');
-    expect(res.body.data[0].effectiveCogsGlAccountId).toBe('gl-cogs-default');
-    expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBe('gl-inv-default');
-  });
-
-  it('suppresses legacy tenant-wide FKs when the location is QBO-connected', async () => {
-    // Product has legacy tenant-wide GL FKs but no per-location override,
-    // and the location is connected to QBO. Those legacy FKs likely point at
-    // a different realm's chart, so they must NOT leak through as the
-    // effective accounts.
-    const p = buildProduct({
-      productCategoryId: null,
-      revenueGlAccountId: 'gl-legacy-rev',
-      cogsGlAccountId: 'gl-legacy-cogs',
-      inventoryAssetGlAccountId: 'gl-legacy-inv',
-    });
-    mockPrisma.product.findMany.mockResolvedValue([p]);
-    mockPrisma.product.count.mockResolvedValue(1);
-    mockPrisma.productGlMapping.findMany.mockResolvedValue([]);
-    mockPrisma.location.findUnique.mockResolvedValue({
-      qboAccessToken: 'tok',
-      qboRealmId: 'realm-1',
     } as any);
 
     const res = await request(app).get('/api/inventory/products?locationId=loc-1');
@@ -180,7 +130,7 @@ describe('GET /api/inventory/products', () => {
 
   it('returns 404 when locationId belongs to another tenant', async () => {
     // Override the default findFirst mock so the tenant-scoped lookup
-    // returns no row -- simulating a foreign locationId. The route must
+    // returns no row — simulating a foreign locationId. The route must
     // refuse before any product/effective-GL queries fire.
     mockPrisma.location.findFirst.mockResolvedValue(null as any);
 
@@ -188,42 +138,45 @@ describe('GET /api/inventory/products', () => {
 
     expect(res.status).toBe(404);
     expect(mockPrisma.product.findMany).not.toHaveBeenCalled();
-    expect(mockPrisma.productGlMapping.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.productCategoryGlMapping.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.location.findUnique).not.toHaveBeenCalled();
   });
+});
 
-  it('also suppresses legacy productCategory.default* on QBO-connected locations', async () => {
-    // QBO-connected location, no overrides, only legacy category defaults
-    // exist. They must NOT bleed through — they likely reference a different
-    // realm's chart, same gating as the legacy product FKs.
-    const p = buildProduct({
-      productCategoryId: 'cat-1',
-      revenueGlAccountId: null,
-      cogsGlAccountId: null,
-      inventoryAssetGlAccountId: null,
-    });
-    mockPrisma.product.findMany.mockResolvedValue([p]);
-    mockPrisma.product.count.mockResolvedValue(1);
-    mockPrisma.productGlMapping.findMany.mockResolvedValue([]);
-    mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([]);
-    mockPrisma.productCategory.findMany.mockResolvedValue([
-      {
-        id: 'cat-1',
-        defaultRevenueGlAccountId: 'gl-rev-default',
-        defaultCogsGlAccountId: 'gl-cogs-default',
-        defaultInventoryAssetGlAccountId: 'gl-inv-default',
-      },
-    ] as any);
-    mockPrisma.location.findUnique.mockResolvedValue({
-      qboAccessToken: 'tok',
-      qboRealmId: 'realm-1',
-    } as any);
+describe('POST /api/inventory/products', () => {
+  it('rejects a create with no productCategoryId (schema validation)', async () => {
+    // After the collapse, productCategoryId is required at the Zod layer
+    // so the route never even reaches a category lookup — and definitely
+    // never creates a row.
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X1',
+        name: 'Anchor',
+        costCents: 100,
+        priceCents: 200,
+        // productCategoryId intentionally omitted
+      });
 
-    const res = await request(app).get('/api/inventory/products?locationId=loc-1');
+    expect(res.status).toBe(400);
+    expect(mockPrisma.product.create).not.toHaveBeenCalled();
+  });
 
-    expect(res.status).toBe(200);
-    expect(res.body.data[0].effectiveRevenueGlAccountId).toBeNull();
-    expect(res.body.data[0].effectiveCogsGlAccountId).toBeNull();
-    expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBeNull();
+  it('rejects a create when the supplied productCategoryId is foreign to the tenant', async () => {
+    // findFirst returns null → "category not found for this tenant" → 400.
+    mockPrisma.productCategory.findFirst.mockResolvedValue(null as any);
+
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X2',
+        name: 'Cleat',
+        costCents: 100,
+        priceCents: 200,
+        productCategoryId: '00000000-0000-0000-0000-000000000000',
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockPrisma.product.create).not.toHaveBeenCalled();
   });
 });

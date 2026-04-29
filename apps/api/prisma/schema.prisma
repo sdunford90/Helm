@@ -491,7 +491,6 @@ model Location {
   purchaseOrders            PurchaseOrder[]
   userLocations             UserLocation[]
   glAccounts                GlAccount[]                @relation(name: "LocationGlAccounts")
-  productGlMappings         ProductGlMapping[]         @relation(name: "LocationProductGlMappings")
   productCategoryGlMappings ProductCategoryGlMapping[] @relation(name: "LocationProductCategoryGlMappings")
   dockageRateGlMappings     DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
   serviceFeeGlMappings      ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
@@ -1253,19 +1252,9 @@ model GlAccount {
   entries                               GlEntry[]
   lineItems                             InvoiceLineItem[]
   products                              Product[]                @relation(name: "ProductGlAccount")
-  productsCogs                          Product[]                @relation(name: "ProductCogsGlAccount")
-  productsInventoryAsset                Product[]                @relation(name: "ProductInventoryAssetGlAccount")
-  productsRevenue                       Product[]                @relation(name: "ProductRevenueGlAccount")
   rentalProductGlMappingsRevenue        RentalProductGlMapping[] @relation(name: "RentalProductGlMappingRevenue")
   rentalProductGlMappingsCogs           RentalProductGlMapping[] @relation(name: "RentalProductGlMappingCogs")
   rentalProductGlMappingsInventoryAsset RentalProductGlMapping[] @relation(name: "RentalProductGlMappingInventoryAsset")
-  productCategoriesRevenue              ProductCategory[]        @relation(name: "ProductCategoryRevenueGlAccount")
-  productCategoriesCogs                 ProductCategory[]        @relation(name: "ProductCategoryCogsGlAccount")
-  productCategoriesInventoryAsset       ProductCategory[]        @relation(name: "ProductCategoryInventoryAssetGlAccount")
-
-  productGlMappingsRevenue                ProductGlMapping[]         @relation(name: "ProductGlMappingRevenue")
-  productGlMappingsCogs                   ProductGlMapping[]         @relation(name: "ProductGlMappingCogs")
-  productGlMappingsInventoryAsset         ProductGlMapping[]         @relation(name: "ProductGlMappingInventoryAsset")
   productCategoryGlMappingsRevenue        ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingRevenue")
   productCategoryGlMappingsCogs           ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingCogs")
   productCategoryGlMappingsInventoryAsset ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingInventoryAsset")
@@ -1287,35 +1276,13 @@ model GlAccount {
 }
 
 // ---------------------------------------------------------------------------
-// Per-location GL mapping tables — overlay the tenant-level FKs on
-// Product/ProductCategory/DockageRate/ServiceFee so operators can map each
-// item to the right account in each location's QBO chart of accounts. The
-// tenant-level FK on the source row is preserved as a legacy fallback so
-// nothing breaks during the rollout.
+// Per-location GL mapping tables — map ProductCategory/DockageRate/ServiceFee
+// to the right account in each location's QBO chart of accounts. For
+// inventory products the per-location ProductCategoryGlMapping is the SOLE
+// source of truth (collapsed from a 4-rung chain); legacy per-product and
+// tenant-wide category default columns were retired in
+// 20260429080000_inventory_category_only_gl.
 // ---------------------------------------------------------------------------
-
-model ProductGlMapping {
-  id                        String   @id @default(uuid())
-  tenantId                  String
-  productId                 String
-  locationId                String
-  revenueGlAccountId        String?
-  cogsGlAccountId           String?
-  inventoryAssetGlAccountId String?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @default(now()) @updatedAt
-
-  product                 Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
-  location                Location   @relation(name: "LocationProductGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
-  revenueGlAccount        GlAccount? @relation(name: "ProductGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
-  cogsGlAccount           GlAccount? @relation(name: "ProductGlMappingCogs", fields: [cogsGlAccountId], references: [id])
-  inventoryAssetGlAccount GlAccount? @relation(name: "ProductGlMappingInventoryAsset", fields: [inventoryAssetGlAccountId], references: [id])
-
-  @@unique([productId, locationId])
-  @@index([tenantId])
-  @@index([locationId])
-  @@map("product_gl_mappings")
-}
 
 model ProductCategoryGlMapping {
   id                        String   @id @default(uuid())
@@ -1929,7 +1896,12 @@ model Product {
   // Legacy free-text category — superseded by productCategoryId. Kept for
   // backwards-compat; UI no longer writes to it for new products.
   category                  String?
-  productCategoryId         String?
+  // Required link to the per-tenant ProductCategory that owns this product's
+  // per-location GL accounts (via ProductCategoryGlMapping). Every tenant has
+  // an "Uncategorized" seed so legacy rows always have a parent. Switched to
+  // RESTRICT on delete in 20260429080000 — categories with products can only
+  // be soft-deleted (active=false).
+  productCategoryId         String
   costCents                 Int?
   priceCents                Int
   taxClass                  String?
@@ -1939,13 +1911,6 @@ model Product {
   qoh                       Int     @default(0)
   active                    Boolean @default(true)
   glAccountId               String?
-  // GL accounts required to mirror this Product as a QBO Inventory item.
-  // When productCategoryId is set and the per-product field is null at write
-  // time, the API copies the category default into the per-product column so
-  // downstream readers (QBO sync, reports) keep using the same field.
-  cogsGlAccountId           String?
-  inventoryAssetGlAccountId String?
-  revenueGlAccountId        String?
 
   // QuickBooks Online sync state (populated by qbo-sync.syncInventoryItem)
   qboItemId          String?
@@ -1957,17 +1922,13 @@ model Product {
   updatedAt DateTime @default(now()) @updatedAt
 
   glAccount               GlAccount?            @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
-  cogsGlAccount           GlAccount?            @relation(name: "ProductCogsGlAccount", fields: [cogsGlAccountId], references: [id])
-  inventoryAssetGlAccount GlAccount?            @relation(name: "ProductInventoryAssetGlAccount", fields: [inventoryAssetGlAccountId], references: [id])
-  revenueGlAccount        GlAccount?            @relation(name: "ProductRevenueGlAccount", fields: [revenueGlAccountId], references: [id])
-  productCategory         ProductCategory?      @relation(fields: [productCategoryId], references: [id])
+  productCategory         ProductCategory       @relation(fields: [productCategoryId], references: [id])
   location                Location?             @relation(fields: [locationId], references: [id])
   inventory               Inventory[]
   posLineItems            PosLineItem[]
   adjustments             InventoryAdjustment[]
   poLineItems             PoLineItem[]
   countItems              InventoryCountItem[]
-  glMappings              ProductGlMapping[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -1979,9 +1940,6 @@ model ProductCategory {
   id                               String   @id @default(uuid())
   tenantId                         String
   name                             String
-  defaultRevenueGlAccountId        String?
-  defaultCogsGlAccountId           String?
-  defaultInventoryAssetGlAccountId String?
   // Aligns with TaxRate.category (e.g. "general", "food", "fuel"). Used by
   // the tax engine to look up the right rate for the customer's location.
   defaultTaxCategory               String?
@@ -1992,11 +1950,11 @@ model ProductCategory {
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @default(now()) @updatedAt
 
-  defaultRevenueGlAccount        GlAccount?                 @relation(name: "ProductCategoryRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
-  defaultCogsGlAccount           GlAccount?                 @relation(name: "ProductCategoryCogsGlAccount", fields: [defaultCogsGlAccountId], references: [id])
-  defaultInventoryAssetGlAccount GlAccount?                 @relation(name: "ProductCategoryInventoryAssetGlAccount", fields: [defaultInventoryAssetGlAccountId], references: [id])
-  products                       Product[]
-  glMappings                     ProductCategoryGlMapping[]
+  // GL accounts for inventory products in this category live entirely in
+  // ProductCategoryGlMapping (per-location). The legacy tenant-wide
+  // default*GlAccountId fields were dropped in 20260429080000.
+  products   Product[]
+  glMappings ProductCategoryGlMapping[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
