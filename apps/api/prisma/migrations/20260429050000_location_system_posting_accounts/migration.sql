@@ -1,21 +1,6 @@
--- Migration: Per-location SYSTEM posting accounts (default revenue, sales
--- tax payable, early-termination income, ACH return fee).
---
--- Mirrors `20260429040000_location_posting_accounts` (A/R, undeposited funds,
--- deferred revenue) for the four account-number fallbacks gl-posting.ts used
--- to silently lean on (4500, 2400, 4700, 4600). Without these pins, multi-
--- property tenants whose per-location QBO charts share account numbers
--- across realms either threw "GL account 4500 not found for tenant …"
--- (because the seeded chart only contains 4010-4100) or, worse, picked a
--- row bound to a different QBO realm and silently mis-routed the entry.
---
--- All four columns are nullable. gl-account-resolver.ts'
--- `resolveLocationSystemPostingAccount` enforces the contract per slot:
---   * pinned column wins;
---   * QBO-connected locations REQUIRE the pin (else throw
---     UNCONFIGURED_GL_MAPPING);
---   * non-QBO locations fall back to the legacy account-number lookup so
---     single-chart tenants keep posting unchanged.
+-- Per-location SYSTEM posting account pins (Task #222). Mirrors
+-- 20260429040000_location_posting_accounts. All nullable; QBO-connected
+-- locations require pins, non-QBO fall back via type-matched chart row.
 
 ALTER TABLE "locations"
   ADD COLUMN IF NOT EXISTS "defaultRevenueGlAccountId"   TEXT,

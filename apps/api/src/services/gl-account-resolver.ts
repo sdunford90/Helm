@@ -109,37 +109,10 @@ export async function isLocationQboConnected(locationId: string): Promise<boolea
   return !!(loc?.qboAccessToken && loc?.qboRealmId);
 }
 
-// ---------------------------------------------------------------------------
-// Per-location SYSTEM posting account resolution
-//
-// Slots that gl-posting.ts used to look up by hardcoded account number,
-// which silently mis-posted across realms when two QBO charts shared the
-// same numbers. Each slot:
-//   * has a Location.<field> column the operator pins in QuickBooks Setup;
-//   * has the GLAccountType(s) the operator's pick must satisfy (the
-//     settings PUT endpoint enforces this; the resolver's non-QBO fallback
-//     uses the same type filter to pick a chart row of the right kind).
-//
-// Resolution chain (no hardcoded account-number fallback at any step):
-//   1. Pinned column on `locations` (set in QuickBooks Setup).
-//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — refuse any
-//      chart-walk fallback because the same row-shape in a different realm
-//      belongs to a different chart of accounts. This is the core
-//      invariant the task exists to enforce.
-//   3. Non-QBO locations: pick the lowest-numbered chart row whose `type`
-//      is in the slot's `expectedTypes`, scoped first to the location and
-//      then tenant-wide (locationId IS NULL). Sibling-location rows are
-//      excluded — pinning into a chart this location doesn't own is the
-//      same bleed the QBO branch above prevents.
-//   4. Throw UNCONFIGURED_GL_MAPPING if no typed row exists.
-//
-// Trade-off vs the legacy number fallback: when a non-QBO single-chart
-// tenant has multiple rows of the slot's required type (e.g. several
-// LIABILITY rows for sales tax), the lowest-numbered row may not be the
-// "right" one (e.g. seed 2100 Deferred Revenue lands before 2400 Sales
-// Tax Payable). The fix is for the operator to pin the slot explicitly in
-// QuickBooks Setup — which is the whole point of this task.
-// ---------------------------------------------------------------------------
+// Per-location SYSTEM posting accounts (Task #222). Resolver: pin → throw
+// for QBO-connected (no chart-walk, prevents cross-realm bleed) →
+// lowest-numbered chart row of the slot's expectedTypes for non-QBO
+// (location-scoped, then tenant-wide) → throw.
 
 export type LocationSystemPostingAccountSlot =
   | "defaultRevenue"
@@ -195,8 +168,7 @@ export async function resolveLocationSystemPostingAccount(
   const spec = LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS[slot];
   const db = (tx ?? prisma) as typeof prisma;
 
-  // 1. Honour the explicit per-location pin first — set in QuickBooks Setup
-  //    and enforced as type-correct by the settings PUT endpoint.
+  // 1. Pin wins.
   if (locationId) {
     const loc = await db.location.findUnique({
       where: { id: locationId },
@@ -211,10 +183,7 @@ export async function resolveLocationSystemPostingAccount(
     if (pinnedId) return pinnedId;
   }
 
-  // 2. QBO-connected locations: refuse any chart-walk fallback. The same
-  //    row in a different realm belongs to a different chart; we'd rather
-  //    surface the misconfiguration than silently mis-route the posting
-  //    (or post into an account QBO knows nothing about).
+  // 2. QBO-connected: require pin (no chart-walk → no cross-realm bleed).
   if (locationId && (await isLocationQboConnected(locationId))) {
     throw new Error(
       `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but ` +
@@ -224,12 +193,7 @@ export async function resolveLocationSystemPostingAccount(
     );
   }
 
-  // 3. Non-QBO fallback: pick the lowest-numbered chart row whose type is
-  //    in the slot's expectedTypes set. Prefer location-scoped rows; fall
-  //    back to tenant-wide (locationId IS NULL). No account-number
-  //    matching here — the type filter is the only constraint the task
-  //    permits, and it's the same constraint the settings PUT validator
-  //    enforces on operator pins.
+  // 3. Non-QBO: lowest-numbered typed row, location-scoped then tenant-wide.
   const expectedTypes = [...spec.expectedTypes];
   if (locationId) {
     const locScoped = await db.glAccount.findFirst({

@@ -444,13 +444,7 @@ model Location {
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 
-  // ----- Per-location posting accounts -----
-  // Pinned GL accounts used by gl-posting / qbo-sync when posting invoices,
-  // payments, refunds, and deferred-revenue recognition for this location.
-  // Falling back to tenant-wide account-number lookups would route ledger
-  // entries (and QBO Invoice/Payment ARAccountRef + DepositToAccountRef) to
-  // a different QBO realm — staff pin per-location accounts here so each
-  // marina's books stay self-consistent.
+  // Per-location posting account pins (Tasks #210, #222).
   arGlAccountId               String?
   undepositedFundsGlAccountId String?
   deferredRevenueGlAccountId  String?
@@ -459,18 +453,6 @@ model Location {
   undepositedFundsGlAccount GlAccount? @relation(name: "LocationUndepositedFundsGlAccount", fields: [undepositedFundsGlAccountId], references: [id])
   deferredRevenueGlAccount  GlAccount? @relation(name: "LocationDeferredRevenueGlAccount",  fields: [deferredRevenueGlAccountId],  references: [id])
 
-  // ----- Per-location SYSTEM posting accounts -----
-  // Pinned chart-of-accounts rows for the four "system" postings that
-  // gl-posting.ts used to fall back to hardcoded account numbers for
-  // (4500 default revenue, 2400 sales tax payable, 4700 early-termination
-  // income, 4600 ACH return fee). Falling back to a tenant-wide number
-  // lookup silently mis-routed entries when (a) the per-location chart
-  // didn't seed that number at all, or (b) the location was QBO-connected
-  // but the matching number lived in a *different* realm's chart. Pinning
-  // these per-location is the same contract as A/R / cash / deferred above:
-  // QBO-connected locations REQUIRE the pin (the resolver throws
-  // UNCONFIGURED_GL_MAPPING otherwise); non-QBO locations fall back to the
-  // legacy account-number lookup so single-chart tenants keep working.
   defaultRevenueGlAccountId   String?
   salesTaxGlAccountId         String?
   earlyTerminationGlAccountId String?

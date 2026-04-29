@@ -800,14 +800,8 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
   });
 
   it('per-location pinned SYSTEM posting accounts route default-revenue, sales-tax, and early-termination postings to each location\'s own chart row', async () => {
-    // Regression guard for Task #222: gl-posting.ts no longer falls back to
-    // hardcoded account numbers (4500 default revenue, 2400 sales tax,
-    // 4700 early termination, 4600 ACH return fee) for QBO-connected
-    // locations. Two QBO-connected locations whose pulled charts share
-    // those numbers but live in different realms must each post to their
-    // own pinned chart rows; a third QBO-connected location with NO pin
-    // must throw UNCONFIGURED_GL_MAPPING rather than silently picking
-    // whichever 4500/2400/4700 row Prisma returned first.
+    // Task #222 regression: QBO-connected locations must use pins (no number-fallback);
+    // unpinned QBO locations throw UNCONFIGURED_GL_MAPPING instead of silently mis-posting.
     const tenantId = 'tenant-system-posting';
     const inAnHour = new Date(Date.now() + 60 * 60 * 1000);
 
@@ -845,10 +839,7 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     locations.set(locB.id, locB);
     locations.set(locC.id, locC);
 
-    // Each realm exposes the same five account numbers but distinct QBO
-    // Ids and names. Numbers picked to exercise every system slot:
-    //   1200 A/R, 4500 default revenue, 2400 sales tax payable,
-    //   4700 early termination income, 2100 deferred revenue.
+    // Same five account numbers in three realms with distinct QBO Ids.
     accountsByRealm['realm-A'] = [
       { Id: 'a1',  Name: 'A/R — A',                   AcctNum: '1200', AccountType: 'Accounts Receivable',   Active: true },
       { Id: 'a45', Name: 'Default Revenue — A',       AcctNum: '4500', AccountType: 'Income',                Active: true },
