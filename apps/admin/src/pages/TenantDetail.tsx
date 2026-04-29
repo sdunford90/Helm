@@ -503,6 +503,101 @@ const PlanChangeModal: React.FC<{
   );
 };
 
+const CustomDomainModal: React.FC<{
+  tenantId: string;
+  currentDomain: string | null;
+  subdomain: string;
+  onClose: () => void;
+  onSaved: () => void;
+}> = ({ tenantId, currentDomain, subdomain, onClose, onSaved }) => {
+  const apiFetch = useApiFetch();
+  const [domain, setDomain] = useState(currentDomain ?? '');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const trimmed = domain.trim().toLowerCase();
+  const looksLikePlaceholder = /\.example$|\.test$|\.invalid$|\.local$/.test(trimmed);
+  const looksValid = trimmed === '' || /^[a-z0-9.-]+\.[a-z]{2,}$/.test(trimmed);
+
+  const submit = async () => {
+    setErr('');
+    if (!looksValid) {
+      setErr('Enter a valid hostname (e.g. app.tracktheturn.com), or leave blank to clear.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiFetch(`${API}/tenants/${tenantId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ customDomain: trimmed === '' ? null : trimmed }),
+      });
+      onSaved();
+      onClose();
+    } catch (e: unknown) {
+      setErr((e as Error).message || 'Failed to update custom domain');
+      setSaving(false);
+    }
+  };
+
+  const inp: React.CSSProperties = {
+    width: '100%', background: '#0A1929', border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 6, padding: '8px 12px', color: '#FFF', fontSize: 13, boxSizing: 'border-box',
+  };
+  const lbl: React.CSSProperties = { fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 4, display: 'block' };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+    }} onClick={onClose}>
+      <div style={{
+        background: '#0D1B2A', borderRadius: 12, padding: 28, width: 540,
+        border: '1px solid rgba(255,255,255,0.08)',
+      }} onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ margin: '0 0 8px', color: '#FFF', fontSize: 16 }}>Edit Custom Domain</h3>
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 20, lineHeight: 1.5 }}>
+          The marina&apos;s subdomain <code style={{ color: '#00D4FF' }}>{subdomain}</code> always works
+          (e.g. <code style={{ color: '#00D4FF' }}>{subdomain}.tracktheturn.com</code>). Set a custom
+          domain here to also serve this tenant from a vanity hostname like{' '}
+          <code style={{ color: '#00D4FF' }}>app.tracktheturn.com</code>. DNS for the hostname must
+          already point at the platform.
+        </div>
+        {err && <div style={{ color: '#F44336', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+        <label style={lbl}>Custom Domain</label>
+        <input
+          style={inp}
+          value={domain}
+          placeholder="app.tracktheturn.com"
+          onChange={(e) => setDomain(e.target.value)}
+          autoFocus
+        />
+        {looksLikePlaceholder && (
+          <div style={{ fontSize: 12, color: '#FF9800', marginTop: 8 }}>
+            Heads up: <code>.example/.test/.invalid/.local</code> are reserved test TLDs and will not
+            resolve in production. Use a real hostname or leave the field blank.
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+          <button onClick={onClose} style={{
+            padding: '8px 20px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 6, color: 'rgba(255,255,255,0.6)', cursor: 'pointer', fontSize: 13,
+          }}>Cancel</button>
+          <button
+            onClick={submit}
+            disabled={saving}
+            style={{
+              padding: '8px 20px', background: '#00D4FF', border: 'none',
+              borderRadius: 6, color: '#0A2342', fontWeight: 700,
+              cursor: saving ? 'not-allowed' : 'pointer',
+              opacity: saving ? 0.6 : 1, fontSize: 13,
+            }}
+          >{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const TenantDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -523,6 +618,7 @@ const TenantDetail: React.FC = () => {
   const [billingBusyLocId, setBillingBusyLocId] = useState<string | null>(null);
   const [billingMsg, setBillingMsg] = useState<{ locId: string; kind: 'ok' | 'err'; text: string } | null>(null);
   const [showPlanModal, setShowPlanModal] = useState(false);
+  const [showDomainModal, setShowDomainModal] = useState(false);
   const [notes, setNotes] = useState<TenantNote[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
@@ -1003,8 +1099,18 @@ const TenantDetail: React.FC = () => {
       {tab === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div style={card}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16 }}>
-              Account Details
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1 }}>
+                Account Details
+              </div>
+              <button
+                onClick={() => setShowDomainModal(true)}
+                style={{
+                  padding: '4px 12px', background: 'transparent',
+                  border: '1px solid rgba(0,212,255,0.4)', borderRadius: 4,
+                  color: '#00D4FF', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                }}
+              >Edit Domain</button>
             </div>
             {([
               ['Subdomain', tenant.subdomain],
@@ -1748,6 +1854,17 @@ const TenantDetail: React.FC = () => {
           initial={editingLoc}
           onSave={handleSaveLocation}
           onClose={() => { setShowLocModal(false); setEditingLoc(undefined); }}
+        />
+      )}
+
+      {/* Custom Domain Modal */}
+      {showDomainModal && id && tenant && (
+        <CustomDomainModal
+          tenantId={id}
+          currentDomain={tenant.customDomain}
+          subdomain={tenant.subdomain}
+          onClose={() => setShowDomainModal(false)}
+          onSaved={() => fetchTenant()}
         />
       )}
 
