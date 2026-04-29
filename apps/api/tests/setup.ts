@@ -302,6 +302,18 @@ vi.mock('../src/middleware/auth.js', () => ({
     if (!locationId) return false;
     return allowed.includes(locationId);
   },
+  requireAdminRole: (..._roles: string[]) => (_req: any, _res: any, next: any) => {
+    _req.userId = _req.userId ?? 'test-user-id';
+    _req.userRole = _req.userRole ?? 'PLATFORM_ADMIN';
+    _req.userAdminRole = _req.userAdminRole ?? 'SUPERUSER';
+    next();
+  },
+  ADMIN_ROLES: ['SUPERUSER', 'BILLING_ADMIN', 'READ_ONLY_SUPPORT'] as const,
+  isAdminRole: (value: unknown): boolean =>
+    typeof value === 'string' && ['SUPERUSER', 'BILLING_ADMIN', 'READ_ONLY_SUPPORT'].includes(value),
+  isLocationBypassRole: (role: string | undefined | null): boolean =>
+    !!role && ['PLATFORM_ADMIN', 'TENANT_ADMIN', 'MARINA_OWNER'].includes(role),
+  loadAllowedLocationIds: async () => null,
   assertAuthConfigOrExit: () => {},
 }));
 

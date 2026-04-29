@@ -79,12 +79,19 @@ describe('GET /api/qbo/callback — location routing', () => {
     expect(vi.mocked(handleCallbackForLocation)).not.toHaveBeenCalled();
   });
 
-  it('returns 400 for a forged/invalid state token', async () => {
+  it('redirects (does not 400) for a forged/invalid state token so the popup gets a usable error UI', async () => {
+    // Task #196 fix: the callback must never return a JSON 4xx body — that
+    // leaves the OAuth popup stuck on a JSON page. It must always redirect
+    // back to /oauth-complete with a sanitized reason code.
     const res = await request(app)
       .get('/api/qbo/callback')
       .query({ code: 'code', realmId: 'realm', state: 'forged.token' });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/oauth-complete');
+    expect(res.headers.location).toContain('provider=qbo');
+    expect(res.headers.location).toContain('success=false');
+    expect(res.headers.location).toContain('reason=invalid_state');
     expect(vi.mocked(handleCallback)).not.toHaveBeenCalled();
     expect(vi.mocked(handleCallbackForLocation)).not.toHaveBeenCalled();
   });
