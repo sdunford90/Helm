@@ -91,9 +91,9 @@ waitForPort = 3003
 
 [deployment]
 deploymentTarget = "autoscale"
-build = ["bash", "-c", "pnpm install --frozen-lockfile && pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build && pnpm --filter @helm/admin build"]
+build = ["bash", "-c", "pnpm install --frozen-lockfile && pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build && pnpm --filter @helm/admin build && pnpm --filter @helm/api build && (cd apps/api && npx prisma generate)"]
 publicDir = "."
-run = ["node", "apps/frontend-server/server.js"]
+run = ["bash", "-c", "set -e; cd apps/api && npx prisma migrate deploy && (NODE_ENV=production npx prisma db seed || echo '[seed] skipped (non-empty DB or seed error)'); cd ../..; (cd apps/api && NODE_ENV=production node dist/index.js) & node apps/frontend-server/server.js"]
 
 [userenv]
 
