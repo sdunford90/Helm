@@ -19,6 +19,8 @@ const fetchMock = vi.fn();
 let pullChartOfAccountsForLocation: typeof import('../../src/services/qbo-sync.js').pullChartOfAccountsForLocation;
 let resolveProductGlAccounts: typeof import('../../src/services/gl-account-resolver.js').resolveProductGlAccounts;
 let postInvoice: typeof import('../../src/services/gl-posting.js').postInvoice;
+let postPayment: typeof import('../../src/services/gl-posting.js').postPayment;
+let postRefund: typeof import('../../src/services/gl-posting.js').postRefund;
 
 // In-memory store backing the prisma mocks: enough Prisma fidelity
 // (notIn/not predicates, P2002 unique-conflict simulation, stateful
@@ -348,6 +350,8 @@ beforeEach(async () => {
   resolveProductGlAccounts = resolver.resolveProductGlAccounts;
   const posting = await import('../../src/services/gl-posting.js');
   postInvoice = posting.postInvoice;
+  postPayment = posting.postPayment;
+  postRefund = posting.postRefund;
 });
 
 describe('end-to-end: QBO pull → per-location mapping → invoice posting keeps locations isolated', () => {
@@ -616,5 +620,170 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     expect(bRows).toHaveLength(1);
     expect(aRows[0].qboAccountId).toBe('101');
     expect(bRows[0].qboAccountId).toBe('201');
+  });
+
+  it('payment + refund posting hits each location\'s own A/R and bank rows under a per-location chart of accounts', async () => {
+    // Regression guard for the cross-location GL bleed in postPayment /
+    // postRefund.  Same shape as the invoice-posting test above: two
+    // QBO-connected locations whose pulled charts share account numbers
+    // (1200 A/R, 1010 Bank) but resolve to *different* GlAccount rows.
+    // Without locationId-scoped lookups, postPayment/postRefund would
+    // pick whichever row Prisma returned first and silently mis-route
+    // both locations' cash + receivables.
+    const tenantId = 'tenant-pay-refund';
+    const inAnHour = new Date(Date.now() + 60 * 60 * 1000);
+    const locA: LocationRow = {
+      id: 'loc-pay-a',
+      tenantId,
+      name: 'Pay Marina A',
+      qboAccessToken: 'access-A',
+      qboRefreshToken: 'refresh-A',
+      qboRealmId: 'realm-A',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    const locB: LocationRow = {
+      id: 'loc-pay-b',
+      tenantId,
+      name: 'Pay Marina B',
+      qboAccessToken: 'access-B',
+      qboRefreshToken: 'refresh-B',
+      qboRealmId: 'realm-B',
+      qboTokenExpiresAt: inAnHour,
+      qboLastChartOfAccountsSyncAt: null,
+    };
+    locations.set(locA.id, locA);
+    locations.set(locB.id, locB);
+
+    // Each realm exposes the A/R + Bank pair postPayment/postRefund will
+    // look up.  Account numbers overlap; QBO Ids and names diverge.
+    accountsByRealm['realm-A'] = [
+      { Id: '1', Name: 'A/R — Marina A', AcctNum: '1200', AccountType: 'Accounts Receivable', Active: true },
+      { Id: '2', Name: 'Operating Bank — Marina A', AcctNum: '1010', AccountType: 'Bank', Active: true },
+    ];
+    accountsByRealm['realm-B'] = [
+      { Id: '11', Name: 'A/R — Marina B', AcctNum: '1200', AccountType: 'Accounts Receivable', Active: true },
+      { Id: '12', Name: 'Operating Bank — Marina B', AcctNum: '1010', AccountType: 'Bank', Active: true },
+    ];
+
+    await pullChartOfAccountsForLocation(locA.id, tenantId);
+    await pullChartOfAccountsForLocation(locB.id, tenantId);
+    expect(glAccounts.size).toBe(4);
+
+    const accountFor = (locationId: string, acctNum: string) => {
+      const found = [...glAccounts.values()].find(
+        (a) => a.locationId === locationId && a.accountNumber === acctNum,
+      );
+      if (!found) throw new Error(`No account ${acctNum} for ${locationId}`);
+      return found;
+    };
+
+    const arA = accountFor(locA.id, '1200');
+    const arB = accountFor(locB.id, '1200');
+    const bankA = accountFor(locA.id, '1010');
+    const bankB = accountFor(locB.id, '1010');
+
+    expect(arA.id).not.toBe(arB.id);
+    expect(bankA.id).not.toBe(bankB.id);
+
+    // Post one CARD payment per location.  In production the route layer
+    // pulls payment.invoice.locationId off the Payment row and threads it
+    // through; here we hand it directly to postPayment.
+    await postPayment({
+      id: 'pay-A',
+      tenantId,
+      amountCents: 50000,
+      method: 'CARD',
+      locationId: locA.id,
+    });
+    await postPayment({
+      id: 'pay-B',
+      tenantId,
+      amountCents: 75000,
+      method: 'CARD',
+      locationId: locB.id,
+    });
+
+    const payEntriesA = glEntries.filter((e) => e.sourceId === 'pay-A');
+    const payEntriesB = glEntries.filter((e) => e.sourceId === 'pay-B');
+    expect(payEntriesA).toHaveLength(2);
+    expect(payEntriesB).toHaveLength(2);
+
+    // Marina A's payment debits Marina A's bank and credits Marina A's
+    // A/R — never Marina B's rows, even though account numbers match.
+    const payDebitA = payEntriesA.find((e) => e.debitCents > 0);
+    const payCreditA = payEntriesA.find((e) => e.creditCents > 0);
+    expect(payDebitA?.accountId).toBe(bankA.id);
+    expect(payCreditA?.accountId).toBe(arA.id);
+
+    const payDebitB = payEntriesB.find((e) => e.debitCents > 0);
+    const payCreditB = payEntriesB.find((e) => e.creditCents > 0);
+    expect(payDebitB?.accountId).toBe(bankB.id);
+    expect(payCreditB?.accountId).toBe(arB.id);
+
+    // Cross-pollination guard.
+    const payAccountsA = new Set(payEntriesA.map((e) => e.accountId));
+    const payAccountsB = new Set(payEntriesB.map((e) => e.accountId));
+    expect(payAccountsA.has(bankB.id)).toBe(false);
+    expect(payAccountsA.has(arB.id)).toBe(false);
+    expect(payAccountsB.has(bankA.id)).toBe(false);
+    expect(payAccountsB.has(arA.id)).toBe(false);
+
+    // Now refund a portion of each payment.  postRefund must reverse
+    // each location's own A/R + bank pair so the books stay balanced
+    // per location instead of moving cash between marinas.
+    await postRefund(
+      {
+        id: 'pay-A',
+        tenantId,
+        amountCents: 50000,
+        method: 'CARD',
+        locationId: locA.id,
+      },
+      20000,
+    );
+    await postRefund(
+      {
+        id: 'pay-B',
+        tenantId,
+        amountCents: 75000,
+        method: 'CARD',
+        locationId: locB.id,
+      },
+      30000,
+    );
+
+    const refundEntriesA = glEntries.filter(
+      (e) => e.sourceId === 'pay-A' && e.sourceType === 'REFUND',
+    );
+    const refundEntriesB = glEntries.filter(
+      (e) => e.sourceId === 'pay-B' && e.sourceType === 'REFUND',
+    );
+    expect(refundEntriesA).toHaveLength(2);
+    expect(refundEntriesB).toHaveLength(2);
+
+    // Refund debits A/R (reinstating the receivable) and credits bank
+    // (cash leaves) — both on the originating location's own rows.
+    const refundDebitA = refundEntriesA.find((e) => e.debitCents > 0);
+    const refundCreditA = refundEntriesA.find((e) => e.creditCents > 0);
+    expect(refundDebitA?.accountId).toBe(arA.id);
+    expect(refundDebitA?.debitCents).toBe(20000);
+    expect(refundCreditA?.accountId).toBe(bankA.id);
+    expect(refundCreditA?.creditCents).toBe(20000);
+
+    const refundDebitB = refundEntriesB.find((e) => e.debitCents > 0);
+    const refundCreditB = refundEntriesB.find((e) => e.creditCents > 0);
+    expect(refundDebitB?.accountId).toBe(arB.id);
+    expect(refundDebitB?.debitCents).toBe(30000);
+    expect(refundCreditB?.accountId).toBe(bankB.id);
+    expect(refundCreditB?.creditCents).toBe(30000);
+
+    // And the refund entries also must not touch the other location.
+    const refundAccountsA = new Set(refundEntriesA.map((e) => e.accountId));
+    const refundAccountsB = new Set(refundEntriesB.map((e) => e.accountId));
+    expect(refundAccountsA.has(arB.id)).toBe(false);
+    expect(refundAccountsA.has(bankB.id)).toBe(false);
+    expect(refundAccountsB.has(arA.id)).toBe(false);
+    expect(refundAccountsB.has(bankA.id)).toBe(false);
   });
 });

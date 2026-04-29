@@ -371,7 +371,7 @@ async function handlePaymentIntentSucceeded(
   // Match by Stripe PaymentIntent id (stored on Payment.stripePaymentId).
   const payment = await prisma.payment.findFirst({
     where: { stripePaymentId: pi.id, ...(tenantId ? { tenantId } : {}) },
-    include: { invoice: { select: { id: true, balanceCents: true, status: true } } },
+    include: { invoice: { select: { id: true, balanceCents: true, status: true, locationId: true } } },
   });
 
   if (!payment) {
@@ -397,6 +397,9 @@ async function handlePaymentIntentSucceeded(
         tenantId: payment.tenantId,
         amountCents: payment.amountCents,
         method: payment.method,
+        // Per-location chart of accounts: thread the invoice's location
+        // so A/R and bank lookups land on this marina's own rows.
+        locationId: payment.invoice?.locationId ?? null,
       },
       tx,
     );

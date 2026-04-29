@@ -427,6 +427,11 @@ export async function generateRecurringInvoices(
                       tenantId,
                       amountCents: chargeAmount,
                       method: "CARD",
+                      // Per-location chart of accounts: thread the slip's
+                      // location so A/R and bank lookups land on this
+                      // marina's own rows instead of whichever location
+                      // Prisma happens to return first.
+                      locationId: contract.slip.locationId ?? null,
                     },
                     tx,
                   );

@@ -82,7 +82,7 @@ export async function handleAchReturn(
     },
     include: {
       invoice: {
-        select: { id: true, status: true, balanceCents: true, totalCents: true },
+        select: { id: true, status: true, balanceCents: true, totalCents: true, locationId: true },
       },
       customer: {
         select: { id: true, email: true, firstName: true, lastName: true },
@@ -108,6 +108,9 @@ export async function handleAchReturn(
         tenantId,
         paymentId: payment.id,
         amountCents: payment.amountCents,
+        // Per-location chart of accounts: scope the bank/A/R reversal
+        // to the same per-location rows the original payment posted to.
+        locationId: payment.invoice?.locationId ?? null,
       },
       tx,
     );

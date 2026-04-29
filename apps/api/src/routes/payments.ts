@@ -234,6 +234,7 @@ router.post(
         balanceCents: number;
         status: string;
         customerId: string;
+        locationId: string | null;
       } | null = null;
 
       if (data.invoiceId) {
@@ -244,6 +245,7 @@ router.post(
             balanceCents: true,
             status: true,
             customerId: true,
+            locationId: true,
           },
         });
 
@@ -412,6 +414,11 @@ router.post(
               tenantId,
               amountCents: data.amountCents,
               method: data.method,
+              // Per-location chart of accounts: thread the invoice's
+              // location so A/R and bank lookups land on this marina's
+              // own rows instead of any tenant-wide / cross-location
+              // duplicate that shares the same account number.
+              locationId: invoice?.locationId ?? null,
             },
             tx,
           );
@@ -520,7 +527,7 @@ router.post(
         where: { id: req.params.id, tenantId },
         include: {
           invoice: {
-            select: { id: true, balanceCents: true, totalCents: true, status: true },
+            select: { id: true, balanceCents: true, totalCents: true, status: true, locationId: true },
           },
         },
       });
@@ -606,6 +613,10 @@ router.post(
             tenantId,
             amountCents: payment.amountCents,
             method: payment.method,
+            // Per-location chart of accounts: route the A/R reinstate
+            // and bank credit back to the same per-location rows the
+            // original payment touched.
+            locationId: payment.invoice?.locationId ?? null,
           },
           refundAmount,
           tx,
@@ -684,6 +695,9 @@ router.post(
                 paymentAmountCents: payment.amountCents,
                 refundAmountCents: refundAmount,
                 invoiceId: payment.invoice?.id ?? null,
+                // Per-location chart of accounts: the inverse posting
+                // must hit the same rows `postRefund` touched above.
+                locationId: payment.invoice?.locationId ?? null,
                 paymentRefundId: refundRow?.id ?? null,
               });
             } catch (rollbackErr) {

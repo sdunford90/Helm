@@ -1074,6 +1074,7 @@ router.post(
               balanceCents: true,
               totalCents: true,
               status: true,
+              locationId: true,
               location: {
                 select: {
                   stripeAccountId: true,
@@ -1197,6 +1198,10 @@ router.post(
             tenantId,
             amountCents: payment.amountCents,
             method: payment.method,
+            // Per-location chart of accounts: route the A/R reinstate
+            // and bank credit back to the same per-location rows the
+            // original payment touched.
+            locationId: payment.invoice?.locationId ?? null,
           },
           refundAmount,
           tx,
@@ -1268,6 +1273,9 @@ router.post(
               paymentAmountCents: payment.amountCents,
               refundAmountCents: refundAmount,
               invoiceId: payment.invoice?.id ?? null,
+              // Per-location chart of accounts: the inverse posting
+              // must hit the same rows `postRefund` touched above.
+              locationId: payment.invoice?.locationId ?? null,
               paymentRefundId: refundRow?.id ?? null,
             });
           } catch (rollbackErr) {

@@ -134,6 +134,43 @@ function warnGlFallback(tenantId: string, accountNumber: string, context: string
   );
 }
 
+/**
+ * Resolve a well-known account by number for a posting that has an
+ * originating location.  Mirrors the per-location strictness applied by
+ * `postInvoice` to A/R: if the location is QBO-connected we MUST find the
+ * account in that location's own chart of accounts — falling back to a
+ * tenant-wide row could silently route the entry to a row bound to a
+ * different QBO realm (or to no realm at all).  When the location is not
+ * QBO-connected we delegate to `getAccountByNumber`, which prefers the
+ * location-scoped row first then falls back to legacy tenant-wide entries
+ * so older fixtures and single-chart tenants keep working unchanged.
+ */
+async function resolveLocationScopedAccountByNumber(
+  tenantId: string,
+  accountNumber: string,
+  locationId: string | null | undefined,
+  context: string,
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string> {
+  const qboConnected = locationId
+    ? await isLocationQboConnected(locationId)
+    : false;
+  if (qboConnected && locationId) {
+    const db = tx ?? prisma;
+    const locScoped = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId, accountNumber },
+      select: { id: true },
+    });
+    if (!locScoped) {
+      throw new Error(
+        `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but has no ${accountNumber} account in its chart of accounts (${context}). Import or configure ${accountNumber} for this location before posting.`,
+      );
+    }
+    return locScoped.id;
+  }
+  return getAccountByNumber(tenantId, accountNumber, tx, locationId ?? null);
+}
+
 /** Resolve the deferred-revenue liability account for a tenant.
  *  Prefers the first account flagged isDeferredRevenue = true in their chart
  *  (ordered by accountNumber so 2100 comes before 2110).  Falls back to the
@@ -382,17 +419,36 @@ export async function postPayment(
     tenantId: string;
     amountCents: number;
     method: string;
+    /** Originating location (typically `payment.invoice.locationId`).
+     *  Used to scope the A/R and bank/cash account lookups to that
+     *  location's chart of accounts.  Without this the helpers fall
+     *  back to whichever row Prisma returned first — frequently the
+     *  wrong location's account in a per-location chart layout. */
+    locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = payment;
+  const locationId = payment.locationId ?? null;
 
   // Cash/card/ACH all go to bank; physical cash could use a separate account
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const cashAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    cashAccountNumber,
+    locationId,
+    `payment=${payment.id}`,
+    tx,
+  );
+  const arAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.ACCOUNTS_RECEIVABLE,
+    locationId,
+    `payment=${payment.id}`,
+    tx,
+  );
 
   return postEntries(
     tenantId,
@@ -426,17 +482,34 @@ export async function postRefund(
     tenantId: string;
     amountCents: number;
     method: string;
+    /** Originating location (typically `payment.invoice.locationId`).
+     *  Scopes A/R and bank/cash lookups so the refund reverses the
+     *  same per-location accounts the original payment touched. */
+    locationId?: string | null;
   },
   refundAmountCents: number,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = payment;
+  const locationId = payment.locationId ?? null;
 
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const cashAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    cashAccountNumber,
+    locationId,
+    `refund payment=${payment.id}`,
+    tx,
+  );
+  const arAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.ACCOUNTS_RECEIVABLE,
+    locationId,
+    `refund payment=${payment.id}`,
+    tx,
+  );
 
   return postEntries(
     tenantId,
@@ -471,17 +544,35 @@ export async function reversePostRefund(
     id: string;
     tenantId: string;
     method: string;
+    /** Originating location of the original payment.  The reversal must
+     *  hit exactly the same per-location A/R and bank rows that
+     *  `postRefund` touched, otherwise the inverse leaves the chart
+     *  unbalanced across locations. */
+    locationId?: string | null;
   },
   refundAmountCents: number,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = payment;
+  const locationId = payment.locationId ?? null;
 
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const cashAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    cashAccountNumber,
+    locationId,
+    `refund reversal payment=${payment.id}`,
+    tx,
+  );
+  const arAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.ACCOUNTS_RECEIVABLE,
+    locationId,
+    `refund reversal payment=${payment.id}`,
+    tx,
+  );
 
   return postEntries(
     tenantId,
@@ -548,15 +639,28 @@ export async function postSecurityDeposit(
     id: string;
     tenantId: string;
     amountCents: number;
+    /** Originating location for the deposit (typically derived from
+     *  the contract's slip).  Scopes the bank and security-deposits
+     *  liability lookups to the location's chart of accounts. */
+    locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = deposit;
+  const locationId = deposit.locationId ?? null;
 
-  const cashAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
-  const liabilityAccountId = await getAccountByNumber(
+  const cashAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.BANK,
+    locationId,
+    `security deposit=${deposit.id}`,
+    tx,
+  );
+  const liabilityAccountId = await resolveLocationScopedAccountByNumber(
     tenantId,
     ACCOUNTS.SECURITY_DEPOSITS_HELD,
+    locationId,
+    `security deposit=${deposit.id}`,
     tx,
   );
 
@@ -592,20 +696,35 @@ export async function releaseSecurityDeposit(
     tenantId: string;
     amountCents: number;
     appliedToInvoiceId?: string | null;
+    /** Originating location.  Scopes the security-deposits liability,
+     *  A/R (when applying to an invoice), and bank (when refunding to
+     *  customer) lookups to the location's chart of accounts so the
+     *  release reverses the same per-location rows the original
+     *  `postSecurityDeposit` touched. */
+    locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = deposit;
+  const locationId = deposit.locationId ?? null;
 
-  const liabilityAccountId = await getAccountByNumber(
+  const liabilityAccountId = await resolveLocationScopedAccountByNumber(
     tenantId,
     ACCOUNTS.SECURITY_DEPOSITS_HELD,
+    locationId,
+    `security deposit release=${deposit.id}`,
     tx,
   );
 
   if (deposit.appliedToInvoiceId) {
     // Apply to invoice: debit liability, credit A/R
-    const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+    const arAccountId = await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.ACCOUNTS_RECEIVABLE,
+      locationId,
+      `security deposit release=${deposit.id}`,
+      tx,
+    );
     return postEntries(
       tenantId,
       [
@@ -628,7 +747,13 @@ export async function releaseSecurityDeposit(
     );
   } else {
     // Refund to customer: debit liability, credit cash
-    const cashAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
+    const cashAccountId = await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.BANK,
+      locationId,
+      `security deposit release=${deposit.id}`,
+      tx,
+    );
     return postEntries(
       tenantId,
       [
@@ -662,13 +787,31 @@ export async function postAchReturn(
     tenantId: string;
     paymentId: string;
     amountCents: number;
+    /** Originating location of the underlying payment (typically
+     *  `payment.invoice.locationId`).  The reversal must touch the
+     *  same per-location bank and A/R rows the original payment
+     *  posted into. */
+    locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = achReturn;
+  const locationId = achReturn.locationId ?? null;
 
-  const bankAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const bankAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.BANK,
+    locationId,
+    `ach return=${achReturn.id}`,
+    tx,
+  );
+  const arAccountId = await resolveLocationScopedAccountByNumber(
+    tenantId,
+    ACCOUNTS.ACCOUNTS_RECEIVABLE,
+    locationId,
+    `ach return=${achReturn.id}`,
+    tx,
+  );
 
   return postEntries(
     tenantId,

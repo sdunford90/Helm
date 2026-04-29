@@ -25,6 +25,15 @@ export async function rollbackReservedRefund(args: {
   refundAmountCents: number;
   invoiceId: string | null;
   /**
+   * Originating location for the underlying invoice (typically
+   * `payment.invoice.locationId`). Threaded into `reversePostRefund` so
+   * the inverse GL entry hits the same per-location A/R and bank rows
+   * the original `postRefund` touched. Without this the reversal could
+   * land on a different location's accounts under a per-location chart
+   * of accounts and silently leave the books unbalanced across locations.
+   */
+  locationId?: string | null;
+  /**
    * Optional id of the `PaymentRefund` history row that was inserted in
    * Phase 1 alongside the `refundedCents` reservation. When provided, the
    * row is deleted in the same rollback transaction so the per-refund
@@ -39,6 +48,7 @@ export async function rollbackReservedRefund(args: {
     paymentAmountCents,
     refundAmountCents,
     invoiceId,
+    locationId = null,
     paymentRefundId = null,
   } = args;
 
@@ -85,7 +95,7 @@ export async function rollbackReservedRefund(args: {
     // Reverse the GL entries we posted in Phase 1 (a balanced inverse
     // entry rather than deleting rows, so the audit trail stays intact).
     await reversePostRefund(
-      { id: paymentId, tenantId, method: paymentMethod },
+      { id: paymentId, tenantId, method: paymentMethod, locationId },
       refundAmountCents,
       tx,
     );
