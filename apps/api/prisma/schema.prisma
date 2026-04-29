@@ -1242,6 +1242,51 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// Platform-admin operational events. Distinct from per-tenant AuditLog so
+// that "what did the support team do?" can be queried independently of
+// tenant-side activity. Used for impersonation start/end, bulk actions,
+// tier changes, locks, and any other admin-side operation that needs an
+// audit trail. tenantId is set when the event targets one specific tenant.
+model AdminAuditEvent {
+  id           String   @id @default(uuid())
+  // The platform admin user who performed the action (User.id).
+  adminUserId  String?
+  adminEmail   String?
+  // Optional target tenant. Bulk actions create one row per tenant so the
+  // tenant timeline can include them.
+  tenantId     String?
+  // Free-form action verb, e.g. IMPERSONATION_STARTED, IMPERSONATION_ENDED,
+  // TENANT_LOCKED, TENANT_UNLOCKED, TENANT_TIER_CHANGED, ANNOUNCEMENT_SENT,
+  // NOTE_CREATED, NOTE_UPDATED, NOTE_DELETED.
+  action       String
+  // Arbitrary structured payload — old/new values for changes, target IDs,
+  // bulk batch ID, etc.
+  metadataJson Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([adminUserId])
+  @@index([action])
+  @@map("admin_audit_events")
+}
+
+// Internal notes that platform admins write on a tenant detail page.
+// Visible only to platform admins. Each admin owns their own notes; for
+// the moment, only the author can edit / delete (per task scope).
+model TenantNote {
+  id          String   @id @default(uuid())
+  tenantId    String
+  authorId    String   // User.id of the platform admin who wrote it
+  authorEmail String?  // Denormalised so notes still display if the admin row is gone
+  body        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@map("tenant_notes")
+}
+
 model EmailTemplate {
   id        String   @id @default(uuid())
   tenantId  String

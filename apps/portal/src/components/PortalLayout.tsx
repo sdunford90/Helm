@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
+import ImpersonationBanner from './ImpersonationBanner';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
@@ -95,6 +96,7 @@ export default function PortalLayout() {
 
   return (
     <div style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
+      <ImpersonationBanner />
       {/* Header */}
       <header style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>

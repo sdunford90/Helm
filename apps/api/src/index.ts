@@ -58,6 +58,7 @@ import saasBillingRouter from "./routes/saas-billing.js";
 import portalRouter from "./routes/portal.js";
 import chargebacksRouter from "./routes/chargebacks.js";
 import emailComplianceRouter from "./routes/email-compliance.js";
+import impersonationRouter from "./routes/impersonation.js";
 import taxRouter from "./routes/tax.js";
 import emailAutomationRouter from "./routes/email-automation.js";
 import portfolioRouter from "./routes/portfolio.js";
@@ -143,6 +144,11 @@ app.use("/api/email", emailComplianceRouter);
 app.use("/api/qbo/webhook", qboWebhookRouter);
 
 app.use(express.json());
+
+// Public impersonation handoff (verify/end). Mounted after express.json()
+// so the JSON body is parsed, but before tenantMiddleware so it can be
+// reached from any tenant subdomain without a tenant lookup.
+app.use("/api/impersonation", impersonationRouter);
 
 // Tenant resolution — attaches tenantId / tenant to every request
 // (bypasses /api/health, /api/admin, /api/onboarding, /api/auth/webhook,

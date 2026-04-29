@@ -135,7 +135,7 @@ const fmtCents = (c: number) =>
 const fmtDate = (d: string) =>
   d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
-type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'export' | 'danger';
+type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'export' | 'danger' | 'notes';
 
 interface TenantExportRow {
   id: string;
@@ -174,6 +174,39 @@ const fmtDateTime = (iso: string | null) => {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+};
+
+interface TenantNote {
+  id: string;
+  tenantId: string;
+  authorId: string;
+  authorEmail: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ActivityItem {
+  kind: 'note' | 'event';
+  id: string;
+  createdAt: string;
+  actorEmail: string | null;
+  body?: string;
+  authorId?: string;
+  action?: string;
+  metadata?: unknown;
+}
+
+const ACTION_LABELS: Record<string, { label: string; color: string }> = {
+  IMPERSONATION_STARTED: { label: 'Impersonation started', color: '#FF9800' },
+  IMPERSONATION_ENDED: { label: 'Impersonation ended', color: '#94A3B8' },
+  TENANT_LOCKED: { label: 'Tenant locked', color: '#F44336' },
+  TENANT_UNLOCKED: { label: 'Tenant unlocked', color: '#4CAF50' },
+  TENANT_TIER_CHANGED: { label: 'Tier changed', color: '#00D4FF' },
+  ANNOUNCEMENT_SENT: { label: 'Announcement sent', color: '#9C27B0' },
+  NOTE_CREATED: { label: 'Note added', color: '#64748B' },
+  NOTE_UPDATED: { label: 'Note edited', color: '#64748B' },
+  NOTE_DELETED: { label: 'Note deleted', color: '#64748B' },
 };
 
 interface AdminTier {
@@ -490,6 +523,15 @@ const TenantDetail: React.FC = () => {
   const [billingBusyLocId, setBillingBusyLocId] = useState<string | null>(null);
   const [billingMsg, setBillingMsg] = useState<{ locId: string; kind: 'ok' | 'err'; text: string } | null>(null);
   const [showPlanModal, setShowPlanModal] = useState(false);
+  const [notes, setNotes] = useState<TenantNote[]>([]);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [newNote, setNewNote] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteBody, setEditingNoteBody] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [impersonating, setImpersonating] = useState(false);
 
   const [exports, setExports] = useState<TenantExportRow[]>([]);
   const [exportsLoading, setExportsLoading] = useState(false);
@@ -552,7 +594,7 @@ const TenantDetail: React.FC = () => {
     } finally {
       setExportsLoading(false);
     }
-  }, [id]);
+  }, [id, apiFetch]);
 
   const fetchDeletion = useCallback(async () => {
     if (!id) return;
@@ -565,7 +607,22 @@ const TenantDetail: React.FC = () => {
     } finally {
       setDeletionLoading(false);
     }
-  }, [id]);
+  }, [id, apiFetch]);
+
+  const fetchNotesAndActivity = useCallback(async () => {
+    if (!id) return;
+    setNotesLoading(true);
+    try {
+      const [notesData, activityData] = await Promise.all([
+        apiFetch<{ notes?: TenantNote[] }>(`${API}/tenants/${id}/notes`),
+        apiFetch<{ items?: ActivityItem[] }>(`${API}/tenants/${id}/activity`),
+      ]);
+      setNotes(Array.isArray(notesData?.notes) ? notesData.notes : []);
+      setActivity(Array.isArray(activityData?.items) ? activityData.items : []);
+    } finally {
+      setNotesLoading(false);
+    }
+  }, [id, apiFetch]);
 
   useEffect(() => { fetchTenant(); }, [fetchTenant]);
   useEffect(() => {
@@ -576,6 +633,7 @@ const TenantDetail: React.FC = () => {
   }, [tab, fetchLocations, fetchTiers]);
   useEffect(() => { if (tab === 'export') fetchExports(); }, [tab, fetchExports]);
   useEffect(() => { fetchDeletion(); }, [fetchDeletion]);
+  useEffect(() => { if (tab === 'notes') fetchNotesAndActivity(); }, [tab, fetchNotesAndActivity]);
 
   const handleRunExport = async () => {
     if (!id) return;
@@ -694,6 +752,101 @@ const TenantDetail: React.FC = () => {
     }
   };
 
+  const handleAddNote = async () => {
+    const body = newNote.trim();
+    if (!body || !id) return;
+    setSavingNote(true);
+    try {
+      await apiFetch(`${API}/tenants/${id}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ body }),
+      });
+      setNewNote('');
+      await fetchNotesAndActivity();
+    } catch {
+      window.alert('Failed to add note.');
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    if (!id || !window.confirm('Delete this note?')) return;
+    try {
+      await apiFetch(`${API}/tenants/${id}/notes/${noteId}`, { method: 'DELETE' });
+      await fetchNotesAndActivity();
+    } catch {
+      window.alert('Failed to delete note (you can only delete your own).');
+    }
+  };
+
+  const beginEditNote = (note: TenantNote) => {
+    setEditingNoteId(note.id);
+    setEditingNoteBody(note.body);
+  };
+
+  const cancelEditNote = () => {
+    setEditingNoteId(null);
+    setEditingNoteBody('');
+  };
+
+  const handleSaveEditNote = async () => {
+    if (!id || !editingNoteId) return;
+    const body = editingNoteBody.trim();
+    if (!body) return;
+    setSavingEdit(true);
+    try {
+      await apiFetch(`${API}/tenants/${id}/notes/${editingNoteId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ body }),
+      });
+      cancelEditNote();
+      await fetchNotesAndActivity();
+    } catch {
+      window.alert('Failed to update note (you can only edit your own).');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleImpersonate = async () => {
+    if (!id || !tenant) return;
+    if (!window.confirm(
+      `Log in as ${tenant.name} (${tenant.subdomain}.gethelm.com)?\n\n` +
+      `This action is recorded in the audit trail and the tenant will see a banner ` +
+      `indicating an admin is impersonating them.`,
+    )) return;
+
+    setImpersonating(true);
+    try {
+      const data = await apiFetch<{ token: string; tenantSubdomain: string }>(
+        `${API}/tenants/${id}/impersonate`,
+        { method: 'POST' },
+      );
+      // Cross-origin handoff: pass the signed token in the URL fragment of the
+      // tenant subdomain. The fragment is kept client-side (never sent to the
+      // server) and is consumed by the tenant app's ImpersonationBanner, which
+      // calls /api/impersonation/verify and then strips it from the URL.
+      const host = window.location.hostname;
+      const protocol = window.location.protocol;
+      let target = '';
+      if (host.includes('localhost') || host.includes('127.0.0.1')) {
+        target = `${protocol}//${data.tenantSubdomain}.localhost:5173`;
+      } else {
+        const parts = host.split('.');
+        if (parts.length > 1) parts[0] = data.tenantSubdomain;
+        target = `${protocol}//${parts.join('.')}`;
+      }
+      target += `#imp_token=${encodeURIComponent(data.token)}`;
+      window.open(target, '_blank', 'noopener');
+      await fetchNotesAndActivity();
+    } catch {
+      window.alert('Failed to start impersonation session.');
+    } finally {
+      setImpersonating(false);
+    }
+  };
+
   const handleSaveLocation = async (form: typeof BLANK_LOC) => {
     if (editingLoc) {
       await apiFetch(`${API}/tenants/${id}/locations/${editingLoc.id}`, {
@@ -735,6 +888,7 @@ const TenantDetail: React.FC = () => {
     { key: 'users', label: `Users (${tenant.users.length})` },
     { key: 'export', label: 'Export Data' },
     { key: 'danger', label: 'Danger Zone' },
+    { key: 'notes', label: 'Notes & Activity' },
   ];
 
   const pendingDeletion = deletion && deletion.status === 'PENDING' ? deletion : null;
@@ -764,6 +918,16 @@ const TenantDetail: React.FC = () => {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={handleImpersonate}
+            disabled={impersonating}
+            title="Open this tenant's app as one of their owners (audit-logged)."
+            style={{
+              padding: '8px 16px', background: 'transparent', border: '1px solid #00D4FF',
+              borderRadius: 6, color: '#00D4FF', cursor: impersonating ? 'wait' : 'pointer',
+              fontSize: 13, fontWeight: 600, opacity: impersonating ? 0.6 : 1,
+            }}
+          >{impersonating ? 'Starting…' : 'Log in as Tenant'}</button>
           {tenant.status === 'ACTIVE' ? (
             <button onClick={async () => {
               if (!window.confirm('Lock this tenant? They will lose access.')) return;
@@ -1400,6 +1564,180 @@ const TenantDetail: React.FC = () => {
                 }}
               >{deleteBusy ? 'Scheduling…' : 'Schedule Deletion'}</button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* ── Notes & Activity ── */}
+      {tab === 'notes' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          {/* Notes column */}
+          <div style={card}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+              Internal Notes ({notes.length})
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <textarea
+                value={newNote}
+                onChange={(e) => setNewNote(e.target.value)}
+                placeholder="Add an internal note about this tenant. Notes are visible to all platform admins but never to the tenant."
+                rows={3}
+                style={{
+                  width: '100%', background: '#0A1929', border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: 6, padding: '8px 12px', color: '#FFF', fontSize: 13,
+                  boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit',
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                <button
+                  onClick={handleAddNote}
+                  disabled={!newNote.trim() || savingNote}
+                  style={{
+                    padding: '6px 16px', background: '#00D4FF', border: 'none', borderRadius: 6,
+                    color: '#0A2342', fontWeight: 700, fontSize: 12,
+                    cursor: !newNote.trim() || savingNote ? 'not-allowed' : 'pointer',
+                    opacity: !newNote.trim() || savingNote ? 0.5 : 1,
+                  }}
+                >{savingNote ? 'Saving…' : 'Add Note'}</button>
+              </div>
+            </div>
+            {notesLoading ? (
+              <div style={{ color: 'rgba(255,255,255,0.3)', padding: 12, textAlign: 'center', fontSize: 12 }}>Loading…</div>
+            ) : notes.length === 0 ? (
+              <div style={{ color: 'rgba(255,255,255,0.3)', padding: 20, textAlign: 'center', fontSize: 13 }}>
+                No notes yet.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {notes.map((n) => {
+                  const isEditing = editingNoteId === n.id;
+                  return (
+                  <div
+                    key={n.id}
+                    style={{
+                      padding: 12,
+                      background: '#0A1929',
+                      borderRadius: 6,
+                      border: '1px solid rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    {isEditing ? (
+                      <>
+                        <textarea
+                          value={editingNoteBody}
+                          onChange={(e) => setEditingNoteBody(e.target.value)}
+                          rows={3}
+                          maxLength={5000}
+                          style={{
+                            width: '100%', padding: 8, fontSize: 13,
+                            background: '#020A14', color: '#FFF',
+                            border: '1px solid rgba(255,255,255,0.15)', borderRadius: 4,
+                            resize: 'vertical', fontFamily: 'inherit',
+                          }}
+                        />
+                        <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+                          <button
+                            onClick={cancelEditNote}
+                            disabled={savingEdit}
+                            style={{
+                              background: 'transparent', border: '1px solid rgba(255,255,255,0.2)',
+                              color: 'rgba(255,255,255,0.7)', borderRadius: 4,
+                              padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                            }}
+                          >Cancel</button>
+                          <button
+                            onClick={handleSaveEditNote}
+                            disabled={!editingNoteBody.trim() || savingEdit}
+                            style={{
+                              background: '#1E88E5', border: 'none', color: '#FFF',
+                              borderRadius: 4, padding: '4px 10px', fontSize: 11,
+                              cursor: !editingNoteBody.trim() || savingEdit ? 'not-allowed' : 'pointer',
+                              opacity: !editingNoteBody.trim() || savingEdit ? 0.5 : 1,
+                            }}
+                          >{savingEdit ? 'Saving…' : 'Save'}</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 13, color: '#FFF', whiteSpace: 'pre-wrap' }}>{n.body}</div>
+                        <div style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          marginTop: 8, fontSize: 11, color: 'rgba(255,255,255,0.4)',
+                        }}>
+                          <span>
+                            {n.authorEmail ?? n.authorId} · {new Date(n.createdAt).toLocaleString()}
+                            {n.updatedAt && n.updatedAt !== n.createdAt ? ' (edited)' : ''}
+                          </span>
+                          <span style={{ display: 'flex', gap: 12 }}>
+                            <button
+                              onClick={() => beginEditNote(n)}
+                              style={{
+                                background: 'transparent', border: 'none', color: '#1E88E5',
+                                fontSize: 11, cursor: 'pointer', padding: 0,
+                              }}
+                            >Edit</button>
+                            <button
+                              onClick={() => handleDeleteNote(n.id)}
+                              style={{
+                                background: 'transparent', border: 'none', color: '#F44336',
+                                fontSize: 11, cursor: 'pointer', padding: 0,
+                              }}
+                            >Delete</button>
+                          </span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Activity timeline column */}
+          <div style={card}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+              Activity Timeline
+            </div>
+            {notesLoading ? (
+              <div style={{ color: 'rgba(255,255,255,0.3)', padding: 12, textAlign: 'center', fontSize: 12 }}>Loading…</div>
+            ) : activity.length === 0 ? (
+              <div style={{ color: 'rgba(255,255,255,0.3)', padding: 20, textAlign: 'center', fontSize: 13 }}>
+                No recorded activity yet.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {activity.map((item) => {
+                  const cfg = item.action ? ACTION_LABELS[item.action] : undefined;
+                  const dotColor = item.kind === 'note' ? '#64748B' : (cfg?.color ?? '#94A3B8');
+                  return (
+                    <div key={`${item.kind}:${item.id}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{
+                        width: 8, height: 8, borderRadius: '50%', background: dotColor,
+                        marginTop: 6, flexShrink: 0,
+                      }} />
+                      <div style={{ flex: 1, paddingBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <div style={{ fontSize: 12, color: '#FFF', fontWeight: 500 }}>
+                          {item.kind === 'note'
+                            ? 'Internal note added'
+                            : (cfg?.label ?? item.action ?? 'Event')}
+                        </div>
+                        {item.kind === 'note' && item.body && (
+                          <div style={{
+                            fontSize: 12, color: 'rgba(255,255,255,0.55)', marginTop: 2,
+                            whiteSpace: 'pre-wrap',
+                            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}>{item.body}</div>
+                        )}
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
+                          {item.actorEmail ?? 'admin'} · {new Date(item.createdAt).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

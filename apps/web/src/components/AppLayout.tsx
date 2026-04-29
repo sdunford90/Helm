@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet, useLocation, Link, useNavigate } from 'react-router-dom';
 import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
+import ImpersonationBanner from './ImpersonationBanner';
 import { useModules } from '../context/ModulesContext';
 import {
   LayoutDashboard,
@@ -364,6 +365,8 @@ export default function AppLayout() {
   const closeSidebar = () => setSidebarOpen(false);
 
   return (
+    <>
+      <ImpersonationBanner />
     <div style={styles.container}>
       {/* Mobile overlay */}
       {sidebarOpen && (
@@ -527,5 +530,6 @@ export default function AppLayout() {
         />
       )}
     </div>
+    </>
   );
 }

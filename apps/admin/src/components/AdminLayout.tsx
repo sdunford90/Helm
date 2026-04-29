@@ -2,6 +2,7 @@ import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useUser, useClerk } from '@clerk/clerk-react';
 import { useAdminMe, adminRoleLabel } from '../hooks/useAdminMe';
+import GlobalSearch from './GlobalSearch';
 
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 
@@ -209,6 +210,7 @@ const AdminLayout: React.FC = () => {
       <header style={topBar}>
         <div style={{ fontSize: 16, fontWeight: 600, color: '#FFFFFF' }}>{pageTitle}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <GlobalSearch />
           <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>ENV: Production</span>
           <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.1)' }} />
           {DEV_BYPASS ? <DevBypassUserControls /> : <ClerkUserControls />}

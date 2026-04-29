@@ -96,3 +96,36 @@ export async function logAdminAction(req: Request, entry: LogEntry): Promise<voi
 export function logAdminActionDetached(req: Request, entry: LogEntry): void {
   void logAdminAction(req, entry);
 }
+
+/**
+ * Record a single platform-admin action against the AdminAuditEvent
+ * table (Task #161 admin operational support tools). Failures are
+ * swallowed and logged so audit problems never block the underlying
+ * operation — but they do surface in server logs.
+ */
+export async function recordAdminEvent(
+  req: Request,
+  action: string,
+  opts: {
+    tenantId?: string | null;
+    metadata?: Record<string, unknown> | null;
+  } = {},
+): Promise<void> {
+  try {
+    const adminUserId = (req.userId as string | undefined) ?? null;
+    const adminEmail =
+      (req.userRecord?.email as string | undefined) ?? null;
+    await prisma.adminAuditEvent.create({
+      data: {
+        action,
+        adminUserId,
+        adminEmail,
+        tenantId: opts.tenantId ?? null,
+        metadataJson: (opts.metadata ?? null) as never,
+        ipAddress: req.ip ?? null,
+      },
+    });
+  } catch (err) {
+    console.error("[admin-audit] failed to record event", action, err);
+  }
+}

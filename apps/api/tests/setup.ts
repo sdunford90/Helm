@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 // Mock environment
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
 process.env.REDIS_URL = 'redis://localhost:6379';
+process.env.IMPERSONATION_SECRET = process.env.IMPERSONATION_SECRET ?? 'test-impersonation-secret-1234567890';
 
 // Mock Prisma - create a mock that returns empty arrays/objects by default
 export const mockPrisma = {
@@ -233,7 +234,11 @@ export const mockPrisma = {
   })(),
   inventory: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
   purchaseOrder: { findMany: vi.fn().mockResolvedValue([]) },
-  tenant: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+  tenant: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },
+  tenantNote: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  adminAuditEvent: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue({ id: 'evt-1' }), count: vi.fn().mockResolvedValue(0) },
+  saasInvoice: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0), aggregate: vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 } }) },
+  saasTier: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
   achReturn: { findMany: vi.fn().mockResolvedValue([]) },
   vesselSafetyRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   emailSuppression: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn(), findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), delete: vi.fn() },
@@ -274,7 +279,13 @@ vi.mock('../src/middleware/auth.js', () => ({
     next();
   },
   requirePlatformAdmin: () => [
-    (_req: any, _res: any, next: any) => { _req.allowedLocationIds = null; next(); },
+    (_req: any, _res: any, next: any) => {
+      _req.userId = 'test-user-id';
+      _req.userRole = 'PLATFORM_ADMIN';
+      _req.userRecord = { id: 'test-user-id', email: 'admin@test.com', role: 'PLATFORM_ADMIN' };
+      _req.allowedLocationIds = null;
+      next();
+    },
   ],
   filterByAllowedLocations: (req: any, baseWhere: Record<string, unknown>, opts?: { field?: string; includeNull?: boolean }) => {
     const allowed = req?.allowedLocationIds;

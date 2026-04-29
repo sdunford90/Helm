@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { requireAuth, getAuth } from "@clerk/express";
 import {
   requirePlatformAdmin,
@@ -31,6 +31,8 @@ import {
   openPortalForLocation,
   startCheckoutForLocation,
 } from "../services/saas-billing-service.js";
+import { recordAdminEvent } from "../lib/admin-audit.js";
+import { mintImpersonationToken } from "../lib/impersonation-token.js";
 
 import {
   REFUND_REASONS,
@@ -226,9 +228,7 @@ router.get("/queues/status", async (_req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  TENANT MANAGEMENT
-// ==========================================================================
 
 // --------------------------------------------------------------------------
 // GET /api/admin/tenants — list all tenants with filtering & pagination
@@ -774,29 +774,53 @@ router.post("/tenants/:id/impersonate", async (req, res, next) => {
       return;
     }
 
-    // Generate a short-lived impersonation token.
-    // In production this would create a signed JWT via your auth provider (e.g. Clerk).
-    // For now we return a verifiable HMAC-based token that downstream middleware can validate.
-    const secret = process.env.IMPERSONATION_SECRET ?? "helm-impersonation-dev-key";
-    const payload = {
-      sub: targetUser.id,
+    // Mint a short-lived (1h) signed impersonation token. The payload travels
+    // inside the token (b64url) and is verified by the public
+    // /api/impersonation/{verify,end} endpoints — no shared server-side state
+    // is required. The IMPERSONATION_SECRET env var is mandatory.
+    const ttlSeconds = 3600;
+    const adminUserId = req.userId ?? "platform_admin";
+    const adminEmail = (req as { userRecord?: { email?: string } }).userRecord?.email
+      ?? "platform_admin";
+
+    let minted;
+    try {
+      minted = mintImpersonationToken({
+        sub: targetUser.id,
+        email: targetUser.email,
+        role: targetUser.role,
+        tenantId: tenant.id,
+        tenantSubdomain: tenant.subdomain,
+        tenantName: tenant.name,
+        impersonatedBy: adminUserId,
+        adminEmail,
+        ttlSeconds,
+      });
+    } catch (e) {
+      res.status(503).json({
+        error: "Impersonation is not configured on this server (IMPERSONATION_SECRET is missing).",
+      });
+      return;
+    }
+
+    await recordAdminEvent(req, "IMPERSONATION_STARTED", {
       tenantId: tenant.id,
-      email: targetUser.email,
-      role: targetUser.role,
-      impersonatedBy: (req as unknown as Record<string, unknown>).userId ?? "platform_admin",
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-    };
-    const tokenId = randomUUID();
-    const signature = createHmac("sha256", secret)
-      .update(JSON.stringify({ ...payload, jti: tokenId }))
-      .digest("hex");
+      metadata: {
+        tokenId: minted.tokenId,
+        targetUserId: targetUser.id,
+        targetEmail: targetUser.email,
+        expiresInSec: ttlSeconds,
+      },
+    });
 
     res.json({
-      token: `imp_${tokenId}.${signature}`,
-      expiresIn: 3600,
+      token: minted.token,
+      tokenId: minted.tokenId,
+      expiresIn: ttlSeconds,
+      expiresAt: minted.expiresAt.toISOString(),
       tenantId: tenant.id,
       tenantName: tenant.name,
+      tenantSubdomain: tenant.subdomain,
       asUser: { id: targetUser.id, email: targetUser.email, role: targetUser.role },
     });
   } catch (err) {
@@ -824,6 +848,8 @@ router.post("/tenants/:id/lock", async (req, res, next) => {
       data: { status: "LOCKED", lockedAt: new Date() },
     });
 
+    await recordAdminEvent(req, "TENANT_LOCKED", { tenantId: updated.id });
+
     res.json({ id: updated.id, status: updated.status, lockedAt: updated.lockedAt });
   } catch (err) {
     next(err);
@@ -850,15 +876,15 @@ router.post("/tenants/:id/unlock", async (req, res, next) => {
       data: { status: "ACTIVE", lockedAt: null, gracePeriodStartedAt: null },
     });
 
+    await recordAdminEvent(req, "TENANT_UNLOCKED", { tenantId: updated.id });
+
     res.json({ id: updated.id, status: updated.status });
   } catch (err) {
     next(err);
   }
 });
 
-// ==========================================================================
 //  SAAS BILLING
-// ==========================================================================
 
 // --------------------------------------------------------------------------
 // POST /api/admin/locations/:locationId/billing/checkout
@@ -1197,9 +1223,7 @@ router.put("/billing/tiers/:id", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  PLATFORM ANALYTICS
-// ==========================================================================
 
 // --------------------------------------------------------------------------
 // GET /api/admin/analytics/overview — platform-wide KPIs
@@ -1455,9 +1479,7 @@ router.get("/analytics/feature-usage", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  SUPPORT
-// ==========================================================================
 
 // --------------------------------------------------------------------------
 // GET /api/admin/support/tickets — list support tickets across all tenants
@@ -1588,9 +1610,7 @@ router.put("/support/tickets/:id", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  TENANT TIMELINE (admin-side activity feed)
-// ==========================================================================
 
 // Helper: write an entry to the tenant's admin timeline. Best-effort —
 // failures here are logged but never block the action that triggered the
@@ -2233,9 +2253,7 @@ router.post("/tenants/:id/save-play", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  LOCATION MANAGEMENT  (per-tenant)
-// ==========================================================================
 
 // GET /api/admin/tenants/:id/locations
 //
@@ -2334,7 +2352,6 @@ router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ==========================================================================
 //  PLATFORM HEALTH MONITORING
 //
 //  Cross-tenant infrastructure dashboard. The Health page in the admin
@@ -2342,7 +2359,6 @@ router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
 //  webhooks, expired QBO tokens, and broken Stripe Connect accounts in one
 //  place. Each metric is intentionally summary-only — the failure drilldown
 //  endpoints serve the recent-records lists.
-// ==========================================================================
 
 const HEALTH_24H_MS = 24 * 60 * 60 * 1000;
 
@@ -2938,6 +2954,150 @@ router.get("/health/stripe-connect", async (_req, res, next) => {
   }
 });
 
+//  GLOBAL SEARCH
+
+// --------------------------------------------------------------------------
+// GET /api/admin/search?q=... — fan-out search across tenants, users,
+// boats, and SaaS invoices. Each entity type capped to keep results
+// snappy from the top-nav search bar.
+// --------------------------------------------------------------------------
+router.get("/search", async (req, res, next) => {
+  try {
+    const q = ((req.query.q as string) ?? "").trim();
+    const perTypeLimit = Math.min(20, Math.max(1, parseInt(req.query.limit as string) || 8));
+
+    if (q.length < 2) {
+      res.json({
+        query: q,
+        groups: { tenants: [], users: [], boats: [], saasInvoices: [] },
+      });
+      return;
+    }
+
+    const insensitive = { contains: q, mode: "insensitive" as const };
+
+    const [tenants, users, boats, saasInvoices] = await Promise.all([
+      prisma.tenant.findMany({
+        where: {
+          OR: [
+            { name: insensitive },
+            { subdomain: insensitive },
+            { customDomain: insensitive },
+          ],
+        },
+        select: { id: true, name: true, subdomain: true, status: true },
+        take: perTypeLimit,
+        orderBy: { name: "asc" },
+      }),
+      prisma.user.findMany({
+        where: {
+          OR: [
+            { email: insensitive },
+            { firstName: insensitive },
+            { lastName: insensitive },
+          ],
+        },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          role: true,
+          tenantId: true,
+          tenant: { select: { name: true, subdomain: true } },
+        },
+        take: perTypeLimit,
+        orderBy: { email: "asc" },
+      }),
+      prisma.boat.findMany({
+        where: {
+          OR: [
+            { name: insensitive },
+            { registrationNumber: insensitive },
+            { hin: insensitive },
+            { make: insensitive },
+            { model: insensitive },
+          ],
+        },
+        select: {
+          id: true,
+          name: true,
+          registrationNumber: true,
+          make: true,
+          model: true,
+          year: true,
+          tenantId: true,
+          customerId: true,
+        },
+        take: perTypeLimit,
+        orderBy: { name: "asc" },
+      }),
+      // Search SaaS invoices by short id prefix or by tenant name match
+      prisma.saasInvoice.findMany({
+        where: {
+          OR: [
+            { id: { startsWith: q } },
+            { tenant: { name: insensitive } },
+            { tenant: { subdomain: insensitive } },
+          ],
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          amountCents: true,
+          status: true,
+          issuedAt: true,
+          tenant: { select: { name: true } },
+        },
+        take: perTypeLimit,
+        orderBy: { issuedAt: "desc" },
+      }),
+    ]);
+
+    res.json({
+      query: q,
+      groups: {
+        tenants: tenants.map((t) => ({
+          id: t.id,
+          name: t.name,
+          subdomain: t.subdomain,
+          status: t.status,
+        })),
+        users: users.map((u) => ({
+          id: u.id,
+          email: u.email,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          role: u.role,
+          tenantId: u.tenantId,
+          tenantName: u.tenant?.name ?? null,
+          tenantSubdomain: u.tenant?.subdomain ?? null,
+        })),
+        boats: boats.map((b) => ({
+          id: b.id,
+          name: b.name,
+          registrationNumber: b.registrationNumber,
+          make: b.make,
+          model: b.model,
+          year: b.year,
+          tenantId: b.tenantId,
+          customerId: b.customerId,
+        })),
+        saasInvoices: saasInvoices.map((i) => ({
+          id: i.id,
+          tenantId: i.tenantId,
+          tenantName: i.tenant.name,
+          amountCents: i.amountCents,
+          status: i.status,
+          issuedAt: i.issuedAt.toISOString(),
+        })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // POST /api/admin/health/stripe-connect/refresh
 //
@@ -3033,6 +3193,67 @@ router.post("/health/stripe-connect/refresh", async (req, res, next) => {
     });
 
     res.json({ stripeAccountId, chargesEnabled, payoutsEnabled, detailsSubmitted });
+  } catch (err) {
+    next(err);
+  }
+});
+
+//  TENANT NOTES & ACTIVITY TIMELINE
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id/notes — list tenant notes (admin-only)
+// --------------------------------------------------------------------------
+router.get("/tenants/:id/notes", async (req, res, next) => {
+  try {
+    const notes = await prisma.tenantNote.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ notes });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/:id/notes — add a note
+// --------------------------------------------------------------------------
+router.post("/tenants/:id/notes", async (req, res, next) => {
+  try {
+    const body = (req.body?.body ?? "").toString().trim();
+    if (!body) {
+      res.status(400).json({ error: "Note body is required" });
+      return;
+    }
+    if (body.length > 5000) {
+      res.status(400).json({ error: "Note body must be 5000 characters or fewer" });
+      return;
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const note = await prisma.tenantNote.create({
+      data: {
+        tenantId: req.params.id,
+        authorId: req.userId ?? "platform_admin",
+        authorEmail: req.userRecord?.email ?? null,
+        body,
+      },
+    });
+
+    await recordAdminEvent(req, "NOTE_CREATED", {
+      tenantId: req.params.id,
+      metadata: { noteId: note.id },
+    });
+
+    res.status(201).json(note);
   } catch (err) {
     next(err);
   }
@@ -3258,6 +3479,182 @@ router.get("/health/quickbooks", async (req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
+// PUT /api/admin/tenants/:id/notes/:noteId — edit own note only
+// --------------------------------------------------------------------------
+router.put("/tenants/:id/notes/:noteId", async (req, res, next) => {
+  try {
+    const body = (req.body?.body ?? "").toString().trim();
+    if (!body) {
+      res.status(400).json({ error: "Note body is required" });
+      return;
+    }
+    const note = await prisma.tenantNote.findUnique({
+      where: { id: req.params.noteId },
+    });
+    if (!note || note.tenantId !== req.params.id) {
+      res.status(404).json({ error: "Note not found" });
+      return;
+    }
+    if (req.userId && note.authorId !== req.userId) {
+      res.status(403).json({ error: "You can only edit your own notes" });
+      return;
+    }
+
+    const updated = await prisma.tenantNote.update({
+      where: { id: note.id },
+      data: { body },
+    });
+
+    await recordAdminEvent(req, "NOTE_UPDATED", {
+      tenantId: note.tenantId,
+      metadata: { noteId: note.id },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// DELETE /api/admin/tenants/:id/notes/:noteId — delete own note only
+// --------------------------------------------------------------------------
+router.delete("/tenants/:id/notes/:noteId", async (req, res, next) => {
+  try {
+    const note = await prisma.tenantNote.findUnique({
+      where: { id: req.params.noteId },
+    });
+    if (!note || note.tenantId !== req.params.id) {
+      res.status(404).json({ error: "Note not found" });
+      return;
+    }
+    if (req.userId && note.authorId !== req.userId) {
+      res.status(403).json({ error: "You can only delete your own notes" });
+      return;
+    }
+
+    await prisma.tenantNote.delete({ where: { id: note.id } });
+    await recordAdminEvent(req, "NOTE_DELETED", {
+      tenantId: note.tenantId,
+      metadata: { noteId: note.id },
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/tenants/:id/activity — interleaved timeline of admin
+// notes and admin audit events (impersonation, locks, tier changes, etc.).
+// --------------------------------------------------------------------------
+router.get("/tenants/:id/activity", async (req, res, next) => {
+  try {
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 100));
+
+    const [notes, events] = await Promise.all([
+      prisma.tenantNote.findMany({
+        where: { tenantId: req.params.id },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+      prisma.adminAuditEvent.findMany({
+        where: { tenantId: req.params.id },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+    ]);
+
+    type TimelineItem = {
+      kind: "note" | "event";
+      id: string;
+      createdAt: string;
+      actorEmail: string | null;
+      // For notes
+      body?: string;
+      authorId?: string;
+      // For events
+      action?: string;
+      metadata?: unknown;
+    };
+
+    const items: TimelineItem[] = [
+      ...notes.map((n) => ({
+        kind: "note" as const,
+        id: n.id,
+        createdAt: n.createdAt.toISOString(),
+        actorEmail: n.authorEmail,
+        body: n.body,
+        authorId: n.authorId,
+      })),
+      ...events.map((e) => ({
+        kind: "event" as const,
+        id: e.id,
+        createdAt: e.createdAt.toISOString(),
+        actorEmail: e.adminEmail,
+        action: e.action,
+        metadata: e.metadataJson ?? null,
+      })),
+    ];
+
+    items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    res.json({ items: items.slice(0, limit) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+//  BULK TENANT ACTIONS
+
+function parseBulkTargets(req: { body?: unknown }): string[] {
+  const body = req.body as Record<string, unknown> | undefined;
+  const ids = Array.isArray(body?.tenantIds) ? (body!.tenantIds as unknown[]) : [];
+  return ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+// NOTE: bulk endpoints live at /bulk/tenants/* rather than /tenants/bulk/*
+// because the dynamic /tenants/:id/lock route would otherwise swallow
+// /tenants/bulk/lock with `:id == "bulk"`.
+
+// --------------------------------------------------------------------------
+// POST /api/admin/bulk/tenants/lock
+// --------------------------------------------------------------------------
+router.post("/bulk/tenants/lock", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+
+    const targets = await prisma.tenant.findMany({
+      where: { id: { in: ids }, status: { not: "LOCKED" } },
+      select: { id: true },
+    });
+
+    const now = new Date();
+    await prisma.tenant.updateMany({
+      where: { id: { in: targets.map((t) => t.id) } },
+      data: { status: "LOCKED", lockedAt: now },
+    });
+
+    await Promise.all(
+      targets.map((t) =>
+        recordAdminEvent(req, "TENANT_LOCKED", {
+          tenantId: t.id,
+          metadata: { bulk: true },
+        }),
+      ),
+    );
+
+    res.json({ updated: targets.length, skipped: ids.length - targets.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
 // Health helpers
 // --------------------------------------------------------------------------
 
@@ -3306,10 +3703,7 @@ function safeJsonPreview(value: unknown): unknown {
   }
 }
 
-
-// ==========================================================================
 //  COUPONS & PROMO CODES (SaaS subscriptions)
-// ==========================================================================
 
 const COUPON_TYPES = ["PERCENT", "FIXED", "TRIAL_EXTENSION"] as const;
 const COUPON_DURATIONS = ["ONCE", "REPEATING"] as const;
@@ -3606,9 +4000,7 @@ router.get("/billing/coupons/:id/redemptions", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  REFUNDS & CREDIT NOTES (SaaS invoices)
-// ==========================================================================
 
 // POST /api/admin/billing/invoices/:id/refund
 router.post("/billing/invoices/:id/refund", async (req, res, next) => {
@@ -3703,6 +4095,42 @@ router.post("/billing/invoices/:id/refund", async (req, res, next) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/bulk/unlock
+// --------------------------------------------------------------------------
+router.post("/bulk/tenants/unlock", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+
+    const targets = await prisma.tenant.findMany({
+      where: { id: { in: ids }, status: { not: "ACTIVE" } },
+      select: { id: true },
+    });
+
+    await prisma.tenant.updateMany({
+      where: { id: { in: targets.map((t) => t.id) } },
+      data: { status: "ACTIVE", lockedAt: null, gracePeriodStartedAt: null },
+    });
+
+    await Promise.all(
+      targets.map((t) =>
+        recordAdminEvent(req, "TENANT_UNLOCKED", {
+          tenantId: t.id,
+          metadata: { bulk: true },
+        }),
+      ),
+    );
+
+    res.json({ updated: targets.length, skipped: ids.length - targets.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/billing/invoices/:id/refunds
 router.get("/billing/invoices/:id/refunds", async (req, res, next) => {
   try {
@@ -3716,9 +4144,7 @@ router.get("/billing/invoices/:id/refunds", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  DUNNING CONSOLE
-// ==========================================================================
 
 // GET /api/admin/billing/dunning — list invoices with failed payments / overdue
 router.get("/billing/dunning", async (_req, res, next) => {
@@ -3997,9 +4423,7 @@ router.post("/billing/dunning/:invoiceId/write-off", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  PLAN CHANGES
-// ==========================================================================
 
 // POST /api/admin/tenants/:id/plan/preview — preview proration
 router.post("/tenants/:id/plan/preview", async (req, res, next) => {
@@ -4017,6 +4441,58 @@ router.post("/tenants/:id/plan/preview", async (req, res, next) => {
       res.status(404).json({ error: err.message });
       return;
     }
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/bulk/tier — switch tenants to a new SaaS tier
+// --------------------------------------------------------------------------
+router.post("/bulk/tenants/tier", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    const saasTierId = (req.body as Record<string, unknown> | undefined)?.saasTierId as string | undefined;
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+    if (!saasTierId) {
+      res.status(400).json({ error: "saasTierId is required" });
+      return;
+    }
+
+    const tier = await prisma.saasTier.findUnique({ where: { id: saasTierId } });
+    if (!tier) {
+      res.status(400).json({ error: "Invalid saasTierId" });
+      return;
+    }
+
+    const before = await prisma.tenant.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, saasTierId: true },
+    });
+
+    const result = await prisma.tenant.updateMany({
+      where: { id: { in: ids } },
+      data: { saasTierId },
+    });
+
+    await Promise.all(
+      before.map((t) =>
+        recordAdminEvent(req, "TENANT_TIER_CHANGED", {
+          tenantId: t.id,
+          metadata: {
+            from: t.saasTierId,
+            to: saasTierId,
+            tierName: tier.name,
+            bulk: true,
+          },
+        }),
+      ),
+    );
+
+    res.json({ updated: result.count, tierName: tier.name });
+  } catch (err) {
     next(err);
   }
 });
@@ -4109,9 +4585,7 @@ router.get("/tenants/:id/plan/changes", async (req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  ADMIN ACTIVITY LOG (read-only across all admin sub-roles)
-// ==========================================================================
 
 // GET /api/admin/activity?actor=&action=&tenantId=&startDate=&endDate=&page=&limit=
 router.get("/activity", allowAnyAdmin, async (req, res, next) => {
@@ -4173,6 +4647,188 @@ router.get("/activity", allowAnyAdmin, async (req, res, next) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/bulk/announce — send an in-app announcement to
+// each selected tenant. Reuses the per-tenant Announcement table so the
+// message lands in the tenant operator inbox just like a tenant-authored
+// announcement.
+// --------------------------------------------------------------------------
+router.post("/bulk/tenants/announce", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    const subject = ((req.body as Record<string, unknown> | undefined)?.subject as string ?? "").trim();
+    const body = ((req.body as Record<string, unknown> | undefined)?.body as string ?? "").trim();
+    const isEmergency = Boolean((req.body as Record<string, unknown> | undefined)?.isEmergency);
+
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+    if (!subject || !body) {
+      res.status(400).json({ error: "subject and body are required" });
+      return;
+    }
+
+    const batchId = randomUUID();
+    let created = 0;
+
+    for (const tenantId of ids) {
+      try {
+        const announcement = await prisma.announcement.create({
+          data: {
+            tenantId,
+            subject,
+            body,
+            channels: "EMAIL",
+            isEmergency,
+            sentAt: new Date(),
+            staffId: req.userId ?? "platform_admin",
+          },
+        });
+        created++;
+        await recordAdminEvent(req, "ANNOUNCEMENT_SENT", {
+          tenantId,
+          metadata: {
+            batchId,
+            announcementId: announcement.id,
+            subject,
+            isEmergency,
+          },
+        });
+      } catch (err) {
+        console.error("[admin.bulk.announce] failed for tenant", tenantId, err);
+      }
+    }
+
+    res.json({ created, batchId, skipped: ids.length - created });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/billing/invoices/:id/refunds
+router.get("/billing/invoices/:id/refunds", async (req, res, next) => {
+  try {
+    const refunds = await prisma.saasInvoiceRefund.findMany({
+      where: { saasInvoiceId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(refunds);
+  } catch (err) {
+    next(err);
+  }
+});
+
+//  DUNNING CONSOLE
+
+// GET /api/admin/billing/dunning — list invoices with failed payments / overdue
+router.get("/billing/dunning", async (_req, res, next) => {
+  try {
+    const now = new Date();
+    const rows = await prisma.saasInvoice.findMany({
+      where: {
+        status: { in: ["past_due", "issued"] },
+        OR: [
+          { failedAttempts: { gt: 0 } },
+          { dueDate: { lt: now } },
+        ],
+        writeOffAt: null,
+      },
+      include: { tenant: { select: { id: true, name: true, gracePeriodStartedAt: true } } },
+      orderBy: [{ failedAttempts: "desc" }, { dueDate: "asc" }],
+    });
+
+    const items = rows
+      .filter((inv) => saasInvoiceOutstandingCents(inv) > 0)
+      .map((inv) => {
+        const due = inv.dueDate ?? inv.issuedAt;
+        const daysOverdue = Math.max(
+          0,
+          Math.floor((now.getTime() - due.getTime()) / (24 * 60 * 60 * 1000)),
+        );
+        // Auto-lock 30 days into grace period; show countdown.
+        const graceStart = inv.tenant.gracePeriodStartedAt;
+        const autoLockAt = graceStart
+          ? new Date(graceStart.getTime() + 30 * 24 * 60 * 60 * 1000)
+          : null;
+        const hoursUntilLock = autoLockAt
+          ? Math.max(
+              0,
+              Math.floor((autoLockAt.getTime() - now.getTime()) / (60 * 60 * 1000)),
+            )
+          : null;
+
+        return {
+          id: inv.id,
+          tenantId: inv.tenantId,
+          tenantName: inv.tenant.name,
+          amountCents: inv.amountCents,
+          discountCents: inv.discountCents,
+          refundedCents: inv.refundedCents,
+          outstandingCents: saasInvoiceOutstandingCents(inv),
+          status: inv.status,
+          dueDate: inv.dueDate?.toISOString() ?? null,
+          daysOverdue,
+          failedAttempts: inv.failedAttempts,
+          lastAttemptAt: inv.lastAttemptAt?.toISOString() ?? null,
+          nextRetryAt: inv.nextRetryAt?.toISOString() ?? null,
+          dunningPaused: inv.dunningPaused,
+          pausedUntil: inv.pausedUntil?.toISOString() ?? null,
+          autoLockAt: autoLockAt?.toISOString() ?? null,
+          hoursUntilLock,
+        };
+      });
+
+    res.json({ items, count: items.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/retry — record a retry attempt
+router.post("/billing/dunning/:invoiceId/retry", async (req, res, next) => {
+  try {
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    // We don't attempt the actual Stripe charge here — Stripe Smart Retries
+    // owns the subscription invoice retry cadence. This endpoint records
+    // an operator-initiated retry intent so it shows up in the audit trail.
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: {
+        failedAttempts: { increment: 1 },
+        lastAttemptAt: new Date(),
+        nextRetryAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_RETRY",
+        changedFieldsJson: { triggeredBy: "platform_admin" },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      failedAttempts: updated.failedAttempts,
+      lastAttemptAt: updated.lastAttemptAt,
+      nextRetryAt: updated.nextRetryAt,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/activity/actions — distinct action codes for filter dropdown
 router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
   try {
@@ -4187,9 +4843,7 @@ router.get("/activity/actions", allowAnyAdmin, async (_req, res, next) => {
   }
 });
 
-// ==========================================================================
 //  ADMIN USER MANAGEMENT (Superuser only)
-// ==========================================================================
 
 // GET /api/admin/users — list every PLATFORM_ADMIN user with their sub-role
 router.get("/users", allowAnyAdmin, async (_req, res, next) => {
@@ -4319,15 +4973,306 @@ router.put("/users/:id/active", allowSuperuserOnly, async (req, res, next) => {
 
     res.json(updated);
   } catch (err) {
+// POST /api/admin/billing/dunning/:invoiceId/remind — send reminder email
+router.post("/billing/dunning/:invoiceId/remind", async (req, res, next) => {
+  try {
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+      include: { tenant: { select: { id: true, name: true } } },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+
+    const owners = await prisma.user.findMany({
+      where: { tenantId: invoice.tenantId, role: "MARINA_OWNER", active: true },
+      select: { email: true },
+    });
+    const recipients = owners.map((u) => u.email).filter((e): e is string => !!e);
+
+    if (recipients.length === 0) {
+      res.status(400).json({ error: "No active owner email on file" });
+      return;
+    }
+
+    const outstanding = saasInvoiceOutstandingCents(invoice);
+    const amountStr = `$${(outstanding / 100).toFixed(2)}`;
+
+    let sent = false;
+    try {
+      await sendEmail({
+        to: recipients,
+        subject: `Reminder: payment due on your Helm subscription (${amountStr})`,
+        html: `<p>Hi ${invoice.tenant.name},</p>
+<p>Your Helm subscription payment of <strong>${amountStr}</strong> is past due. Please update your payment method to keep your account active.</p>
+<p><a href="${process.env.APP_URL ?? "https://gethelm.com"}/settings/billing">Update payment method</a></p>`,
+        tags: [{ name: "event", value: "saas_dunning_reminder" }],
+      });
+      sent = true;
+    } catch (err) {
+      console.warn("[dunning] reminder send failed:", err);
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_REMINDER_SENT",
+        changedFieldsJson: { recipients, sent },
+      },
+    });
+
+    res.json({ sent, recipients });
+  } catch (err) {
     next(err);
   }
 });
 
-// ==========================================================================
-//  TENANT DATA EXPORT  (Superuser only)
-// ==========================================================================
+// POST /api/admin/billing/dunning/:invoiceId/pause — pause auto-lock
+router.post("/billing/dunning/:invoiceId/pause", async (req, res, next) => {
+  try {
+    const { days = 7 } = req.body ?? {};
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
 
-// GET /api/admin/tenants/:id/exports — list past exports for a tenant
+    const pausedUntil = new Date(Date.now() + Number(days) * 24 * 60 * 60 * 1000);
+
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: { dunningPaused: true, pausedUntil },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "DUNNING_PAUSED",
+        changedFieldsJson: { days, pausedUntil: pausedUntil.toISOString() },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      dunningPaused: updated.dunningPaused,
+      pausedUntil: updated.pausedUntil,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/resume — resume auto-lock
+router.post("/billing/dunning/:invoiceId/resume", async (req, res, next) => {
+  try {
+    const updated = await prisma.saasInvoice.update({
+      where: { id: req.params.invoiceId },
+      data: { dunningPaused: false, pausedUntil: null },
+    });
+    await prisma.auditLog.create({
+      data: {
+        tenantId: updated.tenantId,
+        recordType: "SaasInvoice",
+        recordId: updated.id,
+        action: "DUNNING_RESUMED",
+        changedFieldsJson: {},
+      },
+    });
+    res.json({ id: updated.id, dunningPaused: updated.dunningPaused });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/billing/dunning/:invoiceId/write-off — write off invoice
+router.post("/billing/dunning/:invoiceId/write-off", async (req, res, next) => {
+  try {
+    const { reason } = req.body ?? {};
+    if (!reason || typeof reason !== "string") {
+      res.status(400).json({ error: "reason is required" });
+      return;
+    }
+
+    const invoice = await prisma.saasInvoice.findUnique({
+      where: { id: req.params.invoiceId },
+    });
+    if (!invoice) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    if (invoice.writeOffAt) {
+      res.status(400).json({ error: "Invoice already written off" });
+      return;
+    }
+
+    const updated = await prisma.saasInvoice.update({
+      where: { id: invoice.id },
+      data: {
+        status: "written_off",
+        writeOffAt: new Date(),
+        writeOffReason: reason,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: invoice.tenantId,
+        recordType: "SaasInvoice",
+        recordId: invoice.id,
+        action: "WRITE_OFF",
+        changedFieldsJson: { reason },
+      },
+    });
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      writeOffAt: updated.writeOffAt,
+      writeOffReason: updated.writeOffReason,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+//  PLAN CHANGES
+
+// POST /api/admin/tenants/:id/plan/preview — preview proration
+router.post("/tenants/:id/plan/preview", async (req, res, next) => {
+  try {
+    const { toTierId } = req.body ?? {};
+    if (!toTierId) {
+      res.status(400).json({ error: "toTierId is required" });
+      return;
+    }
+
+    const preview = await previewPlanChange(req.params.id, toTierId);
+    res.json(preview);
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/bulk/tier — switch tenants to a new SaaS tier
+// --------------------------------------------------------------------------
+router.post("/bulk/tenants/tier", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    const saasTierId = (req.body as Record<string, unknown> | undefined)?.saasTierId as string | undefined;
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+    if (!saasTierId) {
+      res.status(400).json({ error: "saasTierId is required" });
+      return;
+    }
+
+    const tier = await prisma.saasTier.findUnique({ where: { id: saasTierId } });
+    if (!tier) {
+      res.status(400).json({ error: "Invalid saasTierId" });
+      return;
+    }
+
+    const before = await prisma.tenant.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, saasTierId: true },
+    });
+
+    const result = await prisma.tenant.updateMany({
+      where: { id: { in: ids } },
+      data: { saasTierId },
+    });
+
+    await Promise.all(
+      before.map((t) =>
+        recordAdminEvent(req, "TENANT_TIER_CHANGED", {
+          tenantId: t.id,
+          metadata: {
+            from: t.saasTierId,
+            to: saasTierId,
+            tierName: tier.name,
+            bulk: true,
+          },
+        }),
+      ),
+    );
+
+    res.json({ updated: result.count, tierName: tier.name });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/tenants/:id/plan/change — apply plan change with proration
+router.post("/tenants/:id/plan/change", async (req, res, next) => {
+  try {
+    const { toTierId } = req.body ?? {};
+    if (!toTierId) {
+      res.status(400).json({ error: "toTierId is required" });
+      return;
+    }
+
+    const userId =
+      ((req as unknown as Record<string, unknown>).userId as string | undefined) ??
+      null;
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      select: { saasTierId: true },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (tenant.saasTierId === toTierId) {
+      res.status(400).json({ error: "Tenant is already on this tier" });
+      return;
+    }
+
+    const preview = await previewPlanChange(req.params.id, toTierId);
+    const result = await applyPlanChange({
+      tenantId: req.params.id,
+      toTierId,
+      createdBy: userId,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        tenantId: req.params.id,
+        userId,
+        recordType: "Tenant",
+        recordId: req.params.id,
+        action: "PLAN_CHANGED",
+        changedFieldsJson: {
+          fromTierName: preview.fromTierName,
+          toTierName: preview.toTierName,
+          prorationCents: result.prorationCents,
+        },
+      },
+    });
+
+    res.json({ ...preview, planChangeId: result.planChangeId });
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
 router.get("/tenants/:id/exports", allowAnyAdmin, async (req, res, next) => {
   try {
     const rows = await prisma.tenantExport.findMany({
@@ -4418,16 +5363,34 @@ router.get("/tenants/:id/exports/:exportId/download", allowSuperuserOnly, async 
       `attachment; filename="tenant-${exportRow.tenantId}-${exportRow.id}.zip"`,
     );
     res.send(Buffer.from(exportRow.localBlob));
+// GET /api/admin/tenants/:id/plan/changes — history
+router.get("/tenants/:id/plan/changes", async (req, res, next) => {
+    const changes = await prisma.saasPlanChange.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const tierIds = [...new Set(changes.flatMap((c) => [c.fromTierId, c.toTierId].filter(Boolean) as string[]))];
+    const tiers = await prisma.saasTier.findMany({
+      where: { id: { in: tierIds } },
+      select: { id: true, name: true },
+    });
+    const tierMap = new Map(tiers.map((t) => [t.id, t.name]));
+
+    res.json(
+      changes.map((c) => ({
+        id: c.id,
+        fromTier: c.fromTierId ? tierMap.get(c.fromTierId) ?? null : null,
+        toTier: tierMap.get(c.toTierId) ?? null,
+        prorationCents: c.prorationCents,
+        effectiveAt: c.effectiveAt.toISOString(),
+        createdAt: c.createdAt.toISOString(),
+      })),
+    );
   } catch (err) {
     next(err);
   }
 });
-
-// ==========================================================================
-//  TENANT HARD-DELETE WITH 24H GRACE  (Superuser only)
-// ==========================================================================
-
-// GET /api/admin/tenants/:id/deletion — current pending deletion (or null)
 router.get("/tenants/:id/deletion", allowAnyAdmin, async (req, res, next) => {
   try {
     const row = await prisma.tenantDeletion.findUnique({
@@ -4541,6 +5504,59 @@ router.delete("/tenants/:id/deletion", allowSuperuserOnly, async (req, res, next
     });
 
     res.json(cancelled);
+// --------------------------------------------------------------------------
+// POST /api/admin/tenants/bulk/announce — send an in-app announcement to
+// each selected tenant. Reuses the per-tenant Announcement table so the
+// message lands in the tenant operator inbox just like a tenant-authored
+// announcement.
+router.post("/bulk/tenants/announce", async (req, res, next) => {
+  try {
+    const ids = parseBulkTargets(req);
+    const subject = ((req.body as Record<string, unknown> | undefined)?.subject as string ?? "").trim();
+    const body = ((req.body as Record<string, unknown> | undefined)?.body as string ?? "").trim();
+    const isEmergency = Boolean((req.body as Record<string, unknown> | undefined)?.isEmergency);
+
+    if (ids.length === 0) {
+      res.status(400).json({ error: "tenantIds is required (non-empty array)" });
+      return;
+    }
+    if (!subject || !body) {
+      res.status(400).json({ error: "subject and body are required" });
+      return;
+    }
+
+    const batchId = randomUUID();
+    let created = 0;
+
+    for (const tenantId of ids) {
+      try {
+        const announcement = await prisma.announcement.create({
+          data: {
+            tenantId,
+            subject,
+            body,
+            channels: "EMAIL",
+            isEmergency,
+            sentAt: new Date(),
+            staffId: req.userId ?? "platform_admin",
+          },
+        });
+        created++;
+        await recordAdminEvent(req, "ANNOUNCEMENT_SENT", {
+          tenantId,
+          metadata: {
+            batchId,
+            announcementId: announcement.id,
+            subject,
+            isEmergency,
+          },
+        });
+      } catch (err) {
+        console.error("[admin.bulk.announce] failed for tenant", tenantId, err);
+      }
+    }
+
+    res.json({ created, batchId, skipped: ids.length - created });
   } catch (err) {
     next(err);
   }
