@@ -979,6 +979,187 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
 });
 
 // --------------------------------------------------------------------------
+// GET /api/settings/locations/:id/posting-accounts
+//
+// Returns the per-location pinned posting accounts (A/R, cash / undeposited
+// funds, deferred revenue) plus the candidate accounts the operator can pick
+// from. Candidates are restricted to the location's own chart of accounts
+// for QBO-connected locations and to the tenant-wide chart otherwise — this
+// matches the validation the PUT endpoint enforces.
+// --------------------------------------------------------------------------
+router.get(
+  "/locations/:id/posting-accounts",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      if (!requireLocationAccess(req, req.params.id)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      const tenantId = req.tenantId!;
+      const location = await prisma.location.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: {
+          id: true,
+          arGlAccountId: true,
+          undepositedFundsGlAccountId: true,
+          deferredRevenueGlAccountId: true,
+          qboRealmId: true,
+        },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+
+      const qboConnected = await isLocationQboConnected(req.params.id);
+      // Candidate accounts: QBO-connected locations must pick from their own
+      // chart so the IDs we send back to QBO match its file. Otherwise show
+      // the tenant-wide chart (legacy single chart of accounts).
+      const candidates = await prisma.glAccount.findMany({
+        where: qboConnected
+          ? { tenantId, locationId: req.params.id }
+          : { tenantId },
+        orderBy: { accountNumber: "asc" },
+        select: {
+          id: true,
+          accountNumber: true,
+          name: true,
+          type: true,
+          locationId: true,
+          qboAccountId: true,
+        },
+      });
+
+      res.json({
+        locationId: location.id,
+        qboConnected,
+        accounts: {
+          arGlAccountId: location.arGlAccountId,
+          undepositedFundsGlAccountId: location.undepositedFundsGlAccountId,
+          deferredRevenueGlAccountId: location.deferredRevenueGlAccountId,
+        },
+        candidates,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// PUT /api/settings/locations/:id/posting-accounts
+//
+// Body: { arGlAccountId?, undepositedFundsGlAccountId?, deferredRevenueGlAccountId? }
+//
+// Each field accepts a GL account id, `null` to clear the pin, or `undefined`
+// to leave it unchanged. For QBO-connected locations the chosen account
+// must belong to that location's chart of accounts (mirrors the catalog
+// helper); for non-QBO locations a tenant-scoped check applies.
+// --------------------------------------------------------------------------
+router.put(
+  "/locations/:id/posting-accounts",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      if (!requireLocationAccess(req, req.params.id)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      const tenantId = req.tenantId!;
+      const locationId = req.params.id;
+
+      const location = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true },
+      });
+      if (!location) {
+        res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
+        return;
+      }
+
+      const body = req.body as {
+        arGlAccountId?: string | null;
+        undepositedFundsGlAccountId?: string | null;
+        deferredRevenueGlAccountId?: string | null;
+      };
+
+      const qboConnected = await isLocationQboConnected(locationId);
+
+      // Validate each provided id against the same constraint the catalog
+      // helper uses (QBO-connected ⇒ must belong to this location;
+      // otherwise ⇒ tenant-scoped). null clears the pin and is always OK.
+      async function validate(id: string | null | undefined, field: string) {
+        if (id === undefined || id === null) return;
+        const acct = await prisma.glAccount.findFirst({
+          where: { id, tenantId },
+          select: { id: true, locationId: true },
+        });
+        if (!acct) {
+          throw Object.assign(
+            new Error(`GL account for ${field} not found in this tenant`),
+            { status: 400, code: "GL_ACCOUNT_NOT_FOUND" },
+          );
+        }
+        if (qboConnected && acct.locationId !== locationId) {
+          throw Object.assign(
+            new Error(
+              `GL account for ${field} must belong to this QBO-connected location`,
+            ),
+            { status: 400, code: "GL_ACCOUNT_WRONG_LOCATION" },
+          );
+        }
+      }
+
+      try {
+        await Promise.all([
+          validate(body.arGlAccountId, "arGlAccountId"),
+          validate(body.undepositedFundsGlAccountId, "undepositedFundsGlAccountId"),
+          validate(body.deferredRevenueGlAccountId, "deferredRevenueGlAccountId"),
+        ]);
+      } catch (e: any) {
+        res
+          .status(e.status ?? 400)
+          .json({ error: e.message, code: e.code ?? "VALIDATION_ERROR" });
+        return;
+      }
+
+      const updated = await prisma.location.update({
+        where: { id: locationId },
+        data: {
+          ...(body.arGlAccountId !== undefined && { arGlAccountId: body.arGlAccountId }),
+          ...(body.undepositedFundsGlAccountId !== undefined && {
+            undepositedFundsGlAccountId: body.undepositedFundsGlAccountId,
+          }),
+          ...(body.deferredRevenueGlAccountId !== undefined && {
+            deferredRevenueGlAccountId: body.deferredRevenueGlAccountId,
+          }),
+        },
+        select: {
+          id: true,
+          arGlAccountId: true,
+          undepositedFundsGlAccountId: true,
+          deferredRevenueGlAccountId: true,
+        },
+      });
+
+      res.json({
+        locationId: updated.id,
+        accounts: {
+          arGlAccountId: updated.arGlAccountId,
+          undepositedFundsGlAccountId: updated.undepositedFundsGlAccountId,
+          deferredRevenueGlAccountId: updated.deferredRevenueGlAccountId,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
 // GET /api/settings/team
 // --------------------------------------------------------------------------
 router.get("/team", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {

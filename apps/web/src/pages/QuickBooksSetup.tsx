@@ -56,6 +56,24 @@ interface CoaAccount {
   qboAccountId: string | null;
 }
 
+interface PostingAccountsResponse {
+  locationId: string;
+  qboConnected: boolean;
+  accounts: {
+    arGlAccountId: string | null;
+    undepositedFundsGlAccountId: string | null;
+    deferredRevenueGlAccountId: string | null;
+  };
+  candidates: Array<{
+    id: string;
+    accountNumber: string;
+    name: string;
+    type: string;
+    locationId: string | null;
+    qboAccountId: string | null;
+  }>;
+}
+
 function statusPillStyle(connected: boolean): React.CSSProperties {
   return {
     display: 'inline-flex', alignItems: 'center', gap: '4px',
@@ -151,6 +169,16 @@ export default function QuickBooksSetup() {
   const [stripeByLoc, setStripeByLoc] = useState<Record<string, StripeStatus>>(
     {},
   );
+  // Per-location pinned posting accounts (A/R, undeposited funds, deferred
+  // revenue). Loaded lazily per card and updated optimistically on save so
+  // the dropdowns reflect the new selection without a full page reload.
+  const [postingByLoc, setPostingByLoc] = useState<
+    Record<string, PostingAccountsResponse>
+  >({});
+  const [savingPostingLoc, setSavingPostingLoc] = useState<string | null>(null);
+  const [postingError, setPostingError] = useState<Record<string, string | null>>(
+    {},
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -205,12 +233,65 @@ export default function QuickBooksSetup() {
     }
   }, []);
 
+  const loadPostingAccounts = useCallback(async (locationId: string) => {
+    try {
+      const r = await api.get<PostingAccountsResponse>(
+        `/api/settings/locations/${locationId}/posting-accounts`,
+      );
+      setPostingByLoc((m) => ({ ...m, [locationId]: r }));
+      setPostingError((m) => ({ ...m, [locationId]: null }));
+    } catch (e: any) {
+      setPostingError((m) => ({
+        ...m,
+        [locationId]: e?.response?.data?.error ?? 'Failed to load posting accounts',
+      }));
+    }
+  }, []);
+
+  const savePostingAccounts = useCallback(
+    async (
+      locationId: string,
+      patch: Partial<PostingAccountsResponse['accounts']>,
+    ) => {
+      setSavingPostingLoc(locationId);
+      try {
+        const r = await api.put<{
+          locationId: string;
+          accounts: PostingAccountsResponse['accounts'];
+        }>(`/api/settings/locations/${locationId}/posting-accounts`, patch);
+        setPostingByLoc((m) => {
+          const prev = m[locationId];
+          if (!prev) return m;
+          return { ...m, [locationId]: { ...prev, accounts: r.accounts } };
+        });
+        setPostingError((m) => ({ ...m, [locationId]: null }));
+      } catch (e: any) {
+        setPostingError((m) => ({
+          ...m,
+          [locationId]: e?.response?.data?.error ?? 'Failed to save posting accounts',
+        }));
+      } finally {
+        setSavingPostingLoc(null);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     locations.forEach((l) => {
       if (l.connected && !accountsByLoc[l.locationId]) loadAccounts(l.locationId);
       if (!stripeByLoc[l.locationId]) loadStripe(l.locationId);
+      if (!postingByLoc[l.locationId]) loadPostingAccounts(l.locationId);
     });
-  }, [locations, accountsByLoc, stripeByLoc, loadAccounts, loadStripe]);
+  }, [
+    locations,
+    accountsByLoc,
+    stripeByLoc,
+    postingByLoc,
+    loadAccounts,
+    loadStripe,
+    loadPostingAccounts,
+  ]);
 
   const handleSync = async (locationId: string) => {
     setBusyLoc(locationId);
@@ -300,6 +381,8 @@ export default function QuickBooksSetup() {
         const w = warnings.find((x) => x.locationId === l.locationId);
         const accountsState = accountsByLoc[l.locationId];
         const stripe = stripeByLoc[l.locationId];
+        const posting = postingByLoc[l.locationId];
+        const postingErr = postingError[l.locationId];
         return (
           <div key={l.locationId} style={s.card}>
             <div style={s.cardHeader}>
@@ -403,6 +486,114 @@ export default function QuickBooksSetup() {
                 </>
               )}
             </div>
+
+            {posting && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '12px 16px',
+                  border: '1px solid #E2E8F0',
+                  borderRadius: '6px',
+                  backgroundColor: '#FAFCFF',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    color: '#0A2342',
+                    marginBottom: '6px',
+                  }}
+                >
+                  Posting accounts
+                </div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: '#475569',
+                    marginBottom: '10px',
+                    lineHeight: '1.4',
+                  }}
+                >
+                  Pin which GL accounts invoices and payments for this
+                  location post to. When set, these win over the tenant
+                  defaults and (for QBO-connected locations) are sent to
+                  QuickBooks as the A/R and Deposit-To accounts.
+                </div>
+                {posting.candidates.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#92400E' }}>
+                    No accounts available yet — import the chart of accounts
+                    first.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                      gap: '12px',
+                    }}
+                  >
+                    {(
+                      [
+                        { key: 'arGlAccountId', label: 'Accounts Receivable' },
+                        {
+                          key: 'undepositedFundsGlAccountId',
+                          label: 'Cash / Undeposited Funds',
+                        },
+                        {
+                          key: 'deferredRevenueGlAccountId',
+                          label: 'Deferred Revenue',
+                        },
+                      ] as const
+                    ).map(({ key, label }) => (
+                      <label
+                        key={key}
+                        style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
+                      >
+                        <span style={{ fontSize: '12px', color: '#475569' }}>
+                          {label}
+                        </span>
+                        <select
+                          value={posting.accounts[key] ?? ''}
+                          disabled={savingPostingLoc === l.locationId}
+                          onChange={(e) =>
+                            savePostingAccounts(l.locationId, {
+                              [key]: e.target.value === '' ? null : e.target.value,
+                            } as Partial<PostingAccountsResponse['accounts']>)
+                          }
+                          style={{
+                            padding: '6px 8px',
+                            fontSize: '13px',
+                            border: '1px solid #CBD5E1',
+                            borderRadius: '4px',
+                            backgroundColor: '#FFFFFF',
+                          }}
+                        >
+                          <option value="">— Use tenant default —</option>
+                          {posting.candidates.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.accountNumber} · {c.name}
+                              {c.qboAccountId ? ' · QBO' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {postingErr && (
+                  <div
+                    style={{
+                      marginTop: '8px',
+                      fontSize: '12px',
+                      color: '#B91C1C',
+                    }}
+                  >
+                    {postingErr}
+                  </div>
+                )}
+              </div>
+            )}
 
             {w && w.totalIssues > 0 && (
               <div style={s.warningCard}>

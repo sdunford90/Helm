@@ -108,7 +108,10 @@ export async function recognizeDeferred(tenantId: string): Promise<number> {
       schedule: {
         include: {
           invoiceLineItem: {
-            select: { glAccountId: true },
+            select: {
+              glAccountId: true,
+              invoice: { select: { locationId: true } },
+            },
           },
         },
       },
@@ -120,13 +123,16 @@ export async function recognizeDeferred(tenantId: string): Promise<number> {
   for (const entry of pendingEntries) {
     try {
       await prisma.$transaction(async (tx) => {
-        // Post GL entry
+        // Post GL entry — thread the originating invoice's locationId so
+        // the deferred-revenue side honours per-location pinned accounts.
         const glJournalId = await postDeferredRecognition(
           {
             id: entry.id,
             tenantId,
             amountCents: entry.amountCents,
             revenueAccountId: entry.schedule.invoiceLineItem.glAccountId ?? undefined,
+            locationId:
+              entry.schedule.invoiceLineItem.invoice?.locationId ?? null,
           },
           tx,
         );
@@ -191,7 +197,12 @@ export async function washoutDeferred(
     where: { id: scheduleId, tenantId },
     include: {
       entries: true,
-      invoiceLineItem: { select: { glAccountId: true } },
+      invoiceLineItem: {
+        select: {
+          glAccountId: true,
+          invoice: { select: { locationId: true } },
+        },
+      },
     },
   });
 
@@ -215,6 +226,8 @@ export async function washoutDeferred(
 
   await prisma.$transaction(async (tx) => {
     // First: recognize earned portion (past due entries)
+    const scheduleLocationId =
+      schedule.invoiceLineItem.invoice?.locationId ?? null;
     for (const entry of earnedPending) {
       const glJournalId = await postDeferredRecognition(
         {
@@ -222,6 +235,7 @@ export async function washoutDeferred(
           tenantId,
           amountCents: entry.amountCents,
           revenueAccountId: schedule.invoiceLineItem.glAccountId ?? undefined,
+          locationId: scheduleLocationId,
         },
         tx,
       );
@@ -242,6 +256,7 @@ export async function washoutDeferred(
           tenantId,
           amountCents: entry.amountCents,
           revenueAccountId: schedule.invoiceLineItem.glAccountId ?? undefined,
+          locationId: scheduleLocationId,
         },
         tx,
       );

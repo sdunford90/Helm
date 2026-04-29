@@ -1,5 +1,6 @@
 import { GLAccountType, GlAccountSource } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { getLocationPostingAccounts } from "./gl-account-resolver.js";
 
 // --------------------------------------------------------------------------
 // QuickBooks Online Bidirectional Sync Service
@@ -629,6 +630,18 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     CustomerMemo: { value: (invoice as any).memo || "" },
   };
 
+  // When the invoice's location pins a per-location A/R account that's
+  // already mirrored in QBO, force the QBO Invoice to that A/R account.
+  // Without this, QBO would pick its file's default A/R, which can be the
+  // wrong account (or even the wrong realm) for tenants whose locations
+  // file separate QBO books.
+  if (locationId) {
+    const pinned = await getLocationPostingAccounts(locationId);
+    if (pinned.ar?.qboAccountId) {
+      qboInvoiceData.ARAccountRef = { value: pinned.ar.qboAccountId };
+    }
+  }
+
   let result: any;
 
   if ((invoice as any).qboInvoiceId) {
@@ -695,6 +708,15 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
     throw new Error("Customer has no QBO ID after sync attempt");
   }
 
+  // Resolve location-pinned AR + cash/undeposited-funds accounts. When the
+  // location has them mapped to a QBO account, we send ARAccountRef and
+  // DepositToAccountRef on the QBO Payment / SalesReceipt so QBO posts to
+  // the same accounts our local GL already used (rather than QBO's default
+  // file-level A/R or "Undeposited Funds").
+  const locationPinned = locationId
+    ? await getLocationPostingAccounts(locationId)
+    : { ar: null, undepositedFunds: null, deferredRevenue: null };
+
   // For payments linked to an invoice, create a QBO Payment
   // For standalone payments, create a QBO SalesReceipt
   if (payment.invoice && (payment.invoice as any).qboInvoiceId) {
@@ -719,6 +741,15 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
     if (payment.method === "CARD" || payment.method === "ACH") {
       qboPaymentData.PaymentMethodRef = {
         value: payment.method === "CARD" ? "CreditCard" : "ACH",
+      };
+    }
+
+    if (locationPinned.ar?.qboAccountId) {
+      qboPaymentData.ARAccountRef = { value: locationPinned.ar.qboAccountId };
+    }
+    if (locationPinned.undepositedFunds?.qboAccountId) {
+      qboPaymentData.DepositToAccountRef = {
+        value: locationPinned.undepositedFunds.qboAccountId,
       };
     }
 
@@ -753,6 +784,12 @@ export async function syncPayment(paymentId: string, tenantId: string): Promise<
         },
       ],
     };
+
+    if (locationPinned.undepositedFunds?.qboAccountId) {
+      qboReceiptData.DepositToAccountRef = {
+        value: locationPinned.undepositedFunds.qboAccountId,
+      };
+    }
 
     const result = await qboRequest(
       ctx,

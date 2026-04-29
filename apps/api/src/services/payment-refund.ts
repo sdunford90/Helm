@@ -31,6 +31,7 @@ export async function rollbackReservedRefund(args: {
    * the original `postRefund` touched. Without this the reversal could
    * land on a different location's accounts under a per-location chart
    * of accounts and silently leave the books unbalanced across locations.
+   * Optional; falls back to tenant-wide accounts when omitted.
    */
   locationId?: string | null;
   /**

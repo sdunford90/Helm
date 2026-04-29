@@ -34,6 +34,53 @@ function pick(...vals: (string | null | undefined)[]): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Per-location posting accounts (AR, cash/undeposited funds, deferred revenue)
+//
+// Locations can pin specific GL accounts for the three accounts that show up
+// on every invoice/payment posting. gl-posting.ts and qbo-sync.ts call this
+// helper to find them; when a slot is null the caller falls back to the
+// existing account-number lookup against the location's chart of accounts
+// and finally to the tenant-wide chart.
+// ---------------------------------------------------------------------------
+
+export interface LocationPostingAccount {
+  id: string;
+  accountNumber: string;
+  name: string;
+  qboAccountId: string | null;
+}
+
+export interface LocationPostingAccounts {
+  ar: LocationPostingAccount | null;
+  undepositedFunds: LocationPostingAccount | null;
+  deferredRevenue: LocationPostingAccount | null;
+}
+
+export async function getLocationPostingAccounts(
+  locationId: string,
+): Promise<LocationPostingAccounts> {
+  const loc = await prisma.location.findUnique({
+    where: { id: locationId },
+    select: {
+      arGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+      undepositedFundsGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+      deferredRevenueGlAccount: {
+        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
+      },
+    },
+  });
+  return {
+    ar: loc?.arGlAccount ?? null,
+    undepositedFunds: loc?.undepositedFundsGlAccount ?? null,
+    deferredRevenue: loc?.deferredRevenueGlAccount ?? null,
+  };
+}
+
 export async function isLocationQboConnected(locationId: string): Promise<boolean> {
   const loc = await prisma.location.findUnique({
     where: { id: locationId },

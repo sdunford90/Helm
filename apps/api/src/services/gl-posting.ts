@@ -2,6 +2,34 @@ import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import { isLocationQboConnected } from "./gl-account-resolver.js";
 
+// Look up the location-pinned posting accounts (AR / undeposited funds /
+// deferred revenue). Returns nulls when the location has nothing pinned;
+// callers fall back to account-number lookup. Kept in this module so the
+// posting helpers don't pull the public resolver type into every caller.
+async function getLocationPinnedPostingAccounts(
+  locationId: string,
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<{
+  arGlAccountId: string | null;
+  undepositedFundsGlAccountId: string | null;
+  deferredRevenueGlAccountId: string | null;
+}> {
+  const db = tx ?? prisma;
+  const loc = await (db as typeof prisma).location.findUnique({
+    where: { id: locationId },
+    select: {
+      arGlAccountId: true,
+      undepositedFundsGlAccountId: true,
+      deferredRevenueGlAccountId: true,
+    },
+  });
+  return {
+    arGlAccountId: loc?.arGlAccountId ?? null,
+    undepositedFundsGlAccountId: loc?.undepositedFundsGlAccountId ?? null,
+    deferredRevenueGlAccountId: loc?.deferredRevenueGlAccountId ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GL Posting Service
 //
@@ -182,6 +210,12 @@ async function getDeferredRevenueAccountId(
   locationId?: string | null,
 ): Promise<string | null> {
   const db = tx ?? prisma;
+  // 1. Honour the explicit per-location pin first — it's the contract
+  //    operators set in QuickBooks Setup and never falls back across realms.
+  if (locationId) {
+    const pinned = await getLocationPinnedPostingAccounts(locationId, tx);
+    if (pinned.deferredRevenueGlAccountId) return pinned.deferredRevenueGlAccountId;
+  }
   // Prefer a location-scoped account flagged as deferred when available;
   // otherwise fall through to a tenant-wide flagged account, so per-location
   // QBO charts can pin their own deferred-revenue liability without
@@ -262,13 +296,20 @@ export async function postInvoice(
   const qboConnected = locationId
     ? await isLocationQboConnected(locationId)
     : false;
-  // For QBO-connected locations the A/R account must come from that
-  // location's own chart of accounts. Falling back to a tenant-wide "1200"
-  // could cross-post to the wrong realm or to a default-seeded account that
-  // doesn't exist in QBO at all — refuse that and make the operator pin a
-  // location-scoped A/R account.
+  // Posting-account resolution chain for A/R:
+  //   1. Location-pinned arGlAccountId (set in QuickBooks Setup)
+  //   2. Location-scoped chart row matching account number 1200
+  //   3. Tenant-wide chart row matching account number 1200
+  // For QBO-connected locations we refuse step 3, because falling back to a
+  // tenant-wide "1200" could cross-post to the wrong realm or to a default-
+  // seeded account that doesn't exist in QBO at all.
   let arAccountId: string;
-  if (qboConnected && locationId) {
+  const pinned = locationId
+    ? await getLocationPinnedPostingAccounts(locationId, tx)
+    : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+  if (pinned.arGlAccountId) {
+    arAccountId = pinned.arGlAccountId;
+  } else if (qboConnected && locationId) {
     const db = tx ?? prisma;
     const locAr = await (db as typeof prisma).glAccount.findFirst({
       where: { tenantId, locationId, accountNumber: ACCOUNTS.ACCOUNTS_RECEIVABLE },
@@ -276,7 +317,7 @@ export async function postInvoice(
     });
     if (!locAr) {
       throw new Error(
-        `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but has no A/R account (${ACCOUNTS.ACCOUNTS_RECEIVABLE}) in its chart of accounts. Import or configure A/R for this location before posting.`,
+        `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but has no A/R account pinned and no account number ${ACCOUNTS.ACCOUNTS_RECEIVABLE} in its chart of accounts. Pin an A/R account for this location in QuickBooks Setup before posting.`,
       );
     }
     arAccountId = locAr.id;
@@ -420,10 +461,13 @@ export async function postPayment(
     amountCents: number;
     method: string;
     /** Originating location (typically `payment.invoice.locationId`).
-     *  Used to scope the A/R and bank/cash account lookups to that
-     *  location's chart of accounts.  Without this the helpers fall
-     *  back to whichever row Prisma returned first — frequently the
-     *  wrong location's account in a per-location chart layout. */
+     *  Posting-account resolution chain: (1) the location's pinned cash +
+     *  A/R accounts (set in QuickBooks Setup), then (2) the location-scoped
+     *  chart row matching the well-known account number, then (3) the
+     *  tenant-wide chart row.  Without this the helpers fall back to
+     *  whichever row Prisma returned first — frequently the wrong
+     *  location's account in a per-location chart layout — and for
+     *  QBO-connected locations could cross-post to the wrong realm. */
     locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
@@ -435,20 +479,27 @@ export async function postPayment(
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    cashAccountNumber,
-    locationId,
-    `payment=${payment.id}`,
-    tx,
-  );
-  const arAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    ACCOUNTS.ACCOUNTS_RECEIVABLE,
-    locationId,
-    `payment=${payment.id}`,
-    tx,
-  );
+  const pinned = locationId
+    ? await getLocationPinnedPostingAccounts(locationId, tx)
+    : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+  const cashAccountId =
+    pinned.undepositedFundsGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      cashAccountNumber,
+      locationId,
+      `payment=${payment.id}`,
+      tx,
+    ));
+  const arAccountId =
+    pinned.arGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.ACCOUNTS_RECEIVABLE,
+      locationId,
+      `payment=${payment.id}`,
+      tx,
+    ));
 
   return postEntries(
     tenantId,
@@ -483,8 +534,9 @@ export async function postRefund(
     amountCents: number;
     method: string;
     /** Originating location (typically `payment.invoice.locationId`).
-     *  Scopes A/R and bank/cash lookups so the refund reverses the
-     *  same per-location accounts the original payment touched. */
+     *  Resolution chain: pinned cash + A/R → location-scoped chart row →
+     *  tenant-wide chart row.  Reverses the same per-location accounts
+     *  the original payment touched. */
     locationId?: string | null;
   },
   refundAmountCents: number,
@@ -496,20 +548,27 @@ export async function postRefund(
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    cashAccountNumber,
-    locationId,
-    `refund payment=${payment.id}`,
-    tx,
-  );
-  const arAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    ACCOUNTS.ACCOUNTS_RECEIVABLE,
-    locationId,
-    `refund payment=${payment.id}`,
-    tx,
-  );
+  const pinned = locationId
+    ? await getLocationPinnedPostingAccounts(locationId, tx)
+    : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+  const cashAccountId =
+    pinned.undepositedFundsGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      cashAccountNumber,
+      locationId,
+      `refund payment=${payment.id}`,
+      tx,
+    ));
+  const arAccountId =
+    pinned.arGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.ACCOUNTS_RECEIVABLE,
+      locationId,
+      `refund payment=${payment.id}`,
+      tx,
+    ));
 
   return postEntries(
     tenantId,
@@ -544,8 +603,9 @@ export async function reversePostRefund(
     id: string;
     tenantId: string;
     method: string;
-    /** Originating location of the original payment.  The reversal must
-     *  hit exactly the same per-location A/R and bank rows that
+    /** Originating location of the original payment.  Resolution chain:
+     *  pinned cash + A/R → location-scoped chart row → tenant-wide chart
+     *  row.  The reversal must hit exactly the same per-location rows
      *  `postRefund` touched, otherwise the inverse leaves the chart
      *  unbalanced across locations. */
     locationId?: string | null;
@@ -559,20 +619,27 @@ export async function reversePostRefund(
   const cashAccountNumber =
     payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
 
-  const cashAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    cashAccountNumber,
-    locationId,
-    `refund reversal payment=${payment.id}`,
-    tx,
-  );
-  const arAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    ACCOUNTS.ACCOUNTS_RECEIVABLE,
-    locationId,
-    `refund reversal payment=${payment.id}`,
-    tx,
-  );
+  const pinned = locationId
+    ? await getLocationPinnedPostingAccounts(locationId, tx)
+    : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+  const cashAccountId =
+    pinned.undepositedFundsGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      cashAccountNumber,
+      locationId,
+      `refund reversal payment=${payment.id}`,
+      tx,
+    ));
+  const arAccountId =
+    pinned.arGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.ACCOUNTS_RECEIVABLE,
+      locationId,
+      `refund reversal payment=${payment.id}`,
+      tx,
+    ));
 
   return postEntries(
     tenantId,
@@ -788,9 +855,10 @@ export async function postAchReturn(
     paymentId: string;
     amountCents: number;
     /** Originating location of the underlying payment (typically
-     *  `payment.invoice.locationId`).  The reversal must touch the
-     *  same per-location bank and A/R rows the original payment
-     *  posted into. */
+     *  `payment.invoice.locationId`).  Resolution chain: pinned cash + A/R
+     *  → location-scoped chart row → tenant-wide chart row.  The reversal
+     *  must touch the same per-location bank and A/R rows the original
+     *  payment posted into. */
     locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
@@ -798,20 +866,27 @@ export async function postAchReturn(
   const { tenantId } = achReturn;
   const locationId = achReturn.locationId ?? null;
 
-  const bankAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    ACCOUNTS.BANK,
-    locationId,
-    `ach return=${achReturn.id}`,
-    tx,
-  );
-  const arAccountId = await resolveLocationScopedAccountByNumber(
-    tenantId,
-    ACCOUNTS.ACCOUNTS_RECEIVABLE,
-    locationId,
-    `ach return=${achReturn.id}`,
-    tx,
-  );
+  const pinned = locationId
+    ? await getLocationPinnedPostingAccounts(locationId, tx)
+    : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+  const bankAccountId =
+    pinned.undepositedFundsGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.BANK,
+      locationId,
+      `ach return=${achReturn.id}`,
+      tx,
+    ));
+  const arAccountId =
+    pinned.arGlAccountId
+    ?? (await resolveLocationScopedAccountByNumber(
+      tenantId,
+      ACCOUNTS.ACCOUNTS_RECEIVABLE,
+      locationId,
+      `ach return=${achReturn.id}`,
+      tx,
+    ));
 
   return postEntries(
     tenantId,
@@ -845,16 +920,18 @@ export async function postDeferredRecognition(
     tenantId: string;
     amountCents: number;
     revenueAccountId?: string;
+    locationId?: string | null;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = entry;
+  const locationId = entry.locationId ?? null;
 
-  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
+  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx, locationId);
   if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
   const revenueAccountId =
     entry.revenueAccountId ??
-    (await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx));
+    (await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId));
 
   return postEntries(
     tenantId,
@@ -886,18 +963,25 @@ export async function postEarlyTermination(
   contract: {
     id: string;
     tenantId: string;
+    locationId?: string | null;
   },
   penaltyCents: number,
   remainingDeferredCents: number,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string[]> {
   const { tenantId } = contract;
+  const locationId = contract.locationId ?? null;
   const journalIds: string[] = [];
 
   // 1. Recognize penalty — debit A/R, credit Termination Income
   if (penaltyCents > 0) {
-    const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-    const termIncomeAccountId = await getAccountByNumber(tenantId, ACCOUNTS.TERMINATION_INCOME, tx);
+    const pinned = locationId
+      ? await getLocationPinnedPostingAccounts(locationId, tx)
+      : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
+    const arAccountId =
+      pinned.arGlAccountId
+      ?? (await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx, locationId));
+    const termIncomeAccountId = await getAccountByNumber(tenantId, ACCOUNTS.TERMINATION_INCOME, tx, locationId);
 
     const jid = await postEntries(
       tenantId,
@@ -924,9 +1008,9 @@ export async function postEarlyTermination(
 
   // 2. Wash out remaining deferred revenue to revenue
   if (remainingDeferredCents > 0) {
-    const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
+    const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx, locationId);
     if (!deferredAccountId) throw new Error(`No deferred-revenue GL account found for tenant ${tenantId}`);
-    const revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+    const revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
 
     const jid = await postEntries(
       tenantId,

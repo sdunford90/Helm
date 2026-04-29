@@ -397,9 +397,12 @@ async function handlePaymentIntentSucceeded(
         tenantId: payment.tenantId,
         amountCents: payment.amountCents,
         method: payment.method,
-        // Per-location chart of accounts: thread the invoice's location
-        // so A/R and bank lookups land on this marina's own rows.
-        locationId: payment.invoice?.locationId ?? null,
+        // Per-location chart of accounts: prefer the invoice's location
+        // (payments live under an invoice in Helm) so A/R and bank lookups
+        // land on this marina's own rows. Fall back to the routing-level
+        // location threaded by the dispatcher when the payment has no
+        // invoice attached.
+        locationId: payment.invoice?.locationId ?? locationId,
       },
       tx,
     );

@@ -444,6 +444,21 @@ model Location {
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 
+  // ----- Per-location posting accounts -----
+  // Pinned GL accounts used by gl-posting / qbo-sync when posting invoices,
+  // payments, refunds, and deferred-revenue recognition for this location.
+  // Falling back to tenant-wide account-number lookups would route ledger
+  // entries (and QBO Invoice/Payment ARAccountRef + DepositToAccountRef) to
+  // a different QBO realm — staff pin per-location accounts here so each
+  // marina's books stay self-consistent.
+  arGlAccountId               String?
+  undepositedFundsGlAccountId String?
+  deferredRevenueGlAccountId  String?
+
+  arGlAccount               GlAccount? @relation(name: "LocationArGlAccount",               fields: [arGlAccountId],               references: [id])
+  undepositedFundsGlAccount GlAccount? @relation(name: "LocationUndepositedFundsGlAccount", fields: [undepositedFundsGlAccountId], references: [id])
+  deferredRevenueGlAccount  GlAccount? @relation(name: "LocationDeferredRevenueGlAccount",  fields: [deferredRevenueGlAccountId],  references: [id])
+
   // ----- Per-location SaaS subscription billing -----
   // We charge per marina (= per Location), not per holding company. Each
   // Location has its own Stripe Customer, Stripe Subscription and SaaS tier.
@@ -1239,6 +1254,10 @@ model GlAccount {
   productCategoryGlMappingsInventoryAsset ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingInventoryAsset")
   dockageRateGlMappings           DockageRateGlMapping[]
   serviceFeeGlMappings            ServiceFeeGlMapping[]
+
+  locationsAr               Location[] @relation(name: "LocationArGlAccount")
+  locationsUndepositedFunds Location[] @relation(name: "LocationUndepositedFundsGlAccount")
+  locationsDeferredRevenue  Location[] @relation(name: "LocationDeferredRevenueGlAccount")
 
   @@index([tenantId])
   @@index([locationId])
