@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, X, Edit2, Tag } from 'lucide-react';
+import { Plus, X, Edit2, Tag, MapPin, AlertTriangle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useToast } from './Toast';
+import { api } from '../lib/api';
 
 // Product Category settings — owns default GL accounts (revenue, COGS,
 // inventory asset) and a default tax category + taxable flag for inventory
@@ -52,6 +53,313 @@ const stl = {
 function accountLabel(a: GlAccount | undefined | null) {
   if (!a) return '—';
   return `${a.accountNumber} — ${a.name}`;
+}
+
+interface MappingRow {
+  locationId: string;
+  locationName: string;
+  qboConnected: boolean;
+  override: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+  effective: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+}
+
+interface LocationGlAccount {
+  id: string;
+  accountNumber: string;
+  name: string;
+  type: string;
+  locationId: string | null;
+}
+
+function LocationMappingsModal({
+  category,
+  onClose,
+}: {
+  category: ProductCategory;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [rows, setRows] = useState<MappingRow[]>([]);
+  const [accounts, setAccounts] = useState<LocationGlAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingLoc, setSavingLoc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [m, a] = await Promise.all([
+          api.get<{ data: MappingRow[] }>(
+            `/api/settings/product-categories/${category.id}/gl-mappings`,
+          ),
+          api.get<{ data: LocationGlAccount[] }>(`/api/settings/gl-accounts`),
+        ]);
+        if (cancelled) return;
+        setRows(m.data);
+        setAccounts(a.data);
+      } catch (err) {
+        toast.error(
+          'Failed to load mappings',
+          err instanceof Error ? err.message : 'Unknown error',
+        );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [category.id, toast]);
+
+  const accountsForLocation = (locationId: string, type: 'REVENUE' | 'EXPENSE' | 'ASSET') => {
+    const locScoped = accounts.filter(
+      (a) => a.locationId === locationId && a.type === type,
+    );
+    if (locScoped.length > 0) return locScoped;
+    return accounts.filter((a) => a.locationId == null && a.type === type);
+  };
+
+  const saveRow = async (
+    locationId: string,
+    next: {
+      revenueGlAccountId: string | null;
+      cogsGlAccountId: string | null;
+      inventoryAssetGlAccountId: string | null;
+    },
+  ) => {
+    setSavingLoc(locationId);
+    try {
+      await api.put(
+        `/api/settings/product-categories/${category.id}/gl-mappings/${locationId}`,
+        next,
+      );
+      setRows((prev) =>
+        prev.map((r) =>
+          r.locationId === locationId
+            ? {
+                ...r,
+                override: next,
+                effective: {
+                  revenueGlAccountId:
+                    next.revenueGlAccountId ??
+                    (r.qboConnected
+                      ? null
+                      : category.defaultRevenueGlAccountId ?? null),
+                  cogsGlAccountId:
+                    next.cogsGlAccountId ??
+                    (r.qboConnected
+                      ? null
+                      : category.defaultCogsGlAccountId ?? null),
+                  inventoryAssetGlAccountId:
+                    next.inventoryAssetGlAccountId ??
+                    (r.qboConnected
+                      ? null
+                      : category.defaultInventoryAssetGlAccountId ?? null),
+                },
+              }
+            : r,
+        ),
+      );
+      toast.success('Mapping saved', '');
+    } catch (err) {
+      toast.error(
+        'Save failed',
+        err instanceof Error ? err.message : 'Unknown error',
+      );
+    } finally {
+      setSavingLoc(null);
+    }
+  };
+
+  return (
+    <div style={stl.overlay} onClick={onClose}>
+      <div
+        style={{ ...stl.modal, width: '900px', maxWidth: '95vw' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={stl.modalHeader}>
+          <h2 style={stl.modalTitle}>
+            <MapPin size={16} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            Per-Location GL Mappings — {category.name}
+          </h2>
+          <button style={stl.closeBtn} onClick={onClose}>
+            <X size={20} />
+          </button>
+        </div>
+        <div style={{ padding: '16px 24px' }}>
+          <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '12px' }}>
+            Override the category's default accounts on a per-location basis.
+            Locations connected to QuickBooks must use accounts from their own
+            chart of accounts; the tenant-level defaults stop applying once a
+            location is QBO-connected.
+          </div>
+          {loading ? (
+            <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8' }}>
+              Loading…
+            </div>
+          ) : (
+            <table style={stl.table}>
+              <thead>
+                <tr style={{ background: '#F8FAFC' }}>
+                  <th style={stl.th}>Location</th>
+                  <th style={stl.th}>Revenue</th>
+                  <th style={stl.th}>COGS</th>
+                  <th style={stl.th}>Inv. Asset</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <LocationMappingRow
+                    key={r.locationId}
+                    row={r}
+                    saving={savingLoc === r.locationId}
+                    revenueAccts={accountsForLocation(r.locationId, 'REVENUE')}
+                    cogsAccts={accountsForLocation(r.locationId, 'EXPENSE')}
+                    assetAccts={accountsForLocation(r.locationId, 'ASSET')}
+                    onSave={(next) => saveRow(r.locationId, next)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div style={stl.modalFooter}>
+          <button style={stl.cancelBtn} onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LocationMappingRow({
+  row,
+  saving,
+  revenueAccts,
+  cogsAccts,
+  assetAccts,
+  onSave,
+}: {
+  row: MappingRow;
+  saving: boolean;
+  revenueAccts: LocationGlAccount[];
+  cogsAccts: LocationGlAccount[];
+  assetAccts: LocationGlAccount[];
+  onSave: (next: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  }) => Promise<void>;
+}) {
+  const [form, setForm] = useState(row.override);
+
+  const select = (
+    options: LocationGlAccount[],
+    value: string | null,
+    onChange: (v: string | null) => void,
+    effectiveId: string | null,
+  ) => (
+    <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '4px' }}>
+      <select
+        style={{ ...stl.input, padding: '6px 8px', fontSize: '12px' }}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">— Use default —</option>
+        {options.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.accountNumber} · {a.name}
+          </option>
+        ))}
+      </select>
+      {!effectiveId && (
+        <span
+          style={{
+            fontSize: '11px',
+            color: '#B45309',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}
+        >
+          <AlertTriangle size={11} /> Not mapped
+        </span>
+      )}
+    </div>
+  );
+
+  const dirty =
+    form.revenueGlAccountId !== row.override.revenueGlAccountId ||
+    form.cogsGlAccountId !== row.override.cogsGlAccountId ||
+    form.inventoryAssetGlAccountId !== row.override.inventoryAssetGlAccountId;
+
+  return (
+    <tr>
+      <td style={{ ...stl.td, fontWeight: 600 }}>
+        {row.locationName}
+        {row.qboConnected && (
+          <span
+            style={{
+              ...stl.badge,
+              background: '#E0F2FE',
+              color: '#0369A1',
+              marginLeft: '6px',
+            }}
+          >
+            QBO
+          </span>
+        )}
+      </td>
+      <td style={stl.td}>
+        {select(
+          revenueAccts,
+          form.revenueGlAccountId,
+          (v) => setForm((p) => ({ ...p, revenueGlAccountId: v })),
+          row.effective.revenueGlAccountId,
+        )}
+      </td>
+      <td style={stl.td}>
+        {select(
+          cogsAccts,
+          form.cogsGlAccountId,
+          (v) => setForm((p) => ({ ...p, cogsGlAccountId: v })),
+          row.effective.cogsGlAccountId,
+        )}
+      </td>
+      <td style={stl.td}>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+          {select(
+            assetAccts,
+            form.inventoryAssetGlAccountId,
+            (v) => setForm((p) => ({ ...p, inventoryAssetGlAccountId: v })),
+            row.effective.inventoryAssetGlAccountId,
+          )}
+          {dirty && (
+            <button
+              style={{
+                ...stl.saveBtn,
+                padding: '6px 10px',
+                fontSize: '12px',
+              }}
+              onClick={() => onSave(form)}
+              disabled={saving}
+            >
+              {saving ? '…' : 'Save'}
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 function CategoryModal({
@@ -204,6 +512,7 @@ export default function CategoriesSettings() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ProductCategory | null>(null);
   const [adding, setAdding] = useState(false);
+  const [mappingFor, setMappingFor] = useState<ProductCategory | null>(null);
 
   // Reference data for the modal dropdowns. Filtered server-side by GL type.
   const { data: revenueAccountsData } = useApi<{ accounts: GlAccount[] }>(
@@ -330,6 +639,13 @@ export default function CategoriesSettings() {
                       : <span style={{ ...stl.badge, background: '#F1F5F9', color: '#64748B' }}>Inactive</span>}
                   </td>
                   <td style={{ ...stl.td, textAlign: 'right' as const }}>
+                    <button
+                      style={stl.iconBtn}
+                      title="Per-location GL mappings"
+                      onClick={() => setMappingFor(c)}
+                    >
+                      <MapPin size={16} />
+                    </button>
                     <button style={stl.iconBtn} title="Edit" onClick={() => { setEditing(c); setAdding(false); }}>
                       <Edit2 size={16} />
                     </button>
@@ -359,6 +675,13 @@ export default function CategoriesSettings() {
           taxCategories={taxCategories}
           onClose={() => { setAdding(false); setEditing(null); }}
           onSave={handleSave}
+        />
+      )}
+
+      {mappingFor && (
+        <LocationMappingsModal
+          category={mappingFor}
+          onClose={() => setMappingFor(null)}
         />
       )}
     </>

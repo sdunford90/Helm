@@ -201,6 +201,191 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Modals ─────────────────────────────────────────────── */
 
+interface PerLocationMappingRow {
+  locationId: string;
+  locationName: string;
+  qboConnected: boolean;
+  override: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+  effective: {
+    revenueGlAccountId: string | null;
+    cogsGlAccountId: string | null;
+    inventoryAssetGlAccountId: string | null;
+  };
+}
+
+function ProductPerLocationMappings({ productId }: { productId: string }) {
+  const toast = useToast();
+  const [rows, setRows] = useState<PerLocationMappingRow[] | null>(null);
+  const [accountsByLocation, setAccountsByLocation] = useState<Record<string, ApiGlAccount[]>>({});
+  const [savingLoc, setSavingLoc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/settings/products/${productId}/gl-mappings`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        const data: PerLocationMappingRow[] = json.data ?? [];
+        setRows(data);
+        // Pre-fetch this location's chart so the select is populated. We use
+        // the existing /api/settings/gl-accounts?locationId=... endpoint —
+        // tenant-wide accounts are returned when locationId=TENANT.
+        const byLoc: Record<string, ApiGlAccount[]> = {};
+        await Promise.all(
+          data.map(async (r) => {
+            const accRes = await fetch(`/api/settings/gl-accounts?locationId=${r.locationId}`);
+            if (!accRes.ok) return;
+            const accJson = await accRes.json();
+            byLoc[r.locationId] = (accJson.data ?? []) as ApiGlAccount[];
+          }),
+        );
+        if (!cancelled) setAccountsByLocation(byLoc);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? 'Failed to load per-location mappings');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [productId]);
+
+  const updateField = <K extends keyof PerLocationMappingRow['override']>(
+    locationId: string,
+    field: K,
+    value: PerLocationMappingRow['override'][K],
+  ) => {
+    setRows((prev) =>
+      prev
+        ? prev.map((r) =>
+            r.locationId === locationId
+              ? { ...r, override: { ...r.override, [field]: value } }
+              : r,
+          )
+        : prev,
+    );
+  };
+
+  const save = async (row: PerLocationMappingRow) => {
+    setSavingLoc(row.locationId);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/settings/products/${productId}/gl-mappings/${row.locationId}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(row.override),
+        },
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      toast.success('Saved', `Per-location mapping for ${row.locationName} updated.`);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to save mapping');
+      toast.error('Error', e?.message ?? 'Failed to save mapping');
+    } finally {
+      setSavingLoc(null);
+    }
+  };
+
+  if (rows === null) {
+    return (
+      <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '16px', fontSize: '13px', color: '#64748B' }}>
+        Loading per-location GL mappings…
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const accountsForLoc = (locId: string, type: ApiGlAccount['type']) =>
+    (accountsByLocation[locId] ?? []).filter((a) => a.type === type);
+
+  const labelFor = (a: ApiGlAccount) => `${a.accountNumber} — ${a.name}`;
+
+  return (
+    <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '16px' }}>
+      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>
+        Per-location GL mappings
+      </div>
+      <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '12px' }}>
+        Override the revenue, COGS, and inventory accounts used at each location.
+        Locations connected to QuickBooks must use accounts pulled from their
+        own QBO chart; other locations may use tenant-wide accounts.
+      </div>
+      {error ? (
+        <div style={{ background: '#FEF2F2', color: '#991B1B', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px', fontSize: '12px' }}>
+          {error}
+        </div>
+      ) : null}
+      <div style={{ display: 'grid', gap: '12px' }}>
+        {rows.map((r) => (
+          <div key={r.locationId} style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342' }}>
+                {r.locationName}
+                {r.qboConnected ? (
+                  <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: 600, color: '#0369A1', background: '#E0F2FE', padding: '2px 6px', borderRadius: '4px' }}>
+                    QuickBooks
+                  </span>
+                ) : null}
+              </div>
+              <button
+                style={{ ...st.saveBtn, padding: '4px 12px', fontSize: '12px' }}
+                disabled={savingLoc === r.locationId}
+                onClick={() => save(r)}
+              >
+                {savingLoc === r.locationId ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            {(['revenueGlAccountId', 'cogsGlAccountId', 'inventoryAssetGlAccountId'] as const).map((field) => {
+              const type = field === 'revenueGlAccountId' ? 'REVENUE' : field === 'cogsGlAccountId' ? 'EXPENSE' : 'ASSET';
+              const labelText = field === 'revenueGlAccountId' ? 'Revenue' : field === 'cogsGlAccountId' ? 'COGS' : 'Inventory Asset';
+              const accounts = accountsForLoc(r.locationId, type as ApiGlAccount['type']);
+              const overrideId = r.override[field];
+              const effectiveId = r.effective[field];
+              const isMissing = !overrideId && !effectiveId;
+              return (
+                <div key={field} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', color: '#475569' }}>{labelText}</label>
+                  <select
+                    style={{ ...st.input, padding: '6px 10px', fontSize: '12px' }}
+                    value={overrideId ?? ''}
+                    onChange={(e) => updateField(r.locationId, field, e.target.value || null)}
+                  >
+                    <option value="">
+                      {effectiveId
+                        ? `— Inherit (effective via category/legacy) —`
+                        : `— Not mapped${r.qboConnected ? ' (required for QuickBooks)' : ''} —`}
+                    </option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>{labelFor(a)}</option>
+                    ))}
+                  </select>
+                  {isMissing ? (
+                    <div style={{ gridColumn: '2 / 3', fontSize: '11px', color: '#9B1C1C' }}>
+                      No effective account — invoices for this location will fail to post.
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
   const isEdit = !!product;
 
@@ -435,6 +620,10 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
               </>
             )}
           </div>
+
+          {isEdit && product?.id ? (
+            <ProductPerLocationMappings productId={product.id} />
+          ) : null}
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose}>Cancel</button>

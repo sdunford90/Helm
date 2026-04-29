@@ -2587,17 +2587,31 @@ export default function Settings() {
                 — Assign revenue GL accounts to each product type for proper accounting
               </span>
             </div>
-            <a
-              href="/settings/products"
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '4px',
-                padding: '6px 14px', borderRadius: '6px', textDecoration: 'none',
-                fontSize: '13px', fontWeight: 600, color: '#FFFFFF',
-                backgroundColor: '#4338CA',
-              }}
-            >
-              Products &amp; Revenue →
-            </a>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <a
+                href="/settings/quickbooks"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '4px',
+                  padding: '6px 14px', borderRadius: '6px', textDecoration: 'none',
+                  fontSize: '13px', fontWeight: 600, color: '#4338CA',
+                  backgroundColor: '#FFFFFF',
+                  border: '1px solid #4338CA',
+                }}
+              >
+                QuickBooks Setup →
+              </a>
+              <a
+                href="/settings/products"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '4px',
+                  padding: '6px 14px', borderRadius: '6px', textDecoration: 'none',
+                  fontSize: '13px', fontWeight: 600, color: '#FFFFFF',
+                  backgroundColor: '#4338CA',
+                }}
+              >
+                Products &amp; Revenue →
+              </a>
+            </div>
           </div>
 
           {/* Location Selector */}

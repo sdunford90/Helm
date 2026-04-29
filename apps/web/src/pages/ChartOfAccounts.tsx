@@ -20,6 +20,10 @@ interface GLAccount {
   qboAccountId: string | null;
   isDeferredRevenue: boolean;
   active: boolean;
+  isActive?: boolean;
+  source?: 'QBO' | 'MANUAL';
+  locationId: string | null;
+  location?: { id: string; name: string } | null;
 }
 
 const TYPE_MAP: Record<AccountType, AccountTypeDisplay> = {
@@ -184,10 +188,12 @@ function AccountModal({
   initial,
   onClose,
   onSave,
+  qboLocked,
 }: {
   initial: AccountFormState;
   onClose: () => void;
   onSave: (form: AccountFormState) => Promise<void>;
+  qboLocked: boolean;
 }) {
   const [form, setForm] = useState<AccountFormState>(initial);
   const [saving, setSaving] = useState(false);
@@ -226,24 +232,34 @@ function AccountModal({
           </div>
         )}
 
+        {qboLocked && (
+          <div style={{ background: '#E0F2FE', color: '#075985', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px', fontSize: '12px' }}>
+            This account is owned by QuickBooks. Account number, name, type, sub-type, and the QuickBooks ID are read-only here — edit them in QuickBooks and re-import. You can still update the description and the deferred-revenue flag.
+          </div>
+        )}
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '12px' }}>
           <div style={s.formRow}>
             <label style={s.label}>Account #</label>
             <input
-              style={{ ...s.input, ...mono }}
+              style={{ ...s.input, ...mono, ...(qboLocked ? { background: '#F1F5F9', color: '#64748B' } : {}) }}
               value={form.accountNumber}
               onChange={(e) => set('accountNumber', e.target.value)}
               placeholder="e.g. 4100"
-              autoFocus
+              autoFocus={!qboLocked}
+              readOnly={qboLocked}
+              disabled={qboLocked}
             />
           </div>
           <div style={s.formRow}>
             <label style={s.label}>Account Name</label>
             <input
-              style={s.input}
+              style={{ ...s.input, ...(qboLocked ? { background: '#F1F5F9', color: '#64748B' } : {}) }}
               value={form.name}
               onChange={(e) => set('name', e.target.value)}
               placeholder="e.g. Slip Rental Revenue"
+              readOnly={qboLocked}
+              disabled={qboLocked}
             />
           </div>
         </div>
@@ -252,9 +268,10 @@ function AccountModal({
           <div style={s.formRow}>
             <label style={s.label}>Account Type</label>
             <select
-              style={s.select}
+              style={{ ...s.select, ...(qboLocked ? { background: '#F1F5F9', color: '#64748B' } : {}) }}
               value={form.type}
               onChange={(e) => set('type', e.target.value as AccountType)}
+              disabled={qboLocked}
             >
               {accountTypes.map((t) => (
                 <option key={t} value={t}>{TYPE_MAP[t]}</option>
@@ -264,9 +281,10 @@ function AccountModal({
           <div style={s.formRow}>
             <label style={s.label}>Sub Type</label>
             <select
-              style={s.select}
+              style={{ ...s.select, ...(qboLocked ? { background: '#F1F5F9', color: '#64748B' } : {}) }}
               value={form.subType}
               onChange={(e) => set('subType', e.target.value)}
+              disabled={qboLocked}
             >
               <option value="">— None —</option>
               {subTypeOptions[form.type].map((st) => (
@@ -292,10 +310,12 @@ function AccountModal({
             <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional — links this account to QBO)</span>
           </label>
           <input
-            style={{ ...s.input, ...mono }}
+            style={{ ...s.input, ...mono, ...(qboLocked ? { background: '#F1F5F9', color: '#64748B' } : {}) }}
             value={form.qboAccountId}
             onChange={(e) => set('qboAccountId', e.target.value)}
             placeholder="QBO account ID or number"
+            readOnly={qboLocked}
+            disabled={qboLocked}
           />
         </div>
 
@@ -339,7 +359,7 @@ export default function ChartOfAccounts() {
     setError(null);
     try {
       const res = await api.get<{ data: GLAccount[] }>('/api/settings/gl-accounts');
-      setAccounts((res as any).data.data ?? []);
+      setAccounts(res.data ?? []);
     } catch (e: any) {
       setError(e?.response?.data?.error ?? 'Failed to load GL accounts');
     } finally {
@@ -391,8 +411,8 @@ export default function ChartOfAccounts() {
     if (!confirm(`Archive or delete account "${acct.accountNumber} — ${acct.name}"? Accounts with posted entries will be archived instead of deleted.`)) return;
     setDeletingId(acct.id);
     try {
-      const res = await api.delete<any>(`/api/settings/gl-accounts/${acct.id}`);
-      if ((res as any).data?.archived) {
+      const res = await api.delete<{ success: boolean; archived?: boolean }>(`/api/settings/gl-accounts/${acct.id}`);
+      if (res?.archived) {
         notify('success', `Account archived (has posted entries).`);
       } else {
         notify('success', 'Account deleted.');
@@ -405,9 +425,30 @@ export default function ChartOfAccounts() {
     }
   };
 
-  const grouped = accountTypes.map((type) => ({
-    type,
-    accounts: accounts.filter((a) => a.type === type),
+  // Group first by location, then by account type within each location.
+  const locationOrder: { id: string | null; name: string }[] = [];
+  const seenLocs = new Set<string>();
+  accounts.forEach((a) => {
+    const key = a.locationId ?? '__tenant__';
+    if (!seenLocs.has(key)) {
+      seenLocs.add(key);
+      locationOrder.push({
+        id: a.locationId,
+        name: a.location?.name ?? 'Tenant-wide (legacy)',
+      });
+    }
+  });
+  if (locationOrder.length === 0) {
+    locationOrder.push({ id: null, name: 'Tenant-wide (legacy)' });
+  }
+  const groupedByLocation = locationOrder.map((loc) => ({
+    loc,
+    typed: accountTypes.map((type) => ({
+      type,
+      accounts: accounts.filter(
+        (a) => a.type === type && (a.locationId ?? null) === loc.id,
+      ),
+    })),
   }));
 
   const initialForModal = editTarget
@@ -454,15 +495,32 @@ export default function ChartOfAccounts() {
 
       <div style={s.toolbar}>
         <span style={{ fontSize: '14px', color: '#64748B' }}>
-          {accounts.length} account{accounts.length !== 1 ? 's' : ''} configured
+          {accounts.length} account{accounts.length !== 1 ? 's' : ''} across{' '}
+          {locationOrder.length} scope
+          {locationOrder.length === 1 ? '' : 's'}
         </span>
         <div style={s.toolbarRight}>
+          <Link
+            to="/settings/quickbooks"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              padding: '8px 14px', fontSize: '13px', fontWeight: 600,
+              color: '#FFFFFF', backgroundColor: '#0A2342',
+              border: 'none', borderRadius: '6px', textDecoration: 'none',
+            }}
+          >
+            <RefreshCw size={14} /> Import from QuickBooks
+          </Link>
           <button style={s.refreshBtn} onClick={load} disabled={loading}>
             <RefreshCw size={14} className={loading ? 'spin' : ''} />
             Refresh
           </button>
-          <button style={s.addBtn} onClick={openAdd}>
-            <Plus size={16} /> Add Account
+          <button
+            style={{ ...s.refreshBtn, color: '#475569' }}
+            onClick={openAdd}
+            title="Manually create a GL account (prefer importing from QuickBooks)"
+          >
+            <Plus size={14} /> Add manually
           </button>
         </div>
       </div>
@@ -473,8 +531,27 @@ export default function ChartOfAccounts() {
         </div>
       )}
 
-      {!loading && (
-        <div style={s.tableWrap} className="helm-table-wrap">
+      {!loading && groupedByLocation.map(({ loc, typed }) => (
+        <div key={loc.id ?? '__tenant__'} style={{ marginBottom: '24px' }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 14px', backgroundColor: '#F1F5F9',
+            border: '1px solid #E2E8F0', borderBottom: 'none',
+            borderTopLeftRadius: '8px', borderTopRightRadius: '8px',
+          }}>
+            <div style={{ fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>
+              {loc.id ? `Location: ${loc.name}` : loc.name}
+            </div>
+            {loc.id && (
+              <Link
+                to="/settings/quickbooks"
+                style={{ fontSize: '12px', color: '#0A2342', fontWeight: 600, textDecoration: 'none' }}
+              >
+                Import from QuickBooks <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
+              </Link>
+            )}
+          </div>
+        <div style={{ ...s.tableWrap, marginBottom: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }} className="helm-table-wrap">
           <table style={s.table}>
             <thead>
               <tr>
@@ -483,12 +560,12 @@ export default function ChartOfAccounts() {
                 <th style={s.th}>Type</th>
                 <th style={s.th}>Sub Type</th>
                 <th style={s.th}>QBO Account ID</th>
-                <th style={{ ...s.th, textAlign: 'center' }}>QBO Linked</th>
+                <th style={{ ...s.th, textAlign: 'center' }}>Source</th>
                 <th style={{ ...s.th, textAlign: 'center', width: '80px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {grouped.map(({ type, accounts: typeAccounts }) => {
+              {typed.map(({ type, accounts: typeAccounts }) => {
                 const colors = typeColors[type];
                 const collapsed = collapsedTypes.has(type);
                 return (
@@ -512,7 +589,7 @@ export default function ChartOfAccounts() {
                       </td>
                     </tr>
                     {!collapsed && typeAccounts.map((acct, idx) => (
-                      <tr key={acct.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF', opacity: acct.active ? 1 : 0.5 }}>
+                      <tr key={acct.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF', opacity: (acct.isActive ?? acct.active) ? 1 : 0.5 }}>
                         <td style={s.tdMono}>{acct.accountNumber}</td>
                         <td style={s.td}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -525,7 +602,7 @@ export default function ChartOfAccounts() {
                                 Deferred
                               </span>
                             )}
-                            {!acct.active && (
+                            {!(acct.isActive ?? acct.active) && (
                               <span style={{
                                 padding: '1px 6px', borderRadius: '4px', fontSize: '10px',
                                 fontWeight: 600, backgroundColor: '#F1F5F9', color: '#94A3B8',
@@ -560,13 +637,29 @@ export default function ChartOfAccounts() {
                           {acct.qboAccountId ?? <span style={{ color: '#CBD5E1' }}>—</span>}
                         </td>
                         <td style={{ ...s.td, textAlign: 'center' }}>
-                          {acct.qboAccountId ? (
-                            <span style={{ ...s.checkmark, backgroundColor: '#E8F5E9', color: '#1B5E20' }}>
-                              <Check size={14} />
+                          {acct.source === 'QBO' ? (
+                            <span style={{
+                              display: 'inline-block', padding: '2px 8px',
+                              borderRadius: '9999px', fontSize: '11px', fontWeight: 600,
+                              backgroundColor: '#E0F2FE', color: '#0369A1',
+                            }}>
+                              QuickBooks
+                            </span>
+                          ) : acct.qboAccountId ? (
+                            <span style={{
+                              display: 'inline-block', padding: '2px 8px',
+                              borderRadius: '9999px', fontSize: '11px', fontWeight: 600,
+                              backgroundColor: '#E8F5E9', color: '#1B5E20',
+                            }}>
+                              Linked
                             </span>
                           ) : (
-                            <span style={{ ...s.checkmark, backgroundColor: '#F2F4F6', color: '#94A3B8' }}>
-                              <X size={14} />
+                            <span style={{
+                              display: 'inline-block', padding: '2px 8px',
+                              borderRadius: '9999px', fontSize: '11px', fontWeight: 600,
+                              backgroundColor: '#F2F4F6', color: '#94A3B8',
+                            }}>
+                              Manual
                             </span>
                           )}
                         </td>
@@ -575,18 +668,22 @@ export default function ChartOfAccounts() {
                             <button
                               style={s.editBtn}
                               onClick={() => openEdit(acct)}
-                              title="Edit account"
+                              title={acct.source === 'QBO'
+                                ? 'Toggle deferred-revenue / archive (number, name, type are managed by QuickBooks)'
+                                : 'Edit account'}
                             >
                               <Pencil size={14} />
                             </button>
-                            <button
-                              style={s.deleteBtn}
-                              onClick={() => handleDelete(acct)}
-                              disabled={deletingId === acct.id}
-                              title="Delete or archive account"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            {acct.source !== 'QBO' && (
+                              <button
+                                style={s.deleteBtn}
+                                onClick={() => handleDelete(acct)}
+                                disabled={deletingId === acct.id}
+                                title="Delete or archive account"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -594,23 +691,25 @@ export default function ChartOfAccounts() {
                   </Fragment>
                 );
               })}
-              {accounts.length === 0 && !loading && (
+              {typed.every((g) => g.accounts.length === 0) && (
                 <tr>
-                  <td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
-                    No accounts yet. Click "Add Account" to create your chart of accounts.
+                  <td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#94A3B8', padding: '24px 16px' }}>
+                    No accounts in this scope yet.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      )}
+        </div>
+      ))}
 
       {showModal && (
         <AccountModal
           initial={initialForModal}
           onClose={() => setShowModal(false)}
           onSave={handleSave}
+          qboLocked={editTarget?.source === 'QBO'}
         />
       )}
     </div>

@@ -14,6 +14,7 @@ interface GlAccount {
   accountNumber: string;
   name: string;
   type: string;
+  locationId?: string | null;
 }
 
 interface DockageRate {
@@ -50,6 +51,20 @@ interface RentalProduct {
   active: boolean;
 }
 
+interface MissingItem {
+  kind: 'product' | 'category' | 'dockage_rate' | 'service_fee';
+  id: string;
+  name: string;
+  missing: string[];
+}
+
+interface MissingMappingWarning {
+  locationId: string;
+  locationName: string;
+  items: MissingItem[];
+  totalIssues: number;
+}
+
 interface ProductsSummary {
   dockageRates: DockageRate[];
   serviceFees: ServiceFee[];
@@ -57,6 +72,7 @@ interface ProductsSummary {
   glAccounts: GlAccount[];
   unconfiguredCount: number;
   hasGlAccounts: boolean;
+  missingMappingWarnings?: MissingMappingWarning[];
 }
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -165,16 +181,31 @@ function GlAccountCell({
   currentId,
   glAccounts,
   onSave,
+  locationId,
 }: {
   currentId: string | null | undefined;
   glAccounts: GlAccount[];
   onSave: (glAccountId: string | null) => Promise<void>;
+  locationId?: string | null;
 }) {
+  // For per-location mappings, prefer location-scoped accounts. Tenant-wide
+  // accounts (locationId == null) are only allowed as a fallback when the
+  // location has no per-location chart of accounts pulled yet (i.e. is not
+  // QBO-connected). The backend mapping validator enforces the same rule, so
+  // showing tenant-wide options once a location has its own accounts would
+  // produce save failures.
+  const filtered = (() => {
+    if (!locationId) return glAccounts;
+    const locScoped = glAccounts.filter((a) => a.locationId === locationId);
+    if (locScoped.length > 0) return locScoped;
+    return glAccounts.filter((a) => a.locationId == null);
+  })();
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState(currentId ?? '');
   const [saving, setSaving] = useState(false);
 
   const current = glAccounts.find((a) => a.id === currentId);
+  const options = filtered;
 
   const handleSave = async () => {
     setSaving(true);
@@ -219,7 +250,7 @@ function GlAccountCell({
         autoFocus
       >
         <option value="">— No GL account —</option>
-        {glAccounts.map((a) => (
+        {options.map((a) => (
           <option key={a.id} value={a.id}>
             {a.accountNumber} · {a.name}
           </option>
@@ -246,8 +277,8 @@ export default function SettingsProducts() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get<any>('/api/settings/catalog/products-summary');
-      setData((res as any).data.data);
+      const res = await api.get<{ data: ProductsSummary }>('/api/settings/catalog/products-summary');
+      setData(res.data);
     } catch (e: any) {
       setError(e?.response?.data?.error ?? 'Failed to load product catalog');
     } finally {
@@ -258,7 +289,12 @@ export default function SettingsProducts() {
   useEffect(() => { load(); }, [load]);
 
   const saveDockageRateGl = async (rateId: string, glAccountId: string | null) => {
-    await api.put(`/api/settings/catalog/dockage-rates/${rateId}`, { glAccountId });
+    const rate = data?.dockageRates.find((r) => r.id === rateId);
+    if (!rate) return;
+    await api.put(
+      `/api/settings/catalog/dockage-rates/${rateId}/gl-mappings/${rate.locationId}`,
+      { glAccountId },
+    );
     setData((prev) => {
       if (!prev) return prev;
       const rates = prev.dockageRates.map((r) => r.id === rateId ? { ...r, glAccountId } : r);
@@ -274,7 +310,12 @@ export default function SettingsProducts() {
   };
 
   const saveServiceFeeGl = async (feeId: string, glAccountId: string | null) => {
-    await api.put(`/api/settings/catalog/service-fees/${feeId}`, { glAccountId });
+    const fee = data?.serviceFees.find((f) => f.id === feeId);
+    if (!fee) return;
+    await api.put(
+      `/api/settings/catalog/service-fees/${feeId}/gl-mappings/${fee.locationId}`,
+      { glAccountId },
+    );
     setData((prev) => {
       if (!prev) return prev;
       const fees = prev.serviceFees.map((f) => f.id === feeId ? { ...f, glAccountId } : f);
@@ -373,6 +414,32 @@ export default function SettingsProducts() {
         </div>
       )}
 
+      {data?.missingMappingWarnings && data.missingMappingWarnings.length > 0 && (
+        <div style={s.warningBanner}>
+          <AlertTriangle size={18} color="#F59E0B" style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div style={s.warningText}>
+            <strong>QuickBooks-connected locations are missing GL mappings:</strong>
+            <ul style={{ margin: '6px 0 0 0', paddingLeft: '18px' }}>
+              {data.missingMappingWarnings.map((w) => (
+                <li key={w.locationId}>
+                  <strong>{w.locationName}:</strong> {w.totalIssues} item
+                  {w.totalIssues === 1 ? '' : 's'} (
+                  {w.items.slice(0, 3).map((it) => it.name).join(', ')}
+                  {w.items.length > 3 ? `, +${w.items.length - 3} more` : ''})
+                  {' — '}
+                  <Link
+                    to="/settings/quickbooks"
+                    style={{ color: '#92400E', fontWeight: 600 }}
+                  >
+                    review in QuickBooks Setup
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {hasGlAccounts && unconfigured === 0 && (
         <div style={s.infoBanner}>
           <Check size={16} color="#0369A1" />
@@ -437,6 +504,7 @@ export default function SettingsProducts() {
                     <GlAccountCell
                       currentId={rate.glAccountId}
                       glAccounts={glAccounts}
+                      locationId={rate.locationId}
                       onSave={(id) => saveDockageRateGl(rate.id, id)}
                     />
                   </td>
@@ -502,6 +570,7 @@ export default function SettingsProducts() {
                     <GlAccountCell
                       currentId={fee.glAccountId}
                       glAccounts={glAccounts}
+                      locationId={fee.locationId}
                       onSave={(id) => saveServiceFeeGl(fee.id, id)}
                     />
                   </td>

@@ -1,3 +1,4 @@
+import { GLAccountType, GlAccountSource } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 // --------------------------------------------------------------------------
@@ -1117,6 +1118,238 @@ export async function getStatus(
     lastSyncAt: (tenant as any)?.qboLastSyncAt || null,
     tokenExpiresAt: (tenant as any)?.qboTokenExpiresAt || null,
   };
+}
+
+// ===========================================================================
+// Per-location QBO connection status
+// ---------------------------------------------------------------------------
+// Returns one row per Location for the tenant, indicating connection state
+// and the last chart-of-accounts pull. Used by the QuickBooks Setup page.
+// ===========================================================================
+
+export interface LocationQboStatus {
+  locationId: string;
+  locationName: string;
+  connected: boolean;
+  realmId: string | null;
+  companyName: string | null;
+  tokenExpiresAt: Date | null;
+  connectedAt: Date | null;
+  lastChartOfAccountsSyncAt: Date | null;
+  glAccountCount: number;
+}
+
+export async function getLocationsQboStatus(
+  tenantId: string,
+): Promise<LocationQboStatus[]> {
+  const locations = await prisma.location.findMany({
+    where: { tenantId },
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      name: true,
+      qboAccessToken: true,
+      qboRealmId: true,
+      qboCompanyName: true,
+      qboTokenExpiresAt: true,
+      qboConnectedAt: true,
+      qboLastChartOfAccountsSyncAt: true,
+    },
+  });
+
+  const counts = await prisma.glAccount.groupBy({
+    by: ["locationId"],
+    where: { tenantId, locationId: { not: null }, isActive: true },
+    _count: { _all: true },
+  });
+  const countByLoc = new Map<string, number>();
+  for (const c of counts) {
+    if (c.locationId) countByLoc.set(c.locationId, c._count._all);
+  }
+
+  return locations.map((l) => ({
+    locationId: l.id,
+    locationName: l.name,
+    connected: !!l.qboAccessToken && !!l.qboRealmId,
+    realmId: l.qboRealmId ?? null,
+    companyName: l.qboCompanyName ?? null,
+    tokenExpiresAt: l.qboTokenExpiresAt ?? null,
+    connectedAt: l.qboConnectedAt ?? null,
+    lastChartOfAccountsSyncAt: l.qboLastChartOfAccountsSyncAt ?? null,
+    glAccountCount: countByLoc.get(l.id) ?? 0,
+  }));
+}
+
+// ===========================================================================
+// Chart of Accounts pull — one location at a time
+// ---------------------------------------------------------------------------
+// Pages QuickBooks `Account` records and upserts them into GlAccount rows
+// scoped to the location. Existing QBO-sourced accounts that disappear (or
+// that QBO marks Active=false) are flipped to isActive=false; they are not
+// deleted because they may still be referenced from historical mappings.
+// ===========================================================================
+
+interface QboAccountPayload {
+  Id: string;
+  Name?: string;
+  AcctNum?: string;
+  AccountType?: string;
+  AccountSubType?: string;
+  Active?: boolean;
+  MetaData?: { LastUpdatedTime?: string };
+}
+
+function mapQboAccountType(t?: string): GLAccountType {
+  if (!t) return GLAccountType.ASSET;
+  const v = t.toLowerCase();
+  if (v.includes("revenue") || v.includes("income")) return GLAccountType.REVENUE;
+  if (v.includes("expense") || v.includes("cost of goods")) return GLAccountType.EXPENSE;
+  if (v.includes("liability") || v.includes("payable") || v.includes("credit card"))
+    return GLAccountType.LIABILITY;
+  if (v.includes("equity")) return GLAccountType.EQUITY;
+  return GLAccountType.ASSET;
+}
+
+export interface ChartOfAccountsPullResult {
+  pulled: number;
+  created: number;
+  updated: number;
+  deactivated: number;
+  total: number;
+}
+
+export async function pullChartOfAccountsForLocation(
+  locationId: string,
+  tenantId: string,
+): Promise<ChartOfAccountsPullResult> {
+  const location = await prisma.location.findFirst({
+    where: { id: locationId, tenantId },
+    select: { id: true, qboAccessToken: true, qboRealmId: true },
+  });
+  if (!location) {
+    throw new Error(`Location ${locationId} not found for tenant ${tenantId}`);
+  }
+  if (!location.qboAccessToken || !location.qboRealmId) {
+    throw new Error(
+      `Location ${locationId} is not connected to QuickBooks. Connect it on the QuickBooks Setup page first.`,
+    );
+  }
+
+  const ctx: QboCredentialContext = { tenantId, locationId };
+  const startedAt = new Date();
+  const result: ChartOfAccountsPullResult = {
+    pulled: 0,
+    created: 0,
+    updated: 0,
+    deactivated: 0,
+    total: 0,
+  };
+
+  try {
+    const rows = await queryQboPaged<QboAccountPayload>(
+      ctx,
+      "SELECT * FROM Account",
+      "Account",
+    );
+    result.pulled = rows.length;
+
+    const seenQboIds = new Set<string>();
+
+    for (const a of rows) {
+      const qboId = String(a.Id);
+      seenQboIds.add(qboId);
+      const isActive = a.Active !== false;
+      const existing = await prisma.glAccount.findFirst({
+        where: { tenantId, locationId, qboAccountId: qboId },
+        select: { id: true },
+      });
+      const accountNumber = (a.AcctNum && a.AcctNum.trim()) || `QBO-${qboId}`;
+      const data = {
+        accountNumber,
+        name: (a.Name ?? "Unnamed").slice(0, 200),
+        type: mapQboAccountType(a.AccountType),
+        subType: a.AccountSubType ?? null,
+        qboAccountId: qboId,
+        source: GlAccountSource.QBO,
+        // Mirror both columns so legacy filters keep working alongside
+        // the new isActive-aware ones (see settings.ts schema comment).
+        isActive,
+        active: isActive,
+      };
+      if (existing) {
+        await prisma.glAccount.update({
+          where: { id: existing.id },
+          data,
+        });
+        result.updated++;
+      } else {
+        try {
+          await prisma.glAccount.create({
+            data: { tenantId, locationId, ...data },
+          });
+          result.created++;
+        } catch (err) {
+          // Unique conflict on (tenantId, locationId, accountNumber) — likely
+          // an earlier MANUAL row with the same number. Re-bind it to QBO.
+          const conflict = await prisma.glAccount.findFirst({
+            where: { tenantId, locationId, accountNumber },
+            select: { id: true },
+          });
+          if (conflict) {
+            await prisma.glAccount.update({
+              where: { id: conflict.id },
+              data,
+            });
+            result.updated++;
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+
+    // Mark any QBO-sourced rows we didn't see this pull as inactive.
+    const stale = await prisma.glAccount.findMany({
+      where: {
+        tenantId,
+        locationId,
+        source: GlAccountSource.QBO,
+        isActive: true,
+        qboAccountId: { notIn: Array.from(seenQboIds) },
+      },
+      select: { id: true },
+    });
+    if (stale.length > 0) {
+      await prisma.glAccount.updateMany({
+        where: { id: { in: stale.map((s) => s.id) } },
+        data: { isActive: false, active: false },
+      });
+      result.deactivated = stale.length;
+    }
+
+    result.total = await prisma.glAccount.count({
+      where: { tenantId, locationId, isActive: true },
+    });
+
+    await prisma.location.update({
+      where: { id: locationId },
+      data: { qboLastChartOfAccountsSyncAt: startedAt },
+    });
+
+    await auditLog(tenantId, "QBO_CHART_OF_ACCOUNTS_PULLED", {
+      locationId,
+      counts: result,
+    });
+
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await auditLog(tenantId, "QBO_CHART_OF_ACCOUNTS_PULL_FAILED", {
+      locationId,
+      error: msg,
+    });
+    throw err;
+  }
 }
 
 // ===========================================================================
@@ -2611,7 +2844,7 @@ async function writePullWatermark(
 async function queryQboPaged<T>(
   ctx: QboCredentialContext,
   selectExpr: string,
-  rowsKey: "Vendor" | "Bill",
+  rowsKey: "Vendor" | "Bill" | "Account",
 ): Promise<T[]> {
   const PAGE_SIZE = 100;
   let startPosition = 1;

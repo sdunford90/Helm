@@ -9,6 +9,10 @@ import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { stripe, requireStripe } from "../lib/stripe.js";
 import { issueOAuthState } from "../lib/oauth-state.js";
+import {
+  getMissingGlAccountWarnings,
+  isLocationQboConnected,
+} from "../services/gl-account-resolver.js";
 
 const router: Router = Router();
 
@@ -1334,6 +1338,30 @@ async function assertGlAccountBelongsToTenant(glAccountId: string, tenantId: str
   return acct !== null;
 }
 
+// Helper: when a catalog item (dockage rate / service fee) is created or
+// updated through its legacy single-glAccountId field, enforce per-location
+// integrity for QBO-connected locations. The chosen GL account must belong
+// to the same location's chart-of-accounts. For non-QBO locations, the
+// legacy tenant-scoped check applies.
+async function assertGlAccountForCatalogItem(
+  tenantId: string,
+  locationId: string,
+  glAccountId: string,
+): Promise<void> {
+  const acct = await prisma.glAccount.findFirst({
+    where: { id: glAccountId, tenantId },
+    select: { id: true, locationId: true },
+  });
+  if (!acct) throw new Error(`GL account ${glAccountId} not found`);
+  if (await isLocationQboConnected(locationId)) {
+    if (acct.locationId !== locationId) {
+      throw new Error(
+        `GL account ${glAccountId} belongs to a different location`,
+      );
+    }
+  }
+}
+
 // ==========================================================================
 // CATALOG — DOCKAGE RATES  (location-scoped)
 // ==========================================================================
@@ -1362,8 +1390,13 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
     if (!locationId || !slipType || monthlyRateCents == null) {
       res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
     }
-    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
-      res.status(400).json({ error: "GL account not found" }); return;
+    if (glAccountId) {
+      try {
+        await assertGlAccountForCatalogItem(req.tenantId!, locationId, glAccountId);
+      } catch (e) {
+        res.status(400).json({ error: (e as Error).message });
+        return;
+      }
     }
     const rate = await prisma.dockageRate.create({
       data: {
@@ -1382,6 +1415,18 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
         effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
       },
     });
+    if (glAccountId !== undefined && (await isLocationQboConnected(locationId))) {
+      await prisma.dockageRateGlMapping.upsert({
+        where: { dockageRateId_locationId: { dockageRateId: rate.id, locationId } },
+        create: {
+          tenantId: req.tenantId!,
+          dockageRateId: rate.id,
+          locationId,
+          glAccountId: glAccountId ?? null,
+        },
+        update: { glAccountId: glAccountId ?? null },
+      });
+    }
     res.status(201).json({ data: rate });
   } catch (err) { next(err); }
 });
@@ -1395,7 +1440,14 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
       slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
-    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+    if (glAccountId && existing.locationId) {
+      try {
+        await assertGlAccountForCatalogItem(req.tenantId!, existing.locationId, glAccountId);
+      } catch (e) {
+        res.status(400).json({ error: (e as Error).message });
+        return;
+      }
+    } else if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
       res.status(400).json({ error: "GL account not found" }); return;
     }
     const updated = await prisma.dockageRate.update({
@@ -1414,6 +1466,31 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
         ...(effectiveTo !== undefined && { effectiveTo: effectiveTo ? new Date(effectiveTo) : null }),
       },
     });
+    // Dual-write the per-location mapping table only for QBO-connected
+    // locations so the new resolver / warning helper picks up edits made
+    // via the legacy field. Validation above guarantees same-location
+    // ownership before this write.
+    if (
+      glAccountId !== undefined
+      && existing.locationId
+      && (await isLocationQboConnected(existing.locationId))
+    ) {
+      await prisma.dockageRateGlMapping.upsert({
+        where: {
+          dockageRateId_locationId: {
+            dockageRateId: req.params.id,
+            locationId: existing.locationId,
+          },
+        },
+        create: {
+          tenantId: req.tenantId!,
+          dockageRateId: req.params.id,
+          locationId: existing.locationId,
+          glAccountId: glAccountId ?? null,
+        },
+        update: { glAccountId: glAccountId ?? null },
+      });
+    }
     res.json({ data: updated });
   } catch (err) { next(err); }
 });
@@ -1453,8 +1530,13 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
     if (!locationId || !name) {
       res.status(400).json({ error: "locationId and name are required" }); return;
     }
-    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
-      res.status(400).json({ error: "GL account not found" }); return;
+    if (glAccountId) {
+      try {
+        await assertGlAccountForCatalogItem(req.tenantId!, locationId, glAccountId);
+      } catch (e) {
+        res.status(400).json({ error: (e as Error).message });
+        return;
+      }
     }
     const fee = await prisma.serviceFee.create({
       data: {
@@ -1469,6 +1551,18 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
         active: active ?? true,
       },
     });
+    if (glAccountId !== undefined && (await isLocationQboConnected(locationId))) {
+      await prisma.serviceFeeGlMapping.upsert({
+        where: { serviceFeeId_locationId: { serviceFeeId: fee.id, locationId } },
+        create: {
+          tenantId: req.tenantId!,
+          serviceFeeId: fee.id,
+          locationId,
+          glAccountId: glAccountId ?? null,
+        },
+        update: { glAccountId: glAccountId ?? null },
+      });
+    }
     res.status(201).json({ data: fee });
   } catch (err) { next(err); }
 });
@@ -1479,7 +1573,14 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
     const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
     const { name, feeType, amountCents, pct, glAccountId, taxClass, active } = req.body;
-    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
+    if (glAccountId && existing.locationId) {
+      try {
+        await assertGlAccountForCatalogItem(req.tenantId!, existing.locationId, glAccountId);
+      } catch (e) {
+        res.status(400).json({ error: (e as Error).message });
+        return;
+      }
+    } else if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, req.tenantId!))) {
       res.status(400).json({ error: "GL account not found" }); return;
     }
     const updated = await prisma.serviceFee.update({
@@ -1494,6 +1595,27 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
         ...(active !== undefined && { active }),
       },
     });
+    if (
+      glAccountId !== undefined
+      && existing.locationId
+      && (await isLocationQboConnected(existing.locationId))
+    ) {
+      await prisma.serviceFeeGlMapping.upsert({
+        where: {
+          serviceFeeId_locationId: {
+            serviceFeeId: req.params.id,
+            locationId: existing.locationId,
+          },
+        },
+        create: {
+          tenantId: req.tenantId!,
+          serviceFeeId: req.params.id,
+          locationId: existing.locationId,
+          glAccountId: glAccountId ?? null,
+        },
+        update: { glAccountId: glAccountId ?? null },
+      });
+    }
     res.json({ data: updated });
   } catch (err) { next(err); }
 });
@@ -1547,15 +1669,25 @@ const glAccountSchema = z.object({
   description: z.string().max(500).optional().nullable(),
   qboAccountId: z.string().max(200).optional().nullable(),
   isDeferredRevenue: z.boolean().optional(),
+  // `active` is the legacy boolean; `isActive` is the QBO-aligned name added
+  // alongside per-location chart of accounts. Both columns exist on the row
+  // and we keep them synchronized in writes — accept either from the client
+  // and mirror to both when persisting.
   active: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  locationId: z.string().optional().nullable(),
 });
 
-// GET /api/settings/gl-accounts
-router.get("/gl-accounts", async (req, res, next) => {
+// GET /api/settings/gl-accounts?locationId=...
+router.get("/gl-accounts", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId;
+    const tenantId = req.tenantId!;
+    const locationId = typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+    const where: any = { tenantId };
+    if (locationId === "TENANT") where.locationId = null;
+    else if (locationId) where.locationId = locationId;
     const accounts = await prisma.glAccount.findMany({
-      where: { tenantId },
+      where,
       select: {
         id: true,
         accountNumber: true,
@@ -1565,9 +1697,13 @@ router.get("/gl-accounts", async (req, res, next) => {
         description: true,
         isDeferredRevenue: true,
         active: true,
+        isActive: true,
         qboAccountId: true,
+        source: true,
+        locationId: true,
+        location: { select: { id: true, name: true } },
       },
-      orderBy: { accountNumber: "asc" },
+      orderBy: [{ locationId: "asc" }, { accountNumber: "asc" }],
     });
     res.json({ data: accounts });
   } catch (err) {
@@ -1578,21 +1714,29 @@ router.get("/gl-accounts", async (req, res, next) => {
 // POST /api/settings/gl-accounts
 router.post("/gl-accounts", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId!;
+    const tenantId = req.tenantId!;
     const body = glAccountSchema.parse(req.body);
 
-    // Check for duplicate account number within tenant
+    const locationId = body.locationId ?? null;
+    if (locationId) {
+      const loc = await prisma.location.findFirst({ where: { id: locationId, tenantId } });
+      if (!loc) { res.status(404).json({ error: "Location not found" }); return; }
+    }
+
+    // Check for duplicate account number within tenant + same scope
     const existing = await prisma.glAccount.findFirst({
-      where: { tenantId, accountNumber: body.accountNumber },
+      where: { tenantId, accountNumber: body.accountNumber, locationId },
     });
     if (existing) {
       res.status(409).json({ error: "An account with this number already exists" });
       return;
     }
 
+    const activeFlag = body.isActive ?? body.active ?? true;
     const account = await prisma.glAccount.create({
       data: {
         tenantId,
+        locationId,
         accountNumber: body.accountNumber,
         name: body.name,
         type: body.type,
@@ -1600,7 +1744,10 @@ router.post("/gl-accounts", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
         description: body.description ?? null,
         qboAccountId: body.qboAccountId ?? null,
         isDeferredRevenue: body.isDeferredRevenue ?? false,
-        active: body.active ?? true,
+        // Mirror both columns on every write — see schema comment.
+        active: activeFlag,
+        isActive: activeFlag,
+        source: "MANUAL",
       },
     });
     res.status(201).json({ data: account });
@@ -1616,7 +1763,7 @@ router.post("/gl-accounts", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
 // PUT /api/settings/gl-accounts/:id
 router.put("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId!;
+    const tenantId = req.tenantId!;
     const existing = await prisma.glAccount.findFirst({
       where: { id: req.params.id, tenantId },
     });
@@ -1626,11 +1773,21 @@ router.put("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARI
     }
 
     const body = glAccountSchema.partial().parse(req.body);
+    const isQboSourced = existing.source === "QBO";
 
-    // If changing account number, check for duplicates
+    // If changing account number, check for duplicates within the same scope
     if (body.accountNumber && body.accountNumber !== existing.accountNumber) {
+      if (isQboSourced) {
+        res.status(409).json({ error: "Account number is managed by QuickBooks for this account", code: "QBO_LOCKED_FIELD" });
+        return;
+      }
       const dup = await prisma.glAccount.findFirst({
-        where: { tenantId, accountNumber: body.accountNumber, id: { not: existing.id } },
+        where: {
+          tenantId,
+          accountNumber: body.accountNumber,
+          locationId: existing.locationId,
+          id: { not: existing.id },
+        },
       });
       if (dup) {
         res.status(409).json({ error: "An account with this number already exists" });
@@ -1638,18 +1795,38 @@ router.put("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARI
       }
     }
 
+    // QBO-sourced rows: only isDeferredRevenue / isActive are editable.
+    type GlAccountUpdate = {
+      accountNumber?: string;
+      name?: string;
+      type?: typeof body.type;
+      subType?: string | null;
+      description?: string | null;
+      qboAccountId?: string | null;
+      isDeferredRevenue?: boolean;
+      active?: boolean;
+      isActive?: boolean;
+    };
+    const data: GlAccountUpdate = {};
+    if (!isQboSourced) {
+      if (body.accountNumber != null) data.accountNumber = body.accountNumber;
+      if (body.name != null) data.name = body.name;
+      if (body.type != null) data.type = body.type;
+      if (body.subType !== undefined) data.subType = body.subType;
+      if (body.description !== undefined) data.description = body.description;
+      if (body.qboAccountId !== undefined) data.qboAccountId = body.qboAccountId;
+    }
+    if (body.isDeferredRevenue !== undefined) data.isDeferredRevenue = body.isDeferredRevenue;
+    // Mirror active/isActive together — clients may send either field.
+    const nextActive = body.isActive ?? body.active;
+    if (nextActive !== undefined) {
+      data.active = nextActive;
+      data.isActive = nextActive;
+    }
+
     const updated = await prisma.glAccount.update({
       where: { id: req.params.id },
-      data: {
-        ...(body.accountNumber != null && { accountNumber: body.accountNumber }),
-        ...(body.name != null && { name: body.name }),
-        ...(body.type != null && { type: body.type }),
-        ...(body.subType !== undefined && { subType: body.subType }),
-        ...(body.description !== undefined && { description: body.description }),
-        ...(body.qboAccountId !== undefined && { qboAccountId: body.qboAccountId }),
-        ...(body.isDeferredRevenue !== undefined && { isDeferredRevenue: body.isDeferredRevenue }),
-        ...(body.active !== undefined && { active: body.active }),
-      },
+      data,
     });
     res.json({ data: updated });
   } catch (err) {
@@ -1664,7 +1841,7 @@ router.put("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARI
 // DELETE /api/settings/gl-accounts/:id
 router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId!;
+    const tenantId = req.tenantId!;
     const existing = await prisma.glAccount.findFirst({
       where: { id: req.params.id, tenantId },
     });
@@ -1708,10 +1885,12 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
       where: { accountId: req.params.id },
     });
     if (entryCount > 0) {
-      // Soft-delete: mark inactive instead of hard delete
+      // Soft-delete: mark inactive instead of hard delete. Mirror both
+      // legacy `active` and the new `isActive` columns so the row is
+      // hidden from QBO-aware filters and legacy filters alike.
       await prisma.glAccount.update({
         where: { id: req.params.id },
-        data: { active: false },
+        data: { active: false, isActive: false },
       });
       res.json({ success: true, archived: true, message: "Account has posted entries — it has been archived rather than deleted." });
       return;
@@ -1729,7 +1908,7 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
 // PUT /api/settings/catalog/rental-products/:id/gl-account
 router.put("/catalog/rental-products/:id/gl-account", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId!;
+    const tenantId = req.tenantId!;
     const { glAccountId } = req.body;
     const existing = await prisma.rentalProduct.findFirst({ where: { id: req.params.id, tenantId } });
     if (!existing) { res.status(404).json({ error: "Rental product not found" }); return; }
@@ -1750,53 +1929,625 @@ router.put("/catalog/rental-products/:id/gl-account", ...clerkAuth(), requireRol
 // Returns a unified view of all product-generating catalog entries
 router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"), async (req, res, next) => {
   try {
-    const tenantId = (req as any).tenantId!;
+    const tenantId = req.tenantId!;
     const { locationId } = req.query as { locationId?: string };
     const where: any = { tenantId };
     if (locationId) where.locationId = locationId;
 
-    const [dockageRates, serviceFees, rentalProducts, glAccounts] = await Promise.all([
-      prisma.dockageRate.findMany({
-        where,
-        orderBy: [{ slipType: "asc" }],
-        include: { location: { select: { name: true } } },
-      }),
-      prisma.serviceFee.findMany({
-        where,
-        orderBy: { name: "asc" },
-        include: { location: { select: { name: true } } },
-      }),
-      prisma.rentalProduct.findMany({
-        where: { tenantId },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true, category: true, glAccountId: true, active: true },
-      }),
-      prisma.glAccount.findMany({
-        where: { tenantId, active: true, type: "REVENUE" },
-        select: { id: true, accountNumber: true, name: true },
-        orderBy: { accountNumber: "asc" },
-      }),
-    ]);
+    const [dockageRates, serviceFees, rentalProducts, glAccounts, drMappings, sfMappings] =
+      await Promise.all([
+        prisma.dockageRate.findMany({
+          where,
+          orderBy: [{ slipType: "asc" }],
+          include: { location: { select: { name: true } } },
+        }),
+        prisma.serviceFee.findMany({
+          where,
+          orderBy: { name: "asc" },
+          include: { location: { select: { name: true } } },
+        }),
+        prisma.rentalProduct.findMany({
+          where: { tenantId },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true, category: true, glAccountId: true, active: true },
+        }),
+        prisma.glAccount.findMany({
+          where: { tenantId, active: true, isActive: true, type: "REVENUE" },
+          select: { id: true, accountNumber: true, name: true, locationId: true },
+          orderBy: [{ locationId: "asc" }, { accountNumber: "asc" }],
+        }),
+        prisma.dockageRateGlMapping.findMany({ where: { tenantId } }),
+        prisma.serviceFeeGlMapping.findMany({ where: { tenantId } }),
+      ]);
+
+    // Overlay per-location mapping onto the legacy FK so the UI sees the
+    // effective value. Per-location mapping wins when present.
+    const drMap = new Map<string, string | null>();
+    for (const m of drMappings) {
+      drMap.set(`${m.dockageRateId}|${m.locationId}`, m.glAccountId ?? null);
+    }
+    const sfMap = new Map<string, string | null>();
+    for (const m of sfMappings) {
+      sfMap.set(`${m.serviceFeeId}|${m.locationId}`, m.glAccountId ?? null);
+    }
+    const dockageRatesEnriched = dockageRates.map((r) => {
+      const override = drMap.get(`${r.id}|${r.locationId}`);
+      return { ...r, glAccountId: override !== undefined ? override : r.glAccountId };
+    });
+    const serviceFeesEnriched = serviceFees.map((f) => {
+      const override = sfMap.get(`${f.id}|${f.locationId}`);
+      return { ...f, glAccountId: override !== undefined ? override : f.glAccountId };
+    });
 
     // Count unconfigured items (no GL account)
     const unconfiguredCount =
-      dockageRates.filter((r) => !r.glAccountId).length +
-      serviceFees.filter((f) => !f.glAccountId).length +
+      dockageRatesEnriched.filter((r) => !r.glAccountId).length +
+      serviceFeesEnriched.filter((f) => !f.glAccountId).length +
       rentalProducts.filter((p) => p.active && !p.glAccountId).length;
 
+    const warnings = await getMissingGlAccountWarnings(tenantId);
     res.json({
       data: {
-        dockageRates,
-        serviceFees,
+        dockageRates: dockageRatesEnriched,
+        serviceFees: serviceFeesEnriched,
         rentalProducts,
         glAccounts,
         unconfiguredCount,
         hasGlAccounts: glAccounts.length > 0,
+        missingMappingWarnings: warnings,
       },
     });
   } catch (err) {
     next(err);
   }
 });
+
+// ─── PER-LOCATION GL MAPPINGS ────────────────────────────────────────────────
+//
+// Each catalog item (product, category, dockage rate, service fee) can have
+// a GlAccount mapping per location. These endpoints return one row per
+// location for the tenant: { locationId, locationName, override, effective }.
+// Effective resolution: per-location override → category default → tenant
+// legacy FK → null. Write endpoints validate that the chosen GL account
+// belongs to the same location.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const productMappingPutSchema = z.object({
+  revenueGlAccountId: z.string().nullable().optional(),
+  cogsGlAccountId: z.string().nullable().optional(),
+  inventoryAssetGlAccountId: z.string().nullable().optional(),
+});
+
+const singleMappingPutSchema = z.object({
+  glAccountId: z.string().nullable().optional(),
+});
+
+async function listLocations(tenantId: string) {
+  return prisma.location.findMany({
+    where: { tenantId },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+}
+
+async function validateGlAccountForLocation(
+  tenantId: string,
+  locationId: string,
+  glAccountId: string | null | undefined,
+) {
+  if (!glAccountId) return;
+  const a = await prisma.glAccount.findFirst({
+    where: { id: glAccountId, tenantId },
+    select: { id: true, locationId: true },
+  });
+  if (!a) throw new Error(`GL account ${glAccountId} not found`);
+  // For QBO-connected locations every mapping has to point at an account
+  // pulled from that location's QBO chart — tenant-wide and other-location
+  // accounts are rejected so postings cannot land in the wrong realm.
+  // For non-QBO locations we still accept tenant-wide accounts (locationId
+  // === null) so single-chart tenants can keep using their legacy chart as
+  // a coherent fallback. Other locations' accounts are always rejected.
+  if (a.locationId === locationId) return;
+  if (a.locationId === null && !(await isLocationQboConnected(locationId))) {
+    return;
+  }
+  throw new Error(
+    `GL account ${glAccountId} belongs to a different location`,
+  );
+}
+
+// GET /api/settings/products/:id/gl-mappings
+router.get(
+  "/products/:id/gl-mappings",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const product = await prisma.product.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: {
+          id: true,
+          revenueGlAccountId: true,
+          cogsGlAccountId: true,
+          inventoryAssetGlAccountId: true,
+          productCategoryId: true,
+          productCategory: {
+            select: {
+              defaultRevenueGlAccountId: true,
+              defaultCogsGlAccountId: true,
+              defaultInventoryAssetGlAccountId: true,
+            },
+          },
+        },
+      });
+      if (!product) {
+        res.status(404).json({ error: "Product not found" });
+        return;
+      }
+      const [locs, mappings] = await Promise.all([
+        listLocations(tenantId),
+        prisma.productGlMapping.findMany({
+          where: { tenantId, productId: req.params.id },
+        }),
+      ]);
+      const cat = product.productCategoryId
+        ? await prisma.productCategoryGlMapping.findMany({
+            where: {
+              tenantId,
+              productCategoryId: product.productCategoryId,
+            },
+          })
+        : [];
+      const catByLoc = new Map<string, (typeof cat)[number]>();
+      for (const m of cat) catByLoc.set(m.locationId, m);
+      // Determine QBO-connected locations so the "effective" view stops
+      // falling back to tenant-level FKs once a location has its own chart.
+      // This keeps the client UI honest about unmapped state and matches the
+      // resolver behaviour used by gl-posting / qbo-sync.
+      const qboFlags = await Promise.all(
+        locs.map((l) => isLocationQboConnected(l.id)),
+      );
+      const data = locs.map((l, i) => {
+        const mm = mappings.find((m) => m.locationId === l.id);
+        const cm = catByLoc.get(l.id);
+        const qboConnected = qboFlags[i];
+        const legacy = qboConnected
+          ? {
+              revenueGlAccountId: null,
+              cogsGlAccountId: null,
+              inventoryAssetGlAccountId: null,
+            }
+          : {
+              revenueGlAccountId:
+                product.revenueGlAccountId ??
+                product.productCategory?.defaultRevenueGlAccountId ??
+                null,
+              cogsGlAccountId:
+                product.cogsGlAccountId ??
+                product.productCategory?.defaultCogsGlAccountId ??
+                null,
+              inventoryAssetGlAccountId:
+                product.inventoryAssetGlAccountId ??
+                product.productCategory?.defaultInventoryAssetGlAccountId ??
+                null,
+            };
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          qboConnected,
+          override: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+          effective: {
+            revenueGlAccountId:
+              mm?.revenueGlAccountId ??
+              cm?.revenueGlAccountId ??
+              legacy.revenueGlAccountId,
+            cogsGlAccountId:
+              mm?.cogsGlAccountId ??
+              cm?.cogsGlAccountId ??
+              legacy.cogsGlAccountId,
+            inventoryAssetGlAccountId:
+              mm?.inventoryAssetGlAccountId ??
+              cm?.inventoryAssetGlAccountId ??
+              legacy.inventoryAssetGlAccountId,
+          },
+        };
+      });
+      res.json({ data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/settings/products/:id/gl-mappings/:locationId
+router.put(
+  "/products/:id/gl-mappings/:locationId",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = productMappingPutSchema.parse(req.body);
+      const { id, locationId } = req.params;
+      const [product, location] = await Promise.all([
+        prisma.product.findFirst({
+          where: { id, tenantId },
+          select: { id: true },
+        }),
+        prisma.location.findFirst({
+          where: { id: locationId, tenantId },
+          select: { id: true },
+        }),
+      ]);
+      if (!product) {
+        res.status(404).json({ error: "Product not found" });
+        return;
+      }
+      if (!location) {
+        res.status(404).json({ error: "Location not found" });
+        return;
+      }
+      await Promise.all([
+        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
+        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
+        validateGlAccountForLocation(
+          tenantId,
+          locationId,
+          body.inventoryAssetGlAccountId,
+        ),
+      ]);
+      const data = {
+        revenueGlAccountId: body.revenueGlAccountId ?? null,
+        cogsGlAccountId: body.cogsGlAccountId ?? null,
+        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+      };
+      const result = await prisma.productGlMapping.upsert({
+        where: { productId_locationId: { productId: id, locationId } },
+        create: { tenantId, productId: id, locationId, ...data },
+        update: data,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not found") || msg.includes("different location")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// GET /api/settings/product-categories/:id/gl-mappings
+router.get(
+  "/product-categories/:id/gl-mappings",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const cat = await prisma.productCategory.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: {
+          id: true,
+          defaultRevenueGlAccountId: true,
+          defaultCogsGlAccountId: true,
+          defaultInventoryAssetGlAccountId: true,
+        },
+      });
+      if (!cat) {
+        res.status(404).json({ error: "Category not found" });
+        return;
+      }
+      const [locs, mappings] = await Promise.all([
+        listLocations(tenantId),
+        prisma.productCategoryGlMapping.findMany({
+          where: { tenantId, productCategoryId: req.params.id },
+        }),
+      ]);
+      const qboFlags = await Promise.all(
+        locs.map((l) => isLocationQboConnected(l.id)),
+      );
+      const data = locs.map((l, i) => {
+        const mm = mappings.find((m) => m.locationId === l.id);
+        const qboConnected = qboFlags[i];
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          qboConnected,
+          override: {
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
+            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
+            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
+          },
+          effective: {
+            revenueGlAccountId:
+              mm?.revenueGlAccountId ??
+              (qboConnected ? null : cat.defaultRevenueGlAccountId ?? null),
+            cogsGlAccountId:
+              mm?.cogsGlAccountId ??
+              (qboConnected ? null : cat.defaultCogsGlAccountId ?? null),
+            inventoryAssetGlAccountId:
+              mm?.inventoryAssetGlAccountId ??
+              (qboConnected
+                ? null
+                : cat.defaultInventoryAssetGlAccountId ?? null),
+          },
+        };
+      });
+      res.json({ data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/settings/product-categories/:id/gl-mappings/:locationId
+router.put(
+  "/product-categories/:id/gl-mappings/:locationId",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = productMappingPutSchema.parse(req.body);
+      const { id, locationId } = req.params;
+      const [cat, location] = await Promise.all([
+        prisma.productCategory.findFirst({
+          where: { id, tenantId },
+          select: { id: true },
+        }),
+        prisma.location.findFirst({
+          where: { id: locationId, tenantId },
+          select: { id: true },
+        }),
+      ]);
+      if (!cat) {
+        res.status(404).json({ error: "Category not found" });
+        return;
+      }
+      if (!location) {
+        res.status(404).json({ error: "Location not found" });
+        return;
+      }
+      await Promise.all([
+        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
+        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
+        validateGlAccountForLocation(
+          tenantId,
+          locationId,
+          body.inventoryAssetGlAccountId,
+        ),
+      ]);
+      const data = {
+        revenueGlAccountId: body.revenueGlAccountId ?? null,
+        cogsGlAccountId: body.cogsGlAccountId ?? null,
+        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
+      };
+      const result = await prisma.productCategoryGlMapping.upsert({
+        where: {
+          productCategoryId_locationId: { productCategoryId: id, locationId },
+        },
+        create: { tenantId, productCategoryId: id, locationId, ...data },
+        update: data,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not found") || msg.includes("different location")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// GET /api/settings/catalog/dockage-rates/:id/gl-mappings
+router.get(
+  "/catalog/dockage-rates/:id/gl-mappings",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const rate = await prisma.dockageRate.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true, locationId: true, glAccountId: true },
+      });
+      if (!rate) {
+        res.status(404).json({ error: "Dockage rate not found" });
+        return;
+      }
+      const [locs, mappings] = await Promise.all([
+        listLocations(tenantId),
+        prisma.dockageRateGlMapping.findMany({
+          where: { tenantId, dockageRateId: req.params.id },
+        }),
+      ]);
+      const ownLocations = locs.filter((l) => l.id === rate.locationId);
+      const qboFlags = await Promise.all(
+        ownLocations.map((l) => isLocationQboConnected(l.id)),
+      );
+      const data = ownLocations.map((l, i) => {
+        const mm = mappings.find((m) => m.locationId === l.id);
+        const qboConnected = qboFlags[i];
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          qboConnected,
+          override: { glAccountId: mm?.glAccountId ?? null },
+          effective: {
+            glAccountId:
+              mm?.glAccountId ??
+              (qboConnected ? null : rate.glAccountId ?? null),
+          },
+        };
+      });
+      res.json({ data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/settings/catalog/dockage-rates/:id/gl-mappings/:locationId
+router.put(
+  "/catalog/dockage-rates/:id/gl-mappings/:locationId",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = singleMappingPutSchema.parse(req.body);
+      const { id, locationId } = req.params;
+      const rate = await prisma.dockageRate.findFirst({
+        where: { id, tenantId },
+        select: { id: true, locationId: true },
+      });
+      if (!rate) {
+        res.status(404).json({ error: "Dockage rate not found" });
+        return;
+      }
+      if (rate.locationId !== locationId) {
+        res.status(400).json({
+          error: "Dockage rate does not belong to that location",
+        });
+        return;
+      }
+      await validateGlAccountForLocation(tenantId, locationId, body.glAccountId);
+      const data = { glAccountId: body.glAccountId ?? null };
+      const result = await prisma.dockageRateGlMapping.upsert({
+        where: {
+          dockageRateId_locationId: { dockageRateId: id, locationId },
+        },
+        create: { tenantId, dockageRateId: id, locationId, ...data },
+        update: data,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not found") || msg.includes("different location")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// GET /api/settings/catalog/service-fees/:id/gl-mappings
+router.get(
+  "/catalog/service-fees/:id/gl-mappings",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const fee = await prisma.serviceFee.findFirst({
+        where: { id: req.params.id, tenantId },
+        select: { id: true, locationId: true, glAccountId: true },
+      });
+      if (!fee) {
+        res.status(404).json({ error: "Service fee not found" });
+        return;
+      }
+      const [locs, mappings] = await Promise.all([
+        listLocations(tenantId),
+        prisma.serviceFeeGlMapping.findMany({
+          where: { tenantId, serviceFeeId: req.params.id },
+        }),
+      ]);
+      const ownLocations = locs.filter((l) => l.id === fee.locationId);
+      const qboFlags = await Promise.all(
+        ownLocations.map((l) => isLocationQboConnected(l.id)),
+      );
+      const data = ownLocations.map((l, i) => {
+        const mm = mappings.find((m) => m.locationId === l.id);
+        const qboConnected = qboFlags[i];
+        return {
+          locationId: l.id,
+          locationName: l.name,
+          qboConnected,
+          override: { glAccountId: mm?.glAccountId ?? null },
+          effective: {
+            glAccountId:
+              mm?.glAccountId ??
+              (qboConnected ? null : fee.glAccountId ?? null),
+          },
+        };
+      });
+      res.json({ data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PUT /api/settings/catalog/service-fees/:id/gl-mappings/:locationId
+router.put(
+  "/catalog/service-fees/:id/gl-mappings/:locationId",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const body = singleMappingPutSchema.parse(req.body);
+      const { id, locationId } = req.params;
+      const fee = await prisma.serviceFee.findFirst({
+        where: { id, tenantId },
+        select: { id: true, locationId: true },
+      });
+      if (!fee) {
+        res.status(404).json({ error: "Service fee not found" });
+        return;
+      }
+      if (fee.locationId !== locationId) {
+        res.status(400).json({
+          error: "Service fee does not belong to that location",
+        });
+        return;
+      }
+      await validateGlAccountForLocation(tenantId, locationId, body.glAccountId);
+      const data = { glAccountId: body.glAccountId ?? null };
+      const result = await prisma.serviceFeeGlMapping.upsert({
+        where: {
+          serviceFeeId_locationId: { serviceFeeId: id, locationId },
+        },
+        create: { tenantId, serviceFeeId: id, locationId, ...data },
+        update: data,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not found") || msg.includes("different location")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
 
 export default router;

@@ -64,6 +64,11 @@ const TENANT_SCOPED_MODELS = new Set([
   "CustomerDocument",
   "CardExpiryReminder",
   "PaymentRefund",
+  "GlAccount",
+  "ProductGlMapping",
+  "ProductCategoryGlMapping",
+  "DockageRateGlMapping",
+  "ServiceFeeGlMapping",
 ]);
 
 // --------------------------------------------------------------------------

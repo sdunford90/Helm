@@ -9,7 +9,11 @@ import {
   getStatus,
   disconnect,
   pullVendorsAndBillsForTenant,
+  getLocationsQboStatus,
+  pullChartOfAccountsForLocation,
 } from "../services/qbo-sync.js";
+import { prisma } from "../lib/prisma.js";
+import { getMissingGlAccountWarnings } from "../services/gl-account-resolver.js";
 import {
   listDeliveries,
   replayDelivery,
@@ -222,6 +226,97 @@ router.post(
       const tenantId = req.tenantId!;
       const result = await pullVendorsAndBillsForTenant(tenantId);
       res.json({ success: true, ...result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// GET /locations/status — per-location QBO connection status
+// --------------------------------------------------------------------------
+
+router.get(
+  "/locations/status",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const [locations, warnings] = await Promise.all([
+        getLocationsQboStatus(tenantId),
+        getMissingGlAccountWarnings(tenantId),
+      ]);
+      const warningByLoc = new Map(warnings.map((w) => [w.locationId, w]));
+      const data = locations.map((l) => ({
+        ...l,
+        missingMappings: warningByLoc.get(l.locationId)?.totalIssues ?? 0,
+      }));
+      res.json({ data, warnings });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// POST /locations/:locationId/sync-chart-of-accounts
+// --------------------------------------------------------------------------
+
+router.post(
+  "/locations/:locationId/sync-chart-of-accounts",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { locationId } = req.params;
+      const result = await pullChartOfAccountsForLocation(locationId, tenantId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("not connected") || msg.includes("not found")) {
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
+// GET /locations/:locationId/chart-of-accounts
+// --------------------------------------------------------------------------
+
+router.get(
+  "/locations/:locationId/chart-of-accounts",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { locationId } = req.params;
+      const loc = await prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true, qboLastChartOfAccountsSyncAt: true },
+      });
+      if (!loc) {
+        res.status(404).json({ error: "Location not found" });
+        return;
+      }
+      const accounts = await prisma.glAccount.findMany({
+        where: { tenantId, locationId },
+        orderBy: { accountNumber: "asc" },
+        select: {
+          id: true,
+          accountNumber: true,
+          name: true,
+          type: true,
+          subType: true,
+          qboAccountId: true,
+          source: true,
+          isActive: true,
+          isDeferredRevenue: true,
+        },
+      });
+      res.json({
+        data: accounts,
+        lastSyncAt: loc.qboLastChartOfAccountsSyncAt ?? null,
+      });
     } catch (err) {
       next(err);
     }

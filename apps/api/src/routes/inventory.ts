@@ -3,6 +3,7 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, GLAccountType } from "@prisma/client";
+import { resolveProductGlAccounts } from "../services/gl-account-resolver.js";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -33,6 +34,11 @@ type AdjustmentRow = Awaited<ReturnType<typeof prisma.inventoryAdjustment.findFi
 async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
   if (!product.trackInventory) return product;
   try {
+    const resolved = await resolveProductGlAccounts(
+      product.tenantId,
+      product.id,
+      product.locationId ?? null,
+    );
     const result = await syncInventoryItem(
       {
         productId: product.id,
@@ -42,9 +48,11 @@ async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
         priceCents: product.priceCents,
         costCents: product.costCents ?? 0,
         qoh: product.qoh,
-        incomeGlAccountId: product.revenueGlAccountId,
-        inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
-        cogsGlAccountId: product.cogsGlAccountId,
+        incomeGlAccountId:
+          resolved.revenueGlAccountId ?? product.revenueGlAccountId,
+        inventoryAssetGlAccountId:
+          resolved.inventoryAssetGlAccountId ?? product.inventoryAssetGlAccountId,
+        cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
       },
       product.tenantId,
       product.locationId,
@@ -78,6 +86,11 @@ async function tryPushAdjustmentJournal(
   // Skip reasons accounted for elsewhere (received → Bill, sold → auto-COGS)
   if (adjustment.reason === "received" || adjustment.reason === "sold") return;
   try {
+    const resolved = await resolveProductGlAccounts(
+      product.tenantId,
+      product.id,
+      product.locationId ?? null,
+    );
     const result = await postInventoryAdjustmentJournal(
       {
         adjustmentId: adjustment.id,
@@ -86,8 +99,9 @@ async function tryPushAdjustmentJournal(
         reason: adjustment.reason,
         quantityChange: adjustment.quantityChange,
         unitCostCents: product.costCents ?? 0,
-        inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
-        cogsGlAccountId: product.cogsGlAccountId,
+        inventoryAssetGlAccountId:
+          resolved.inventoryAssetGlAccountId ?? product.inventoryAssetGlAccountId,
+        cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
         notes: adjustment.notes,
       },
       product.tenantId,
@@ -655,6 +669,11 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
         .json({ error: "Product does not track inventory — only inventory items sync to QBO" });
     }
     try {
+      const resolved = await resolveProductGlAccounts(
+        product.tenantId,
+        product.id,
+        product.locationId ?? null,
+      );
       const result = await syncInventoryItem(
         {
           productId: product.id,
@@ -664,9 +683,12 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           priceCents: product.priceCents,
           costCents: product.costCents ?? 0,
           qoh: product.qoh,
-          incomeGlAccountId: product.revenueGlAccountId,
-          inventoryAssetGlAccountId: product.inventoryAssetGlAccountId,
-          cogsGlAccountId: product.cogsGlAccountId,
+          incomeGlAccountId:
+            resolved.revenueGlAccountId ?? product.revenueGlAccountId,
+          inventoryAssetGlAccountId:
+            resolved.inventoryAssetGlAccountId ??
+            product.inventoryAssetGlAccountId,
+          cogsGlAccountId: resolved.cogsGlAccountId ?? product.cogsGlAccountId,
         },
         product.tenantId,
         product.locationId,

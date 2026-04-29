@@ -174,6 +174,11 @@ enum GLAccountType {
   EXPENSE
 }
 
+enum GlAccountSource {
+  MANUAL
+  QBO
+}
+
 enum ReservationStatus {
   PENDING
   CONFIRMED
@@ -429,6 +434,8 @@ model Location {
   // Last time we pulled Vendors / Bills from QBO for this location.
   qboLastVendorPullAt DateTime?
   qboLastBillPullAt   DateTime?
+  // Last time the chart of accounts was pulled from QBO for this location.
+  qboLastChartOfAccountsSyncAt DateTime?
 
   // Per-location Stripe Connect (each property routes payments to its own account)
   stripeAccountId          String?
@@ -459,6 +466,11 @@ model Location {
   products       Product[]
   purchaseOrders PurchaseOrder[]
   userLocations  UserLocation[]
+  glAccounts                 GlAccount[]                @relation(name: "LocationGlAccounts")
+  productGlMappings          ProductGlMapping[]         @relation(name: "LocationProductGlMappings")
+  productCategoryGlMappings  ProductCategoryGlMapping[] @relation(name: "LocationProductCategoryGlMappings")
+  dockageRateGlMappings      DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
+  serviceFeeGlMappings       ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -1183,15 +1195,27 @@ model SecurityDeposit {
 model GlAccount {
   id                String        @id @default(uuid())
   tenantId          String
+  // Per-location chart of accounts. Null means tenant-wide / legacy manual
+  // entry (kept around so operators without a QBO connection still have a
+  // single chart they can fall back to).
+  locationId        String?
   accountNumber     String
   name              String
   type              GLAccountType
   subType           String?
   qboAccountId      String?
+  // Where the account came from. QBO accounts are pulled by the QuickBooks
+  // chart-of-accounts sync and should be treated as read-only on QBO-owned
+  // fields (number, name, type, qboAccountId).
+  source            GlAccountSource @default(MANUAL)
+  // Mirrors QBO's Active flag for QBO-sourced rows. Manual accounts use this
+  // for soft-delete archival when they have posted entries.
+  isActive          Boolean       @default(true)
   isDeferredRevenue Boolean       @default(false)
   active            Boolean       @default(true)
   description       String?
 
+  location               Location?         @relation(name: "LocationGlAccounts", fields: [locationId], references: [id])
   entries                GlEntry[]
   lineItems              InvoiceLineItem[]
   products               Product[]         @relation(name: "ProductGlAccount")
@@ -1203,8 +1227,110 @@ model GlAccount {
   productCategoriesCogs           ProductCategory[] @relation(name: "ProductCategoryCogsGlAccount")
   productCategoriesInventoryAsset ProductCategory[] @relation(name: "ProductCategoryInventoryAssetGlAccount")
 
+  productGlMappingsRevenue        ProductGlMapping[] @relation(name: "ProductGlMappingRevenue")
+  productGlMappingsCogs           ProductGlMapping[] @relation(name: "ProductGlMappingCogs")
+  productGlMappingsInventoryAsset ProductGlMapping[] @relation(name: "ProductGlMappingInventoryAsset")
+  productCategoryGlMappingsRevenue        ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingRevenue")
+  productCategoryGlMappingsCogs           ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingCogs")
+  productCategoryGlMappingsInventoryAsset ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingInventoryAsset")
+  dockageRateGlMappings           DockageRateGlMapping[]
+  serviceFeeGlMappings            ServiceFeeGlMapping[]
+
   @@index([tenantId])
+  @@index([locationId])
   @@map("gl_accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Per-location GL mapping tables — overlay the tenant-level FKs on
+// Product/ProductCategory/DockageRate/ServiceFee so operators can map each
+// item to the right account in each location's QBO chart of accounts. The
+// tenant-level FK on the source row is preserved as a legacy fallback so
+// nothing breaks during the rollout.
+// ---------------------------------------------------------------------------
+
+model ProductGlMapping {
+  id                        String   @id @default(uuid())
+  tenantId                  String
+  productId                 String
+  locationId                String
+  revenueGlAccountId        String?
+  cogsGlAccountId           String?
+  inventoryAssetGlAccountId String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @default(now()) @updatedAt
+
+  product                 Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  location                Location   @relation(name: "LocationProductGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  revenueGlAccount        GlAccount? @relation(name: "ProductGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
+  cogsGlAccount           GlAccount? @relation(name: "ProductGlMappingCogs", fields: [cogsGlAccountId], references: [id])
+  inventoryAssetGlAccount GlAccount? @relation(name: "ProductGlMappingInventoryAsset", fields: [inventoryAssetGlAccountId], references: [id])
+
+  @@unique([productId, locationId])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("product_gl_mappings")
+}
+
+model ProductCategoryGlMapping {
+  id                        String   @id @default(uuid())
+  tenantId                  String
+  productCategoryId         String
+  locationId                String
+  revenueGlAccountId        String?
+  cogsGlAccountId           String?
+  inventoryAssetGlAccountId String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @default(now()) @updatedAt
+
+  productCategory         ProductCategory @relation(fields: [productCategoryId], references: [id], onDelete: Cascade)
+  location                Location        @relation(name: "LocationProductCategoryGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  revenueGlAccount        GlAccount?      @relation(name: "ProductCategoryGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
+  cogsGlAccount           GlAccount?      @relation(name: "ProductCategoryGlMappingCogs", fields: [cogsGlAccountId], references: [id])
+  inventoryAssetGlAccount GlAccount?      @relation(name: "ProductCategoryGlMappingInventoryAsset", fields: [inventoryAssetGlAccountId], references: [id])
+
+  @@unique([productCategoryId, locationId])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("product_category_gl_mappings")
+}
+
+model DockageRateGlMapping {
+  id            String   @id @default(uuid())
+  tenantId      String
+  dockageRateId String
+  locationId    String
+  glAccountId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  dockageRate DockageRate @relation(fields: [dockageRateId], references: [id], onDelete: Cascade)
+  location    Location    @relation(name: "LocationDockageRateGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  glAccount   GlAccount?  @relation(fields: [glAccountId], references: [id])
+
+  @@unique([dockageRateId, locationId])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("dockage_rate_gl_mappings")
+}
+
+model ServiceFeeGlMapping {
+  id           String   @id @default(uuid())
+  tenantId     String
+  serviceFeeId String
+  locationId   String
+  glAccountId  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  serviceFee ServiceFee @relation(fields: [serviceFeeId], references: [id], onDelete: Cascade)
+  location   Location   @relation(name: "LocationServiceFeeGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  glAccount  GlAccount? @relation(fields: [glAccountId], references: [id])
+
+  @@unique([serviceFeeId, locationId])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("service_fee_gl_mappings")
 }
 
 model GlEntry {
@@ -1774,6 +1900,7 @@ model Product {
   adjustments             InventoryAdjustment[]
   poLineItems             PoLineItem[]
   countItems              InventoryCountItem[]
+  glMappings              ProductGlMapping[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -1802,6 +1929,7 @@ model ProductCategory {
   defaultCogsGlAccount           GlAccount? @relation(name: "ProductCategoryCogsGlAccount", fields: [defaultCogsGlAccountId], references: [id])
   defaultInventoryAssetGlAccount GlAccount? @relation(name: "ProductCategoryInventoryAssetGlAccount", fields: [defaultInventoryAssetGlAccountId], references: [id])
   products                       Product[]
+  glMappings                     ProductCategoryGlMapping[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -2257,7 +2385,8 @@ model DockageRate {
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
 
-  location Location @relation(fields: [locationId], references: [id])
+  location   Location               @relation(fields: [locationId], references: [id])
+  glMappings DockageRateGlMapping[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -2287,7 +2416,8 @@ model ServiceFee {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  location Location @relation(fields: [locationId], references: [id])
+  location   Location              @relation(fields: [locationId], references: [id])
+  glMappings ServiceFeeGlMapping[]
 
   @@index([tenantId])
   @@index([locationId])

@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
+import { isLocationQboConnected } from "./gl-account-resolver.js";
 
 // ---------------------------------------------------------------------------
 // GL Posting Service
@@ -69,8 +70,27 @@ async function getAccountByNumber(
   tenantId: string,
   accountNumber: string,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  locationId?: string | null,
 ): Promise<string> {
   const db = tx ?? prisma;
+  // After per-location chart of accounts, the same account number can exist
+  // at multiple locations. When the caller knows the originating location,
+  // prefer that location's account first then fall back to tenant-wide
+  // (locationId=null) accounts. When no locationId is provided we keep
+  // the legacy behaviour — match any row with that number under the tenant
+  // — so older callers and fixtures continue to work unchanged.
+  if (locationId) {
+    const locScoped = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId, accountNumber },
+      select: { id: true },
+    });
+    if (locScoped) return locScoped.id;
+    const tenantWide = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId: null, accountNumber },
+      select: { id: true },
+    });
+    if (tenantWide) return tenantWide.id;
+  }
   const account = await (db as typeof prisma).glAccount.findFirst({
     where: { tenantId, accountNumber },
     select: { id: true },
@@ -122,21 +142,41 @@ function warnGlFallback(tenantId: string, accountNumber: string, context: string
 async function getDeferredRevenueAccountId(
   tenantId: string,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  locationId?: string | null,
 ): Promise<string | null> {
   const db = tx ?? prisma;
+  // Prefer a location-scoped account flagged as deferred when available;
+  // otherwise fall through to a tenant-wide flagged account, so per-location
+  // QBO charts can pin their own deferred-revenue liability without
+  // disturbing tenants still using the legacy single chart.
   const flagged = await (db as typeof prisma).glAccount.findFirst({
-    where: { tenantId, isDeferredRevenue: true },
+    where: locationId
+      ? { tenantId, locationId, isDeferredRevenue: true }
+      : { tenantId, isDeferredRevenue: true },
     orderBy: { accountNumber: "asc" },
     select: { id: true },
   });
   if (flagged) return flagged.id;
+  if (locationId) {
+    const tenantWideFlagged = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId: null, isDeferredRevenue: true },
+      orderBy: { accountNumber: "asc" },
+      select: { id: true },
+    });
+    if (tenantWideFlagged) return tenantWideFlagged.id;
+  }
 
   // Fallback: the default chart seeds 2100 as "Deferred Revenue - Slips"
-  const byNumber = await (db as typeof prisma).glAccount.findFirst({
-    where: { tenantId, accountNumber: ACCOUNTS.DEFERRED_REVENUE_FALLBACK },
-    select: { id: true },
-  });
-  return byNumber?.id ?? null;
+  try {
+    return await getAccountByNumber(
+      tenantId,
+      ACCOUNTS.DEFERRED_REVENUE_FALLBACK,
+      tx,
+      locationId,
+    );
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +196,11 @@ export async function postInvoice(
     id: string;
     tenantId: string;
     totalCents: number;
+    /** Originating location for the invoice. Used to scope account-number
+     *  lookups (A/R, sales tax, fallback revenue) to that location's chart
+     *  of accounts and to enforce strict per-location mappings when the
+     *  location is QBO-connected. */
+    locationId?: string | null;
     lineItems: {
       id: string;
       extendedCents: number;
@@ -172,8 +217,36 @@ export async function postInvoice(
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const { tenantId } = invoice;
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx);
+  const locationId = invoice.locationId ?? null;
+  // QBO-connected locations must use their own chart of accounts. Revenue
+  // mappings have to be set explicitly per location; we refuse to silently
+  // post to a hardcoded fallback account that could belong to another QBO
+  // realm (or to no QBO realm at all).
+  const qboConnected = locationId
+    ? await isLocationQboConnected(locationId)
+    : false;
+  // For QBO-connected locations the A/R account must come from that
+  // location's own chart of accounts. Falling back to a tenant-wide "1200"
+  // could cross-post to the wrong realm or to a default-seeded account that
+  // doesn't exist in QBO at all — refuse that and make the operator pin a
+  // location-scoped A/R account.
+  let arAccountId: string;
+  if (qboConnected && locationId) {
+    const db = tx ?? prisma;
+    const locAr = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId, accountNumber: ACCOUNTS.ACCOUNTS_RECEIVABLE },
+      select: { id: true },
+    });
+    if (!locAr) {
+      throw new Error(
+        `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but has no A/R account (${ACCOUNTS.ACCOUNTS_RECEIVABLE}) in its chart of accounts. Import or configure A/R for this location before posting.`,
+      );
+    }
+    arAccountId = locAr.id;
+  } else {
+    arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx, locationId);
+  }
+  const deferredAccountId = await getDeferredRevenueAccountId(tenantId, tx, locationId);
 
   const lines: GlLine[] = [];
 
@@ -205,9 +278,20 @@ export async function postInvoice(
         let revenueAccountId: string;
         if (li.glAccountId) {
           revenueAccountId = li.glAccountId;
+        } else if (qboConnected) {
+          // Per-location QBO charts must not fall back to a hardcoded
+          // tenant-wide account number — that account belongs to a
+          // different chart of accounts. Surface the misconfiguration
+          // so operators map it explicitly in Settings > Products & Revenue.
+          throw new Error(
+            `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
+            `has no revenue GL account and the originating location is ` +
+            `connected to QuickBooks. Configure a per-location revenue ` +
+            `mapping for this product before issuing the invoice.`,
+          );
         } else {
           warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id}`);
-          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
         }
         lines.push({
           accountId: revenueAccountId,
@@ -235,8 +319,8 @@ export async function postInvoice(
         taxAccountId = glAccountId;
       } else {
         // Fall back to 2400 Sales Tax Payable
-        taxAccountId = await getAccountByNumber(tenantId, ACCOUNTS.SALES_TAX_PAYABLE, tx).catch(async () =>
-          getAccountByNumber(tenantId, ACCOUNTS.STATE_TAX_PAYABLE, tx),
+        taxAccountId = await getAccountByNumber(tenantId, ACCOUNTS.SALES_TAX_PAYABLE, tx, locationId).catch(async () =>
+          getAccountByNumber(tenantId, ACCOUNTS.STATE_TAX_PAYABLE, tx, locationId),
         );
       }
 
@@ -264,9 +348,16 @@ export async function postInvoice(
         let revenueAccountId: string;
         if (li.glAccountId) {
           revenueAccountId = li.glAccountId;
+        } else if (qboConnected) {
+          throw new Error(
+            `UNCONFIGURED_GL_MAPPING: Invoice ${invoice.id} line ${li.id} ` +
+            `has no revenue GL account and the originating location is ` +
+            `connected to QuickBooks. Configure a per-location revenue ` +
+            `mapping for this product before issuing the invoice.`,
+          );
         } else {
           warnGlFallback(tenantId, ACCOUNTS.GENERAL_REVENUE, `invoice=${invoice.id} lineItem=${li.id} (legacy path)`);
-          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+          revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx, locationId);
         }
         lines.push({
           accountId: revenueAccountId,

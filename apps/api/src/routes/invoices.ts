@@ -7,6 +7,7 @@ import { postInvoice, postVoid } from "../services/gl-posting.js";
 import { voidQboInvoice } from "../services/qbo-sync.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
 import { resolveProductTaxCategory } from "../services/product-defaults.js";
+import { resolveProductGlAccounts, isLocationQboConnected } from "../services/gl-account-resolver.js";
 import { queues } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
 import puppeteer from "puppeteer";
@@ -52,6 +53,47 @@ const LineItemSchema = z.object({
   deferredStartDate: z.coerce.date().optional(),
   deferredEndDate: z.coerce.date().optional(),
 });
+
+/**
+ * Batch-resolve per-line revenue GL accounts using per-location overrides.
+ * Returns `null` for lines without a product hint or whose product has no
+ * mapping for this location (when QBO-connected) — the caller decides
+ * whether to keep the client-provided glAccountId or leave it null so the
+ * missing-mapping warning surfaces it.
+ */
+async function resolveLineItemRevenueGl(
+  tenantId: string,
+  locationId: string | null,
+  lineItems: Array<{
+    productId?: string | null;
+    sourceType?: string | null;
+    sourceId?: string | null;
+  }>,
+): Promise<(string | null)[]> {
+  const productIds = lineItems.map((li) => {
+    return (
+      li.productId ??
+      (li.sourceType?.toUpperCase() === "PRODUCT" ? li.sourceId ?? null : null)
+    );
+  });
+  const out: (string | null)[] = new Array(lineItems.length).fill(null);
+  const uniqueIds = Array.from(
+    new Set(productIds.filter((p): p is string => !!p)),
+  );
+  if (uniqueIds.length === 0) return out;
+  const resolved = new Map<string, string | null>();
+  await Promise.all(
+    uniqueIds.map(async (pid) => {
+      const r = await resolveProductGlAccounts(tenantId, pid, locationId);
+      resolved.set(pid, r.revenueGlAccountId);
+    }),
+  );
+  for (let i = 0; i < lineItems.length; i++) {
+    const pid = productIds[i];
+    if (pid) out[i] = resolved.get(pid) ?? null;
+  }
+  return out;
+}
 
 /**
  * Batch-resolve per-line tax info. When the caller already set `taxCategory`
@@ -439,6 +481,15 @@ router.post(
       let subtotalCents = 0;
       let totalTaxCents = 0;
 
+      // Resolve revenue GL per-location for any product-backed lines so a
+      // QBO-connected location's invoice posts against its own chart of
+      // accounts, not a stale tenant-level FK pointing at a different realm.
+      const resolvedRevenueIds = await resolveLineItemRevenueGl(
+        tenantId,
+        locationId,
+        data.lineItems,
+      );
+
       const lineItemData = data.lineItems.map((li, idx) => {
         const extendedCents =
           li.unitPriceCents * li.quantity - li.discountCents;
@@ -456,7 +507,7 @@ router.post(
           taxRate,
           taxCents,
           extendedCents,
-          glAccountId: li.glAccountId ?? null,
+          glAccountId: li.glAccountId ?? resolvedRevenueIds[idx] ?? null,
           isDeferred: li.isDeferred,
           sourceType: li.sourceType ?? null,
           sourceId: li.sourceId ?? null,
@@ -565,6 +616,14 @@ router.put(
         let subtotalCents = 0;
         let totalTaxCents = 0;
 
+        // Mirror the create path: prefer the per-location resolved revenue
+        // account when the client didn't pin a glAccountId itself.
+        const resolvedRevenueIds = await resolveLineItemRevenueGl(
+          tenantId,
+          existing.locationId,
+          data.lineItems,
+        );
+
         const newLineItems = data.lineItems.map((li, idx) => {
           const extendedCents =
             li.unitPriceCents * li.quantity - li.discountCents;
@@ -582,7 +641,7 @@ router.put(
             taxRate,
             taxCents,
             extendedCents,
-            glAccountId: li.glAccountId ?? null,
+            glAccountId: li.glAccountId ?? resolvedRevenueIds[idx] ?? null,
             isDeferred: li.isDeferred,
             sourceType: li.sourceType ?? null,
             sourceId: li.sourceId ?? null,
@@ -669,6 +728,7 @@ router.post(
           {
             id: inv.id,
             tenantId,
+            locationId: inv.locationId,
             totalCents: inv.totalCents,
             lineItems: inv.lineItems,
           },
@@ -696,9 +756,21 @@ router.post(
         return inv;
       });
 
-      // Queue QBO sync if the tenant has connected QuickBooks
-      const tenantForQbo = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { qboRealmId: true } });
-      if (tenantForQbo?.qboRealmId) {
+      // Queue QBO sync if either the originating location OR the tenant has
+      // connected QuickBooks. With per-location QBO, a location can be
+      // connected even when the tenant-level realm is null.
+      const locationConnected = updated.locationId
+        ? await isLocationQboConnected(updated.locationId)
+        : false;
+      let shouldEnqueue = locationConnected;
+      if (!shouldEnqueue) {
+        const tenantForQbo = await prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { qboRealmId: true },
+        });
+        shouldEnqueue = !!tenantForQbo?.qboRealmId;
+      }
+      if (shouldEnqueue) {
         await queues["qbo-sync"].add("sync-invoice", { tenantId, invoiceId: updated.id });
       }
 

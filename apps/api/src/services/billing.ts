@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import { calculateTax } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
+import { resolveDockageRateGlAccount } from "./gl-account-resolver.js";
 import { stripe, requireStripe } from "../lib/stripe.js";
 import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
 
@@ -124,7 +125,8 @@ export async function generateRecurringInvoices(
           )
         : contract.rateCents;
 
-      // Resolve GL account from DockageRate configuration
+      // Resolve GL account from DockageRate configuration. Per-location
+      // mapping (DockageRateGlMapping) wins over the legacy tenant-level FK.
       let slipGlAccountId: string | undefined;
       if (contract.slip.locationId && contract.slip.slipType) {
         const dockageRate = await prisma.dockageRate.findFirst({
@@ -134,11 +136,16 @@ export async function generateRecurringInvoices(
             slipType: contract.slip.slipType,
             active: true,
           },
-          select: { glAccountId: true },
+          select: { id: true, glAccountId: true },
           orderBy: { createdAt: "desc" },
         });
-        if (dockageRate?.glAccountId) {
-          slipGlAccountId = dockageRate.glAccountId;
+        if (dockageRate) {
+          const resolved = await resolveDockageRateGlAccount(
+            tenantId,
+            dockageRate.id,
+            contract.slip.locationId,
+          );
+          slipGlAccountId = resolved ?? dockageRate.glAccountId ?? undefined;
         }
       }
 
@@ -250,6 +257,7 @@ export async function generateRecurringInvoices(
           data: {
             id: invoiceId,
             tenantId,
+            locationId: contract.slip.locationId ?? null,
             customerId: contract.customerId,
             invoiceNumber,
             issuedDate: today,
@@ -302,6 +310,7 @@ export async function generateRecurringInvoices(
           {
             id: inv.id,
             tenantId,
+            locationId: inv.locationId,
             totalCents: inv.totalCents,
             lineItems: inv.lineItems,
             taxBreakdowns: allBreakdowns,
