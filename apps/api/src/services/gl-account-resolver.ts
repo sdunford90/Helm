@@ -114,28 +114,31 @@ export async function isLocationQboConnected(locationId: string): Promise<boolea
 //
 // Slots that gl-posting.ts used to look up by hardcoded account number,
 // which silently mis-posted across realms when two QBO charts shared the
-// same number. Each slot:
+// same numbers. Each slot:
 //   * has a Location.<field> column the operator pins in QuickBooks Setup;
-//   * has the GLAccountType(s) the operator's pick must satisfy (settings
-//     PUT enforces this);
-//   * has a list of well-known seed account numbers used as a single-chart
-//     compatibility shim for non-QBO tenants who haven't pinned yet.
+//   * has the GLAccountType(s) the operator's pick must satisfy (the
+//     settings PUT endpoint enforces this; the resolver's non-QBO fallback
+//     uses the same type filter to pick a chart row of the right kind).
 //
-// Resolution chain:
+// Resolution chain (no hardcoded account-number fallback at any step):
 //   1. Pinned column on `locations` (set in QuickBooks Setup).
-//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — refuse
-//      any chart-walk fallback, because the same number in a different
-//      realm belongs to a different chart of accounts. This is the
-//      cross-realm bleed the whole task exists to prevent.
-//   3. Non-QBO locations: walk seed-number fallbacks scoped first to the
-//      location, then tenant-wide. Mirrors Task #210's pattern for A/R
-//      (`getAccountByNumber("1200")`) and Deferred Revenue
-//      (`getAccountByNumber("2100")`) — those are also kept as non-QBO
-//      compatibility shims, not removed. Without this shim, every
-//      single-chart non-QBO tenant would have to pin all four slots
-//      before any posting could go through. The QBO cross-realm risk
-//      doesn't apply because there's no QBO chart to disagree with.
-//   4. Throw UNCONFIGURED_GL_MAPPING if no seed number matches.
+//   2. QBO-connected locations: throw UNCONFIGURED_GL_MAPPING — refuse any
+//      chart-walk fallback because the same row-shape in a different realm
+//      belongs to a different chart of accounts. This is the core
+//      invariant the task exists to enforce.
+//   3. Non-QBO locations: pick the lowest-numbered chart row whose `type`
+//      is in the slot's `expectedTypes`, scoped first to the location and
+//      then tenant-wide (locationId IS NULL). Sibling-location rows are
+//      excluded — pinning into a chart this location doesn't own is the
+//      same bleed the QBO branch above prevents.
+//   4. Throw UNCONFIGURED_GL_MAPPING if no typed row exists.
+//
+// Trade-off vs the legacy number fallback: when a non-QBO single-chart
+// tenant has multiple rows of the slot's required type (e.g. several
+// LIABILITY rows for sales tax), the lowest-numbered row may not be the
+// "right" one (e.g. seed 2100 Deferred Revenue lands before 2400 Sales
+// Tax Payable). The fix is for the operator to pin the slot explicitly in
+// QuickBooks Setup — which is the whole point of this task.
 // ---------------------------------------------------------------------------
 
 export type LocationSystemPostingAccountSlot =
@@ -150,10 +153,6 @@ interface SystemPostingAccountSpec {
     | "salesTaxGlAccountId"
     | "earlyTerminationGlAccountId"
     | "achReturnFeeGlAccountId";
-  // Seed account numbers tried in order against the location's chart, then
-  // tenant-wide. Used ONLY for non-QBO tenants — see resolution chain note
-  // above. QBO-connected locations skip this entirely and require a pin.
-  seedFallbackNumbers: readonly string[];
   expectedTypes: ReadonlyArray<"REVENUE" | "LIABILITY">;
   description: string;
 }
@@ -164,33 +163,21 @@ export const LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS: Record<
 > = {
   defaultRevenue: {
     field: "defaultRevenueGlAccountId",
-    // The default seed chart doesn't have a "general/catch-all" revenue
-    // row; 4010 Slip Revenue is the closest practical default for the
-    // single-chart tenants who used to fall through to a null account.
-    seedFallbackNumbers: ["4500", "4010"],
     expectedTypes: ["REVENUE"],
     description: "default revenue",
   },
   salesTax: {
     field: "salesTaxGlAccountId",
-    // 2400 Sales Tax Payable IS in the seed chart; 2401 mirrors the
-    // legacy `getAccountByNumber(SALES_TAX_PAYABLE).catch(STATE)` chain.
-    seedFallbackNumbers: ["2400", "2401"],
     expectedTypes: ["LIABILITY"],
     description: "sales tax payable",
   },
   earlyTermination: {
     field: "earlyTerminationGlAccountId",
-    // No 4700 in the seed; 4010 Slip Revenue is the historical default
-    // single-chart tenants used (matches what the legacy code threw
-    // through to before the null guard).
-    seedFallbackNumbers: ["4700", "4010"],
     expectedTypes: ["REVENUE"],
     description: "early termination income",
   },
   achReturnFee: {
     field: "achReturnFeeGlAccountId",
-    seedFallbackNumbers: ["4600", "4010"],
     expectedTypes: ["REVENUE"],
     description: "ACH return fee revenue",
   },
@@ -225,10 +212,9 @@ export async function resolveLocationSystemPostingAccount(
   }
 
   // 2. QBO-connected locations: refuse any chart-walk fallback. The same
-  //    number in a different realm belongs to a different chart of
-  //    accounts; we'd rather surface the misconfiguration than silently
-  //    mis-route the posting (or post into an account QBO knows nothing
-  //    about). This is the core invariant the task exists to enforce.
+  //    row in a different realm belongs to a different chart; we'd rather
+  //    surface the misconfiguration than silently mis-route the posting
+  //    (or post into an account QBO knows nothing about).
   if (locationId && (await isLocationQboConnected(locationId))) {
     throw new Error(
       `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but ` +
@@ -238,33 +224,33 @@ export async function resolveLocationSystemPostingAccount(
     );
   }
 
-  // 3. Non-QBO single-chart compatibility shim — same pattern Task #210
-  //    used for A/R (`getAccountByNumber("1200", …, locationId)`) and
-  //    Deferred Revenue (`getAccountByNumber("2100", …, locationId)`).
-  //    Walk the seed numbers in order, scoped first to the location, then
-  //    tenant-wide. Cross-realm bleed isn't a concern here because there's
-  //    no QBO chart to disagree with.
-  for (const accountNumber of spec.seedFallbackNumbers) {
-    if (locationId) {
-      const locScoped = await db.glAccount.findFirst({
-        where: { tenantId, locationId, accountNumber },
-        select: { id: true },
-      });
-      if (locScoped) return locScoped.id;
-    }
-    const tenantWide = await db.glAccount.findFirst({
-      where: { tenantId, locationId: null, accountNumber },
+  // 3. Non-QBO fallback: pick the lowest-numbered chart row whose type is
+  //    in the slot's expectedTypes set. Prefer location-scoped rows; fall
+  //    back to tenant-wide (locationId IS NULL). No account-number
+  //    matching here — the type filter is the only constraint the task
+  //    permits, and it's the same constraint the settings PUT validator
+  //    enforces on operator pins.
+  const expectedTypes = [...spec.expectedTypes];
+  if (locationId) {
+    const locScoped = await db.glAccount.findFirst({
+      where: { tenantId, locationId, type: { in: expectedTypes } },
+      orderBy: { accountNumber: "asc" },
       select: { id: true },
     });
-    if (tenantWide) return tenantWide.id;
+    if (locScoped) return locScoped.id;
   }
+  const tenantWide = await db.glAccount.findFirst({
+    where: { tenantId, locationId: null, type: { in: expectedTypes } },
+    orderBy: { accountNumber: "asc" },
+    select: { id: true },
+  });
+  if (tenantWide) return tenantWide.id;
 
   throw new Error(
     `UNCONFIGURED_GL_MAPPING: no ${spec.description} account found for ` +
     `tenant ${tenantId} (location=${locationId ?? "none"}, ${context}). ` +
     `Pin a ${spec.description} account for this location in QuickBooks ` +
-    `Setup, or seed account number ${spec.seedFallbackNumbers[0]} in the ` +
-    `chart of accounts.`,
+    `Setup, or add a ${expectedTypes.join("/")}-typed row to the chart.`,
   );
 }
 
