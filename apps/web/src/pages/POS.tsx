@@ -247,15 +247,26 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
   );
 }
 
+/* ── Card payment metadata surfaced to the host component ─────────────────── */
+//
+// Rail (Terminal vs CNP) is always set on a successful card payment. For CNP,
+// `cnpFallbackReason` records how the cashier landed on the keyed form so
+// owners can tell silent fallback from explicit choice.
+export type CardRail = 'TERMINAL' | 'CNP';
+export type CnpFallbackReason = 'NO_READER' | 'DISCOVERY_FAILED' | 'MANUAL_CHOICE';
+export type CardPaymentMeta = { cardRail: CardRail; cnpFallbackReason: CnpFallbackReason | null };
+
 /* ── Card-Not-Present inner form (must be inside Elements) ── */
 
 function CnpForm({
-  total, onBack, onComplete, apiCall, locationId, backLabel,
+  total, onBack, onComplete, apiCall, locationId, backLabel, fallbackReason,
 }: {
-  total: number; onBack: () => void; onComplete: (method: string) => void;
+  total: number; onBack: () => void;
+  onComplete: (method: string, meta: CardPaymentMeta) => void;
   apiCall: (method: string, path: string, body?: unknown) => Promise<any>;
   locationId: string | null;
   backLabel?: string;
+  fallbackReason: CnpFallbackReason;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -277,7 +288,7 @@ function CnpForm({
         paymentMethodId: paymentMethod!.id,
         ...(locationId ? { locationId } : {}),
       });
-      onComplete('Card Not Present');
+      onComplete('Card Not Present', { cardRail: 'CNP', cnpFallbackReason: fallbackReason });
     } catch (err: any) {
       setCnpError((err as Error).message ?? 'Payment failed');
       setCnpLoading(false);
@@ -330,7 +341,9 @@ type CardStatus = 'loading' | 'readers' | 'connecting' | 'collecting' | 'process
 function CardPaymentModal({
   total, amountCents, cartItems, onClose, onComplete, getToken, locationId,
 }: {
-  total: number; amountCents: number; cartItems: CartItem[]; onClose: () => void; onComplete: (method: string) => void; getToken: () => Promise<string | null>;
+  total: number; amountCents: number; cartItems: CartItem[]; onClose: () => void;
+  onComplete: (method: string, meta: CardPaymentMeta) => void;
+  getToken: () => Promise<string | null>;
   locationId: string | null;
 }) {
   const [status, setStatus] = useState<CardStatus>('loading');
@@ -447,7 +460,10 @@ function CardPaymentModal({
         locationId ? { locationId } : undefined,
       );
       setStatus('terminal_done');
-      setTimeout(() => { onComplete('Card (Terminal)'); onClose(); }, 1800);
+      setTimeout(() => {
+        onComplete('Card (Terminal)', { cardRail: 'TERMINAL', cnpFallbackReason: null });
+        onClose();
+      }, 1800);
     } catch (err: any) {
       setErrorMsg((err as Error).message ?? 'Terminal payment failed');
       setStatus('terminal_error');
@@ -623,9 +639,18 @@ function CardPaymentModal({
                   total={total}
                   onBack={noReaderWarning !== 'none' ? () => void discoverReaders() : () => setStatus('readers')}
                   backLabel={noReaderWarning !== 'none' ? '↻ Check for readers again' : '← Back to readers'}
-                  onComplete={(method) => { setStatus('cnp_done'); onComplete(method); }}
+                  onComplete={(method, meta) => { setStatus('cnp_done'); onComplete(method, meta); }}
                   apiCall={apiCall}
                   locationId={locationId}
+                  // Tag the CNP sale with how the cashier ended up here so the
+                  // rail-mix report can split silent fallback from explicit choice.
+                  fallbackReason={
+                    noReaderWarning === 'no_reader'
+                      ? 'NO_READER'
+                      : noReaderWarning === 'discovery_failed'
+                        ? 'DISCOVERY_FAILED'
+                        : 'MANUAL_CHOICE'
+                  }
                 />
               </Elements>
             </>
@@ -1088,6 +1113,216 @@ function RecallBanner({ txnNumber, onClear }: { txnNumber: string; onClear: () =
   );
 }
 
+/* ── Card Rail Mix Tile ────────────────────────────────── */
+//
+// Surfaces the Terminal-vs-CNP split for card sales over a chosen date range
+// (default: trailing 30 days). Owners need this to spot locations that are
+// silently routing every card sale through the more-expensive keyed (CNP)
+// rail because no reader was discovered at the counter.
+
+interface CardRailMixBucket {
+  locationId: string | null;
+  locationName?: string | null;
+  terminalCount: number;
+  terminalCents: number;
+  cnpCount: number;
+  cnpCents: number;
+  unknownCardCount: number;
+  unknownCardCents: number;
+  cnpFallbackBreakdown: {
+    no_reader: number;
+    discovery_failed: number;
+    manual_choice: number;
+    unknown: number;
+  };
+}
+
+interface CardRailMixResponse {
+  dateFrom: string;
+  dateTo: string;
+  overall: CardRailMixBucket;
+  byLocation: CardRailMixBucket[];
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function CardRailMixTile() {
+  const today = useMemo(() => new Date(), []);
+  const defaultFrom = useMemo(() => {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 30);
+    return d;
+  }, [today]);
+
+  const [dateFrom, setDateFrom] = useState<string>(isoDay(defaultFrom));
+  const [dateTo, setDateTo] = useState<string>(isoDay(today));
+
+  const path = `/api/pos/reports/card-rail-mix?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`;
+  // useApi fires once on mount via `immediate`, then we re-fetch only when the
+  // cashier actually changes the date range (skip the redundant mount call).
+  const { data, loading, error, execute } = useApi<CardRailMixResponse>('get', path, { immediate: true });
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    void execute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo]);
+
+  const overall = data?.overall;
+  const totalCardCount = (overall?.terminalCount ?? 0) + (overall?.cnpCount ?? 0) + (overall?.unknownCardCount ?? 0);
+  const pctTerminal = totalCardCount > 0 ? Math.round(((overall?.terminalCount ?? 0) / totalCardCount) * 100) : 0;
+  const pctCnp = totalCardCount > 0 ? Math.round(((overall?.cnpCount ?? 0) / totalCardCount) * 100) : 0;
+
+  const cardWrap: React.CSSProperties = {
+    background: '#FFFFFF',
+    border: '1px solid #E2E8F0',
+    borderRadius: '8px',
+    padding: '20px',
+    marginBottom: '20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+  };
+
+  return (
+    <div style={cardWrap}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <CreditCard size={18} style={{ color: '#0A2342' }} />
+          <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#0A2342' }}>Card payment mix</h3>
+          <span style={{ fontSize: '12px', color: '#64748B' }}>Terminal vs. keyed (Card Not Present)</span>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px', color: '#64748B' }}>
+          <label style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            From
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo}
+              onChange={(e) => setDateFrom(e.target.value)}
+              style={{ padding: '4px 8px', fontSize: '12px', border: '1px solid #CBD5E1', borderRadius: '4px' }}
+            />
+          </label>
+          <label style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            To
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom}
+              max={isoDay(today)}
+              onChange={(e) => setDateTo(e.target.value)}
+              style={{ padding: '4px 8px', fontSize: '12px', border: '1px solid #CBD5E1', borderRadius: '4px' }}
+            />
+          </label>
+        </div>
+      </div>
+
+      {loading && <div style={{ fontSize: '13px', color: '#64748B' }}>Loading card mix…</div>}
+      {error && <div style={{ fontSize: '13px', color: '#DC2626' }}>{error}</div>}
+
+      {!loading && !error && totalCardCount === 0 && (
+        <div style={{ fontSize: '13px', color: '#64748B', padding: '8px 0' }}>
+          No card sales in this date range.
+        </div>
+      )}
+
+      {!loading && !error && totalCardCount > 0 && overall && (
+        <>
+          {/* Headline split bar */}
+          <div style={{ display: 'flex', height: '14px', borderRadius: '7px', overflow: 'hidden', marginBottom: '10px', background: '#F1F5F9' }}>
+            {pctTerminal > 0 && (
+              <div title={`Terminal: ${pctTerminal}%`} style={{ width: `${pctTerminal}%`, background: '#22C55E' }} />
+            )}
+            {pctCnp > 0 && (
+              <div title={`Card Not Present: ${pctCnp}%`} style={{ width: `${pctCnp}%`, background: '#F59E0B' }} />
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '14px' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <span style={{ display: 'inline-block', width: '8px', height: '8px', background: '#22C55E', borderRadius: '2px', marginRight: '6px' }} />
+                Terminal
+              </div>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>
+                {pctTerminal}%
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                {overall.terminalCount} sales · ${(overall.terminalCents / 100).toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <span style={{ display: 'inline-block', width: '8px', height: '8px', background: '#F59E0B', borderRadius: '2px', marginRight: '6px' }} />
+                Card Not Present (keyed)
+              </div>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>
+                {pctCnp}%
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                {overall.cnpCount} sales · ${(overall.cnpCents / 100).toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Of keyed sales
+              </div>
+              <div style={{ fontSize: '13px', color: '#92400E', fontVariantNumeric: 'tabular-nums', lineHeight: 1.5 }}>
+                <div><strong>{overall.cnpFallbackBreakdown.no_reader}</strong> no reader detected</div>
+                <div><strong>{overall.cnpFallbackBreakdown.discovery_failed}</strong> reader check failed</div>
+                <div><strong>{overall.cnpFallbackBreakdown.manual_choice}</strong> cashier chose keyed</div>
+                {overall.cnpFallbackBreakdown.unknown > 0 && (
+                  <div style={{ color: '#94A3B8' }}><strong>{overall.cnpFallbackBreakdown.unknown}</strong> not tagged</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Per-location breakdown — only show when there's more than one bucket */}
+          {data && data.byLocation.length > 1 && (
+            <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>By location</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Location</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Terminal</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Keyed (CNP)</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Keyed share</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: '#64748B', fontWeight: 600 }}>Silent fallback</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.byLocation.map((b) => {
+                    const locTotal = b.terminalCount + b.cnpCount + b.unknownCardCount;
+                    const cnpShare = locTotal > 0 ? Math.round((b.cnpCount / locTotal) * 100) : 0;
+                    const silent = b.cnpFallbackBreakdown.no_reader + b.cnpFallbackBreakdown.discovery_failed;
+                    const isOutlier = cnpShare >= 80 && b.cnpCount > 0;
+                    return (
+                      <tr key={b.locationId ?? '__no_location__'} style={{ background: isOutlier ? '#FEF3C7' : 'transparent' }}>
+                        <td style={{ padding: '6px 8px', color: '#0A2342' }}>
+                          {b.locationName ?? (b.locationId ? b.locationId.slice(0, 8) : 'No location')}
+                          {isOutlier && <AlertTriangle size={12} style={{ color: '#B45309', marginLeft: '6px', verticalAlign: 'middle' }} />}
+                        </td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{b.terminalCount}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{b.cnpCount}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: cnpShare >= 50 ? '#92400E' : '#0A2342' }}>{cnpShare}%</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: silent > 0 ? '#92400E' : '#64748B' }}>{silent}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Main Component ─────────────────────────────────────── */
 
 type StripeStatus = 'unknown' | 'checking' | 'ready' | 'not_configured' | 'error';
@@ -1313,7 +1548,7 @@ export default function POS() {
 
   const transactions = apiTransactionsMapped;
 
-  const handlePaymentComplete = async (method: string) => {
+  const handlePaymentComplete = async (method: string, cardMeta?: CardPaymentMeta) => {
     const lineItems = cart.map((i) => {
       const unitPriceCents = Math.round(i.product.price * 100);
       const qty = Math.max(1, Math.round(i.quantity));
@@ -1327,6 +1562,12 @@ export default function POS() {
     const result = await createTransaction.execute({
       lineItems,
       paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
+      // Forward the rail tag so the server can store it on the transaction.
+      // Only sent for card sales — server also defensively scrubs non-CARD rows.
+      ...(cardMeta ? {
+        cardRail: cardMeta.cardRail,
+        cnpFallbackReason: cardMeta.cnpFallbackReason ?? null,
+      } : {}),
     });
 
     if (result !== null) {
@@ -1763,6 +2004,10 @@ export default function POS() {
       {/* Transactions */}
       {tab === 'transactions' && (
         <>
+          {/* Card payment mix tile — shows how often card sales fall back to
+              keyed (CNP) entry vs. running through Stripe Terminal. */}
+          <CardRailMixTile />
+
           <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ ...st.searchWrap, flex: 1 }}>
               <Search size={16} style={st.searchIcon} />
@@ -1866,7 +2111,7 @@ export default function POS() {
           amountCents={Math.round(total * 100)}
           cartItems={paymentModal.cartSnapshot}
           onClose={() => setPaymentModal(null)}
-          onComplete={(method) => { handlePaymentComplete(method); }}
+          onComplete={(method, meta) => { handlePaymentComplete(method, meta); }}
           getToken={getToken}
           locationId={currentLocationId}
         />

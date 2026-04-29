@@ -262,3 +262,234 @@ describe('GET /api/pos/transactions', () => {
     expect(res.body).toHaveProperty('pagination');
   });
 });
+
+describe('POST /api/pos/transactions — card rail tagging', () => {
+  // Persisting the rail (Terminal vs CNP) and CNP fallback reason is what
+  // powers the rail-mix report. These tests pin down that the create endpoint
+  // (a) stores what the cashier client sent for card sales, (b) clears any
+  // fallback reason on Terminal sales, and (c) refuses to tag rail metadata
+  // on non-card sales so the report dataset stays clean.
+  function captureCreate() {
+    let captured: any = null;
+    mockPrisma.posTransaction.create.mockImplementation(async ({ data }: any) => {
+      captured = data;
+      return { id: 'txn-card', ...data, lineItems: data.lineItems?.create ?? [] };
+    });
+    mockPrisma.product.findMany.mockResolvedValue([
+      buildPosProduct({ id: 'p1', priceCents: 1000, taxClass: null }),
+    ]);
+    mockPrisma.inventory.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+    return () => captured;
+  }
+
+  it('stores cardRail=TERMINAL with no fallback reason for reader sales', async () => {
+    const get = captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'TERMINAL',
+      });
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.cardRail).toBe('TERMINAL');
+    expect(captured.cnpFallbackReason).toBeNull();
+  });
+
+  it('stores cardRail=CNP and the cnpFallbackReason for keyed sales', async () => {
+    const get = captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'CNP',
+        cnpFallbackReason: 'NO_READER',
+      });
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.cardRail).toBe('CNP');
+    expect(captured.cnpFallbackReason).toBe('NO_READER');
+  });
+
+  it('drops the fallback reason when cardRail is TERMINAL even if client sends one', async () => {
+    // A buggy client could send a fallback reason with a Terminal sale.
+    // The server must scrub it so the report doesn't double-count.
+    const get = captureCreate();
+    await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'TERMINAL',
+        cnpFallbackReason: 'NO_READER',
+      });
+    const captured = get();
+    expect(captured.cardRail).toBe('TERMINAL');
+    expect(captured.cnpFallbackReason).toBeNull();
+  });
+
+  it('drops cardRail entirely on non-card sales', async () => {
+    // Cash/ACH/charge sales don't belong in the card-rail-mix dataset.
+    const get = captureCreate();
+    await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CASH',
+        cardRail: 'CNP',
+        cnpFallbackReason: 'MANUAL_CHOICE',
+      });
+    const captured = get();
+    expect(captured.cardRail).toBeNull();
+    expect(captured.cnpFallbackReason).toBeNull();
+  });
+
+  it('rejects an unknown cardRail value', async () => {
+    captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'BITCOIN',
+      });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe('GET /api/pos/reports/card-rail-mix', () => {
+  // The rail-mix report aggregates raw card rows into per-location buckets so
+  // owners can spot locations that are silently routing sales through CNP.
+  // These tests pin down the bucket math and the per-location bucketing.
+  it('aggregates card sales into Terminal vs CNP buckets and breaks down fallback reasons', async () => {
+    mockPrisma.posTransaction.findMany.mockResolvedValue([
+      // Terminal sale
+      {
+        totalCents: 1000,
+        cardRail: 'TERMINAL',
+        cnpFallbackReason: null,
+        createdAt: new Date(),
+        shift: { locationId: 'loc-A' },
+      },
+      // CNP — silent fallback (no reader)
+      {
+        totalCents: 2000,
+        cardRail: 'CNP',
+        cnpFallbackReason: 'NO_READER',
+        createdAt: new Date(),
+        shift: { locationId: 'loc-A' },
+      },
+      // CNP — explicit cashier choice, different location
+      {
+        totalCents: 3000,
+        cardRail: 'CNP',
+        cnpFallbackReason: 'MANUAL_CHOICE',
+        createdAt: new Date(),
+        shift: { locationId: 'loc-B' },
+      },
+      // Pre-migration card sale with no rail tagged
+      {
+        totalCents: 500,
+        cardRail: null,
+        cnpFallbackReason: null,
+        createdAt: new Date(),
+        shift: { locationId: 'loc-A' },
+      },
+    ]);
+    mockPrisma.location.findMany.mockResolvedValue([
+      { id: 'loc-A', name: 'Main Marina' },
+      { id: 'loc-B', name: 'North Dock' },
+    ]);
+
+    const res = await request(app).get('/api/pos/reports/card-rail-mix');
+
+    expect(res.status).toBe(200);
+    expect(res.body.overall).toEqual(
+      expect.objectContaining({
+        terminalCount: 1,
+        terminalCents: 1000,
+        cnpCount: 2,
+        cnpCents: 5000,
+        unknownCardCount: 1,
+      }),
+    );
+    expect(res.body.overall.cnpFallbackBreakdown).toEqual({
+      no_reader: 1,
+      discovery_failed: 0,
+      manual_choice: 1,
+      unknown: 0,
+    });
+
+    // Per-location buckets carry their location name for nice rendering.
+    const byLoc = new Map<string, any>(res.body.byLocation.map((b: any) => [b.locationId, b]));
+    expect(byLoc.get('loc-A')).toEqual(
+      expect.objectContaining({
+        locationName: 'Main Marina',
+        terminalCount: 1,
+        cnpCount: 1,
+        unknownCardCount: 1,
+      }),
+    );
+    expect(byLoc.get('loc-B')).toEqual(
+      expect.objectContaining({
+        locationName: 'North Dock',
+        terminalCount: 0,
+        cnpCount: 1,
+      }),
+    );
+  });
+
+  it('only queries CARD rows so cash/ACH/charge sales are excluded', async () => {
+    mockPrisma.posTransaction.findMany.mockResolvedValue([]);
+    mockPrisma.location.findMany.mockResolvedValue([]);
+    await request(app).get('/api/pos/reports/card-rail-mix');
+    expect(mockPrisma.posTransaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'CARD' }),
+      }),
+    );
+  });
+
+  it('returns an empty overall bucket when there are no card sales', async () => {
+    mockPrisma.posTransaction.findMany.mockResolvedValue([]);
+    mockPrisma.location.findMany.mockResolvedValue([]);
+    const res = await request(app).get('/api/pos/reports/card-rail-mix');
+    expect(res.status).toBe(200);
+    expect(res.body.overall.terminalCount).toBe(0);
+    expect(res.body.overall.cnpCount).toBe(0);
+    expect(res.body.byLocation).toEqual([]);
+  });
+
+  it('respects an optional locationId filter', async () => {
+    mockPrisma.posTransaction.findMany.mockResolvedValue([
+      {
+        totalCents: 1000,
+        cardRail: 'TERMINAL',
+        cnpFallbackReason: null,
+        createdAt: new Date(),
+        shift: { locationId: 'loc-A' },
+      },
+      {
+        totalCents: 2000,
+        cardRail: 'CNP',
+        cnpFallbackReason: 'NO_READER',
+        createdAt: new Date(),
+        shift: { locationId: 'loc-B' },
+      },
+    ]);
+    mockPrisma.location.findMany.mockResolvedValue([{ id: 'loc-A', name: 'Main Marina' }]);
+
+    const res = await request(app)
+      .get('/api/pos/reports/card-rail-mix?locationId=loc-A');
+
+    expect(res.status).toBe(200);
+    // Only loc-A's Terminal sale should land in the overall bucket.
+    expect(res.body.overall.terminalCount).toBe(1);
+    expect(res.body.overall.cnpCount).toBe(0);
+    expect(res.body.byLocation).toHaveLength(1);
+    expect(res.body.byLocation[0].locationId).toBe('loc-A');
+  });
+});

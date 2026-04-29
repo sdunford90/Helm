@@ -67,6 +67,14 @@ const CreateTransactionSchema = z.object({
   shiftId: z.string().optional().nullable(),
   paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT"]).default("CASH"),
   tipCents: z.number().int().min(0).default(0),
+  // Card-only metadata so reports can show the Terminal-vs-CNP split per
+  // location and surface how often the keyed form was a silent fallback.
+  // Server validates that fallback reasons only apply to CNP card sales.
+  cardRail: z.enum(["TERMINAL", "CNP"]).optional().nullable(),
+  cnpFallbackReason: z
+    .enum(["NO_READER", "DISCOVERY_FAILED", "MANUAL_CHOICE"])
+    .optional()
+    .nullable(),
 });
 
 const ListTransactionsQuerySchema = z.object({
@@ -451,6 +459,13 @@ router.post(
 
       const totalCents = subtotalCents + taxCents + data.tipCents;
 
+      // Card-rail metadata is only meaningful for CARD sales. Silently drop
+      // any rail/fallback fields for cash/ACH/charge so a buggy client can't
+      // pollute the report dataset, and clear fallback reason for Terminal.
+      const cardRail = data.paymentMethod === "CARD" ? data.cardRail ?? null : null;
+      const cnpFallbackReason =
+        cardRail === "CNP" ? data.cnpFallbackReason ?? null : null;
+
       const transaction = await prisma.posTransaction.create({
         data: {
           tenantId,
@@ -461,6 +476,8 @@ router.post(
           tipCents: data.tipCents,
           totalCents,
           status: data.paymentMethod,
+          cardRail,
+          cnpFallbackReason,
           offlineQueued: false,
           lineItems: {
             create: lineItemsData,
@@ -500,6 +517,8 @@ router.post(
             totalCents,
             paymentMethod: data.paymentMethod,
             lineItemCount: data.lineItems.length,
+            ...(cardRail ? { cardRail } : {}),
+            ...(cnpFallbackReason ? { cnpFallbackReason } : {}),
           },
         },
       });
@@ -1103,6 +1122,159 @@ router.get(
         totalTipsCents: totalTips,
         byPaymentMethod: byMethod,
         topProducts,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /reports/card-rail-mix — Terminal vs CNP split ─────────────────────
+//
+// Owners need visibility into how often POS card sales fall back to keyed
+// (card-not-present) entry — silently or by choice — because CNP is the more
+// expensive rail. This endpoint aggregates successful (non-refunded) card
+// sales over a date range and breaks them down per location:
+//   - terminalCount / terminalCents   — paid via reader
+//   - cnpCount / cnpCents             — keyed entry
+//   - cnpFallbackBreakdown            — among CNP, how the cashier got there
+//                                       (no_reader / discovery_failed / manual_choice / unknown)
+// Pre-migration rows have no rail tagged and surface in `unknownCardCount`.
+
+const CardRailMixQuerySchema = z.object({
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  locationId: z.string().optional(),
+});
+
+router.get(
+  "/reports/card-rail-mix",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const query = CardRailMixQuerySchema.parse(req.query);
+
+      // Default: last 30 days, inclusive of today.
+      const now = new Date();
+      const defaultStart = new Date(now);
+      defaultStart.setDate(defaultStart.getDate() - 30);
+      defaultStart.setHours(0, 0, 0, 0);
+
+      const dateFrom = query.dateFrom ? new Date(query.dateFrom) : defaultStart;
+      const dateTo = query.dateTo
+        ? new Date(query.dateTo + "T23:59:59.999Z")
+        : new Date();
+
+      // Only consider card sales (status === "CARD"). Cash/ACH/etc. don't
+      // belong in a rail-mix report. Refunded rows are excluded so the split
+      // reflects what the customer actually paid.
+      const cardSales = await prisma.posTransaction.findMany({
+        where: {
+          tenantId,
+          status: "CARD",
+          createdAt: { gte: dateFrom, lte: dateTo },
+        },
+        select: {
+          totalCents: true,
+          cardRail: true,
+          cnpFallbackReason: true,
+          createdAt: true,
+          shift: { select: { locationId: true } },
+        },
+      });
+
+      // Optional per-location filter — applied after the query because the
+      // location lives on the joined Shift row (and shift can be null).
+      const filtered = query.locationId
+        ? cardSales.filter((t) => t.shift?.locationId === query.locationId)
+        : cardSales;
+
+      type Bucket = {
+        locationId: string | null;
+        terminalCount: number;
+        terminalCents: number;
+        cnpCount: number;
+        cnpCents: number;
+        unknownCardCount: number;
+        unknownCardCents: number;
+        cnpFallbackBreakdown: {
+          no_reader: number;
+          discovery_failed: number;
+          manual_choice: number;
+          unknown: number;
+        };
+      };
+
+      const makeBucket = (locationId: string | null): Bucket => ({
+        locationId,
+        terminalCount: 0,
+        terminalCents: 0,
+        cnpCount: 0,
+        cnpCents: 0,
+        unknownCardCount: 0,
+        unknownCardCents: 0,
+        cnpFallbackBreakdown: {
+          no_reader: 0,
+          discovery_failed: 0,
+          manual_choice: 0,
+          unknown: 0,
+        },
+      });
+
+      const overall = makeBucket(null);
+      const byLocation = new Map<string, Bucket>();
+
+      for (const t of filtered) {
+        const locId = t.shift?.locationId ?? null;
+        const locKey = locId ?? "__no_location__";
+        if (!byLocation.has(locKey)) byLocation.set(locKey, makeBucket(locId));
+        const locBucket = byLocation.get(locKey)!;
+
+        const apply = (b: Bucket) => {
+          if (t.cardRail === "TERMINAL") {
+            b.terminalCount++;
+            b.terminalCents += t.totalCents;
+          } else if (t.cardRail === "CNP") {
+            b.cnpCount++;
+            b.cnpCents += t.totalCents;
+            const reason = t.cnpFallbackReason;
+            if (reason === "NO_READER") b.cnpFallbackBreakdown.no_reader++;
+            else if (reason === "DISCOVERY_FAILED")
+              b.cnpFallbackBreakdown.discovery_failed++;
+            else if (reason === "MANUAL_CHOICE")
+              b.cnpFallbackBreakdown.manual_choice++;
+            else b.cnpFallbackBreakdown.unknown++;
+          } else {
+            // Pre-migration rows or any card sale that didn't tag a rail.
+            b.unknownCardCount++;
+            b.unknownCardCents += t.totalCents;
+          }
+        };
+
+        apply(overall);
+        apply(locBucket);
+      }
+
+      // Hydrate location names for nicer client-side rendering.
+      const locationIds = Array.from(byLocation.values())
+        .map((b) => b.locationId)
+        .filter((id): id is string => !!id);
+      const locations = locationIds.length
+        ? await prisma.location.findMany({
+            where: { id: { in: locationIds }, tenantId },
+            select: { id: true, name: true },
+          })
+        : [];
+      const nameById = new Map(locations.map((l) => [l.id, l.name]));
+
+      res.json({
+        dateFrom: dateFrom.toISOString(),
+        dateTo: dateTo.toISOString(),
+        overall,
+        byLocation: Array.from(byLocation.values()).map((b) => ({
+          ...b,
+          locationName: b.locationId ? nameById.get(b.locationId) ?? null : null,
+        })),
       });
     } catch (err) {
       next(err);

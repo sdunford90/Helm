@@ -1671,12 +1671,23 @@ model PosTransaction {
   offlineQueued Boolean   @default(false)
   syncedAt      DateTime?
   status        String
+  // For card payments: which rail processed it. "TERMINAL" = Stripe Terminal
+  // reader, "CNP" = card-not-present (keyed). Null for non-card sales.
+  cardRail          String?
+  // When cardRail = "CNP", how the cashier ended up on the keyed form:
+  //   "NO_READER"        — discovery completed, no readers paired
+  //   "DISCOVERY_FAILED" — discovery threw (SDK/network)
+  //   "MANUAL_CHOICE"    — cashier explicitly tapped Card Not Present
+  // Null otherwise. Lets owners see how often "keyed" was a silent fallback
+  // vs. a deliberate cashier choice.
+  cnpFallbackReason String?
   createdAt     DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])
   lineItems PosLineItem[]
 
   @@index([tenantId])
+  @@index([tenantId, createdAt])
   @@map("pos_transactions")
 }
 
