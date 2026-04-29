@@ -412,6 +412,53 @@ export default function Settings() {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
 
+  // ── Marina Profile (real data from /api/settings/marina) ──────────────
+  // The form below was previously a hardcoded mock that always showed
+  // "Bayshore Marina". We now fetch the actual tenant profile, bind every
+  // field to controlled state, and PUT real changes on save.
+  type MarinaProfile = {
+    name: string;
+    address: string;
+    phone: string;
+    email: string;
+    website: string;
+    timezone: string;
+    fiscalYearEnd: string;
+  };
+  const { data: marinaProfileData } = useApi<MarinaProfile>('get', '/api/settings/marina', { immediate: true });
+  const { execute: saveMarinaProfile, loading: savingMarinaProfile } = useApi<MarinaProfile>('put', '/api/settings/marina');
+  const [marinaName, setMarinaName] = useState('');
+  const [marinaPhone, setMarinaPhone] = useState('');
+  const [marinaAddress, setMarinaAddress] = useState('');
+  const [marinaEmail, setMarinaEmail] = useState('');
+  const [marinaWebsite, setMarinaWebsite] = useState('');
+  const [marinaTimezone, setMarinaTimezone] = useState('America/New_York');
+  React.useEffect(() => {
+    if (marinaProfileData) {
+      setMarinaName(marinaProfileData.name ?? '');
+      setMarinaPhone(marinaProfileData.phone ?? '');
+      setMarinaAddress(marinaProfileData.address ?? '');
+      setMarinaEmail(marinaProfileData.email ?? '');
+      setMarinaWebsite(marinaProfileData.website ?? '');
+      if (marinaProfileData.timezone) setMarinaTimezone(marinaProfileData.timezone);
+    }
+  }, [marinaProfileData]);
+  const handleSaveMarinaProfile = async () => {
+    const result = await saveMarinaProfile({
+      name: marinaName,
+      address: marinaAddress,
+      phone: marinaPhone,
+      email: marinaEmail,
+      website: marinaWebsite,
+      timezone: marinaTimezone,
+      fiscalYearEnd: marinaProfileData?.fiscalYearEnd ?? '12-31',
+    });
+    if (result) {
+      setSavedMsg('Marina profile saved successfully!');
+      setTimeout(() => setSavedMsg(null), 2000);
+    }
+  };
+
   // Branding logo upload
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
@@ -1462,39 +1509,56 @@ export default function Settings() {
           <div style={st.formGrid} className="helm-form-grid">
             <div style={st.field}>
               <label style={st.label}>Marina Name</label>
-              <input style={st.input} defaultValue="Bayshore Marina" />
+              <input
+                style={st.input}
+                value={marinaName}
+                placeholder="Your marina's name"
+                onChange={(e) => setMarinaName(e.target.value)}
+              />
             </div>
             <div style={st.field}>
               <label style={st.label}>Phone</label>
-              <input style={st.input} defaultValue="(555) 234-5678" />
+              <input
+                style={st.input}
+                value={marinaPhone}
+                placeholder="(555) 555-5555"
+                onChange={(e) => setMarinaPhone(e.target.value)}
+              />
             </div>
             <div style={st.fieldFull}>
-              <label style={st.label}>Street Address</label>
-              <input style={st.input} defaultValue="1200 Harbor Drive" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>City</label>
-              <input style={st.input} defaultValue="Bayshore" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>State</label>
-              <input style={st.input} defaultValue="FL" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Zip Code</label>
-              <input style={st.input} defaultValue="33541" />
+              <label style={st.label}>Address</label>
+              <input
+                style={st.input}
+                value={marinaAddress}
+                placeholder="Street, City, State ZIP"
+                onChange={(e) => setMarinaAddress(e.target.value)}
+              />
             </div>
             <div style={st.field}>
               <label style={st.label}>Email</label>
-              <input style={st.input} defaultValue="info@bayshoremarina.com" />
+              <input
+                style={st.input}
+                value={marinaEmail}
+                placeholder="info@yourmarina.com"
+                onChange={(e) => setMarinaEmail(e.target.value)}
+              />
             </div>
             <div style={st.field}>
               <label style={st.label}>Website</label>
-              <input style={st.input} defaultValue="https://bayshoremarina.com" />
+              <input
+                style={st.input}
+                value={marinaWebsite}
+                placeholder="https://yourmarina.com"
+                onChange={(e) => setMarinaWebsite(e.target.value)}
+              />
             </div>
             <div style={st.field}>
               <label style={st.label}>Timezone</label>
-              <select style={st.select} defaultValue="America/New_York">
+              <select
+                style={st.select}
+                value={marinaTimezone}
+                onChange={(e) => setMarinaTimezone(e.target.value)}
+              >
                 <option value="America/New_York">Eastern (ET)</option>
                 <option value="America/Chicago">Central (CT)</option>
                 <option value="America/Denver">Mountain (MT)</option>
@@ -1525,8 +1589,8 @@ export default function Settings() {
               ))}
             </div>
           </div>
-          <button style={st.saveBtn} onClick={() => handleSave('profile')} disabled={savingSettings}>
-            {savingSettings ? 'Saving...' : 'Save Changes'}
+          <button style={st.saveBtn} onClick={handleSaveMarinaProfile} disabled={savingMarinaProfile}>
+            {savingMarinaProfile ? 'Saving...' : 'Save Changes'}
           </button>
         </div>
       )}
