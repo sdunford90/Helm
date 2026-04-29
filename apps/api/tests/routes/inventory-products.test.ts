@@ -180,3 +180,65 @@ describe('POST /api/inventory/products', () => {
     expect(mockPrisma.product.create).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/inventory/products/:id/qbo-sync — strict GL mapping', () => {
+  // Manual QBO push must surface the canonical
+  //   `MISSING_GL_MAPPING: Missing GL mapping for category "{name}" at location "{name}"`
+  // wording when the per-(category, location) row is absent — otherwise the
+  // UI's deep-link to Settings → Categories has nothing to anchor on and
+  // operators get a generic "missing GL account" error from QBO sync.
+
+  it('returns the canonical MISSING_GL_MAPPING wording with category + location names when no per-(category, location) row exists', async () => {
+    const product = buildProduct({
+      id: 'prod-strict-1',
+      productCategoryId: 'cat-1',
+      locationId: 'loc-1',
+      trackInventory: true,
+    });
+    // Both the route's initial findFirst AND the strict resolver's product
+    // lookup go through prisma.product.findFirst. We make the same row
+    // satisfy both call sites (Prisma mocks don't enforce select scopes,
+    // so we attach productCategory.name in case the strict resolver picks it up).
+    mockPrisma.product.findFirst.mockResolvedValue({
+      ...product,
+      productCategory: { name: 'Engine Parts' },
+    } as any);
+    // Strict resolver fetches the location name via location.findFirst.
+    mockPrisma.location.findFirst.mockResolvedValue({ name: 'Marina Alpha' } as any);
+    // No per-(category, location) row → strict resolver throws.
+    mockPrisma.productCategoryGlMapping.findFirst.mockResolvedValue(null as any);
+    // Route catches the throw and persists the message into qboItemSyncError.
+    mockPrisma.product.update.mockResolvedValue(product as any);
+
+    const res = await request(app).post('/api/inventory/products/prod-strict-1/qbo-sync');
+
+    // The route surfaces sync errors as 502 with `{ success: false, error }`.
+    expect(res.status).toBe(502);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toMatch(/^MISSING_GL_MAPPING: Missing GL mapping for category "Engine Parts" at location "Marina Alpha"/);
+    // The persisted error column also carries the canonical wording so the
+    // background retry sweep + UI banner share one source of truth.
+    const update = mockPrisma.product.update.mock.calls[0][0];
+    expect(update.data.qboItemSyncError).toMatch(/^MISSING_GL_MAPPING:/);
+  });
+
+  it('returns the canonical wording when the product has no locationId at all', async () => {
+    // A tracked-inventory product with no locationId can't be QBO-synced
+    // (per-location chart). The route still surfaces this in the canonical
+    // form so the UI deep-link is consistent across all reasons.
+    const product = buildProduct({
+      id: 'prod-strict-noloc',
+      name: 'Anchor Chain',
+      productCategoryId: 'cat-1',
+      locationId: null,
+      trackInventory: true,
+    });
+    mockPrisma.product.findFirst.mockResolvedValue(product as any);
+    mockPrisma.product.update.mockResolvedValue(product as any);
+
+    const res = await request(app).post('/api/inventory/products/prod-strict-noloc/qbo-sync');
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/^MISSING_GL_MAPPING: Product "Anchor Chain" has no locationId set/);
+  });
+});

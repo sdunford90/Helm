@@ -3,7 +3,10 @@ import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, GLAccountType } from "@prisma/client";
-import { resolveProductGlAccounts } from "../services/gl-account-resolver.js";
+import {
+  resolveProductGlAccounts,
+  resolveProductGlAccountsStrict,
+} from "../services/gl-account-resolver.js";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -33,10 +36,20 @@ type AdjustmentRow = Awaited<ReturnType<typeof prisma.inventoryAdjustment.findFi
 async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
   if (!product.trackInventory) return product;
   try {
-    const resolved = await resolveProductGlAccounts(
+    if (!product.locationId) {
+      // QBO inventory items live in a per-location chart; without a
+      // location we cannot pick the correct (category, location) mapping.
+      // Surface this in the canonical wording so the UI deep-link works.
+      throw new Error(
+        `MISSING_GL_MAPPING: Product "${product.name}" has no locationId set. ` +
+        `Assign the product to a location before syncing to QuickBooks.`,
+      );
+    }
+    const resolved = await resolveProductGlAccountsStrict(
       product.tenantId,
       product.id,
-      product.locationId ?? null,
+      product.locationId,
+      ["revenue", "cogs", "inventoryAsset"],
     );
     const result = await syncInventoryItem(
       {
@@ -83,10 +96,18 @@ async function tryPushAdjustmentJournal(
   // Skip reasons accounted for elsewhere (received → Bill, sold → auto-COGS)
   if (adjustment.reason === "received" || adjustment.reason === "sold") return;
   try {
-    const resolved = await resolveProductGlAccounts(
+    if (!product.locationId) {
+      throw new Error(
+        `MISSING_GL_MAPPING: Product "${product.name}" has no locationId set. ` +
+        `Assign the product to a location before posting inventory ` +
+        `adjustment journal entries.`,
+      );
+    }
+    const resolved = await resolveProductGlAccountsStrict(
       product.tenantId,
       product.id,
-      product.locationId ?? null,
+      product.locationId,
+      ["revenue", "cogs", "inventoryAsset"],
     );
     const result = await postInventoryAdjustmentJournal(
       {
@@ -700,10 +721,17 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
         .json({ error: "Product does not track inventory — only inventory items sync to QBO" });
     }
     try {
-      const resolved = await resolveProductGlAccounts(
+      if (!product.locationId) {
+        throw new Error(
+          `MISSING_GL_MAPPING: Product "${product.name}" has no locationId set. ` +
+          `Assign the product to a location before syncing to QuickBooks.`,
+        );
+      }
+      const resolved = await resolveProductGlAccountsStrict(
         product.tenantId,
         product.id,
-        product.locationId ?? null,
+        product.locationId,
+        ["revenue", "cogs", "inventoryAsset"],
       );
       const result = await syncInventoryItem(
         {
