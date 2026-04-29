@@ -344,6 +344,10 @@ describe('POST /api/contracts/:id/terminate', () => {
         glEntry: { create: vi.fn() },
         deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
         auditLog: { create: vi.fn() },
+        invoice: {
+          findUnique: vi.fn().mockResolvedValue({ balanceCents: 50000, status: 'ISSUED' }),
+          update: vi.fn(),
+        },
       };
       return fn(tx);
     });
@@ -361,6 +365,409 @@ describe('POST /api/contracts/:id/terminate', () => {
         appliedToInvoiceId: 'inv-final-99',
       }),
       expect.anything(),
+    );
+  });
+
+  it('applies a held deposit to the chosen invoice when the operator picks APPLY_TO_INVOICE', async () => {
+    // Operator picked "apply to invoice" for this deposit during termination.
+    // The route must (a) update the SecurityDeposit row's appliedToInvoiceId,
+    // (b) forward that ID to releaseSecurityDeposit so the journal debits
+    // 2300 / credits A/R, and (c) reduce the invoice's balance accordingly,
+    // marking it PAID when fully covered. This is the lock-in for the
+    // per-deposit-instruction wiring.
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3901',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 100000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3902';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    // Pre-validation invoice fetch outside the transaction.
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 100000,
+      status: 'ISSUED',
+    });
+    const securityDepositUpdate = vi.fn();
+    const invoiceUpdate = vi.fn();
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: securityDepositUpdate },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: vi.fn() },
+        invoice: {
+          findUnique: vi.fn().mockResolvedValue({ balanceCents: 100000, status: 'ISSUED' }),
+          update: invoiceUpdate,
+        },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        reason: 'Final invoice settlement',
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(securityDepositUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: heldDeposit.id },
+        data: expect.objectContaining({
+          status: 'RELEASED',
+          appliedToInvoiceId: targetInvoiceId,
+        }),
+      }),
+    );
+    expect(glPosting.releaseSecurityDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: heldDeposit.id,
+        amountCents: 100000,
+        appliedToInvoiceId: targetInvoiceId,
+      }),
+      expect.anything(),
+    );
+    // Fully covered → invoice balance zeroes and status flips to PAID.
+    expect(invoiceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: targetInvoiceId },
+        data: expect.objectContaining({ balanceCents: 0, status: 'PAID' }),
+      }),
+    );
+  });
+
+  it('rejects APPLY_TO_INVOICE when the deposit exceeds the invoice balance', async () => {
+    // Partial application is not supported — we'd be left with an awkward
+    // 2300 liability remainder and an over-credited A/R. Block it up front.
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3a01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 200000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3a02';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 50000,
+      status: 'ISSUED',
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'DEPOSIT_EXCEEDS_INVOICE_BALANCE');
+    expect(glPosting.releaseSecurityDeposit).not.toHaveBeenCalled();
+  });
+
+  it('rejects APPLY_TO_INVOICE when the invoice is not open (e.g., DRAFT)', async () => {
+    // Status gating: only ISSUED / PAST_DUE / COLLECTIONS invoices should be
+    // valid targets. DRAFT isn't yet a customer-facing receivable, PAID has
+    // nothing to absorb, and VOID is closed.
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3c01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 50000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3c02';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 100000,
+      status: 'DRAFT',
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'INVOICE_NOT_OPEN');
+    expect(glPosting.releaseSecurityDeposit).not.toHaveBeenCalled();
+  });
+
+  it('rejects when multiple deposits applied to the same invoice would over-credit it', async () => {
+    // Two deposits — each individually fits within the invoice balance, but
+    // their *sum* exceeds it. The route must aggregate per invoice and
+    // reject up front, otherwise GL would post A/R credits totaling more
+    // than the receivable, leaving the books off.
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const dep1 = {
+      id: '00000000-0000-0000-0000-0000000d3d01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 60000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const dep2 = { ...dep1, id: '00000000-0000-0000-0000-0000000d3d02', amountCents: 70000 };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3d03';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [dep1, dep2],
+    });
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 100000, // less than 60000 + 70000
+      status: 'ISSUED',
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: dep1.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+          { depositId: dep2.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'DEPOSIT_EXCEEDS_INVOICE_BALANCE');
+    expect(glPosting.releaseSecurityDeposit).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a concurrent payment shrinks the invoice balance mid-transaction', async () => {
+    // Pre-validation saw a balance large enough to absorb the deposit, but
+    // by the time the in-tx re-read fires another payment has shrunk it.
+    // The route must throw and roll back rather than silently clamp the
+    // balance to zero (which would leave A/R over-credited by the GL post).
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3e01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 100000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3e02';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    // Pre-validation sees a balance of 100000 — exactly enough.
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 100000,
+      status: 'ISSUED',
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: vi.fn() },
+        invoice: {
+          // Mid-transaction re-read sees a smaller balance (a payment landed).
+          findUnique: vi.fn().mockResolvedValue({ balanceCents: 25000, status: 'ISSUED' }),
+          update: vi.fn(),
+        },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toHaveProperty('code', 'INVOICE_BALANCE_CHANGED');
+  });
+
+  it('rejects an instruction targeting a deposit that is not on this contract', async () => {
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [], // no held deposits at all
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: '00000000-0000-0000-0000-0000000bad01', action: 'REFUND' },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'INVALID_DEPOSIT');
+  });
+
+  it('rejects duplicate instructions for the same deposit', async () => {
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3f01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 30000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'REFUND' },
+          { depositId: heldDeposit.id, action: 'REFUND' },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('code', 'DUPLICATE_DEPOSIT_INSTRUCTION');
+  });
+
+  it('records per-deposit refund/apply choices in the audit log', async () => {
+    // The audit trail needs to explain *why* each deposit went where it did,
+    // since the choice has real cash-flow consequences (refund vs. A/R offset).
+    const contract = buildContract({ status: 'ACTIVE', customerId: '00000000-0000-0000-0000-000000000abc' });
+    const heldDeposit = {
+      id: '00000000-0000-0000-0000-0000000d3b01',
+      tenantId: 'test-tenant-id',
+      locationId: 'loc-marina-A',
+      customerId: contract.customerId,
+      contractId: contract.id,
+      amountCents: 40000,
+      status: 'HELD',
+      appliedToInvoiceId: null,
+      releasedAt: null,
+    };
+    const targetInvoiceId = '00000000-0000-0000-0000-0000000d3b02';
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [heldDeposit],
+    });
+    mockPrisma.invoice.findFirst.mockResolvedValue({
+      id: targetInvoiceId,
+      customerId: contract.customerId,
+      balanceCents: 100000,
+      status: 'ISSUED',
+    });
+    const auditLogCreate = vi.fn();
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: auditLogCreate },
+        invoice: {
+          findUnique: vi.fn().mockResolvedValue({ balanceCents: 100000, status: 'ISSUED' }),
+          update: vi.fn(),
+        },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        depositInstructions: [
+          { depositId: heldDeposit.id, action: 'APPLY_TO_INVOICE', invoiceId: targetInvoiceId },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(auditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'TERMINATED',
+          changedFieldsJson: expect.objectContaining({
+            depositActions: [
+              expect.objectContaining({
+                depositId: heldDeposit.id,
+                action: 'APPLY_TO_INVOICE',
+                invoiceId: targetInvoiceId,
+                amountCents: 40000,
+              }),
+            ],
+          }),
+        }),
+      }),
     );
   });
 });

@@ -79,11 +79,24 @@ const ListContractsQuerySchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
+const DepositInstructionSchema = z.discriminatedUnion("action", [
+  z.object({
+    depositId: z.string().uuid(),
+    action: z.literal("REFUND"),
+  }),
+  z.object({
+    depositId: z.string().uuid(),
+    action: z.literal("APPLY_TO_INVOICE"),
+    invoiceId: z.string().uuid(),
+  }),
+]);
+
 const TerminateContractSchema = z.object({
   reason: z.string().optional(),
   terminationDate: z.coerce.date().optional(),
   penaltyOverrideCents: z.number().int().min(0).optional(),
   glAccountId: z.string().uuid().optional(),
+  depositInstructions: z.array(DepositInstructionSchema).optional(),
 });
 
 const RenewContractSchema = z.object({
@@ -742,6 +755,7 @@ router.post(
         terminationDate,
         penaltyOverrideCents,
         glAccountId,
+        depositInstructions,
       } = TerminateContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
@@ -766,6 +780,115 @@ router.post(
           400,
           "INVALID_STATUS",
         );
+      }
+
+      // Build a per-deposit instruction map.  Default action for any held
+      // deposit not explicitly addressed is REFUND, preserving prior behavior.
+      const instructionByDeposit = new Map<
+        string,
+        { action: "REFUND" } | { action: "APPLY_TO_INVOICE"; invoiceId: string }
+      >();
+      for (const inst of depositInstructions ?? []) {
+        instructionByDeposit.set(inst.depositId, inst);
+      }
+
+      // Validate every supplied instruction targets a held deposit on this
+      // contract, and that any "apply to invoice" target is an open invoice
+      // for the same customer with enough balance to absorb every deposit
+      // pointed at it. We aggregate the requested totals per invoice so that
+      // multiple deposits applied to the same invoice can't collectively
+      // over-credit A/R (the per-deposit pass would otherwise pass each
+      // check individually while their sum exceeds the balance).
+      //
+      // "Open" here means ISSUED / PAST_DUE / COLLECTIONS — DRAFT is not
+      // yet a customer-facing receivable, PAID has nothing to apply to,
+      // and VOID is closed.
+      const OPEN_INVOICE_STATUSES = new Set([
+        "ISSUED",
+        "PAST_DUE",
+        "COLLECTIONS",
+      ]);
+      const heldIds = new Set(contract.securityDeposits.map((d) => d.id));
+      const seenDepositIds = new Set<string>();
+      const requestedByInvoice = new Map<string, number>();
+
+      for (const inst of depositInstructions ?? []) {
+        if (!heldIds.has(inst.depositId)) {
+          throw appError(
+            `Deposit ${inst.depositId} is not a held deposit on this contract`,
+            400,
+            "INVALID_DEPOSIT",
+          );
+        }
+        if (seenDepositIds.has(inst.depositId)) {
+          throw appError(
+            `Deposit ${inst.depositId} appears more than once in depositInstructions`,
+            400,
+            "DUPLICATE_DEPOSIT_INSTRUCTION",
+          );
+        }
+        seenDepositIds.add(inst.depositId);
+
+        if (inst.action === "APPLY_TO_INVOICE") {
+          const heldAmount =
+            contract.securityDeposits.find((d) => d.id === inst.depositId)
+              ?.amountCents ?? 0;
+          requestedByInvoice.set(
+            inst.invoiceId,
+            (requestedByInvoice.get(inst.invoiceId) ?? 0) + heldAmount,
+          );
+        }
+      }
+
+      for (const [invoiceId, requestedTotal] of requestedByInvoice) {
+        const targetInvoice = await prisma.invoice.findFirst({
+          where: { id: invoiceId, tenantId },
+          select: {
+            id: true,
+            customerId: true,
+            balanceCents: true,
+            status: true,
+          },
+        });
+        if (!targetInvoice) {
+          throw appError(
+            `Invoice ${invoiceId} not found`,
+            404,
+            "INVOICE_NOT_FOUND",
+          );
+        }
+        if (targetInvoice.customerId !== contract.customerId) {
+          throw appError(
+            "Invoice does not belong to this contract's customer",
+            400,
+            "INVOICE_CUSTOMER_MISMATCH",
+          );
+        }
+        if (!OPEN_INVOICE_STATUSES.has(targetInvoice.status)) {
+          throw appError(
+            `Invoice ${invoiceId} is not open (status=${targetInvoice.status}); only ISSUED, PAST_DUE, or COLLECTIONS invoices can absorb a deposit`,
+            400,
+            "INVOICE_NOT_OPEN",
+          );
+        }
+        if (targetInvoice.balanceCents <= 0) {
+          throw appError(
+            `Invoice ${invoiceId} has no outstanding balance`,
+            400,
+            "INVOICE_NO_BALANCE",
+          );
+        }
+        if (requestedTotal > targetInvoice.balanceCents) {
+          throw appError(
+            `Deposits applied to invoice ${invoiceId} (total ${
+              requestedTotal / 100
+            }) exceed its balance (${
+              targetInvoice.balanceCents / 100
+            }); partial application is not supported`,
+            400,
+            "DEPOSIT_EXCEEDS_INVOICE_BALANCE",
+          );
+        }
       }
 
       const effectiveDate = terminationDate ?? new Date();
@@ -808,21 +931,87 @@ router.post(
         // separate QBO realms. We mark the deposit RELEASED and post the
         // reversing journal in the same transaction so the row state and the
         // ledger stay in lockstep.
+        //
+        // Per-deposit operator choice: the terminate request can specify
+        // `depositInstructions` to apply specific deposits to a customer
+        // invoice (debit 2300 / credit A/R) instead of refunding to the bank.
+        // Any deposit not addressed defaults to REFUND, matching the prior
+        // behavior. When a deposit is applied to an invoice we also reduce
+        // that invoice's `balanceCents` and flip its status to PAID if the
+        // application zeroes it out, so the customer's open balance and the
+        // ledger move together.
         for (const heldDeposit of contract.securityDeposits) {
+          const instruction = instructionByDeposit.get(heldDeposit.id);
+          // Resolution order:
+          //   1. Explicit operator instruction from the request (refund vs.
+          //      apply-to-invoice).
+          //   2. Otherwise, fall back to the deposit row's pre-existing
+          //      `appliedToInvoiceId` (legacy behavior — if it was already
+          //      earmarked, keep that earmark).
+          const targetInvoiceId = instruction
+            ? instruction.action === "APPLY_TO_INVOICE"
+              ? instruction.invoiceId
+              : null
+            : heldDeposit.appliedToInvoiceId ?? null;
+
           await tx.securityDeposit.update({
             where: { id: heldDeposit.id },
-            data: { status: "RELEASED", releasedAt: effectiveDate },
+            data: {
+              status: "RELEASED",
+              releasedAt: effectiveDate,
+              appliedToInvoiceId: targetInvoiceId,
+            },
           });
           await releaseSecurityDeposit(
             {
               id: heldDeposit.id,
               tenantId,
               amountCents: heldDeposit.amountCents,
-              appliedToInvoiceId: heldDeposit.appliedToInvoiceId ?? null,
+              appliedToInvoiceId: targetInvoiceId,
               locationId: heldDeposit.locationId ?? null,
             },
             tx,
           );
+
+          if (targetInvoiceId) {
+            // Re-read inside the transaction so concurrent payments cannot
+            // race the deposit application past zero balance. If a payment
+            // landed between the request-time validation and now, the live
+            // balance may be too small to absorb this deposit — bail and
+            // roll the whole termination back rather than silently clamping
+            // to zero (which would leave A/R over-credited by the GL post).
+            const liveInvoice = await tx.invoice.findUnique({
+              where: { id: targetInvoiceId },
+              select: { balanceCents: true, status: true },
+            });
+            if (!liveInvoice) {
+              throw appError(
+                `Invoice ${targetInvoiceId} disappeared during termination`,
+                409,
+                "INVOICE_GONE",
+              );
+            }
+            if (liveInvoice.balanceCents < heldDeposit.amountCents) {
+              throw appError(
+                `Invoice ${targetInvoiceId} balance changed during termination (now ${
+                  liveInvoice.balanceCents / 100
+                }, deposit ${heldDeposit.amountCents / 100}); please retry`,
+                409,
+                "INVOICE_BALANCE_CHANGED",
+              );
+            }
+            const newBalance = liveInvoice.balanceCents - heldDeposit.amountCents;
+            await tx.invoice.update({
+              where: { id: targetInvoiceId },
+              data: {
+                balanceCents: newBalance,
+                status:
+                  newBalance === 0 && liveInvoice.status !== "VOID"
+                    ? "PAID"
+                    : liveInvoice.status,
+              },
+            });
+          }
         }
 
         // Post penalty GL entry if applicable
@@ -859,7 +1048,29 @@ router.post(
           });
         }
 
-        // Create audit log
+        // Create audit log — include the per-deposit refund/apply choices so
+        // the trail explains why some deposits were refunded vs. applied to
+        // outstanding balances. The recorded action reflects what actually
+        // happened (the *effective* target invoice), including the legacy
+        // fallback where a deposit row's pre-existing `appliedToInvoiceId`
+        // was used because no explicit instruction was supplied.
+        const depositActions = contract.securityDeposits.map((d) => {
+          const inst = instructionByDeposit.get(d.id);
+          const effectiveInvoiceId =
+            inst?.action === "APPLY_TO_INVOICE"
+              ? inst.invoiceId
+              : inst?.action === "REFUND"
+                ? null
+                : (d.appliedToInvoiceId ?? null);
+          return {
+            depositId: d.id,
+            amountCents: d.amountCents,
+            action: effectiveInvoiceId ? "APPLY_TO_INVOICE" : "REFUND",
+            invoiceId: effectiveInvoiceId,
+            instructionSource: inst ? "explicit" : "legacy_fallback",
+          };
+        });
+
         await tx.auditLog.create({
           data: {
             tenantId,
@@ -872,6 +1083,7 @@ router.post(
               effectiveDate: effectiveDate.toISOString(),
               penaltyCents,
               previousStatus: contract.status,
+              depositActions,
             },
           },
         });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle } from 'lucide-react';
+import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
@@ -574,7 +574,7 @@ function ContractDetailModal({
   onUpdate: (id: string, changes: Partial<Contract>) => void;
 }) {
   const { getToken } = useAuth();
-  const [mode, setMode] = useState<'view' | 'edit' | 'transfer' | 'compliance'>('view');
+  const [mode, setMode] = useState<'view' | 'edit' | 'transfer' | 'compliance' | 'terminate'>('view');
 
   /* ── Edit state ── */
   const [rate, setRate] = useState(String(contract.rate));
@@ -593,6 +593,103 @@ function ContractDetailModal({
   const [effectiveDate, setEffectiveDate] = useState('');
   const [transferNotes, setTransferNotes] = useState('');
   const [transferring, setTransferring] = useState(false);
+
+  /* ── Terminate state ── */
+  type DepositAction = 'REFUND' | 'APPLY_TO_INVOICE';
+  interface HeldDeposit { id: string; amountCents: number; locationId: string | null; createdAt?: string; }
+  interface OpenInvoice { id: string; invoiceNumber: string; balanceCents: number; status: string; dueDate: string; }
+  const [terminateReason, setTerminateReason] = useState('');
+  const [terminateDate, setTerminateDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [terminating, setTerminating] = useState(false);
+  const [terminateError, setTerminateError] = useState('');
+  const [heldDeposits, setHeldDeposits] = useState<HeldDeposit[] | null>(null);
+  const [openInvoices, setOpenInvoices] = useState<OpenInvoice[] | null>(null);
+  const [depositChoices, setDepositChoices] = useState<Record<string, { action: DepositAction; invoiceId: string }>>({});
+  const [terminateLoading, setTerminateLoading] = useState(false);
+
+  // Lazy-load held deposits + customer open invoices when the operator opens
+  // the terminate dialog. The terminate endpoint will release HELD deposits
+  // either by refunding to the bank or applying to an open invoice (debits
+  // 2300 / credits A/R), and the operator picks per-deposit here.
+  useEffect(() => {
+    if (mode !== 'terminate') return;
+    let cancelled = false;
+    setTerminateLoading(true);
+    setTerminateError('');
+    (async () => {
+      try {
+        const token = await getToken();
+        const [contractDetail, invoiceList] = await Promise.all([
+          api.get<{ securityDeposits: HeldDeposit[] & { status: string }[] }>(`/api/contracts/${contract.id}`, token),
+          api.get<{ data: OpenInvoice[] }>(`/api/invoices?customerId=${contract.customerId}&take=100`, token),
+        ]);
+        if (cancelled) return;
+        const held = (contractDetail.securityDeposits as Array<HeldDeposit & { status: string }>)
+          .filter((d) => d.status === 'HELD');
+        // Mirror the API's INVOICE_NOT_OPEN check exactly so operators
+        // never see a status here that the backend would reject (e.g.,
+        // DRAFT). Only ISSUED / PAST_DUE / COLLECTIONS qualify as open.
+        const OPEN_STATUSES = new Set(['ISSUED', 'PAST_DUE', 'COLLECTIONS']);
+        const open = (invoiceList.data ?? []).filter((i) => i.balanceCents > 0 && OPEN_STATUSES.has(i.status));
+        setHeldDeposits(held);
+        setOpenInvoices(open);
+        const initial: Record<string, { action: DepositAction; invoiceId: string }> = {};
+        for (const d of held) initial[d.id] = { action: 'REFUND', invoiceId: '' };
+        setDepositChoices(initial);
+      } catch {
+        if (!cancelled) setTerminateError('Failed to load deposits and invoices.');
+      } finally {
+        if (!cancelled) setTerminateLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mode, contract.id, contract.customerId, getToken]);
+
+  const handleTerminate = async () => {
+    if (!heldDeposits) return;
+    // Validate that every "apply to invoice" choice has an invoice picked and
+    // the deposit doesn't exceed that invoice's balance (the API enforces
+    // these too, but failing fast keeps the operator in flow).
+    for (const d of heldDeposits) {
+      const choice = depositChoices[d.id];
+      if (choice?.action === 'APPLY_TO_INVOICE') {
+        if (!choice.invoiceId) {
+          setTerminateError('Please pick an invoice for every deposit set to "Apply to invoice".');
+          return;
+        }
+        const inv = openInvoices?.find((i) => i.id === choice.invoiceId);
+        if (inv && d.amountCents > inv.balanceCents) {
+          setTerminateError(`Deposit of $${(d.amountCents / 100).toFixed(2)} exceeds invoice ${inv.invoiceNumber} balance ($${(inv.balanceCents / 100).toFixed(2)}). Pick a different invoice or refund instead.`);
+          return;
+        }
+      }
+    }
+    setTerminating(true);
+    setTerminateError('');
+    try {
+      const token = await getToken();
+      const depositInstructions = heldDeposits.map((d) => {
+        const c = depositChoices[d.id];
+        if (c?.action === 'APPLY_TO_INVOICE') {
+          return { depositId: d.id, action: 'APPLY_TO_INVOICE', invoiceId: c.invoiceId };
+        }
+        return { depositId: d.id, action: 'REFUND' };
+      });
+      await api.post(`/api/contracts/${contract.id}/terminate`, {
+        reason: terminateReason || undefined,
+        terminationDate: terminateDate,
+        depositInstructions,
+      }, token);
+      // Reflect locally so the UI updates without a full refetch.
+      onUpdate(contract.id, { status: 'Terminated' });
+      onClose();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Termination failed.';
+      setTerminateError(msg);
+    } finally {
+      setTerminating(false);
+    }
+  };
 
   /* ── Compliance state ── */
   const [hin, setHin] = useState('');
@@ -745,9 +842,14 @@ function ContractDetailModal({
                 <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(52,211,153,0.5)', backgroundColor: 'rgba(52,211,153,0.15)', color: '#34D399', cursor: 'pointer' }} onClick={() => setMode('compliance')}>
                   <Shield size={13} /> Vessel & Compliance
                 </button>
+                {(contract.status === 'Active' || contract.status === 'Expiring') && (
+                  <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(248,113,113,0.5)', backgroundColor: 'rgba(248,113,113,0.15)', color: '#F87171', cursor: 'pointer' }} onClick={() => setMode('terminate')}>
+                    <XCircle size={13} /> Terminate
+                  </button>
+                )}
               </>
             )}
-            {mode === 'compliance' && (
+            {(mode === 'compliance' || mode === 'terminate') && (
               <button style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, borderRadius: '6px', border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'rgba(255,255,255,0.1)', color: '#FFFFFF', cursor: 'pointer' }} onClick={() => setMode('view')}>
                 ← Back
               </button>
@@ -1021,9 +1123,122 @@ function ContractDetailModal({
             </div>
           </>
         )}
+
+        {/* ── Terminate Mode ── */}
+        {mode === 'terminate' && (
+          <>
+            <div style={st.modalBody}>
+              <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', marginBottom: '20px', fontSize: '13px', color: '#B91C1C', display: 'flex', gap: '10px' }}>
+                <AlertTriangleInline />
+                <div>
+                  Terminating <strong>{contract.number}</strong> will end the slip lease and release every held security deposit. For each held deposit, choose whether to refund it to the customer or apply it to one of their open invoices to reduce the balance owed.
+                </div>
+              </div>
+
+              {terminateError && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '8px', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', marginBottom: '16px', fontSize: '13px', color: '#DC2626' }}>
+                  <AlertCircle size={15} /> {terminateError}
+                </div>
+              )}
+
+              <div style={st.twoCol} className="helm-form-grid">
+                <div style={st.field}>
+                  <label style={st.label}>Termination Date</label>
+                  <input style={st.input} type="date" value={terminateDate} onChange={(e) => setTerminateDate(e.target.value)} />
+                </div>
+                <div style={st.field}>
+                  <label style={st.label}>Reason / Notes</label>
+                  <input style={st.input} placeholder="e.g. Customer sold the boat" value={terminateReason} onChange={(e) => setTerminateReason(e.target.value)} />
+                </div>
+              </div>
+
+              <div style={{ borderTop: '2px solid #E2E8F0', marginTop: '20px', paddingTop: '20px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px' }}>
+                  Held Security Deposits
+                </div>
+
+                {terminateLoading && (
+                  <div style={{ textAlign: 'center', padding: '24px', color: '#64748B', fontSize: '13px' }}>Loading deposits and open invoices…</div>
+                )}
+
+                {!terminateLoading && heldDeposits && heldDeposits.length === 0 && (
+                  <div style={{ padding: '14px', borderRadius: '8px', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', fontSize: '13px', color: '#64748B' }}>
+                    No held deposits on this contract — nothing to refund or apply.
+                  </div>
+                )}
+
+                {!terminateLoading && heldDeposits && heldDeposits.map((d) => {
+                  const choice = depositChoices[d.id] ?? { action: 'REFUND' as DepositAction, invoiceId: '' };
+                  return (
+                    <div key={d.id} style={{ padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <div>
+                          <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>Deposit</div>
+                          <div style={{ fontSize: '12px', color: '#94A3B8', fontFamily: '"JetBrains Mono", monospace', marginTop: '2px' }}>{d.id.slice(0, 8)}…</div>
+                        </div>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                          ${(d.amountCents / 100).toFixed(2)}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' as const }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}>
+                          <input
+                            type="radio"
+                            name={`deposit-${d.id}`}
+                            checked={choice.action === 'REFUND'}
+                            onChange={() => setDepositChoices((prev) => ({ ...prev, [d.id]: { action: 'REFUND', invoiceId: '' } }))}
+                          />
+                          Refund to customer
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}>
+                          <input
+                            type="radio"
+                            name={`deposit-${d.id}`}
+                            checked={choice.action === 'APPLY_TO_INVOICE'}
+                            onChange={() => setDepositChoices((prev) => ({ ...prev, [d.id]: { action: 'APPLY_TO_INVOICE', invoiceId: prev[d.id]?.invoiceId ?? '' } }))}
+                          />
+                          Apply to invoice
+                        </label>
+                        {choice.action === 'APPLY_TO_INVOICE' && (
+                          <select
+                            style={{ ...st.formSelect, flex: 1, minWidth: '240px' }}
+                            value={choice.invoiceId}
+                            onChange={(e) => setDepositChoices((prev) => ({ ...prev, [d.id]: { action: 'APPLY_TO_INVOICE', invoiceId: e.target.value } }))}
+                          >
+                            <option value="">Select an open invoice…</option>
+                            {(openInvoices ?? []).map((inv) => (
+                              <option key={inv.id} value={inv.id} disabled={d.amountCents > inv.balanceCents}>
+                                {inv.invoiceNumber} — balance ${(inv.balanceCents / 100).toFixed(2)}{d.amountCents > inv.balanceCents ? ' (insufficient)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div style={st.modalFooter}>
+              <button style={st.cancelBtn} onClick={() => setMode('view')}>Cancel</button>
+              <button
+                style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: terminating || terminateLoading ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={handleTerminate}
+                disabled={terminating || terminateLoading}
+              >
+                <XCircle size={15} />
+                {terminating ? 'Terminating…' : 'Terminate Contract'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
+}
+
+function AlertTriangleInline() {
+  return <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />;
 }
 
 /* ── Main Component ──────────────────────────────────────── */
