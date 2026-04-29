@@ -2113,13 +2113,32 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
 
     // Check if any catalog products still reference this GL account.
     // Deleting (or NULL-ing) the FK on these would silently break GL posting,
-    // so block the delete until the operator reassigns them.
-    const [dockageRateRefs, serviceFeeRefs, productRefs, rentalProductRefs] = await Promise.all([
+    // so block the delete until the operator reassigns them. Rental products
+    // no longer carry a tenant-wide FK; their references live in the
+    // per-location `rental_product_gl_mappings` table across any of the
+    // revenue / COGS / inventory-asset slots.
+    const [dockageRateRefs, serviceFeeRefs, productRefs, rentalProductMappingRows] = await Promise.all([
       prisma.dockageRate.count({ where: { tenantId, glAccountId: req.params.id } }),
       prisma.serviceFee.count({ where: { tenantId, glAccountId: req.params.id } }),
       prisma.product.count({ where: { tenantId, glAccountId: req.params.id } }),
-      prisma.rentalProduct.count({ where: { tenantId, glAccountId: req.params.id } }),
+      prisma.rentalProductGlMapping.findMany({
+        where: {
+          tenantId,
+          OR: [
+            { revenueGlAccountId: req.params.id },
+            { cogsGlAccountId: req.params.id },
+            { inventoryAssetGlAccountId: req.params.id },
+          ],
+        },
+        select: { rentalProductId: true },
+      }),
     ]);
+    // Distinct rental products affected — multiple per-location mapping
+    // rows can reference the same product, but the operator only needs to
+    // know how many unique products require reassignment.
+    const rentalProductRefs = new Set(
+      rentalProductMappingRows.map((m) => m.rentalProductId),
+    ).size;
     const totalRefs = dockageRateRefs + serviceFeeRefs + productRefs + rentalProductRefs;
     if (totalRefs > 0) {
       const parts: string[] = [];
@@ -2164,26 +2183,6 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
   }
 });
 
-// ─── CATALOG — GL ACCOUNT ASSIGNMENT FOR PRODUCTS ────────────────────────────
-
-// PUT /api/settings/catalog/rental-products/:id/gl-account
-router.put("/catalog/rental-products/:id/gl-account", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
-  try {
-    const tenantId = req.tenantId!;
-    const { glAccountId } = req.body;
-    const existing = await prisma.rentalProduct.findFirst({ where: { id: req.params.id, tenantId } });
-    if (!existing) { res.status(404).json({ error: "Rental product not found" }); return; }
-    if (glAccountId && !(await assertGlAccountBelongsToTenant(glAccountId, tenantId))) {
-      res.status(400).json({ error: "GL account not found" }); return;
-    }
-    const updated = await prisma.rentalProduct.update({
-      where: { id: req.params.id },
-      data: { glAccountId: glAccountId ?? null },
-    });
-    res.json({ data: updated });
-  } catch (err) { next(err); }
-});
-
 // ─── CATALOG — PRODUCTS SUMMARY (all product types with GL account info) ─────
 
 // GET /api/settings/catalog/products-summary?locationId=xxx
@@ -2210,7 +2209,7 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
         prisma.rentalProduct.findMany({
           where: { tenantId },
           orderBy: { name: "asc" },
-          select: { id: true, name: true, category: true, glAccountId: true, active: true },
+          select: { id: true, name: true, category: true, active: true },
         }),
         prisma.glAccount.findMany({
           // Include REVENUE, EXPENSE, and ASSET so the rental-product per-
@@ -2241,10 +2240,9 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
         prisma.location.findMany({
           where: { tenantId },
           orderBy: { name: "asc" },
-          // qboAccessToken/qboRealmId are needed to mirror the resolver's
-          // QBO-gating rule: once a location is QBO-connected the legacy
-          // tenant-wide RentalProduct.glAccountId is *not* a valid
-          // fallback, so the badge / `effective` view must not honor it.
+          // qboAccessToken/qboRealmId are returned so the public response
+          // can flatten them down to a `qboConnected` boolean for the
+          // location-aware UI controls (account-list filtering, etc.).
           select: {
             id: true,
             name: true,
@@ -2273,10 +2271,10 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
       return { ...f, glAccountId: override !== undefined ? override : f.glAccountId };
     });
 
-    // Build per-location mapping rows for each rental product. The legacy
-    // tenant-wide RentalProduct.glAccountId fills the revenue slot when no
-    // explicit override exists. Each row carries an `effective` revenue
-    // account so the UI can decide whether to flag it as unconfigured.
+    // Build per-location mapping rows for each rental product. The
+    // tenant-wide legacy RentalProduct.glAccountId column has been
+    // retired, so each row's `effective` slots are sourced exclusively
+    // from the per-location override (or null when unmapped).
     const rpMapByPair = new Map<
       string,
       {
@@ -2304,13 +2302,6 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
     const rentalProductsEnriched = rentalProducts.map((p) => {
       const perLocation = rentalLocations.map((l) => {
         const mm = rpMapByPair.get(`${p.id}|${l.id}`);
-        // Mirror resolver/warning behavior: once a location is QBO-
-        // connected the tenant-wide legacy `RentalProduct.glAccountId`
-        // is not a valid fallback (it points at an account that lives
-        // outside that location's chart). Suppressing it here keeps the
-        // unconfigured badge in agreement with the warnings banner.
-        const qboConnected = !!(l.qboAccessToken && l.qboRealmId);
-        const legacyRevenue = qboConnected ? null : p.glAccountId ?? null;
         return {
           locationId: l.id,
           locationName: l.name,
@@ -2320,7 +2311,7 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
             inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
-            revenueGlAccountId: mm?.revenueGlAccountId ?? legacyRevenue,
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
             cogsGlAccountId: mm?.cogsGlAccountId ?? null,
             inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
@@ -2343,15 +2334,16 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
 
     // Count unconfigured items (no effective revenue mapping). For rental
     // products this means *any* location that lacks an effective revenue
-    // mapping counts toward the warning total — once a tenant has multiple
-    // locations a single tenant-wide FK is no longer enough. In single-
-    // location mode the gap count is naturally narrowed because
-    // `perLocation` now only contains that one location.
+    // mapping counts toward the warning total — every location now needs an
+    // explicit per-location override since the legacy tenant-wide FK was
+    // retired. In single-location mode the gap count is naturally narrowed
+    // because `perLocation` only contains that one location. A tenant with
+    // zero locations counts each active product as a single gap.
     const rentalUnconfigured = rentalProductsEnriched
       .filter((p) => p.active)
       .reduce((acc, p) => {
         const gaps = rentalLocations.length === 0
-          ? (p.glAccountId ? 0 : 1)
+          ? 1
           : p.perLocation.filter((row) => !row.effective.revenueGlAccountId).length;
         return acc + gaps;
       }, 0);
@@ -2890,12 +2882,9 @@ router.get(
 //
 // Returns one row per location for the tenant: { locationId, locationName,
 // qboConnected, override, effective }. Override is the per-location mapping
-// row if any. Effective resolution chain (first non-null wins):
-//   1. Per-location override (RentalProductGlMapping)
-//   2. Tenant-level legacy FK (RentalProduct.glAccountId) for the revenue
-//      slot only — but only when the location is NOT QBO-connected (a
-//      QBO-connected location must use a per-location mapping or it cannot
-//      post safely).
+// row if any. The legacy tenant-wide RentalProduct.glAccountId column has
+// been retired, so the per-location mapping is now the sole source for the
+// `effective` slots — there is no further fallback.
 router.get(
   "/catalog/rental-products/:id/gl-mappings",
   ...clerkAuth(),
@@ -2905,7 +2894,7 @@ router.get(
       const tenantId = req.tenantId!;
       const product = await prisma.rentalProduct.findFirst({
         where: { id: req.params.id, tenantId },
-        select: { id: true, glAccountId: true },
+        select: { id: true },
       });
       if (!product) {
         res.status(404).json({ error: "Rental product not found" });
@@ -2923,7 +2912,6 @@ router.get(
       const data = locs.map((l, i) => {
         const mm = mappings.find((m) => m.locationId === l.id);
         const qboConnected = qboFlags[i];
-        const legacyRevenue = qboConnected ? null : product.glAccountId ?? null;
         return {
           locationId: l.id,
           locationName: l.name,
@@ -2934,7 +2922,7 @@ router.get(
             inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
-            revenueGlAccountId: mm?.revenueGlAccountId ?? legacyRevenue,
+            revenueGlAccountId: mm?.revenueGlAccountId ?? null,
             cogsGlAccountId: mm?.cogsGlAccountId ?? null,
             inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },

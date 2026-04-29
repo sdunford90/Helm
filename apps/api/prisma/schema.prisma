@@ -344,7 +344,7 @@ model Tenant {
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
 
-  saasTier         SaasTier?         @relation(fields: [saasTierId], references: [id])
+  saasTier         SaasTier?             @relation(fields: [saasTierId], references: [id])
   users            User[]
   locations        Location[]
   saasInvoices     SaasInvoice[]
@@ -363,23 +363,23 @@ model Tenant {
 // these entries are written by platform_admin users about their
 // retention work on the account.
 model TenantTimelineEvent {
-  id            String   @id @default(uuid())
-  tenantId      String
+  id           String   @id @default(uuid())
+  tenantId     String
   // adminUserId is the platform_admin who took the action. Nullable so
   // automated lifecycle entries (status transitions, etc.) can omit it.
-  adminUserId   String?
+  adminUserId  String?
   // type is a short machine-readable verb so the UI can pick an icon /
   // color: nudge_sent | assigned | unassigned | trial_extended |
   // coupon_applied | tier_changed | check_in_scheduled | ticket_opened |
   // note. Free-form on purpose — adding new save-play actions doesn't
   // require a migration.
-  type          String
-  summary       String
+  type         String
+  summary      String
   // Optional structured payload for the action (e.g. new tier id, coupon
   // code, ticket id, scheduled-at timestamp). Rendered as small chips
   // below the summary in the timeline UI.
-  metadataJson  Json?
-  createdAt     DateTime @default(now())
+  metadataJson Json?
+  createdAt    DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
@@ -425,15 +425,15 @@ model Location {
   brandingJson Json?
 
   // Per-location QuickBooks connection (each property files its own books)
-  qboRealmId          String?
-  qboAccessToken      String?
-  qboRefreshToken     String?
-  qboTokenExpiresAt   DateTime?
-  qboConnectedAt      DateTime?
-  qboCompanyName      String?
+  qboRealmId                   String?
+  qboAccessToken               String?
+  qboRefreshToken              String?
+  qboTokenExpiresAt            DateTime?
+  qboConnectedAt               DateTime?
+  qboCompanyName               String?
   // Last time we pulled Vendors / Bills from QBO for this location.
-  qboLastVendorPullAt DateTime?
-  qboLastBillPullAt   DateTime?
+  qboLastVendorPullAt          DateTime?
+  qboLastBillPullAt            DateTime?
   // Last time the chart of accounts was pulled from QBO for this location.
   qboLastChartOfAccountsSyncAt DateTime?
 
@@ -454,19 +454,19 @@ model Location {
   undepositedFundsGlAccountId String?
   deferredRevenueGlAccountId  String?
 
-  arGlAccount               GlAccount? @relation(name: "LocationArGlAccount",               fields: [arGlAccountId],               references: [id])
+  arGlAccount               GlAccount? @relation(name: "LocationArGlAccount", fields: [arGlAccountId], references: [id])
   undepositedFundsGlAccount GlAccount? @relation(name: "LocationUndepositedFundsGlAccount", fields: [undepositedFundsGlAccountId], references: [id])
-  deferredRevenueGlAccount  GlAccount? @relation(name: "LocationDeferredRevenueGlAccount",  fields: [deferredRevenueGlAccountId],  references: [id])
+  deferredRevenueGlAccount  GlAccount? @relation(name: "LocationDeferredRevenueGlAccount", fields: [deferredRevenueGlAccountId], references: [id])
 
   defaultRevenueGlAccountId   String?
   salesTaxGlAccountId         String?
   earlyTerminationGlAccountId String?
   achReturnFeeGlAccountId     String?
 
-  defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount",   fields: [defaultRevenueGlAccountId],   references: [id])
-  salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount",         fields: [salesTaxGlAccountId],         references: [id])
+  defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
+  salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount", fields: [salesTaxGlAccountId], references: [id])
   earlyTerminationGlAccount GlAccount? @relation(name: "LocationEarlyTerminationGlAccount", fields: [earlyTerminationGlAccountId], references: [id])
-  achReturnFeeGlAccount     GlAccount? @relation(name: "LocationAchReturnFeeGlAccount",     fields: [achReturnFeeGlAccountId],     references: [id])
+  achReturnFeeGlAccount     GlAccount? @relation(name: "LocationAchReturnFeeGlAccount", fields: [achReturnFeeGlAccountId], references: [id])
 
   // ----- Per-location SaaS subscription billing -----
   // We charge per marina (= per Location), not per holding company. Each
@@ -482,21 +482,21 @@ model Location {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id])
-  saasTier       SaasTier?       @relation(fields: [saasTierId], references: [id])
-  dockageRates   DockageRate[]
-  serviceFees    ServiceFee[]
-  invoices       Invoice[]
-  products       Product[]
-  purchaseOrders PurchaseOrder[]
-  userLocations  UserLocation[]
-  glAccounts                 GlAccount[]                @relation(name: "LocationGlAccounts")
-  productGlMappings          ProductGlMapping[]         @relation(name: "LocationProductGlMappings")
-  productCategoryGlMappings  ProductCategoryGlMapping[] @relation(name: "LocationProductCategoryGlMappings")
-  dockageRateGlMappings      DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
-  serviceFeeGlMappings       ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
-  rentalProductGlMappings    RentalProductGlMapping[]   @relation(name: "LocationRentalProductGlMappings")
-  securityDeposits           SecurityDeposit[]          @relation(name: "LocationSecurityDeposits")
+  tenant                    Tenant                     @relation(fields: [tenantId], references: [id])
+  saasTier                  SaasTier?                  @relation(fields: [saasTierId], references: [id])
+  dockageRates              DockageRate[]
+  serviceFees               ServiceFee[]
+  invoices                  Invoice[]
+  products                  Product[]
+  purchaseOrders            PurchaseOrder[]
+  userLocations             UserLocation[]
+  glAccounts                GlAccount[]                @relation(name: "LocationGlAccounts")
+  productGlMappings         ProductGlMapping[]         @relation(name: "LocationProductGlMappings")
+  productCategoryGlMappings ProductCategoryGlMapping[] @relation(name: "LocationProductCategoryGlMappings")
+  dockageRateGlMappings     DockageRateGlMapping[]     @relation(name: "LocationDockageRateGlMappings")
+  serviceFeeGlMappings      ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
+  rentalProductGlMappings   RentalProductGlMapping[]   @relation(name: "LocationRentalProductGlMappings")
+  securityDeposits          SecurityDeposit[]          @relation(name: "LocationSecurityDeposits")
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -521,7 +521,7 @@ model SaasTier {
 }
 
 model User {
-  id           String   @id @default(uuid())
+  id           String     @id @default(uuid())
   tenantId     String
   email        String
   role         UserRole
@@ -532,10 +532,10 @@ model User {
   firstName    String
   lastName     String
   clerkUserId  String?
-  active       Boolean  @default(true)
+  active       Boolean    @default(true)
   customRoleId String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id])
   customRole    CustomRole?    @relation(fields: [customRoleId], references: [id])
@@ -1227,7 +1227,7 @@ model SecurityDeposit {
 }
 
 model GlAccount {
-  id                String        @id @default(uuid())
+  id                String          @id @default(uuid())
   tenantId          String
   // Per-location chart of accounts. Null means tenant-wide / legacy manual
   // entry (kept around so operators without a QBO connection still have a
@@ -1244,34 +1244,33 @@ model GlAccount {
   source            GlAccountSource @default(MANUAL)
   // Mirrors QBO's Active flag for QBO-sourced rows. Manual accounts use this
   // for soft-delete archival when they have posted entries.
-  isActive          Boolean       @default(true)
-  isDeferredRevenue Boolean       @default(false)
-  active            Boolean       @default(true)
+  isActive          Boolean         @default(true)
+  isDeferredRevenue Boolean         @default(false)
+  active            Boolean         @default(true)
   description       String?
 
-  location               Location?         @relation(name: "LocationGlAccounts", fields: [locationId], references: [id])
-  entries                GlEntry[]
-  lineItems              InvoiceLineItem[]
-  products               Product[]         @relation(name: "ProductGlAccount")
-  productsCogs           Product[]         @relation(name: "ProductCogsGlAccount")
-  productsInventoryAsset Product[]         @relation(name: "ProductInventoryAssetGlAccount")
-  productsRevenue        Product[]         @relation(name: "ProductRevenueGlAccount")
-  rentalProducts         RentalProduct[]   @relation(name: "RentalProductGlAccount")
+  location                              Location?                @relation(name: "LocationGlAccounts", fields: [locationId], references: [id])
+  entries                               GlEntry[]
+  lineItems                             InvoiceLineItem[]
+  products                              Product[]                @relation(name: "ProductGlAccount")
+  productsCogs                          Product[]                @relation(name: "ProductCogsGlAccount")
+  productsInventoryAsset                Product[]                @relation(name: "ProductInventoryAssetGlAccount")
+  productsRevenue                       Product[]                @relation(name: "ProductRevenueGlAccount")
   rentalProductGlMappingsRevenue        RentalProductGlMapping[] @relation(name: "RentalProductGlMappingRevenue")
   rentalProductGlMappingsCogs           RentalProductGlMapping[] @relation(name: "RentalProductGlMappingCogs")
   rentalProductGlMappingsInventoryAsset RentalProductGlMapping[] @relation(name: "RentalProductGlMappingInventoryAsset")
-  productCategoriesRevenue        ProductCategory[] @relation(name: "ProductCategoryRevenueGlAccount")
-  productCategoriesCogs           ProductCategory[] @relation(name: "ProductCategoryCogsGlAccount")
-  productCategoriesInventoryAsset ProductCategory[] @relation(name: "ProductCategoryInventoryAssetGlAccount")
+  productCategoriesRevenue              ProductCategory[]        @relation(name: "ProductCategoryRevenueGlAccount")
+  productCategoriesCogs                 ProductCategory[]        @relation(name: "ProductCategoryCogsGlAccount")
+  productCategoriesInventoryAsset       ProductCategory[]        @relation(name: "ProductCategoryInventoryAssetGlAccount")
 
-  productGlMappingsRevenue        ProductGlMapping[] @relation(name: "ProductGlMappingRevenue")
-  productGlMappingsCogs           ProductGlMapping[] @relation(name: "ProductGlMappingCogs")
-  productGlMappingsInventoryAsset ProductGlMapping[] @relation(name: "ProductGlMappingInventoryAsset")
+  productGlMappingsRevenue                ProductGlMapping[]         @relation(name: "ProductGlMappingRevenue")
+  productGlMappingsCogs                   ProductGlMapping[]         @relation(name: "ProductGlMappingCogs")
+  productGlMappingsInventoryAsset         ProductGlMapping[]         @relation(name: "ProductGlMappingInventoryAsset")
   productCategoryGlMappingsRevenue        ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingRevenue")
   productCategoryGlMappingsCogs           ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingCogs")
   productCategoryGlMappingsInventoryAsset ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingInventoryAsset")
-  dockageRateGlMappings           DockageRateGlMapping[]
-  serviceFeeGlMappings            ServiceFeeGlMapping[]
+  dockageRateGlMappings                   DockageRateGlMapping[]
+  serviceFeeGlMappings                    ServiceFeeGlMapping[]
 
   locationsAr               Location[] @relation(name: "LocationArGlAccount")
   locationsUndepositedFunds Location[] @relation(name: "LocationUndepositedFundsGlAccount")
@@ -1472,8 +1471,8 @@ model AdminAuditEvent {
 model TenantNote {
   id          String   @id @default(uuid())
   tenantId    String
-  authorId    String   // User.id of the platform admin who wrote it
-  authorEmail String?  // Denormalised so notes still display if the admin row is gone
+  authorId    String // User.id of the platform admin who wrote it
+  authorEmail String? // Denormalised so notes still display if the admin row is gone
   body        String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1577,11 +1576,9 @@ model RentalProduct {
   cancellationPolicyId String?
   taxClass             String?  @default("Tax Exempt")
   active               Boolean  @default(true)
-  glAccountId          String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  glAccount              GlAccount?                @relation(name: "RentalProductGlAccount", fields: [glAccountId], references: [id])
   cancellationPolicy     CancellationPolicy?       @relation(fields: [cancellationPolicyId], references: [id])
   pricingRules           PricingRule[]
   calendarOverrides      PricingCalendarOverride[]
@@ -1856,17 +1853,17 @@ model ConciergeVendor {
 }
 
 model PosTransaction {
-  id            String    @id @default(uuid())
-  tenantId      String
-  cashierId     String?
-  shiftId       String?
-  subtotalCents Int
-  taxCents      Int       @default(0)
-  tipCents      Int       @default(0)
-  totalCents    Int
-  offlineQueued Boolean   @default(false)
-  syncedAt      DateTime?
-  status        String
+  id                String    @id @default(uuid())
+  tenantId          String
+  cashierId         String?
+  shiftId           String?
+  subtotalCents     Int
+  taxCents          Int       @default(0)
+  tipCents          Int       @default(0)
+  totalCents        Int
+  offlineQueued     Boolean   @default(false)
+  syncedAt          DateTime?
+  status            String
   // For card payments: which rail processed it. "TERMINAL" = Stripe Terminal
   // reader, "CNP" = card-not-present (keyed). Null for non-card sales.
   cardRail          String?
@@ -1877,7 +1874,7 @@ model PosTransaction {
   // Null otherwise. Lets owners see how often "keyed" was a silent fallback
   // vs. a deliberate cashier choice.
   cnpFallbackReason String?
-  createdAt     DateTime  @default(now())
+  createdAt         DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])
   lineItems PosLineItem[]
@@ -1979,7 +1976,7 @@ model Product {
 }
 
 model ProductCategory {
-  id                               String  @id @default(uuid())
+  id                               String   @id @default(uuid())
   tenantId                         String
   name                             String
   defaultRevenueGlAccountId        String?
@@ -1990,14 +1987,14 @@ model ProductCategory {
   defaultTaxCategory               String?
   // When false, products in this category are exempt from sales tax even if
   // the location has rates configured (tax engine still respects this flag).
-  taxable                          Boolean @default(true)
-  active                           Boolean @default(true)
+  taxable                          Boolean  @default(true)
+  active                           Boolean  @default(true)
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @default(now()) @updatedAt
 
-  defaultRevenueGlAccount        GlAccount? @relation(name: "ProductCategoryRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
-  defaultCogsGlAccount           GlAccount? @relation(name: "ProductCategoryCogsGlAccount", fields: [defaultCogsGlAccountId], references: [id])
-  defaultInventoryAssetGlAccount GlAccount? @relation(name: "ProductCategoryInventoryAssetGlAccount", fields: [defaultInventoryAssetGlAccountId], references: [id])
+  defaultRevenueGlAccount        GlAccount?                 @relation(name: "ProductCategoryRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
+  defaultCogsGlAccount           GlAccount?                 @relation(name: "ProductCategoryCogsGlAccount", fields: [defaultCogsGlAccountId], references: [id])
+  defaultInventoryAssetGlAccount GlAccount?                 @relation(name: "ProductCategoryInventoryAssetGlAccount", fields: [defaultInventoryAssetGlAccountId], references: [id])
   products                       Product[]
   glMappings                     ProductCategoryGlMapping[]
 
@@ -2187,17 +2184,17 @@ model QboInventorySyncRef {
 // the polling endpoint survive an API restart and lets multiple replicas see
 // consistent progress.
 model QboInventoryResyncJob {
-  id          String                        @id @default(uuid())
+  id          String    @id @default(uuid())
   tenantId    String
-  status      String                        @default("running") // 'running' | 'succeeded' | 'failed'
-  total       Int                           @default(0)
-  processed   Int                           @default(0)
-  attempted   Int                           @default(0)
-  succeeded   Int                           @default(0)
-  failed      Int                           @default(0)
-  skipped     Int                           @default(0)
-  startedAt   DateTime                      @default(now())
-  updatedAt   DateTime                      @default(now()) @updatedAt
+  status      String    @default("running") // 'running' | 'succeeded' | 'failed'
+  total       Int       @default(0)
+  processed   Int       @default(0)
+  attempted   Int       @default(0)
+  succeeded   Int       @default(0)
+  failed      Int       @default(0)
+  skipped     Int       @default(0)
+  startedAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
   completedAt DateTime?
   error       String?
 
@@ -2215,7 +2212,7 @@ model QboInventoryResyncJobDetail {
   sourceType String
   sourceId   String
   qboType    String
-  status     String   // 'succeeded' | 'failed' | 'skipped'
+  status     String // 'succeeded' | 'failed' | 'skipped'
   error      String?
   createdAt  DateTime @default(now())
 
@@ -2523,8 +2520,8 @@ model SaasInvoice {
   couponRedemptionId String?
   planChangeId       String? // marks proration adjustment lines
 
-  tenant   Tenant              @relation(fields: [tenantId], references: [id])
-  refunds  SaasInvoiceRefund[]
+  tenant  Tenant              @relation(fields: [tenantId], references: [id])
+  refunds SaasInvoiceRefund[]
 
   @@index([tenantId])
   @@index([status])
@@ -2725,7 +2722,7 @@ model ScheduledReport {
 // is the tenant the action affected, when applicable. Some actions
 // (e.g. ROLE_CHANGE on another admin) have no target tenant.
 model AdminAuditLog {
-  id             String    @id @default(uuid())
+  id             String   @id @default(uuid())
   actorUserId    String
   actorEmail     String
   actorName      String?
@@ -2736,7 +2733,7 @@ model AdminAuditLog {
   targetId       String?
   detailsJson    Json?
   ipAddress      String?
-  createdAt      DateTime  @default(now())
+  createdAt      DateTime @default(now())
 
   @@index([createdAt])
   @@index([actorUserId])
@@ -2750,25 +2747,25 @@ model AdminAuditLog {
 // to R2 (when configured) or stores the buffer in `localBlob` so it can
 // be streamed back via the download endpoint.
 model TenantExport {
-  id              String             @id @default(uuid())
-  tenantId        String
-  requestedById   String
+  id               String             @id @default(uuid())
+  tenantId         String
+  requestedById    String
   requestedByEmail String
-  status          TenantExportStatus @default(PENDING)
-  storageKey      String? // R2 object key when uploaded externally
-  downloadToken   String             @unique @default(uuid())
-  fileSizeBytes   Int?
-  rowCounts       Json? // per-table row counts captured during export
-  errorMsg        String?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  expiresAt       DateTime? // download link expiration (typically +7 days)
-  createdAt       DateTime           @default(now())
+  status           TenantExportStatus @default(PENDING)
+  storageKey       String? // R2 object key when uploaded externally
+  downloadToken    String             @unique @default(uuid())
+  fileSizeBytes    Int?
+  rowCounts        Json? // per-table row counts captured during export
+  errorMsg         String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  expiresAt        DateTime? // download link expiration (typically +7 days)
+  createdAt        DateTime           @default(now())
 
   // Local fallback storage when R2 is not configured. Stored as Bytes
   // so the API can stream it directly to the requester. Cleared after
   // expiresAt by a periodic job.
-  localBlob       Bytes?
+  localBlob Bytes?
 
   @@index([tenantId])
   @@index([status])
@@ -2780,17 +2777,17 @@ model TenantExport {
 // can cancel before the cascade fires. The tenant lifecycle job promotes
 // PENDING -> COMPLETED (and runs the cascade) when scheduledFor <= now.
 model TenantDeletion {
-  id                String               @id @default(uuid())
-  tenantId          String               @unique
-  requestedById     String
-  requestedByEmail  String
-  scheduledFor      DateTime // requestedAt + 24h
-  status            TenantDeletionStatus @default(PENDING)
-  cancelledAt       DateTime?
-  cancelledById     String?
-  completedAt       DateTime?
-  errorMsg          String?
-  createdAt         DateTime             @default(now())
+  id               String               @id @default(uuid())
+  tenantId         String               @unique
+  requestedById    String
+  requestedByEmail String
+  scheduledFor     DateTime // requestedAt + 24h
+  status           TenantDeletionStatus @default(PENDING)
+  cancelledAt      DateTime?
+  cancelledById    String?
+  completedAt      DateTime?
+  errorMsg         String?
+  createdAt        DateTime             @default(now())
 
   @@index([status, scheduledFor])
   @@index([tenantId])

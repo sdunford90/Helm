@@ -63,7 +63,6 @@ interface RentalProduct {
   id: string;
   name: string;
   category: string;
-  glAccountId?: string | null;
   active: boolean;
   perLocation?: RentalProductPerLocationRow[];
 }
@@ -330,12 +329,12 @@ function RentalProductRow({
   const [error, setError] = useState<string | null>(null);
 
   const perLocation = product.perLocation ?? [];
-  // Once mappings exist for a location, the legacy tenant-wide FK is no
-  // longer the source of truth there; show only locations that lack an
-  // effective revenue account in the badge.
+  // The tenant-wide legacy FK has been retired; an active rental product
+  // counts as one gap for every location that lacks a per-location override
+  // (or one for the whole product when the tenant has no locations yet).
   const missingCount = product.active
     ? perLocation.length === 0
-      ? (product.glAccountId ? 0 : 1)
+      ? 1
       : perLocation.filter((row) => !row.effective.revenueGlAccountId).length
     : 0;
 
@@ -468,7 +467,7 @@ function RentalProductRow({
               {perLocation.map((row) => {
                 const draft = draftFor(row);
                 const dirty = drafts[row.locationId] !== undefined;
-                const missingRevenue = !draft.revenueGlAccountId && !product.glAccountId;
+                const missingRevenue = !draft.revenueGlAccountId;
                 return (
                   <div key={row.locationId} style={{
                     background: '#FFFFFF', border: '1px solid #E2E8F0',
@@ -508,11 +507,7 @@ function RentalProductRow({
                             value={draft[field] ?? ''}
                             onChange={(e) => updateDraft(row.locationId, field, e.target.value || null, draft)}
                           >
-                            <option value="">
-                              {field === 'revenueGlAccountId' && product.glAccountId
-                                ? '— Inherit tenant-wide default —'
-                                : '— Not mapped —'}
-                            </option>
+                            <option value="">— Not mapped —</option>
                             {accounts.map((a) => (
                               <option key={a.id} value={a.id}>
                                 {a.accountNumber} · {a.name}
@@ -524,7 +519,7 @@ function RentalProductRow({
                     })}
                     {missingRevenue ? (
                       <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
-                        No effective revenue account — invoices for this location will fall back
+                        No revenue account mapped — invoices for this location will fall back
                         to the General Revenue account.
                       </div>
                     ) : null}
@@ -669,10 +664,11 @@ export default function SettingsProducts() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Recalculate the unconfigured-count badge after any mapping changes. Per-
-  // location overrides take precedence over the tenant-wide legacy FK; an
-  // active rental product counts as one gap for every location that has
-  // neither an override nor a usable legacy fallback.
+  // Recalculate the unconfigured-count badge after any mapping changes.
+  // The legacy tenant-wide FK has been retired, so an active rental product
+  // counts as one gap for every location that lacks a per-location revenue
+  // override (or one for the whole product when the tenant has no
+  // locations).
   const recountUnconfigured = (next: ProductsSummary): number => {
     const drGaps = next.dockageRates.filter((r) => !r.glAccountId).length;
     const sfGaps = next.serviceFees.filter((f) => !f.glAccountId).length;
@@ -680,7 +676,7 @@ export default function SettingsProducts() {
       .filter((p) => p.active)
       .reduce((acc, p) => {
         if (!p.perLocation || p.perLocation.length === 0) {
-          return acc + (p.glAccountId ? 0 : 1);
+          return acc + 1;
         }
         return acc + p.perLocation.filter((row) => !row.effective.revenueGlAccountId).length;
       }, 0);
@@ -732,23 +728,21 @@ export default function SettingsProducts() {
     );
     setData((prev) => {
       if (!prev) return prev;
-      // Mirror the backend resolver: once a location is QBO-connected the
-      // tenant-wide RentalProduct.glAccountId is no longer a valid revenue
-      // fallback (it points outside that location's chart). Honoring that
-      // here keeps the badge / unconfigured count in sync with the warning
-      // banner without waiting for a refetch.
-      const loc = prev.locations?.find((l) => l.id === locationId);
-      const qboConnected = !!loc?.qboConnected;
+      // The legacy tenant-wide RentalProduct.glAccountId column has been
+      // retired, so the per-location override is the sole source for the
+      // effective slots. When an override clears a slot the effective
+      // value falls back to null, which keeps the badge / unconfigured
+      // count in sync with the warning banner without waiting for a
+      // refetch.
       const products = prev.rentalProducts.map((p) => {
         if (p.id !== productId) return p;
-        const legacyRevenue = qboConnected ? null : p.glAccountId ?? null;
         const perLocation = (p.perLocation ?? []).map((row) => {
           if (row.locationId !== locationId) return row;
           return {
             ...row,
             override,
             effective: {
-              revenueGlAccountId: override.revenueGlAccountId ?? legacyRevenue,
+              revenueGlAccountId: override.revenueGlAccountId ?? null,
               cogsGlAccountId: override.cogsGlAccountId ?? null,
               inventoryAssetGlAccountId: override.inventoryAssetGlAccountId ?? null,
             },

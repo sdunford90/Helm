@@ -26,7 +26,6 @@ const buildRentalProduct = (overrides: any = {}) => ({
   tenantId: 'test-tenant-id',
   name: 'Kayak — half day',
   category: 'kayak',
-  glAccountId: null,
   active: true,
   ...overrides,
 });

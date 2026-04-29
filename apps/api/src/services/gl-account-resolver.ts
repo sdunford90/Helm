@@ -330,9 +330,12 @@ export async function resolveRentalProductGlAccounts(
   rentalProductId: string,
   locationId: string | null,
 ): Promise<ResolvedProductGl> {
+  // The legacy tenant-wide `RentalProduct.glAccountId` column was retired
+  // in favor of the per-location `RentalProductGlMapping` table, so the
+  // only resolution source is the per-location override.
   const product = await prisma.rentalProduct.findFirst({
     where: { id: rentalProductId, tenantId },
-    select: { id: true, glAccountId: true },
+    select: { id: true },
   });
   if (!product) {
     return {
@@ -357,17 +360,13 @@ export async function resolveRentalProductGlAccounts(
       },
     });
   }
-  const qboConnected = locationId ? await isLocationQboConnected(locationId) : false;
-  const legacyRevenue = qboConnected ? null : product.glAccountId;
-  const revenueGlAccountId = pick(pOver?.revenueGlAccountId, legacyRevenue);
+  const revenueGlAccountId = pick(pOver?.revenueGlAccountId);
   const cogsGlAccountId = pick(pOver?.cogsGlAccountId);
   const inventoryAssetGlAccountId = pick(pOver?.inventoryAssetGlAccountId);
-  let source: ResolvedProductGl["source"] = "unmapped";
-  if (pOver && (pOver.revenueGlAccountId || pOver.cogsGlAccountId || pOver.inventoryAssetGlAccountId)) {
-    source = "product_override";
-  } else if (legacyRevenue) {
-    source = "legacy_product_fk";
-  }
+  const source: ResolvedProductGl["source"] =
+    pOver && (pOver.revenueGlAccountId || pOver.cogsGlAccountId || pOver.inventoryAssetGlAccountId)
+      ? "product_override"
+      : "unmapped";
   return { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId, source };
 }
 
