@@ -76,6 +76,62 @@ else
       echo "[deploy-run] WARNING: rolled-back resolve returned non-zero — proceeding to migrate deploy anyway"
   fi
 
+  # One-shot recovery for migration 20260429080000_inventory_category_only_gl.
+  # Step 4 of that migration runs `ALTER TABLE products ALTER COLUMN
+  # productCategoryId SET NOT NULL`, which fails on production databases with
+  # orphan products (products whose owning tenant row was deleted — there is
+  # no FK on products.tenantId, so the original Step 1 Uncategorized seed
+  # never covered those tenant ids and Step 2's UPDATE silently left them
+  # NULL).
+  #
+  # Steps 1-3 of the original SQL DID succeed (categories seeded for live
+  # tenants, non-orphan products backfilled, ProductCategoryGlMapping
+  # populated), so the table state is forward-compatible with treating it as
+  # applied. The follow-up migration 20260430120000_finish_inventory_category
+  # _only_gl_backfill is designed to re-run Steps 1-6 idempotently, this
+  # time including orphan tenant ids in the seed. Marking the original
+  # --applied unblocks Prisma so the follow-up can run and finish the job.
+  # Detection is intentionally narrow — we only auto-recover this specific
+  # failure mode (Step 4's NOT NULL on products.productCategoryId). If the
+  # original migration failed for a different reason, the operator still
+  # owns the recovery, since marking it --applied would let the follow-up
+  # drop product_gl_mappings and legacy GL columns without preserving the
+  # earlier steps' work. We require:
+  #   • a row exists for this migration name,
+  #   • finished_at IS NULL (failed, not in-progress is also captured but
+  #     concurrent deploys aren't a concern on autoscale single-revision),
+  #   • rolled_back_at IS NULL (operator hasn't already intervened),
+  #   • logs match the exact NOT NULL signature we're recovering from.
+  STUCK_INVENTORY_GL="20260429080000_inventory_category_only_gl"
+  INVENTORY_GL_FAILED=$(node -e "
+    const { PrismaClient } = require('@prisma/client');
+    (async () => {
+      const p = new PrismaClient();
+      try {
+        const rows = await p.\$queryRawUnsafe(
+          \`SELECT 1 FROM \"_prisma_migrations\"
+            WHERE migration_name = '${STUCK_INVENTORY_GL}'
+              AND finished_at IS NULL
+              AND rolled_back_at IS NULL
+              AND logs IS NOT NULL
+              AND logs ILIKE '%productCategoryId%'
+              AND logs ILIKE '%null values%'\`
+        );
+        console.log(rows.length > 0 ? 'yes' : 'no');
+      } catch (e) {
+        console.log('no');
+      } finally {
+        await p.\$disconnect();
+      }
+    })();
+  " 2>/dev/null || echo no)
+
+  if [ "$INVENTORY_GL_FAILED" = "yes" ]; then
+    echo "[deploy-run] detected failed migration ${STUCK_INVENTORY_GL} (Step 4 NOT NULL on productCategoryId) — marking it --applied so the follow-up backfill migration can run"
+    npx prisma migrate resolve --applied "${STUCK_INVENTORY_GL}" || \
+      echo "[deploy-run] WARNING: applied resolve returned non-zero — proceeding to migrate deploy anyway"
+  fi
+
   echo "[deploy-run] applying pending migrations"
   npx prisma migrate deploy
 fi
