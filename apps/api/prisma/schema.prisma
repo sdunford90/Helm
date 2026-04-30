@@ -900,6 +900,9 @@ model SlipContract {
   // May 1 reads back as May 1 in every timezone.
   startDate             DateTime         @db.Date
   endDate               DateTime?        @db.Date
+  // Actual early-termination date. Distinct from endDate (scheduled end),
+  // which is preserved so reports can distinguish ended-early from ended-on-schedule.
+  terminationDate       DateTime?        @db.Date
   billingCycle          BillingCycle     @default(MONTHLY)
   billingAnchor         Int?
   rateCents             Int

@@ -786,7 +786,12 @@ router.put(
       // Slip-contract date columns are calendar dates — surface them in the
       // audit diff as YYYY-MM-DD instead of full ISO timestamps so the
       // history reads as "endDate: 2026-05-01 → 2026-06-01".
-      const dateOnlyFields = new Set(["startDate", "endDate", "signedAt"]);
+      const dateOnlyFields = new Set([
+        "startDate",
+        "endDate",
+        "signedAt",
+        "terminationDate",
+      ]);
       const changedFields: Record<string, unknown> = {};
       for (const key of Object.keys(data) as (keyof typeof data)[]) {
         if (data[key] !== undefined) {
@@ -987,12 +992,14 @@ router.post(
       }
 
       await prisma.$transaction(async (tx) => {
-        // Update contract status
+        // Record the early-termination date in its own column; leave the
+        // scheduled endDate intact so we can still tell ended-early from
+        // ended-on-schedule.
         await tx.slipContract.update({
           where: { id: req.params.id },
           data: {
             status: "TERMINATED",
-            endDate: effectiveDate,
+            terminationDate: effectiveDate,
           },
         });
 
@@ -1158,7 +1165,12 @@ router.post(
             action: "TERMINATED",
             changedFieldsJson: {
               reason,
-              effectiveDate: formatDateOnlyISO(effectiveDate),
+              terminationDate: formatDateOnlyISO(effectiveDate),
+              // Preserved on the row, mirrored here so audit readers can
+              // see ended-early vs. ended-on-schedule at a glance.
+              scheduledEndDate: contract.endDate
+                ? formatDateOnlyISO(contract.endDate)
+                : null,
               penaltyCents,
               previousStatus: contract.status,
               depositActions,
@@ -1171,6 +1183,8 @@ router.post(
         success: true,
         contractId: req.params.id,
         terminationDate: formatDateOnlyISO(effectiveDate),
+        // Preserved scheduled end so callers can show both dates.
+        endDate: contract.endDate ? formatDateOnlyISO(contract.endDate) : null,
         penaltyCents,
         message: "Contract terminated successfully",
       });
