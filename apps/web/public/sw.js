@@ -1,8 +1,18 @@
 /// Helm Marina – Service Worker for Offline Dock Walks
 
-const CACHE_NAME = 'helm-app-shell-v5';
+// Bumping the version evicts the previous cache on activate. Bump this
+// any time the navigation strategy or pre-cached asset list changes
+// (and any time you suspect users may be stuck on a stale shell).
+const CACHE_NAME = 'helm-app-shell-v6';
+
+// IMPORTANT: Do NOT pre-cache '/' here. The HTML shell references a
+// content-hashed JS bundle (e.g. /assets/index-AbCd1234.js); after a
+// new deploy the old bundle URL 404s, so a cached old shell would
+// permanently white-screen returning users until they manually
+// unregister the SW. We treat HTML navigations as network-first below
+// and only fall back to the cached '/' if we ever fetched it once
+// while online.
 const APP_SHELL_ASSETS = [
-  '/',
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
@@ -43,7 +53,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// Fetch – network-first for API, cache-first for app shell
+// Fetch – network-first for API and HTML navigations, cache-only for icons
 // ---------------------------------------------------------------------------
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
@@ -54,32 +64,42 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // JS/CSS bundles from Vite – always network-first.
-  // Vite produces content-hashed filenames so caching them in the SW is
-  // unnecessary and causes stale-bundle problems during development/deployment.
+  // JS/CSS bundles from Vite – always network. Vite produces content-hashed
+  // filenames so caching them in the SW is unnecessary and causes
+  // stale-bundle problems across deployments.
   if (url.pathname.startsWith('/assets/') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
     event.respondWith(fetch(event.request));
     return;
   }
 
-  // Everything else (HTML navigation, icons, manifest): cache-first, then network
+  // HTML navigations: NETWORK-FIRST. We must always serve the freshest
+  // index.html so it references the current content-hashed bundle. The
+  // cached '/' is only used when the network fails (true offline).
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          // Cache a copy so we have *something* to serve when offline.
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put('/', clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match('/').then((cached) =>
+          cached || new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+        ))
+    );
+    return;
+  }
+
+  // Everything else (icons, manifest, fonts): cache-first, then network
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        // Only cache navigation/shell assets, not arbitrary resources
-        if (event.request.method === 'GET' && response.status === 200 && event.request.mode === 'navigate') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      });
-    }).catch(() => {
-      // If both cache and network fail, return the cached root for navigation
-      if (event.request.mode === 'navigate') {
-        return caches.match('/');
-      }
-      return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
+      return fetch(event.request).catch(() =>
+        new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+      );
     })
   );
 });
