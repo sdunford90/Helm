@@ -1223,7 +1223,10 @@ export default function Settings() {
     if (selectedRoleId === roleId) setSelectedRoleId(roles.find((r) => r.id !== roleId)?.id ?? null);
   };
 
-  const tabItems: { key: string; label: string; icon: typeof Building2; to?: string }[] = [
+  type TabItem =
+    | { key: SettingsTab; label: string; icon: typeof Building2 }
+    | { key: string; label: string; icon: typeof Building2; to: string };
+  const tabItems: TabItem[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
     { key: 'locations', label: 'Locations', icon: MapPin },
     { key: 'branding', label: 'Branding', icon: Palette },
@@ -1248,12 +1251,13 @@ export default function Settings() {
       <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => {
           const Icon = t.icon;
-          const isActive = !t.to && tab === t.key;
+          const isExternal = 'to' in t;
+          const isActive = !isExternal && tab === t.key;
           return (
             <button
               key={t.key}
               style={{ ...st.tab, ...(isActive ? st.tabActive : {}), display: 'flex', alignItems: 'center', gap: '6px' }}
-              onClick={() => (t.to ? navigate(t.to) : setTab(t.key as SettingsTab))}
+              onClick={() => ('to' in t ? navigate(t.to) : setTab(t.key))}
             >
               <Icon size={16} /> {t.label}
             </button>
