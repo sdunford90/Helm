@@ -357,7 +357,7 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
                 location on the product&apos;s category.{' '}
                 {selectedCategory ? (
                   <Link
-                    to={`/settings/categories?edit=${selectedCategory.id}`}
+                    to={`/settings?tab=categories&edit=${selectedCategory.id}`}
                     style={{ color: '#0A2342', fontWeight: 600 }}
                   >
                     Edit GL mappings for &ldquo;{selectedCategory.name}&rdquo; →
@@ -628,7 +628,7 @@ export default function Inventory() {
   ) => {
     const editLink = productCategoryId ? (
       <Link
-        to={`/settings/categories?edit=${productCategoryId}`}
+        to={`/settings?tab=categories&edit=${productCategoryId}`}
         title="Edit GL mappings on this category"
         style={{ fontSize: '10px', color: '#0066CC', textDecoration: 'underline', whiteSpace: 'nowrap' }}
       >

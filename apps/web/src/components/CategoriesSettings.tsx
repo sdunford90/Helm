@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, X, Edit2, Tag, MapPin, AlertTriangle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useToast } from './Toast';
@@ -437,11 +438,26 @@ function CategoryModal({
 
 export default function CategoriesSettings() {
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ProductCategory | null>(null);
   const [adding, setAdding] = useState(false);
   const [mappingFor, setMappingFor] = useState<ProductCategory | null>(null);
+
+  // Honor `?edit=<categoryId>` deep-links from elsewhere in the app
+  // (e.g. the Inventory page's "Edit on category" links). Once handled
+  // we strip the param so closing the modal doesn't immediately re-open it.
+  useEffect(() => {
+    if (loading || categories.length === 0) return;
+    const editId = searchParams.get('edit');
+    if (!editId) return;
+    const target = categories.find((c) => c.id === editId);
+    if (target) setEditing(target);
+    const sp = new URLSearchParams(searchParams);
+    sp.delete('edit');
+    setSearchParams(sp, { replace: true });
+  }, [loading, categories, searchParams, setSearchParams]);
 
   // Reference data — only the tax-category vocabulary is needed at the
   // category modal level. GL account dropdowns moved to the per-location
