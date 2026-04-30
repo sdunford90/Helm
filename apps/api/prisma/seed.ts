@@ -20,12 +20,18 @@ async function main() {
   const tiers = await seedTiers(prisma);
   console.log(`  ✓ ${tiers.length} SaaS tiers`);
 
-  const { tenant, users } = await seedTenantAndUsers(prisma, tiers[1].id);
+  const { tenant, locations, users } = await seedTenantAndUsers(prisma, tiers[1].id);
   console.log(`  ✓ Tenant: ${tenant.name}`);
+  console.log(`  ✓ ${locations.length} locations`);
   console.log(`  ✓ ${users.length} staff users`);
 
-  const glAccounts = await seedGlAccounts(prisma, tenant.id);
-  console.log(`  ✓ ${glAccounts.length} GL accounts`);
+  // Seed mock QBO-synced GL accounts for connected locations only
+  const connectedLocations = locations.filter((l) => l.qboConnected);
+  const glAccountSets = await Promise.all(
+    connectedLocations.map((loc) => seedGlAccounts(prisma, tenant.id, loc.id)),
+  );
+  const totalGlAccounts = glAccountSets.reduce((sum, set) => sum + set.length, 0);
+  console.log(`  ✓ ${totalGlAccounts} GL accounts across ${connectedLocations.length} connected locations`);
 
   const slips = await seedSlips(prisma, tenant.id);
   console.log(`  ✓ ${slips.length} slips across 3 docks`);

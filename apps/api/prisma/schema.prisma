@@ -244,6 +244,36 @@ enum ChargebackStatus {
   LOST
 }
 
+enum AccountMappingType {
+  SYSTEM_ACCOUNT
+  REVENUE_STREAM
+  PAYMENT_METHOD
+}
+
+enum CostingMethod {
+  WAC
+  FIFO
+}
+
+enum RentalGlMode {
+  SINGLE
+  PER_PRODUCT
+}
+
+enum FiscalPeriodStatus {
+  OPEN
+  CLOSED
+  LOCKED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SUBMITTED
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model Tenant {
@@ -254,7 +284,6 @@ model Tenant {
   brandingJson         Json?
   invoiceTemplateJson  Json?
   stripeAccountId      String?
-  qboRealmId           String?
   timezone             String       @default("America/New_York")
   fiscalYearEnd        String       @default("12/31")
   saasTierId           String?
@@ -264,28 +293,47 @@ model Tenant {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
-  saasTier  SaasTier?  @relation(fields: [saasTierId], references: [id])
-  users     User[]
-  locations Location[]
+  saasTier      SaasTier?      @relation(fields: [saasTierId], references: [id])
+  users         User[]
+  locations     Location[]
+  fiscalPeriods FiscalPeriod[]
 
   @@map("tenants")
 }
 
 model Location {
-  id        String   @id @default(uuid())
-  tenantId  String
-  name      String
-  address   String?
-  city      String?
-  state     String?
-  zip       String?
-  phone     String?
-  timezone  String   @default("America/New_York")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String       @id @default(uuid())
+  tenantId          String
+  name              String
+  address           String?
+  city              String?
+  state             String?
+  zip               String?
+  phone             String?
+  timezone          String       @default("America/New_York")
+  active            Boolean      @default(true)
+  // QBO per-location connection
+  qboRealmId        String?
+  qboAccessToken    String?
+  qboRefreshToken   String?
+  qboTokenExpiresAt DateTime?
+  qboConnected      Boolean      @default(false)
+  qboCompanyName    String?
+  qboLastSync       DateTime?
+  // Rental GL mode toggle
+  rentalGlMode      RentalGlMode @default(SINGLE)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant                   Tenant                   @relation(fields: [tenantId], references: [id])
+  glAccounts               GlAccount[]
+  accountMappings          AccountMapping[]
+  dockageRates             DockageRate[]
+  serviceFees              ServiceFee[]
+  productCategories        ProductCategory[]
+  purchaseOrders           PurchaseOrder[]
+  inventoryReceipts        InventoryReceipt[]
+  accountMappingAuditLogs  AccountMappingAuditLog[]
 
   @@index([tenantId])
   @@map("locations")
@@ -788,23 +836,34 @@ model SecurityDeposit {
 model GlAccount {
   id                String        @id @default(uuid())
   tenantId          String
-  accountNumber     String
+  locationId        String
+  accountNumber     String?
   name              String
   type              GLAccountType
   subType           String?
   qboAccountId      String?
   isDeferredRevenue Boolean       @default(false)
 
-  entries   GlEntry[]
-  lineItems InvoiceLineItem[]
+  location               Location          @relation(fields: [locationId], references: [id])
+  entries                GlEntry[]
+  lineItems              InvoiceLineItem[]
+  dockageRates           DockageRate[]
+  serviceFees            ServiceFee[]
+  categoryRevenue        ProductCategory[] @relation("CategoryRevenueAccount")
+  categoryCogs           ProductCategory[] @relation("CategoryCogsAccount")
+  rentalProducts         RentalProduct[]
+  mappings               AccountMapping[]  @relation("MappingAccount")
+  mappingsCogs           AccountMapping[]  @relation("MappingCogsAccount")
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("gl_accounts")
 }
 
 model GlEntry {
   id          String   @id @default(uuid())
   tenantId    String
+  locationId  String?
   journalId   String?
   accountId   String
   debitCents  Int      @default(0)
@@ -817,6 +876,7 @@ model GlEntry {
   account GlAccount @relation(fields: [accountId], references: [id])
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("gl_entries")
 }
 
@@ -865,16 +925,18 @@ model RentalProduct {
   damageWaiverCents    Int?
   depositCents         Int?
   cancellationPolicyId String?
+  glRevenueAccountId   String?
   active               Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  cancellationPolicy    CancellationPolicy?     @relation(fields: [cancellationPolicyId], references: [id])
-  pricingRules          PricingRule[]
-  calendarOverrides     PricingCalendarOverride[]
-  demandSurgeTiers      DemandSurgeTier[]
+  cancellationPolicy     CancellationPolicy?      @relation(fields: [cancellationPolicyId], references: [id])
+  glRevenueAccount       GlAccount?               @relation(fields: [glRevenueAccountId], references: [id])
+  pricingRules           PricingRule[]
+  calendarOverrides      PricingCalendarOverride[]
+  demandSurgeTiers       DemandSurgeTier[]
   algorithmicSuggestions AlgorithmicSuggestion[]
-  reservations          Reservation[]
+  reservations           Reservation[]
 
   @@index([tenantId])
   @@map("rental_products")
@@ -1154,8 +1216,9 @@ model Shift {
 }
 
 model Product {
-  id             String  @id @default(uuid())
+  id             String        @id @default(uuid())
   tenantId       String
+  categoryId     String?
   name           String
   sku            String?
   barcode        String?
@@ -1163,11 +1226,17 @@ model Product {
   costCents      Int?
   priceCents     Int
   taxClass       String?
-  trackInventory Boolean @default(false)
+  trackInventory Boolean       @default(false)
   reorderQty     Int?
+  qboItemId      String?
+  costingMethod  CostingMethod @default(WAC)
 
-  inventory    Inventory[]
-  posLineItems PosLineItem[]
+  category         ProductCategory?      @relation(fields: [categoryId], references: [id])
+  inventory        Inventory[]
+  posLineItems     PosLineItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  receiptItems     InventoryReceiptItem[]
+  inventoryLayers  InventoryLayer[]
 
   @@index([tenantId])
   @@map("products")
@@ -1189,16 +1258,220 @@ model Inventory {
 }
 
 model PurchaseOrder {
-  id           String    @id @default(uuid())
+  id           String              @id @default(uuid())
   tenantId     String
+  locationId   String
   vendorId     String?
-  status       String
+  vendorName   String?
+  status       PurchaseOrderStatus @default(DRAFT)
   expectedDate DateTime?
-  totalCents   Int
-  createdAt    DateTime  @default(now())
+  notes        String?
+  totalCents   Int                 @default(0)
+  createdBy    String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  location  Location             @relation(fields: [locationId], references: [id])
+  items     PurchaseOrderItem[]
+  receipts  InventoryReceipt[]
 
   @@index([tenantId])
+  @@index([locationId])
   @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id               String @id @default(uuid())
+  purchaseOrderId  String
+  productId        String
+  quantityOrdered  Int
+  quantityReceived Int    @default(0)
+  unitCostCents    Int
+  extendedCents    Int
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@map("purchase_order_items")
+}
+
+model InventoryReceipt {
+  id              String   @id @default(uuid())
+  tenantId        String
+  locationId      String
+  purchaseOrderId String
+  receivedAt      DateTime @default(now())
+  receivedBy      String?
+  glJournalId     String?
+  notes           String?
+
+  location      Location              @relation(fields: [locationId], references: [id])
+  purchaseOrder PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id])
+  items         InventoryReceiptItem[]
+  layers        InventoryLayer[]
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("inventory_receipts")
+}
+
+model InventoryReceiptItem {
+  id               String @id @default(uuid())
+  receiptId        String
+  productId        String
+  quantityReceived Int
+  unitCostCents    Int
+
+  receipt InventoryReceipt @relation(fields: [receiptId], references: [id])
+  product Product          @relation(fields: [productId], references: [id])
+
+  @@map("inventory_receipt_items")
+}
+
+model InventoryLayer {
+  id                String   @id @default(uuid())
+  tenantId          String
+  locationId        String
+  productId         String
+  receiptId         String
+  quantityRemaining Int
+  unitCostCents     Int
+  receivedAt        DateTime
+
+  receipt  InventoryReceipt @relation(fields: [receiptId], references: [id])
+  product  Product          @relation(fields: [productId], references: [id])
+
+  @@index([tenantId])
+  @@index([productId, receivedAt])
+  @@map("inventory_layers")
+}
+
+model DockageRate {
+  id                   String          @id @default(uuid())
+  tenantId             String
+  locationId           String
+  slipType             String
+  monthlyRateCents     Int
+  quarterlyRateCents   Int?
+  annualRateCents      Int?
+  electricityMode      ElectricityMode @default(METERED)
+  electricityRateCents Int?
+  glRevenueAccountId   String?
+  active               Boolean         @default(true)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  location         Location   @relation(fields: [locationId], references: [id])
+  glRevenueAccount GlAccount? @relation(fields: [glRevenueAccountId], references: [id])
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("dockage_rates")
+}
+
+model ServiceFee {
+  id          String   @id @default(uuid())
+  tenantId    String
+  locationId  String
+  name        String
+  amountCents Int
+  glAccountId String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  location  Location   @relation(fields: [locationId], references: [id])
+  glAccount GlAccount? @relation(fields: [glAccountId], references: [id])
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("service_fees")
+}
+
+model ProductCategory {
+  id                 String        @id @default(uuid())
+  tenantId           String
+  locationId         String
+  name               String
+  glRevenueAccountId String?
+  glCogsAccountId    String?
+  costingMethod      CostingMethod @default(WAC)
+  active             Boolean       @default(true)
+  createdAt          DateTime      @default(now())
+
+  location         Location   @relation(fields: [locationId], references: [id])
+  glRevenueAccount GlAccount? @relation("CategoryRevenueAccount", fields: [glRevenueAccountId], references: [id])
+  glCogsAccount    GlAccount? @relation("CategoryCogsAccount", fields: [glCogsAccountId], references: [id])
+  products         Product[]
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("product_categories")
+}
+
+model AccountMapping {
+  id               String             @id @default(uuid())
+  tenantId         String
+  locationId       String
+  mappingType      AccountMappingType
+  sourceKey        String
+  glAccountId      String
+  glCogsAccountId  String?
+  availablePOS     Boolean            @default(true)
+  availableBilling Boolean            @default(true)
+  active           Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  location      Location   @relation(fields: [locationId], references: [id])
+  glAccount     GlAccount  @relation("MappingAccount", fields: [glAccountId], references: [id])
+  glCogsAccount GlAccount? @relation("MappingCogsAccount", fields: [glCogsAccountId], references: [id])
+
+  @@unique([locationId, mappingType, sourceKey])
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("account_mappings")
+}
+
+model FiscalPeriod {
+  id        String             @id @default(uuid())
+  tenantId  String
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  status    FiscalPeriodStatus @default(OPEN)
+  closedBy  String?
+  closedAt  DateTime?
+  lockedBy  String?
+  lockedAt  DateTime?
+  createdAt DateTime           @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("fiscal_periods")
+}
+
+model AccountMappingAuditLog {
+  id             String   @id @default(uuid())
+  tenantId       String
+  locationId     String
+  userId         String
+  userName       String
+  mappingSection String
+  mappingLabel   String
+  fieldChanged   String
+  oldAccountName String?
+  oldAccountId   String?
+  newAccountName String?
+  newAccountId   String?
+  changedAt      DateTime @default(now())
+
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("account_mapping_audit_logs")
 }
 
 model DockWalk {

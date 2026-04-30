@@ -38,6 +38,8 @@ import qboRouter from "./routes/qbo.js";
 import storageRouter from "./routes/storage.js";
 import inventoryRouter from "./routes/inventory.js";
 import communicationPrefsRouter from "./routes/communication-prefs.js";
+import { accountingRouter } from "./routes/accounting.js";
+import { purchaseOrdersRouter } from "./routes/purchase-orders.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -93,6 +95,8 @@ app.use("/api/qbo", qboRouter);
 app.use("/api/storage", storageRouter);
 app.use("/api/inventory", inventoryRouter);
 app.use("/api/communication-prefs", communicationPrefsRouter);
+app.use("/api/accounting", accountingRouter);
+app.use("/api/purchase-orders", purchaseOrdersRouter);
 
 // --------------------------------------------------------------------------
 // Error handler (must be last)

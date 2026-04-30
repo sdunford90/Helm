@@ -1,12 +1,20 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
+import {
+  getSystemAccount,
+  getPaymentAccount,
+  type PaymentMethodKey,
+} from "./account-mapping.js";
 
 // ---------------------------------------------------------------------------
 // GL Posting Service
 //
-// All financial transactions flow through this service to create double-entry
-// GL journal entries.  Every posting function ensures debits === credits.
+// All financial transactions flow through here to create double-entry GL
+// journal entries. Every posting function ensures debits === credits.
 // Amounts are always in cents (integers).
+//
+// Account resolution uses the AccountMapping service — no hardcoded account
+// numbers. Each location configures its own mappings via Accounting Hub.
 // ---------------------------------------------------------------------------
 
 interface GlLine {
@@ -16,28 +24,61 @@ interface GlLine {
   description?: string;
 }
 
-/**
- * Post a balanced set of GL entries within a transaction.
- * Returns the journalId that ties the entries together.
- */
+// ---------------------------------------------------------------------------
+// Fiscal period guard — blocks posting to closed/locked periods
+// ---------------------------------------------------------------------------
+
+async function assertPeriodOpen(tenantId: string, postDate: Date): Promise<void> {
+  const period = await prisma.fiscalPeriod.findFirst({
+    where: {
+      tenantId,
+      startDate: { lte: postDate },
+      endDate: { gte: postDate },
+    },
+    select: { status: true, name: true },
+  });
+
+  if (!period) return; // No period defined — allow posting
+
+  if (period.status === "LOCKED") {
+    throw new Error(
+      `Cannot post to ${period.name}: period is locked. Contact your accounting manager.`,
+    );
+  }
+
+  if (period.status === "CLOSED") {
+    throw new Error(
+      `Cannot post to ${period.name}: period is closed. Reopen the period before posting.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Core — post balanced GL entries
+// ---------------------------------------------------------------------------
+
 async function postEntries(
   tenantId: string,
+  locationId: string | null,
   lines: GlLine[],
   sourceType: string,
   sourceId: string,
+  postDate?: Date,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
   const totalDebits = lines.reduce((s, l) => s + l.debitCents, 0);
   const totalCredits = lines.reduce((s, l) => s + l.creditCents, 0);
 
   if (totalDebits !== totalCredits) {
-    throw new Error(
-      `GL entries do not balance: debits=${totalDebits} credits=${totalCredits}`,
-    );
+    throw new Error(`GL entries do not balance: debits=${totalDebits} credits=${totalCredits}`);
   }
 
-  if (totalDebits === 0) {
-    throw new Error("GL entries cannot all be zero");
+  if (totalDebits === 0) throw new Error("GL entries cannot all be zero");
+
+  const postedAt = postDate ?? new Date();
+
+  if (locationId) {
+    await assertPeriodOpen(tenantId, postedAt);
   }
 
   const journalId = uuid();
@@ -47,12 +88,13 @@ async function postEntries(
     data: lines.map((l) => ({
       id: uuid(),
       tenantId,
+      locationId,
       journalId,
       accountId: l.accountId,
       debitCents: l.debitCents,
       creditCents: l.creditCents,
       description: l.description ?? null,
-      postedAt: new Date(),
+      postedAt,
       sourceType,
       sourceId,
     })),
@@ -62,40 +104,6 @@ async function postEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Account resolution helpers
-// ---------------------------------------------------------------------------
-
-async function getAccountByNumber(
-  tenantId: string,
-  accountNumber: string,
-  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-): Promise<string> {
-  const db = tx ?? prisma;
-  const account = await (db as typeof prisma).glAccount.findFirst({
-    where: { tenantId, accountNumber },
-    select: { id: true },
-  });
-  if (!account) {
-    throw new Error(`GL account ${accountNumber} not found for tenant ${tenantId}`);
-  }
-  return account.id;
-}
-
-// Well-known account numbers (convention)
-const ACCOUNTS = {
-  ACCOUNTS_RECEIVABLE: "1200",
-  CASH: "1000",
-  BANK: "1010",
-  DEFERRED_REVENUE: "2400",
-  SECURITY_DEPOSITS_HELD: "2300",
-  SLIP_RENTAL_REVENUE: "4000",
-  ELECTRICITY_REVENUE: "4100",
-  GENERAL_REVENUE: "4500",
-  ACH_RETURN_FEE_REVENUE: "4600",
-  TERMINATION_INCOME: "4700",
-} as const;
-
-// ---------------------------------------------------------------------------
 // Invoice posting
 // ---------------------------------------------------------------------------
 
@@ -103,6 +111,7 @@ export async function postInvoice(
   invoice: {
     id: string;
     tenantId: string;
+    locationId: string;
     totalCents: number;
     lineItems: {
       id: string;
@@ -114,13 +123,13 @@ export async function postInvoice(
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = invoice;
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-  const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx).catch(() => null);
+  const { tenantId, locationId } = invoice;
+
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
+  const deferredAccountId = await getSystemAccount(locationId, "DEFERRED_REVENUE").catch(() => null);
 
   const lines: GlLine[] = [];
 
-  // Debit: Accounts Receivable for total (including tax)
   lines.push({
     accountId: arAccountId,
     debitCents: invoice.totalCents,
@@ -128,7 +137,6 @@ export async function postInvoice(
     description: `Invoice ${invoice.id} — A/R`,
   });
 
-  // Credit: Revenue (or deferred revenue) for each line item
   for (const li of invoice.lineItems) {
     const lineTotal = li.extendedCents + li.taxCents;
     if (lineTotal === 0) continue;
@@ -141,11 +149,13 @@ export async function postInvoice(
         description: `Invoice ${invoice.id} — deferred revenue`,
       });
     } else {
-      // Use the line item's GL account or fall back to general revenue
-      const revenueAccountId = li.glAccountId
-        ?? await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
+      if (!li.glAccountId) {
+        throw new Error(
+          `Invoice line item ${li.id} has no GL account. Ensure account mappings are configured.`,
+        );
+      }
       lines.push({
-        accountId: revenueAccountId,
+        accountId: li.glAccountId,
         debitCents: 0,
         creditCents: lineTotal,
         description: `Invoice ${invoice.id} — revenue`,
@@ -153,7 +163,7 @@ export async function postInvoice(
     }
   }
 
-  return postEntries(tenantId, lines, "INVOICE", invoice.id, tx);
+  return postEntries(tenantId, locationId, lines, "INVOICE", invoice.id, undefined, tx);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,271 +174,184 @@ export async function postPayment(
   payment: {
     id: string;
     tenantId: string;
+    locationId: string;
     amountCents: number;
     method: string;
+    postedDate?: Date;
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = payment;
+  const { tenantId, locationId } = payment;
 
-  // Cash/card/ACH all go to bank; physical cash could use a separate account
-  const cashAccountNumber =
-    payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
-
-  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const methodKey = mapPaymentMethod(payment.method);
+  const cashAccountId = await getPaymentAccount(locationId, methodKey);
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
 
   return postEntries(
     tenantId,
+    locationId,
     [
-      {
-        accountId: cashAccountId,
-        debitCents: payment.amountCents,
-        creditCents: 0,
-        description: `Payment ${payment.id} — cash/bank`,
-      },
-      {
-        accountId: arAccountId,
-        debitCents: 0,
-        creditCents: payment.amountCents,
-        description: `Payment ${payment.id} — A/R reduction`,
-      },
+      { accountId: cashAccountId, debitCents: payment.amountCents, creditCents: 0, description: `Payment ${payment.id} — cash/bank` },
+      { accountId: arAccountId, debitCents: 0, creditCents: payment.amountCents, description: `Payment ${payment.id} — A/R reduction` },
     ],
     "PAYMENT",
     payment.id,
+    payment.postedDate,
     tx,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Refund posting (reverse of payment)
+// Refund posting
 // ---------------------------------------------------------------------------
 
 export async function postRefund(
   payment: {
     id: string;
     tenantId: string;
-    amountCents: number;
+    locationId: string;
     method: string;
+    refundAmountCents: number;
   },
-  refundAmountCents: number,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = payment;
+  const { tenantId, locationId } = payment;
 
-  const cashAccountNumber =
-    payment.method === "CASH" ? ACCOUNTS.CASH : ACCOUNTS.BANK;
-
-  const cashAccountId = await getAccountByNumber(tenantId, cashAccountNumber, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const methodKey = mapPaymentMethod(payment.method);
+  const cashAccountId = await getPaymentAccount(locationId, methodKey);
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
 
   return postEntries(
     tenantId,
+    locationId,
     [
-      {
-        accountId: arAccountId,
-        debitCents: refundAmountCents,
-        creditCents: 0,
-        description: `Refund on payment ${payment.id} — A/R reinstatement`,
-      },
-      {
-        accountId: cashAccountId,
-        debitCents: 0,
-        creditCents: refundAmountCents,
-        description: `Refund on payment ${payment.id} — cash/bank`,
-      },
+      { accountId: arAccountId, debitCents: payment.refundAmountCents, creditCents: 0, description: `Refund ${payment.id} — A/R reinstatement` },
+      { accountId: cashAccountId, debitCents: 0, creditCents: payment.refundAmountCents, description: `Refund ${payment.id} — cash/bank` },
     ],
     "REFUND",
     payment.id,
+    undefined,
     tx,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Void invoice (reverse all invoice GL entries)
+// Invoice void
 // ---------------------------------------------------------------------------
 
 export async function postVoid(
   invoice: {
     id: string;
     tenantId: string;
+    locationId: string;
+    totalCents: number;
+    lineItems: { extendedCents: number; taxCents: number; glAccountId?: string | null; isDeferred: boolean }[];
   },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const db = tx ?? prisma;
-  const { tenantId } = invoice;
+  const { tenantId, locationId } = invoice;
 
-  // Find original GL entries for this invoice
-  const originalEntries = await (db as typeof prisma).glEntry.findMany({
-    where: { tenantId, sourceType: "INVOICE", sourceId: invoice.id },
-  });
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
+  const deferredAccountId = await getSystemAccount(locationId, "DEFERRED_REVENUE").catch(() => null);
 
-  if (originalEntries.length === 0) {
-    throw new Error(`No GL entries found for invoice ${invoice.id}`);
+  const lines: GlLine[] = [
+    { accountId: arAccountId, debitCents: 0, creditCents: invoice.totalCents, description: `Void ${invoice.id} — A/R reversal` },
+  ];
+
+  for (const li of invoice.lineItems) {
+    const lineTotal = li.extendedCents + li.taxCents;
+    if (lineTotal === 0) continue;
+
+    const accountId = li.isDeferred && deferredAccountId ? deferredAccountId : li.glAccountId;
+    if (!accountId) continue;
+
+    lines.push({ accountId, debitCents: lineTotal, creditCents: 0, description: `Void ${invoice.id} — revenue reversal` });
   }
 
-  // Create reversing entries (swap debit/credit)
-  const lines: GlLine[] = originalEntries.map((e) => ({
-    accountId: e.accountId,
-    debitCents: e.creditCents,
-    creditCents: e.debitCents,
-    description: `VOID reversal — ${e.description ?? ""}`,
-  }));
-
-  return postEntries(tenantId, lines, "VOID", invoice.id, tx);
+  return postEntries(tenantId, locationId, lines, "VOID", invoice.id, undefined, tx);
 }
 
 // ---------------------------------------------------------------------------
-// Security deposit posting
+// Security deposit
 // ---------------------------------------------------------------------------
 
 export async function postSecurityDeposit(
-  deposit: {
-    id: string;
-    tenantId: string;
-    amountCents: number;
-  },
+  deposit: { id: string; tenantId: string; locationId: string; amountCents: number; method: string },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = deposit;
-
-  const cashAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
-  const liabilityAccountId = await getAccountByNumber(
-    tenantId,
-    ACCOUNTS.SECURITY_DEPOSITS_HELD,
-    tx,
-  );
+  const { tenantId, locationId } = deposit;
+  const methodKey = mapPaymentMethod(deposit.method);
+  const cashAccountId = await getPaymentAccount(locationId, methodKey);
+  const depositAccountId = await getSystemAccount(locationId, "SECURITY_DEPOSITS_HELD");
 
   return postEntries(
     tenantId,
+    locationId,
     [
-      {
-        accountId: cashAccountId,
-        debitCents: deposit.amountCents,
-        creditCents: 0,
-        description: `Security deposit ${deposit.id} received`,
-      },
-      {
-        accountId: liabilityAccountId,
-        debitCents: 0,
-        creditCents: deposit.amountCents,
-        description: `Security deposit ${deposit.id} liability`,
-      },
+      { accountId: cashAccountId, debitCents: deposit.amountCents, creditCents: 0, description: `Security deposit ${deposit.id} — cash received` },
+      { accountId: depositAccountId, debitCents: 0, creditCents: deposit.amountCents, description: `Security deposit ${deposit.id} — liability` },
     ],
     "SECURITY_DEPOSIT",
     deposit.id,
+    undefined,
     tx,
   );
 }
-
-// ---------------------------------------------------------------------------
-// Release security deposit
-// ---------------------------------------------------------------------------
 
 export async function releaseSecurityDeposit(
-  deposit: {
-    id: string;
-    tenantId: string;
-    amountCents: number;
-    appliedToInvoiceId?: string | null;
-  },
+  deposit: { id: string; tenantId: string; locationId: string; amountCents: number; appliedToInvoiceId?: string | null },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = deposit;
-
-  const liabilityAccountId = await getAccountByNumber(
-    tenantId,
-    ACCOUNTS.SECURITY_DEPOSITS_HELD,
-    tx,
-  );
-
-  if (deposit.appliedToInvoiceId) {
-    // Apply to invoice: debit liability, credit A/R
-    const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-    return postEntries(
-      tenantId,
-      [
-        {
-          accountId: liabilityAccountId,
-          debitCents: deposit.amountCents,
-          creditCents: 0,
-          description: `Security deposit ${deposit.id} applied to invoice`,
-        },
-        {
-          accountId: arAccountId,
-          debitCents: 0,
-          creditCents: deposit.amountCents,
-          description: `Security deposit ${deposit.id} applied — A/R reduction`,
-        },
-      ],
-      "DEPOSIT_RELEASE",
-      deposit.id,
-      tx,
-    );
-  } else {
-    // Refund to customer: debit liability, credit cash
-    const cashAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
-    return postEntries(
-      tenantId,
-      [
-        {
-          accountId: liabilityAccountId,
-          debitCents: deposit.amountCents,
-          creditCents: 0,
-          description: `Security deposit ${deposit.id} released`,
-        },
-        {
-          accountId: cashAccountId,
-          debitCents: 0,
-          creditCents: deposit.amountCents,
-          description: `Security deposit ${deposit.id} refunded`,
-        },
-      ],
-      "DEPOSIT_RELEASE",
-      deposit.id,
-      tx,
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// ACH Return posting (reverse payment)
-// ---------------------------------------------------------------------------
-
-export async function postAchReturn(
-  achReturn: {
-    id: string;
-    tenantId: string;
-    paymentId: string;
-    amountCents: number;
-  },
-  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-): Promise<string> {
-  const { tenantId } = achReturn;
-
-  const bankAccountId = await getAccountByNumber(tenantId, ACCOUNTS.BANK, tx);
-  const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
+  const { tenantId, locationId } = deposit;
+  const depositAccountId = await getSystemAccount(locationId, "SECURITY_DEPOSITS_HELD");
+  const cashAccountId = await getSystemAccount(locationId, "CASH");
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
 
   return postEntries(
     tenantId,
+    locationId,
     [
+      { accountId: depositAccountId, debitCents: deposit.amountCents, creditCents: 0, description: `Deposit release ${deposit.id} — liability cleared` },
       {
-        accountId: arAccountId,
-        debitCents: achReturn.amountCents,
-        creditCents: 0,
-        description: `ACH return ${achReturn.id} — A/R reinstated`,
-      },
-      {
-        accountId: bankAccountId,
+        accountId: deposit.appliedToInvoiceId ? arAccountId : cashAccountId,
         debitCents: 0,
-        creditCents: achReturn.amountCents,
-        description: `ACH return ${achReturn.id} — bank reversal`,
+        creditCents: deposit.amountCents,
+        description: deposit.appliedToInvoiceId ? `Deposit release ${deposit.id} — applied to invoice` : `Deposit release ${deposit.id} — refunded`,
       },
     ],
-    "ACH_RETURN",
-    achReturn.id,
+    "DEPOSIT_RELEASE",
+    deposit.id,
+    undefined,
     tx,
   );
+}
+
+// ---------------------------------------------------------------------------
+// ACH Return
+// ---------------------------------------------------------------------------
+
+export async function postAchReturn(
+  achReturn: { id: string; tenantId: string; locationId: string; paymentAmountCents: number; returnFeeCents?: number | null },
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string> {
+  const { tenantId, locationId } = achReturn;
+  const achAccountId = await getPaymentAccount(locationId, "ACH");
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
+  const lateFeeAccountId = await getSystemAccount(locationId, "ACH_RETURN_FEE").catch(() => null);
+
+  const lines: GlLine[] = [
+    { accountId: arAccountId, debitCents: achReturn.paymentAmountCents, creditCents: 0, description: `ACH return ${achReturn.id} — A/R reinstated` },
+    { accountId: achAccountId, debitCents: 0, creditCents: achReturn.paymentAmountCents, description: `ACH return ${achReturn.id} — bank reversal` },
+  ];
+
+  if (achReturn.returnFeeCents && achReturn.returnFeeCents > 0 && lateFeeAccountId) {
+    lines.push(
+      { accountId: arAccountId, debitCents: achReturn.returnFeeCents, creditCents: 0, description: `ACH return fee ${achReturn.id}` },
+      { accountId: lateFeeAccountId, debitCents: 0, creditCents: achReturn.returnFeeCents, description: `ACH return fee revenue ${achReturn.id}` },
+    );
+  }
+
+  return postEntries(tenantId, locationId, lines, "ACH_RETURN", achReturn.id, undefined, tx);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,116 +359,143 @@ export async function postAchReturn(
 // ---------------------------------------------------------------------------
 
 export async function postDeferredRecognition(
-  entry: {
-    id: string;
-    tenantId: string;
-    amountCents: number;
-    revenueAccountId?: string;
-  },
+  entry: { id: string; tenantId: string; locationId: string; amountCents: number; revenueAccountId: string; recognitionDate: Date },
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string> {
-  const { tenantId } = entry;
-
-  const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx);
-  const revenueAccountId =
-    entry.revenueAccountId ??
-    (await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx));
+  const { tenantId, locationId } = entry;
+  const deferredAccountId = await getSystemAccount(locationId, "DEFERRED_REVENUE");
 
   return postEntries(
     tenantId,
+    locationId,
     [
-      {
-        accountId: deferredAccountId,
-        debitCents: entry.amountCents,
-        creditCents: 0,
-        description: `Deferred recognition ${entry.id}`,
-      },
-      {
-        accountId: revenueAccountId,
-        debitCents: 0,
-        creditCents: entry.amountCents,
-        description: `Revenue recognition ${entry.id}`,
-      },
+      { accountId: deferredAccountId, debitCents: entry.amountCents, creditCents: 0, description: `Deferred recognition ${entry.id}` },
+      { accountId: entry.revenueAccountId, debitCents: 0, creditCents: entry.amountCents, description: `Deferred recognition ${entry.id} — revenue` },
     ],
     "DEFERRED_RECOGNITION",
     entry.id,
+    entry.recognitionDate,
     tx,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Early termination posting
+// Early termination
 // ---------------------------------------------------------------------------
 
 export async function postEarlyTermination(
-  contract: {
-    id: string;
+  data: {
+    contractId: string;
     tenantId: string;
+    locationId: string;
+    penaltyCents: number;
+    penaltyAccountId: string;
+    remainingDeferredCents: number;
+    revenueAccountId: string;
   },
-  penaltyCents: number,
-  remainingDeferredCents: number,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string[]> {
-  const { tenantId } = contract;
-  const journalIds: string[] = [];
+  const { tenantId, locationId } = data;
+  const arAccountId = await getSystemAccount(locationId, "ACCOUNTS_RECEIVABLE");
+  const deferredAccountId = await getSystemAccount(locationId, "DEFERRED_REVENUE");
 
-  // 1. Recognize penalty — debit A/R, credit Termination Income
-  if (penaltyCents > 0) {
-    const arAccountId = await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx);
-    const termIncomeAccountId = await getAccountByNumber(tenantId, ACCOUNTS.TERMINATION_INCOME, tx);
+  const journals: string[] = [];
 
-    const jid = await postEntries(
+  if (data.penaltyCents > 0) {
+    journals.push(await postEntries(
       tenantId,
+      locationId,
       [
-        {
-          accountId: arAccountId,
-          debitCents: penaltyCents,
-          creditCents: 0,
-          description: `Early termination penalty — contract ${contract.id}`,
-        },
-        {
-          accountId: termIncomeAccountId,
-          debitCents: 0,
-          creditCents: penaltyCents,
-          description: `Early termination income — contract ${contract.id}`,
-        },
+        { accountId: arAccountId, debitCents: data.penaltyCents, creditCents: 0, description: `Early termination penalty ${data.contractId}` },
+        { accountId: data.penaltyAccountId, debitCents: 0, creditCents: data.penaltyCents, description: `Early termination income ${data.contractId}` },
       ],
       "EARLY_TERMINATION",
-      contract.id,
+      data.contractId,
+      undefined,
       tx,
-    );
-    journalIds.push(jid);
+    ));
   }
 
-  // 2. Wash out remaining deferred revenue to revenue
-  if (remainingDeferredCents > 0) {
-    const deferredAccountId = await getAccountByNumber(tenantId, ACCOUNTS.DEFERRED_REVENUE, tx);
-    const revenueAccountId = await getAccountByNumber(tenantId, ACCOUNTS.GENERAL_REVENUE, tx);
-
-    const jid = await postEntries(
+  if (data.remainingDeferredCents > 0) {
+    journals.push(await postEntries(
       tenantId,
+      locationId,
       [
-        {
-          accountId: deferredAccountId,
-          debitCents: remainingDeferredCents,
-          creditCents: 0,
-          description: `Deferred washout — contract ${contract.id}`,
-        },
-        {
-          accountId: revenueAccountId,
-          debitCents: 0,
-          creditCents: remainingDeferredCents,
-          description: `Revenue acceleration — contract ${contract.id}`,
-        },
+        { accountId: deferredAccountId, debitCents: data.remainingDeferredCents, creditCents: 0, description: `Termination deferred washout ${data.contractId}` },
+        { accountId: data.revenueAccountId, debitCents: 0, creditCents: data.remainingDeferredCents, description: `Termination deferred washout ${data.contractId} — revenue` },
       ],
-      "DEFERRED_WASHOUT",
-      contract.id,
+      "EARLY_TERMINATION",
+      data.contractId,
+      undefined,
       tx,
-    );
-    journalIds.push(jid);
+    ));
   }
 
-  return journalIds;
+  return journals;
+}
+
+// ---------------------------------------------------------------------------
+// Inventory receiving (DR Inventory Asset / CR Accounts Payable)
+// ---------------------------------------------------------------------------
+
+export async function postInventoryReceipt(
+  data: {
+    receiptId: string;
+    tenantId: string;
+    locationId: string;
+    totalCostCents: number;
+    postedDate?: Date;
+  },
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string> {
+  const { tenantId, locationId } = data;
+  const inventoryAccountId = await getSystemAccount(locationId, "INVENTORY_ASSET");
+  const apAccountId = await getSystemAccount(locationId, "ACCOUNTS_PAYABLE");
+
+  return postEntries(
+    tenantId,
+    locationId,
+    [
+      { accountId: inventoryAccountId, debitCents: data.totalCostCents, creditCents: 0, description: `Inventory receipt ${data.receiptId}` },
+      { accountId: apAccountId, debitCents: 0, creditCents: data.totalCostCents, description: `Inventory receipt ${data.receiptId} — A/P` },
+    ],
+    "INVENTORY_RECEIPT",
+    data.receiptId,
+    data.postedDate,
+    tx,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// COGS posting on sale (DR COGS / CR Inventory Asset) — same date as revenue
+// ---------------------------------------------------------------------------
+
+export async function postCogs(
+  data: {
+    saleId: string;
+    tenantId: string;
+    locationId: string;
+    costCents: number;
+    cogsAccountId: string;
+    saleDate: Date;
+  },
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+): Promise<string> {
+  const { tenantId, locationId } = data;
+  const inventoryAccountId = await getSystemAccount(locationId, "INVENTORY_ASSET");
+
+  return postEntries(
+    tenantId,
+    locationId,
+    [
+      { accountId: data.cogsAccountId, debitCents: data.costCents, creditCents: 0, description: `COGS ${data.saleId}` },
+      { accountId: inventoryAccountId, debitCents: 0, creditCents: data.costCents, description: `COGS ${data.saleId} — inventory reduction` },
+    ],
+    "COGS",
+    data.saleId,
+    data.saleDate,
+    tx,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -554,14 +504,26 @@ export async function postEarlyTermination(
 
 export async function postManualJournalEntry(
   tenantId: string,
-  entries: {
-    accountId: string;
-    debitCents: number;
-    creditCents: number;
-    description?: string;
-  }[],
+  locationId: string,
+  entries: GlLine[],
   sourceDescription?: string,
 ): Promise<string> {
-  const sourceId = uuid();
-  return postEntries(tenantId, entries, "MANUAL_JOURNAL", sourceId);
+  return postEntries(tenantId, locationId, entries, "MANUAL_JOURNAL", sourceDescription ?? "manual");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function mapPaymentMethod(method: string): PaymentMethodKey {
+  const map: Record<string, PaymentMethodKey> = {
+    CARD: "CARD",
+    ACH: "ACH",
+    CASH: "CASH",
+    CHECK: "CHECK",
+    WIRE: "WIRE",
+    CHARGE_TO_SLIP: "CHARGE_TO_SLIP",
+    GIFT_CARD: "CARD",
+  };
+  return map[method] ?? "CARD";
 }
