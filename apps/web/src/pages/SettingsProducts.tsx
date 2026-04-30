@@ -999,7 +999,7 @@ export default function SettingsProducts() {
             <span style={s.sectionCount}>{rentalProducts.length}</span>
           </div>
           <Link
-            to="/settings?tab=catalog&section=rentals"
+            to="/rentals"
             style={{ fontSize: '13px', color: '#0A2342', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
           >
             <Settings size={13} /> Manage products
@@ -1007,7 +1007,7 @@ export default function SettingsProducts() {
         </div>
         {rentalProducts.length === 0 ? (
           <div style={s.emptyRow}>
-            No rental products configured. Add them in Settings → Catalog.
+            No rental products configured. Add them on the Rentals page.
           </div>
         ) : currentLocationId ? (
           // Single-location mode: flat one-row-per-product table with three
