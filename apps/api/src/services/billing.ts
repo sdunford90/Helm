@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
+import { parseDateOnly, todayDateOnly } from "@helm/shared-types";
 import { calculateTax } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
@@ -36,17 +37,17 @@ interface GeneratedInvoice {
 export async function generateRecurringInvoices(
   tenantId: string,
 ): Promise<GeneratedInvoice[]> {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  // Find active contracts with billingAnchor <= today's day-of-month
-  // In production this would use a dedicated next_billing_date column;
-  // here we approximate by checking the billing anchor day.
+  // Anchor every billing-window comparison to UTC midnight today so the
+  // same set of contracts gets billed regardless of the server's local
+  // timezone. billingAnchor is a 1–31 day-of-month integer that's
+  // compared against UTC components of the contract's startDate, so use
+  // UTC components here as well.
+  const today = todayDateOnly();
   const contracts = await prisma.slipContract.findMany({
     where: {
       tenantId,
       status: "ACTIVE",
-      billingAnchor: { lte: today.getDate() },
+      billingAnchor: { lte: today.getUTCDate() },
     },
     include: {
       customer: {
@@ -72,11 +73,15 @@ export async function generateRecurringInvoices(
     },
   });
 
-  // Filter out contracts that already have an invoice for this month
-  const currentMonth = today.getMonth();
-  const currentYear = today.getFullYear();
-  const monthStart = new Date(currentYear, currentMonth, 1);
-  const monthEnd = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59, 999);
+  // Filter out contracts that already have an invoice for this month.
+  // Use UTC components throughout so the month window aligns with the
+  // UTC-midnight contract dates we compare against below.
+  const currentMonth = today.getUTCMonth();
+  const currentYear = today.getUTCFullYear();
+  const monthStart = new Date(Date.UTC(currentYear, currentMonth, 1));
+  const monthEnd = new Date(
+    Date.UTC(currentYear, currentMonth + 1, 0, 23, 59, 59, 999),
+  );
 
   const results: GeneratedInvoice[] = [];
 
@@ -108,12 +113,13 @@ export async function generateRecurringInvoices(
         sourceId: string;
       }[] = [];
 
-      // 1. Slip rental
-      const billingStart = new Date(currentYear, currentMonth, 1);
-      const billingEnd = new Date(currentYear, currentMonth + 1, 0);
-
-      // Check if contract started mid-month for proration
-      const contractStart = new Date(contract.startDate);
+      // 1. Slip rental — billing window and contract start are both
+      // calendar values; keep both at UTC midnight so the proration check
+      // ("did this contract start mid-month?") behaves identically on
+      // every server timezone.
+      const billingStart = new Date(Date.UTC(currentYear, currentMonth, 1));
+      const billingEnd = new Date(Date.UTC(currentYear, currentMonth + 1, 0));
+      const contractStart = parseDateOnly(contract.startDate);
       const needsProration =
         contractStart > billingStart && contractStart <= billingEnd;
 
@@ -577,10 +583,11 @@ export function calculateProration(
   startDate: Date,
   endDate: Date,
 ): number {
-  // Total days in the month (use endDate's month)
-  const year = endDate.getFullYear();
-  const month = endDate.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  // Total days in the month (use endDate's month). Read UTC components
+  // because callers pass UTC-midnight calendar dates.
+  const year = endDate.getUTCFullYear();
+  const month = endDate.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 
   // Days of service
   const msPerDay = 1000 * 60 * 60 * 24;

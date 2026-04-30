@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { Ship, Shield, AlertCircle, CheckCircle, ChevronRight, ChevronLeft, Anchor } from 'lucide-react';
+import { formatDateOnlyDisplay } from '@helm/shared-types';
 
 /* ── Types ──────────────────────────────────────────────── */
 
@@ -355,8 +356,8 @@ export default function ESignPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '14px' }}>
               <div><span style={{ color: '#64748B' }}>Slip </span><strong style={{ color: '#0A2342' }}>{c.slip.slipNumber}</strong></div>
               <div><span style={{ color: '#64748B' }}>Rate </span><strong style={{ color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmt(c.rateCents)}/{CYCLE_LABEL[c.billingCycle] ?? c.billingCycle}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Start </span><strong style={{ color: '#0A2342' }}>{c.startDate ? c.startDate.split('T')[0] : '—'}</strong></div>
-              {c.endDate && <div><span style={{ color: '#64748B' }}>End </span><strong style={{ color: '#0A2342' }}>{c.endDate.split('T')[0]}</strong></div>}
+              <div><span style={{ color: '#64748B' }}>Start </span><strong style={{ color: '#0A2342' }}>{formatDateOnlyDisplay(c.startDate)}</strong></div>
+              {c.endDate && <div><span style={{ color: '#64748B' }}>End </span><strong style={{ color: '#0A2342' }}>{formatDateOnlyDisplay(c.endDate)}</strong></div>}
             </div>
           </div>
 
@@ -479,7 +480,7 @@ export default function ESignPage() {
               {/* Terms summary */}
               <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px 20px', marginBottom: '20px', fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
                 <p style={{ margin: '0 0 8px', fontWeight: 600, color: '#0A2342' }}>Slip Rental Agreement Summary</p>
-                <p style={{ margin: '0 0 4px' }}>Tenant agrees to rent Slip <strong>{c.slip.slipNumber}</strong> at a rate of <strong>{fmt(c.rateCents)}</strong> per {CYCLE_LABEL[c.billingCycle]?.toLowerCase() ?? 'period'}, beginning <strong>{c.startDate?.split('T')[0]}</strong>{c.endDate ? ` through ${c.endDate.split('T')[0]}` : ''}.</p>
+                <p style={{ margin: '0 0 4px' }}>Tenant agrees to rent Slip <strong>{c.slip.slipNumber}</strong> at a rate of <strong>{fmt(c.rateCents)}</strong> per {CYCLE_LABEL[c.billingCycle]?.toLowerCase() ?? 'period'}, beginning <strong>{formatDateOnlyDisplay(c.startDate)}</strong>{c.endDate ? ` through ${formatDateOnlyDisplay(c.endDate)}` : ''}.</p>
                 <p style={{ margin: '0 0 4px' }}>Tenant agrees to maintain valid marine liability insurance, keep vessel registration current, and comply with all marina rules and regulations.</p>
                 {c.autoRenew && <p style={{ margin: '0' }}>This agreement will automatically renew unless cancelled with 30 days written notice.</p>}
               </div>

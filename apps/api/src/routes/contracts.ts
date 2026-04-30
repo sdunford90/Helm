@@ -5,11 +5,41 @@ import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "../lib/email.js";
 import {
+  formatDateOnlyISO,
+  parseDateOnly,
+  todayDateOnly,
+} from "@helm/shared-types";
+import {
   postSecurityDeposit,
   releaseSecurityDeposit,
 } from "../services/gl-posting.js";
 
 const router: Router = Router();
+
+// Slip-contract date-only fields. Prisma stores them as DateTime, but they
+// are conceptually pure calendar dates. Normalize on the wire so any
+// consumer (web, customer portal, PDF/email, integrations) receives
+// `YYYY-MM-DD` strings instead of timezone-sensitive ISO timestamps.
+const CONTRACT_DATE_FIELDS = [
+  "startDate",
+  "endDate",
+  "signedAt",
+  "terminationDate",
+] as const;
+
+function serializeContract<T extends Record<string, unknown>>(c: T): T {
+  const out: Record<string, unknown> = { ...c };
+  for (const f of CONTRACT_DATE_FIELDS) {
+    if (f in c) {
+      const v = c[f];
+      out[f] =
+        v == null
+          ? null
+          : formatDateOnlyISO(v as Date | string);
+    }
+  }
+  return out as T;
+}
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -149,7 +179,10 @@ function calculateProration(
   startDate: Date,
   billingCycle: string,
 ): { proratedCents: number; proratedDays: number; totalDays: number } {
-  const dayOfMonth = startDate.getDate();
+  // Slip contract dates are normalized to UTC midnight via parseDateOnly,
+  // so read calendar fields off the UTC components — local getters would
+  // shift the day in a non-UTC server timezone.
+  const dayOfMonth = startDate.getUTCDate();
 
   // If starting on the 1st, no proration needed
   if (dayOfMonth === 1) {
@@ -157,9 +190,9 @@ function calculateProration(
   }
 
   // Get the number of days in the start month
-  const year = startDate.getFullYear();
-  const month = startDate.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const year = startDate.getUTCFullYear();
+  const month = startDate.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   const remainingDays = daysInMonth - dayOfMonth + 1;
 
   let cycleDays = daysInMonth;
@@ -245,8 +278,12 @@ router.get(
         status: contract.signedAt ? "signed" : "pending",
         rateCents: contract.rateCents,
         billingCycle: contract.billingCycle,
-        startDate: contract.startDate,
-        endDate: contract.endDate,
+        // Slip contract dates are calendar-only — emit YYYY-MM-DD strings
+        // so the e-sign page never sees a timestamp it would have to
+        // .split('T')[0] back into a date.
+        startDate: formatDateOnlyISO(contract.startDate),
+        endDate: formatDateOnlyISO(contract.endDate),
+        signedAt: formatDateOnlyISO(contract.signedAt),
         autoRenew: contract.autoRenew,
         slip: contract.slip,
         customer: contract.customer,
@@ -330,11 +367,13 @@ router.post(
         }));
       }
 
-      // Mark contract as signed
+      // Mark contract as signed. signedAt is a calendar date (which day the
+      // customer signed), not a wall-clock timestamp — store it normalized
+      // so it renders as the same day for every viewer.
       ops.push(prisma.slipContract.update({
         where: { id: contract.id },
         data: {
-          signedAt: new Date(),
+          signedAt: todayDateOnly(),
           esignEnvelopeId: req.params.requestId,
         } as Record<string, unknown>,
       }));
@@ -362,9 +401,14 @@ router.get(
       const tenantId = req.tenantId!;
       const { days, skip, take } = ExpiringQuerySchema.parse(req.query);
 
-      const now = new Date();
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() + days);
+      // Compare against UTC midnight today so a contract whose endDate is
+      // exactly today is treated identically regardless of when in the day
+      // this query runs (avoids the day-boundary flicker where a contract
+      // fell out of "expiring within 30 days" because the query happened
+      // to run after midnight in one timezone but before in another).
+      const now = todayDateOnly();
+      const cutoff = new Date(now);
+      cutoff.setUTCDate(cutoff.getUTCDate() + days);
 
       const where = {
         tenantId,
@@ -389,15 +433,18 @@ router.get(
         prisma.slipContract.count({ where }),
       ]);
 
-      // Add days until expiry
-      const data = contracts.map((c) => ({
-        ...c,
-        daysUntilExpiry: c.endDate
-          ? Math.ceil(
-              (c.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
-            )
-          : null,
-      }));
+      // Add days until expiry. daysUntilExpiry must be computed BEFORE
+      // serializing the dates to YYYY-MM-DD strings since it needs Date math.
+      const data = contracts.map((c) =>
+        serializeContract({
+          ...c,
+          daysUntilExpiry: c.endDate
+            ? Math.ceil(
+                (c.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+              )
+            : null,
+        }),
+      );
 
       res.json({
         data,
@@ -450,7 +497,7 @@ router.get(
       ]);
 
       res.json({
-        data: contracts,
+        data: contracts.map((c) => serializeContract(c)),
         pagination: {
           skip: query.skip,
           take: query.take,
@@ -519,7 +566,7 @@ router.get(
       });
 
       res.json({
-        ...contract,
+        ...serializeContract(contract),
         billingHistory,
       });
     } catch (err) {
@@ -587,15 +634,23 @@ router.post(
         }
       }
 
+      // Normalize the user-supplied calendar dates to UTC midnight before
+      // any comparison or persistence so a contract that starts on
+      // "2026-05-01" stays on May 1 for every reader regardless of timezone.
+      const normalizedStartDate = parseDateOnly(data.startDate);
+      const normalizedEndDate =
+        data.endDate != null ? parseDateOnly(data.endDate) : null;
+
       // Calculate proration if mid-month start
       const proration = calculateProration(
         data.rateCents,
-        data.startDate,
+        normalizedStartDate,
         data.billingCycle ?? "MONTHLY",
       );
 
       // Set billing anchor to start day if not specified
-      const billingAnchor = data.billingAnchor ?? data.startDate.getDate();
+      const billingAnchor =
+        data.billingAnchor ?? normalizedStartDate.getUTCDate();
 
       // Create contract in a transaction
       const contract = await prisma.$transaction(async (tx) => {
@@ -603,6 +658,8 @@ router.post(
           data: {
             tenantId,
             ...data,
+            startDate: normalizedStartDate,
+            endDate: normalizedEndDate,
             billingAnchor,
             status: data.status ?? "ACTIVE",
           },
@@ -678,7 +735,7 @@ router.post(
       });
 
       res.status(201).json({
-        ...contract,
+        ...serializeContract(contract),
         proration:
           proration.proratedDays > 0
             ? {
@@ -710,18 +767,36 @@ router.put(
         throw appError("Contract not found", 404, "NOT_FOUND");
       }
 
+      // Normalize the endDate to UTC midnight so re-saving never drifts the
+      // stored calendar day, even when the API client posts a midday ISO
+      // string instead of a YYYY-MM-DD.
+      const persistData: Record<string, unknown> = { ...data };
+      if (data.endDate != null) {
+        persistData.endDate = parseDateOnly(data.endDate);
+      }
+
       const updated = await prisma.slipContract.update({
         where: { id: req.params.id },
-        data,
+        data: persistData,
       });
 
+      // Slip-contract date columns are calendar dates — surface them in the
+      // audit diff as YYYY-MM-DD instead of full ISO timestamps so the
+      // history reads as "endDate: 2026-05-01 → 2026-06-01".
+      const dateOnlyFields = new Set(["startDate", "endDate", "signedAt"]);
       const changedFields: Record<string, unknown> = {};
       for (const key of Object.keys(data) as (keyof typeof data)[]) {
         if (data[key] !== undefined) {
-          changedFields[key] = {
-            from: (existing as Record<string, unknown>)[key],
-            to: data[key],
-          };
+          const fromVal = (existing as Record<string, unknown>)[key];
+          const toVal = persistData[key as string] ?? data[key];
+          if (dateOnlyFields.has(key as string)) {
+            changedFields[key] = {
+              from: formatDateOnlyISO(fromVal as Date | null | undefined),
+              to: formatDateOnlyISO(toVal as Date | null | undefined),
+            };
+          } else {
+            changedFields[key] = { from: fromVal, to: toVal };
+          }
         }
       }
 
@@ -736,7 +811,7 @@ router.put(
         },
       });
 
-      res.json(updated);
+      res.json(serializeContract(updated));
     } catch (err) {
       next(err);
     }
@@ -891,7 +966,13 @@ router.post(
         }
       }
 
-      const effectiveDate = terminationDate ?? new Date();
+      // Slip-contract termination is a calendar event ("contract ended on
+      // April 29, 2026"). Normalize the supplied date — or fall back to
+      // today's UTC date — so the persisted endDate and audit entry both
+      // render as a pure date for every viewer.
+      const effectiveDate = terminationDate
+        ? parseDateOnly(terminationDate)
+        : todayDateOnly();
 
       // Calculate penalty
       let penaltyCents = 0;
@@ -1080,7 +1161,7 @@ router.post(
             action: "TERMINATED",
             changedFieldsJson: {
               reason,
-              effectiveDate: effectiveDate.toISOString(),
+              effectiveDate: formatDateOnlyISO(effectiveDate),
               penaltyCents,
               previousStatus: contract.status,
               depositActions,
@@ -1092,7 +1173,7 @@ router.post(
       res.json({
         success: true,
         contractId: req.params.id,
-        terminationDate: effectiveDate,
+        terminationDate: formatDateOnlyISO(effectiveDate),
         penaltyCents,
         message: "Contract terminated successfully",
       });
@@ -1132,7 +1213,14 @@ router.post(
         );
       }
 
-      const newStartDate = contract.endDate ?? new Date();
+      // The renewed contract picks up where the previous one ended (or
+      // today if the previous contract had no end). Both inputs are
+      // calendar dates — normalize so the new contract's startDate /
+      // endDate sit at UTC midnight just like the manually-created ones.
+      const newStartDate = contract.endDate
+        ? parseDateOnly(contract.endDate)
+        : todayDateOnly();
+      const normalizedNewEndDate = parseDateOnly(newEndDate);
       const effectiveRate = newRateCents ?? contract.rateCents;
       const effectiveBillingCycle = billingCycle ?? contract.billingCycle;
 
@@ -1151,7 +1239,7 @@ router.post(
             customerId: contract.customerId,
             boatId: contract.boatId,
             startDate: newStartDate,
-            endDate: newEndDate,
+            endDate: normalizedNewEndDate,
             billingCycle: effectiveBillingCycle,
             billingAnchor: contract.billingAnchor,
             rateCents: effectiveRate,
@@ -1188,7 +1276,7 @@ router.post(
         return renewed;
       });
 
-      res.status(201).json(result);
+      res.status(201).json(serializeContract(result));
     } catch (err) {
       next(err);
     }
@@ -1461,7 +1549,12 @@ router.post(
       };
 
       if (event === "signature_request_signed") {
-        updateData.esignSignedAt = timestamp || new Date();
+        // esignSignedAt stores the calendar day the customer signed (same
+        // concept as `signedAt`), so normalize to UTC midnight rather than
+        // keeping the provider's wall-clock event timestamp here.
+        updateData.esignSignedAt = timestamp
+          ? parseDateOnly(timestamp)
+          : todayDateOnly();
         if (signedDocumentUrl) {
           updateData.esignSignedDocumentUrl = signedDocumentUrl;
         }
@@ -1485,7 +1578,11 @@ router.post(
             requestId,
             signerEmail: signerEmail || null,
             signedDocumentUrl: signedDocumentUrl || null,
-            timestamp: (timestamp || new Date()).toISOString(),
+            // The contract-side concept of "when this happened" is the
+            // calendar day, matching how signedAt is stored — keep the
+            // audit entry date-only so the diff history reads as
+            // YYYY-MM-DD rather than a wall-clock timestamp.
+            timestamp: formatDateOnlyISO(timestamp ?? todayDateOnly()),
           },
         },
       });
@@ -1524,7 +1621,9 @@ router.get(
         requestId: contract.esignEnvelopeId || null,
         status: contract.signedAt ? "signed" : contract.esignEnvelopeId ? "sent" : null,
         sentAt: null,
-        signedAt: contract.signedAt || null,
+        // signedAt is a calendar date (which day the customer signed) —
+        // emit as YYYY-MM-DD so the polling UI doesn't render a timestamp.
+        signedAt: formatDateOnlyISO(contract.signedAt),
         signerName: null,
         signerEmail: null,
         signedDocumentUrl: contract.signedDocumentUrl || null,

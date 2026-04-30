@@ -1,6 +1,7 @@
 // E-signature integration for contracts and renewals
 
 import { prisma } from "../lib/prisma.js";
+import { formatDateOnlyISO, todayDateOnly } from "@helm/shared-types";
 
 interface EsignConfig {
   provider: "docusign" | "hellosign";
@@ -263,10 +264,12 @@ export async function handleWebhook(payload: any, tenantId: string): Promise<voi
       }
     }
 
-    // Update contract status
+    // Update contract status. signedAt is a calendar date — normalize to
+    // UTC midnight so the contract reads as signed on the same day for
+    // every viewer regardless of timezone.
     await prisma.slipContract.updateMany({
       where: { tenantId, esignEnvelopeId: envelopeId },
-      data: { status: "ACTIVE", signedAt: new Date(), signedDocumentUrl },
+      data: { status: "ACTIVE", signedAt: todayDateOnly(), signedDocumentUrl },
     });
 
     await prisma.auditLog.create({
@@ -319,7 +322,9 @@ export async function getSigningStatus(
 
     return {
       status: contract.status.toLowerCase(),
-      signedAt: contract.signedAt?.toISOString(),
+      // signedAt is a calendar date — emit YYYY-MM-DD instead of an ISO
+      // timestamp so the polling caller never has to .split('T')[0] it.
+      signedAt: formatDateOnlyISO(contract.signedAt) ?? undefined,
       documentUrl: contract.signedDocumentUrl ?? undefined,
     };
   }
@@ -344,7 +349,11 @@ export async function getSigningStatus(
 
   return {
     status: envelope.status,
-    signedAt: envelope.completedDateTime,
+    // DocuSign returns a full ISO timestamp, but signedAt is a calendar
+    // date contract-side — normalize to YYYY-MM-DD so the field is shaped
+    // consistently with the local-fallback branch and with the rest of the
+    // API surface.
+    signedAt: formatDateOnlyISO(envelope.completedDateTime) ?? undefined,
     documentUrl: envelope.status === "completed"
       ? `${process.env.R2_PUBLIC_URL || "https://storage.helm.dev"}/tenants/${tenantId}/contracts/signed/${requestId}.pdf`
       : undefined,

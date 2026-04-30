@@ -3,6 +3,7 @@ import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, E
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { formatDateOnlyISO, todayDateOnlyISO } from '@helm/shared-types';
 import ESignatureFlow from '../components/ESignatureFlow';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -363,8 +364,11 @@ function mapApiContract(c: ApiContract): Contract {
     slip: c.slip.slipNumber,
     rate: c.rateCents / 100,
     billingCycle: API_CYCLE_MAP[c.billingCycle] ?? c.billingCycle,
-    start: c.startDate ? c.startDate.split('T')[0] : '',
-    end: c.endDate ? c.endDate.split('T')[0] : '',
+    // Slip contract dates are calendar-only — read them in UTC so a contract
+    // for May 1 doesn't become Apr 30 for negative-offset viewers when the
+    // server still emits a full ISO timestamp on the legacy DateTime column.
+    start: formatDateOnlyISO(c.startDate) ?? '',
+    end: formatDateOnlyISO(c.endDate) ?? '',
     status: API_STATUS_MAP[c.status] ?? 'Active',
     boat: c.boat?.id ?? '',
     boatName: c.boat?.name ?? '',
@@ -599,7 +603,7 @@ function ContractDetailModal({
   interface HeldDeposit { id: string; amountCents: number; locationId: string | null; createdAt?: string; }
   interface OpenInvoice { id: string; invoiceNumber: string; balanceCents: number; status: string; dueDate: string; }
   const [terminateReason, setTerminateReason] = useState('');
-  const [terminateDate, setTerminateDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [terminateDate, setTerminateDate] = useState(() => todayDateOnlyISO());
   const [terminating, setTerminating] = useState(false);
   const [terminateError, setTerminateError] = useState('');
   const [heldDeposits, setHeldDeposits] = useState<HeldDeposit[] | null>(null);
@@ -1331,14 +1335,21 @@ export default function Contracts() {
     }
   };
 
-  const now = new Date();
+  // c.end is now a YYYY-MM-DD string — parse as UTC midnight and compare to
+  // today (also UTC midnight) so the "expiring within N days" filter behaves
+  // as a calendar-day range and doesn't drop a contract whose endDate is
+  // exactly today just because it's already late afternoon locally.
+  const todayIso = todayDateOnlyISO();
+  const [ty, tm, td] = todayIso.split('-').map(Number);
+  const todayUtc = Date.UTC(ty, tm - 1, td);
   const filtered = contracts.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;
     if (cycleFilter !== 'All' && c.billingCycle !== cycleFilter) return false;
-    if (expiringFilter !== 'All') {
+    if (expiringFilter !== 'All' && c.end) {
       const days = parseInt(expiringFilter);
-      const end = new Date(c.end);
-      const diff = (end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+      const [ey, em, ed] = c.end.split('-').map(Number);
+      const endUtc = Date.UTC(ey, em - 1, ed);
+      const diff = (endUtc - todayUtc) / (1000 * 60 * 60 * 24);
       if (diff < 0 || diff > days) return false;
     }
     if (search) {

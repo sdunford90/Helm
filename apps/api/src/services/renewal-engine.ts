@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { queues } from "../lib/queue.js";
+import { parseDateOnly, todayDateOnly } from "@helm/shared-types";
 
 // ---------------------------------------------------------------------------
 // Renewal Engine Service
@@ -287,10 +288,20 @@ export async function executeBatch(
     for (const contract of contracts) {
       const newRate = calculateNewRate(contract.rateCents, increaseType, increaseValue);
 
-      // Calculate new term dates: start = old end (or now), end = +1 year
-      const newStartDate = contract.endDate ?? new Date();
-      const newEndDate = new Date(newStartDate);
-      newEndDate.setFullYear(newEndDate.getFullYear() + 1);
+      // Calculate new term dates: start = old end (or today), end = +1 year.
+      // Slip-contract dates are calendar-only — keep both successor dates at
+      // UTC midnight using UTC math so DST or local-tz arithmetic can't drift
+      // the new contract into the prior or next day.
+      const newStartDate = contract.endDate
+        ? parseDateOnly(contract.endDate)
+        : todayDateOnly();
+      const newEndDate = new Date(
+        Date.UTC(
+          newStartDate.getUTCFullYear() + 1,
+          newStartDate.getUTCMonth(),
+          newStartDate.getUTCDate(),
+        ),
+      );
 
       // Create successor contract
       const successor = await tx.slipContract.create({
@@ -381,9 +392,12 @@ export async function executeBatch(
 export async function transitionContractLifecycle(
   tenantId: string,
 ): Promise<{ expired: number; expiring: number }> {
-  const now = new Date();
-  const expiringCutoff = new Date();
-  expiringCutoff.setDate(now.getDate() + 30);
+  // Lifecycle transitions key off the calendar day, not the wall clock — a
+  // contract whose endDate is "yesterday" should be EXPIRED whether this
+  // sweep runs at 00:05 or 23:55. Anchor everything to UTC midnight today.
+  const now = todayDateOnly();
+  const expiringCutoff = new Date(now);
+  expiringCutoff.setUTCDate(expiringCutoff.getUTCDate() + 30);
 
   const expired = await prisma.slipContract.updateMany({
     where: {
@@ -421,9 +435,12 @@ export async function autoRenewCheck(tenantId: string): Promise<{
   // correct statuses.
   const lifecycle = await transitionContractLifecycle(tenantId);
 
-  const now = new Date();
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() + 30);
+  // Auto-renewal eligibility is "endDate within the next 30 calendar days".
+  // Anchor to UTC midnight so the same set of contracts is selected
+  // regardless of when within the day this job fires.
+  const now = todayDateOnly();
+  const cutoff = new Date(now);
+  cutoff.setUTCDate(cutoff.getUTCDate() + 30);
 
   const eligibleContracts = await prisma.slipContract.findMany({
     where: {
