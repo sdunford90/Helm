@@ -32,35 +32,65 @@ Before starting:
   Online. A location can be QBO-connected or stand-alone — the rules
   change between the two. **Read the callout below before continuing.**
 
-> ### 📌 GL resolution: order of precedence
+> ### 📌 GL resolution: three different paths
 >
-> Every posting (invoice, POS sale, COGS, inventory adjustment, rental)
-> resolves the GL account it credits/debits in this order:
+> Helm does **not** use one global precedence chain for every account. It
+> picks one of **three** resolvers depending on what's being posted, and
+> only the operator can fix a misposting if you know which resolver the
+> posting line went through. Each posting line credits/debits two sides;
+> a single sale typically uses 2–3 of these paths at once.
 >
-> 1. **Per-(category, location) mapping** on `ProductCategoryGlMapping`
->    (set in **Settings → Categories → 📍 map-pin icon**). This is the
->    only source for inventory products.
-> 2. **Location-pinned posting account** for system slots — A/R,
->    Undeposited Funds, Deferred Revenue, Default Revenue, Sales Tax
->    Payable, Early Termination Income, ACH Return Fee Revenue (set on
->    **Settings → QuickBooks Setup → Posting Accounts**).
-> 3. **Location-scoped chart-of-accounts** lookup by well-known account
->    number (e.g. 1200 A/R, 4500 Default Revenue, 2400 Sales Tax) within
->    that location's own chart.
-> 4. **Tenant-wide chart-of-accounts** lookup by the same well-known
->    number — **but only if the location is NOT QBO-connected**.
-> 5. **Loud failure.** The posting throws `UNCONFIGURED_GL_MAPPING` or
->    `MISSING_GL_MAPPING` and the operator sees an error pointing them at
->    the screen to fix.
+> **Path A — Inventory products & their COGS / inventory-asset legs.**
+> Source: per-(category, location) row in `ProductCategoryGlMapping`,
+> edited at **Settings → Categories → 📍 map-pin icon**.
 >
-> **One narrow exception:** Deferred Revenue resolution
-> (`getDeferredRevenueAccountId`) intentionally falls back to a
-> tenant-wide account flagged `isDeferredRevenue = true`, and finally to
-> the chart-by-number `2100` row, **even on QBO-connected locations**.
-> This is a deliberate carve-out so legacy tenants with a single
-> deferred-revenue liability don't have to duplicate it per QBO realm.
-> If you want strict per-location isolation for deferred revenue, set
-> the **Deferred Revenue** pin in step 2 — the pin always wins.
+> 1. Read the product's `productCategoryId` (required field).
+> 2. Look up the `ProductCategoryGlMapping` row for that
+>    (category, originating-location) pair and read the `revenueGl`,
+>    `cogsGl`, or `inventoryAssetGl` slot the posting needs.
+> 3. If the row is missing **or** the slot is null → `MISSING_GL_MAPPING`
+>    error. **There is no fallback** — no tenant-wide product default,
+>    no other location's mapping, nothing. Fix it on the category.
+>
+> **Path B — Rental products, dockage rates, and service fees.**
+> Source: the GL slots pinned directly on the rental product / dockage
+> rate / service fee, with optional per-location overrides on the same
+> entity. Inventory's "category-only" rule does **not** apply to these —
+> they keep their per-item per-location pins (out of scope of Task #235).
+> Edited on the item's own settings page.
+>
+> **Path C — System posting accounts** (A/R 1200, Undeposited Funds 1000,
+> Deferred Revenue 2100, Default Revenue 4500, Sales Tax Payable 2400,
+> Early Termination Income 4700, ACH Return Fee Revenue 4600). Source:
+> `resolveLocationSystemPostingAccount` (and the parallel A/R / cash
+> resolvers in `gl-posting.ts`).
+>
+> 1. **Location pin wins** — the slot you set on
+>    **QuickBooks Setup → Posting Accounts**.
+> 2. **If the location is QBO-connected and there's no pin:** the
+>    resolver looks for a row in **that location's own chart of accounts**
+>    matching the well-known number (e.g. 1200 for A/R). If none, it
+>    throws `UNCONFIGURED_GL_MAPPING` immediately. It will **not** walk
+>    up to a tenant-wide row, because that could cross-post into another
+>    QBO realm.
+> 3. **If the location is NOT QBO-connected and there's no pin:** the
+>    resolver tries a location-scoped chart row, then a tenant-wide chart
+>    row. Loud failure only if neither exists.
+>
+> **One carve-out for Deferred Revenue.** `getDeferredRevenueAccountId`
+> deliberately keeps a tenant-wide fallback even on QBO-connected
+> locations: pin → location-scoped flagged → tenant-wide flagged →
+> chart-by-number `2100` → null. This exists so legacy tenants with one
+> shared deferred-revenue liability don't have to duplicate it per QBO
+> realm. If you need strict per-location isolation, set the **Deferred
+> Revenue** pin (step 2 of section 2) — the pin always wins.
+>
+> **The QBO sales-tax-split exception (Path C, sales tax slot only).**
+> When an invoice or POS sale calculates tax, each `TaxRate` row may
+> carry its own `glAccountId`. If set, that rate's tax credit goes to
+> *that* account regardless of the location's pinned Sales Tax Payable
+> slot — only rates with no `glAccountId` fall through to the location's
+> pin. See **section 3b**.
 
 > ### 📌 The QBO-strictness rule
 >
@@ -84,15 +114,22 @@ precedence callout) and the strict QBO rules above don't apply.
 1. Go to **Settings → QuickBooks Setup** (left sidebar of the marina
    dashboard, route `/settings/quickbooks`).
 2. You will see one card per location.
-3. On the location's card, click **Connect to QuickBooks**.
-4. Complete the Intuit OAuth flow in the popup. When you return, the card
-   should show:
-   - The connected QuickBooks **company name** and **realm ID**.
-   - A **Disconnect** button.
-   - A **Sync now** button (manual chart-of-accounts pull).
-5. Click **Sync now** once. This pulls the QBO chart of accounts into
-   Helm and tags every imported row with this location's `locationId`.
-   You should see the chart populate within a few seconds.
+3. On the location's card, click **Connect QuickBooks** (the button
+   shows a plug icon). For an unconnected location this is the only
+   button visible in the card's actions row.
+4. Complete the Intuit OAuth flow in the popup. When you return, the
+   card should show:
+   - The connected QuickBooks **company name** and **realm ID** in the
+     card header.
+   - An **Import / Refresh Chart of Accounts** button (with a refresh
+     icon) where the **Connect QuickBooks** button used to be.
+   - A red **Disconnect** button next to it.
+5. Click **Import / Refresh Chart of Accounts** once. The button label
+   changes to **Pulling…** while the request is in flight, then returns
+   to **Import / Refresh Chart of Accounts** when the chart has been
+   imported. Helm tags every imported row with this location's
+   `locationId`. You can re-click this any time you change the chart
+   in QuickBooks.
 6. **Verification.** Open **Settings → Categories → (any category) → 📍
    map-pin icon**. The Revenue / COGS / Inventory Asset dropdowns for
    this location should now show options pulled from QuickBooks.
@@ -138,12 +175,17 @@ to chart-by-number lookup).
      termination fees credit on contract cancellations.
    - **ACH Return Fee Revenue (4600)** — the revenue account ACH
      return fees credit when a bank returns a payment.
-3. Click **Save** on each row.
-4. **Verification.** On a QBO-connected location, every row should now
-   show a green "Saved" indicator and the account name + number.
+3. **There is no per-row Save button.** Each dropdown saves
+   immediately on selection — the row is briefly disabled while the
+   request is in flight, and any error is shown in red below the grid.
+4. **Verification.** On a QBO-connected location, the placeholder row
+   in each empty dropdown reads `— Required: pin an account —` (vs.
+   `— Use tenant default —` on stand-alone locations). Once you pick
+   an account, the dropdown shows the account number, name, and a `·
+   QBO` suffix on QBO-imported rows.
 
-**If you skip a slot on a QBO-connected location**, the first posting
-that needs it will throw:
+**If you skip a system slot on a QBO-connected location**, the first
+posting that needs it will throw:
 
 ```
 UNCONFIGURED_GL_MAPPING: location {id} is QBO-connected but has no
@@ -219,6 +261,117 @@ every applicable rate.
 **Verification.** Open **POS → New Sale** at this location, add any
 taxable item, and confirm the tax line(s) at the bottom show one row per
 jurisdiction with the expected rate.
+
+### 3d. Worked examples — NJ rate-lock, MOTOR_FUEL, and exempt classes
+
+These three patterns trip up almost every new tenant. Model them with
+the generic jurisdiction + rate primitives — there are no special
+"NJ-only" or "fuel-only" toggles in the engine; what makes them behave
+correctly is which **category** strings you put on the rate row vs.
+the product category.
+
+#### 3d.i — NJ state sales tax (rate-locked at 6.625%)
+
+New Jersey's state sales tax has been statutorily fixed at **6.625%**
+since 2018. Operators sometimes "round it down to 6.6%" or guess
+`6.5%` — the engine will happily use whatever you type, so the rate is
+only ever wrong because someone overrode it. Treat the row as
+read-only after setup.
+
+1. Create a jurisdiction with **Code** `NJ`, **Name** `New Jersey
+   State Sales Tax`, **Kind** `STATE`.
+2. Add **one** rate row to it:
+   - **Category**: `general`
+   - **Rate %**: `6.625` (stored as `662.5 bps`, which is the only
+     correct value for NJ state sales tax)
+   - **Effective from**: the date the location starts collecting tax
+     (typically the location's go-live date, not 2018)
+   - **Effective to**: leave blank
+   - **GL Account**: pin to `2400 Sales Tax Payable - NJ` if you
+     report NJ separately on your liability roll-forward.
+3. Stack `NJ` first (lowest `sortOrder`) on every NJ-domiciled
+   location's jurisdiction list (step 3c).
+4. **Operational rule.** Treat the NJ rate row as locked. If the
+   statutory rate ever changes, end-date the existing row (set
+   **Effective to** = the day before the new rate kicks in) and add a
+   new row with the new rate and the new **Effective from** — don't
+   edit the basis points in place, or historical invoices will report
+   the wrong rate when re-rendered.
+
+#### 3d.ii — MOTOR_FUEL (separate excise on fuel sales)
+
+Many states (NJ included) layer a **motor-fuel-only** tax on top of
+sales tax. In Helm this is just a second rate row whose Category
+matches a tax-category string you only put on fuel SKUs.
+
+1. Decide on the string you'll use for fuel line items. The
+   convention in the marina default vocabulary is lowercase `fuel`.
+   This SOP uses `fuel` — substitute `motor_fuel` if your bookkeeper
+   prefers the longer form, but use the same string everywhere.
+2. **On the fuel jurisdiction** (could be the existing `NJ`
+   jurisdiction, or a separate `NJ_MOTOR_FUEL` one if you want the
+   liability split out for reporting):
+   - Add a rate row with **Category** `fuel`, the per-gallon-equivalent
+     percentage rate, an **Effective from** date, and a dedicated
+     **GL Account** like `2410 Motor Fuel Excise Payable`.
+   - Do **not** add a `general` row to this jurisdiction if it's a
+     fuel-only special district — that way only fuel lines pick it up.
+3. **On the product side**, create a `Fuel` category whose **Default
+   Tax Category** is `fuel` (step 4a). Every fuel SKU you create
+   under this category inherits `taxCategory = "fuel"` automatically,
+   and the engine applies the motor-fuel rate to those lines while
+   leaving non-fuel lines alone.
+4. **Verification.** Ring up a mixed POS sale (10 gal fuel + 1 cooler
+   of soda). The tax breakdown on the fuel line should show two rows
+   — `NJ general 6.625%` + `NJ_MOTOR_FUEL fuel <X>%` — while the soda
+   line shows only `NJ general 6.625%`.
+
+> **Pure-excise variant.** If your state's motor-fuel tax is a
+> per-gallon dollar amount, not a percentage, the engine doesn't
+> support that natively (rates are stored in basis points of the line
+> amount). Either convert it to a percentage of the pump price for
+> SOP purposes, or take the excise outside Helm and post it manually.
+
+#### 3d.iii — Exempt classes (resale, government, non-profit)
+
+There are **two** ways to suppress tax for an exempt sale, and they
+mean different things:
+
+1. **Customer-level exemption** (the common case — resale
+   certificates, 501(c)(3) buyers, government accounts):
+   - On the customer record (**Customers → (customer)**), set
+     **Tax Exempt = on** and set **Exemption Expiry** (the date the
+     certificate expires; leave blank for "never expires"). These are
+     the only two fields the engine consults — Helm does not currently
+     store an exemption *reason* or *certificate number* as separate
+     columns, so capture those in the customer's free-text
+     **Notes** field if your auditor needs them on file.
+   - When a sale at any jurisdiction is rung up against this customer
+     and `exemptionExpiry` has not yet passed, the engine **skips the
+     entire jurisdiction stack** and posts $0 tax. Every line on the
+     sale is exempt — there is no per-line carve-out.
+   - Anonymous POS sales (no customer attached) **cannot be exempt**
+     — the engine has nothing to look at, so the location's
+     jurisdiction stack applies in full. If you sell tax-exempt at
+     the counter regularly, create a "Tax Exempt — Walk-In" customer
+     and attach it to those sales.
+2. **Category-level exemption** (rare — e.g. a category of items
+   that's never taxed regardless of who buys them, like "Federal
+   excise stamps"):
+   - On the product category, set **Taxable = off** (step 4a).
+     Products in this category never have tax calculated, even for
+     non-exempt customers.
+   - Alternatively, give the category a **Default Tax Category** of
+     `exempt` and add `0%` rate rows with **Category** `exempt` to
+     each relevant jurisdiction. The engine will then formally pick
+     up an exempt rate (auditable on the breakdown) instead of
+     simply not applying any rate.
+
+**Reverification.** After setting up an exempt customer, run a POS
+sale against them and confirm the tax line shows `$0.00` with no
+breakdown rows. The customer's saved card / autopay flow uses the
+same engine, so a recurring autopay invoice will also bill $0 tax
+until the exemption expires.
 
 ---
 
@@ -302,9 +455,10 @@ invoice or POS sale at a location.
 4. If this is a tracked-inventory item, set **Track Inventory = on**.
 5. **Save.**
 6. The product list shows a per-product QBO sync badge
-   (Synced / Pending / Error) and a "Sync now" cloud button — click it
-   to push the item to QBO immediately. (It also pushes automatically
-   in the background after each save.)
+   (Synced / Pending / Error) and a small green **cloud icon button**
+   (tooltip: "Sync to QuickBooks") in the row's action column. Click
+   the cloud to push the item to QBO immediately. (It also pushes
+   automatically in the background after each save.)
 
 **Effective GL display.** When you've selected a single location in the
 location switcher, the product list shows the *effective* Revenue / COGS /
@@ -473,7 +627,7 @@ context (invoice ids, location ids, category names) on top of these.
 | `UNCONFIGURED_GL_MAPPING: Invoice ... line ... has no revenue GL account and the originating location is connected to QuickBooks` | A QBO-connected location tried to post a non-product (ad-hoc) line with no GL account.                                  | Either pin **Default Revenue** (step 2), or convert the line to a product with a category mapping (step 4b).     |
 | `UNCONFIGURED_GL_MAPPING: no <slot> account found for tenant ... (location=...)`                          | Non-QBO posting found neither a pin nor a typed chart row for the requested system slot at the location or tenant-wide. | Pin the slot in **QuickBooks Setup**, or add a row of the right type (REVENUE / LIABILITY) to the chart.          |
 | `GL account <number> not found for tenant <id>`                                                          | Non-QBO posting tried to look up a well-known number (1200 / 1000 / etc.) and the tenant chart has no such row.         | Seed the chart row, or pin the equivalent slot in **QuickBooks Setup**.                                            |
-| QBO sync badge on a product is **Error**                                                                  | The push to QBO failed (QBO category drifted, refresh token expired, etc.).                                              | Hover the badge to read the error → fix in QBO if needed → click **Sync now** on the product row.                  |
+| QBO sync badge on a product is **Error**                                                                  | The push to QBO failed (QBO category drifted, refresh token expired, etc.).                                              | Hover the badge to read the error → fix in QBO if needed → click the green **cloud icon** ("Sync to QuickBooks") on the product row to retry. |
 | **"Not mapped"** amber chip on a category × location row                                                  | The `ProductCategoryGlMapping` row exists but a slot is null.                                                           | Set the slot in **Settings → Categories → 📍 map-pin → (location row)** → **Save**.                              |
 | **"Not assigned"** amber chip on the Inventory list "Effective GL" column                                  | The product's category has no per-location mapping for the location currently selected in the location switcher.        | Click **"Edit on category →"** next to the chip — it deep-links to the right per-location mapping modal.          |
 | Sales tax appears on a POS sale that should be exempt                                                     | Customer's `taxExempt` flag is off, or `exemptionExpiry` has passed, or the sale was anonymous (no customer attached).  | **Customers → (customer) → Tax Exempt = on**, set / clear **Exemption Expiry**. Anonymous sales cannot be exempt.  |
@@ -492,8 +646,8 @@ go. **Finish every box for one location and that location is postable.**
 LOCATION: ____________________________________
 
 QuickBooks (skip if not connecting this location)
-[ ] Connect to QuickBooks (Settings → QuickBooks Setup → location card)
-[ ] Sync now — chart of accounts populated
+[ ] Connect QuickBooks (Settings → QuickBooks Setup → location card)
+[ ] Import / Refresh Chart of Accounts — chart populated
 [ ] (Optional) Stripe Connect onboarded
 
 Posting Accounts (Settings → QuickBooks Setup → Posting Accounts)
