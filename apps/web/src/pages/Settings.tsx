@@ -10,7 +10,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi,
+  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi, Package,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
@@ -150,12 +150,6 @@ const PERMISSION_MODULES = [
 
 const MODULE_GROUPS = [...new Set(PERMISSION_MODULES.map((m) => m.group))];
 
-// The DockageRate / RentalProduct / POSItem / ServiceFee row types and
-// their associated mock-data constants used to live here to power an
-// in-page Settings → Catalog tab. That tab was retired in favour of the
-// real, location-aware /settings/products page (which talks to actual
-// GlAccount IDs instead of made-up '4xxx'/'5xxx' literals); see Task #236.
-
 interface ApiKeyEntry {
   id: string;
   name: string;
@@ -289,11 +283,8 @@ export default function Settings() {
   type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal';
   const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal'];
   const tabFromUrl = searchParams.get('tab');
-  // The Integrations tab was retired — Stripe Connect and QuickBooks are now
-  // managed per-Location. Redirect any old deep-links to the Locations tab.
-  // The Catalog tab was also retired in favour of the dedicated
-  // /settings/products page (which uses real per-location GL mappings); see
-  // Task #236. Old ?tab=catalog deep-links are forwarded by the effect below.
+  // Integrations is now managed per-Location, and the Catalog editor lives at
+  // /settings/products. Old deep-links are normalized by the effect below.
   const initialTab: SettingsTab =
     tabFromUrl === 'integrations'
       ? 'locations'
@@ -309,21 +300,15 @@ export default function Settings() {
     setSearchParams(sp, { replace: true });
   };
 
-  // Normalize legacy ?tab=integrations URLs to ?tab=locations and forward
-  // legacy ?tab=catalog URLs to /settings/products on first render so
-  // refreshes/bookmarks pick up the new paths cleanly.
   React.useEffect(() => {
     if (tabFromUrl === 'catalog') {
       navigate('/settings/products', { replace: true });
-      return;
-    }
-    if (tabFromUrl === 'integrations') {
+    } else if (tabFromUrl === 'integrations') {
       const sp = new URLSearchParams(searchParams);
       sp.set('tab', 'locations');
       setSearchParams(sp, { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tabFromUrl, navigate, searchParams, setSearchParams]);
 
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
@@ -1238,7 +1223,7 @@ export default function Settings() {
     if (selectedRoleId === roleId) setSelectedRoleId(roles.find((r) => r.id !== roleId)?.id ?? null);
   };
 
-  const tabItems: { key: typeof tab; label: string; icon: typeof Building2 }[] = [
+  const tabItems: { key: string; label: string; icon: typeof Building2; to?: string }[] = [
     { key: 'profile', label: 'Marina Profile', icon: Building2 },
     { key: 'locations', label: 'Locations', icon: MapPin },
     { key: 'branding', label: 'Branding', icon: Palette },
@@ -1247,6 +1232,7 @@ export default function Settings() {
     { key: 'roles', label: 'Roles', icon: Shield },
     { key: 'tax', label: 'Tax', icon: Landmark },
     { key: 'categories', label: 'Categories', icon: Tag },
+    { key: 'catalog', label: 'Catalog', icon: Package, to: '/settings/products' },
     { key: 'terminal', label: 'Terminal', icon: Wifi },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
@@ -1262,8 +1248,13 @@ export default function Settings() {
       <div style={st.tabs} className="helm-tabs">
         {tabItems.map((t) => {
           const Icon = t.icon;
+          const isActive = !t.to && tab === t.key;
           return (
-            <button key={t.key} style={{ ...st.tab, ...(tab === t.key ? st.tabActive : {}), display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setTab(t.key)}>
+            <button
+              key={t.key}
+              style={{ ...st.tab, ...(isActive ? st.tabActive : {}), display: 'flex', alignItems: 'center', gap: '6px' }}
+              onClick={() => (t.to ? navigate(t.to) : setTab(t.key as SettingsTab))}
+            >
               <Icon size={16} /> {t.label}
             </button>
           );
