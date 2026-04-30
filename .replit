@@ -118,8 +118,8 @@ HELM_PLATFORM_ADMIN_EMAIL = "sdunford90@gmail.com"
 HELM_PLATFORM_ADMIN_FIRST_NAME = "S"
 HELM_PLATFORM_ADMIN_LAST_NAME = "Dunford"
 HELM_PLATFORM_ADMIN_CLERK_ID = "user_3CrlF1gin3W2m9tk5hjaeotnUmj"
-HELM_PROD_FORCE_RESET = "yes"
 PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION = "Yes"
+HELM_DEMO_TENANT_CUSTOM_DOMAIN = "app.tracktheturn.com"
 
 [postMerge]
 path = "scripts/post-merge.sh"

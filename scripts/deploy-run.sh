@@ -156,6 +156,13 @@ if [ "$SEED_EXIT" -ne 0 ]; then
 fi
 rm -f "$SEED_LOG"
 
+# Idempotent post-deploy fixups (admin identity, demo tenant domain, …).
+# Reads HELM_PLATFORM_ADMIN_* and HELM_DEMO_TENANT_CUSTOM_DOMAIN. Safe to
+# run on every deploy: no-op once the desired values are in place.
+echo "[deploy-run] running post-deploy fixups"
+NODE_ENV=production npx tsx scripts/post-deploy-fixup.ts || \
+  echo "[deploy-run] WARNING: post-deploy fixup returned non-zero — continuing"
+
 cd "$ROOT_DIR"
 
 echo "[deploy-run] starting API on :${API_PORT}"
