@@ -6,3 +6,9 @@ id = "vZortsFlM1BnRdf8X0izA"
 uri = "file://TESTING.md"
 type = "text"
 title = "Helm E2E Testing Guide — with QBO Sandbox Setup"
+
+[[outputs]]
+id = "ug7mDcWkx115Ays7VNj0b"
+uri = "file://docs/accounting-setup-sop.md"
+type = "text"
+title = "Accounting Setup SOP — Tenant Onboarding Runbook"
