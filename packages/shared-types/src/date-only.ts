@@ -1,25 +1,13 @@
-// Slip-contract date-only helpers.
+// Calendar-date helpers shared by the API and web app.
 //
-// Slip contract start, end, signed, and termination dates are conceptually
-// pure calendar dates. The Prisma columns are still `DateTime`, so we
-// normalize on write (always at UTC midnight) and format on read so a
-// contract for "May 1, 2026" reads back as "May 1, 2026" no matter what
-// timezone the server or viewer is in.
-//
-// Conventions:
 //   - parseDateOnly       — accepts a `YYYY-MM-DD` string, ISO timestamp,
 //                           or `Date`; returns a `Date` at UTC 00:00 on
 //                           that calendar day.
 //   - normalizeDateOnly   — alias of parseDateOnly.
-//   - todayDateOnly       — UTC-midnight `Date` for "now"; treat the
-//                           server clock's UTC calendar day as
-//                           authoritative for unattended fallbacks.
-//   - formatDateOnlyISO   — `YYYY-MM-DD` for storage / wire / diffing.
+//   - todayDateOnly       — UTC-midnight `Date` for "now".
+//   - formatDateOnlyISO   — `YYYY-MM-DD` for wire / diffing.
 //   - formatDateOnlyDisplay — `Mon D, YYYY` for human-facing rendering.
 //   - todayDateOnlyISO    — `YYYY-MM-DD` for "today" (clients).
-//
-// Both the API and the web app import from this module so the day-of-month
-// calculation lives in exactly one place.
 
 const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',

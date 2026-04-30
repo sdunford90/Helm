@@ -88,6 +88,58 @@ describe('POST /api/contracts', () => {
     expect(res.body).toHaveProperty('id');
   });
 
+  it('persists the caller-intended calendar day when startDate carries a non-UTC offset', async () => {
+    // "2026-05-01T23:30:00-07:00" is the instant 2026-05-02T06:30Z.
+    // Writing that to a DATE column would truncate to May 2 — the
+    // wrong day. The Zod transformer must lock in May 1 first.
+    const SLIP_ID = '00000000-1111-0000-0000-000000000099';
+    const CUST_ID = '00000000-2222-0000-0000-000000000099';
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT' });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({
+      slipId: SLIP_ID,
+      customerId: CUST_ID,
+      status: 'ACTIVE',
+    });
+
+    let observedCreate: any = null;
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: {
+          create: vi.fn().mockImplementation((args: any) => {
+            observedCreate = args;
+            return Promise.resolve(contract);
+          }),
+        },
+        slip: { update: vi.fn().mockResolvedValue(slip) },
+        securityDeposit: {
+          create: vi.fn().mockResolvedValue({ id: 'dep-tz' }),
+        },
+      };
+      return fn(tx);
+    });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01T23:30:00-07:00',
+        endDate: '2026-12-31T23:59:00-07:00',
+        rateCents: 150000,
+      });
+
+    expect(res.status).toBe(201);
+    expect(observedCreate).not.toBeNull();
+    const persistedStart: Date = observedCreate.data.startDate;
+    const persistedEnd: Date = observedCreate.data.endDate;
+    expect(persistedStart.toISOString()).toBe('2026-05-01T00:00:00.000Z');
+    expect(persistedEnd.toISOString()).toBe('2026-12-31T00:00:00.000Z');
+  });
+
   it('returns 404 when slip does not exist', async () => {
     mockPrisma.slip.findFirst.mockResolvedValue(null);
 
@@ -228,6 +280,54 @@ describe('POST /api/contracts/:id/terminate', () => {
     expect(res.body).toHaveProperty('contractId', contract.id);
     expect(res.body).toHaveProperty('penaltyCents');
     expect(res.body).toHaveProperty('terminationDate');
+  });
+
+  it('persists the caller-intended terminationDate when it carries a non-UTC offset', async () => {
+    // Same Zod transformer as the create path: a TZ-bearing input
+    // must lock in the caller's calendar day before the DATE column
+    // truncates the value.
+    const contract = buildContract({
+      status: 'ACTIVE',
+      earlyTerminationType: 'FIXED',
+      earlyTerminationValue: 50000,
+    });
+
+    let observedUpdate: any = null;
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId },
+      securityDeposits: [],
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: {
+          update: vi.fn().mockImplementation((args: any) => {
+            observedUpdate = args;
+            return Promise.resolve({ ...contract, ...args.data });
+          }),
+        },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: { findMany: vi.fn().mockResolvedValue([]), update: vi.fn() },
+        auditLog: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({
+        reason: 'Relocating',
+        terminationDate: '2026-04-15T22:00:00-07:00',
+      });
+
+    expect(res.status).toBe(200);
+    expect(observedUpdate).not.toBeNull();
+    expect(observedUpdate.data.endDate.toISOString()).toBe(
+      '2026-04-15T00:00:00.000Z',
+    );
+    expect(res.body.terminationDate).toBe('2026-04-15');
   });
 
   it('rejects termination of already-terminated contract', async () => {

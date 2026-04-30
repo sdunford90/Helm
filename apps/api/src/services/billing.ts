@@ -1,6 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
-import { parseDateOnly, todayDateOnly } from "@helm/shared-types";
+import { todayDateOnly } from "@helm/shared-types";
 import { calculateTax } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
@@ -119,7 +119,7 @@ export async function generateRecurringInvoices(
       // every server timezone.
       const billingStart = new Date(Date.UTC(currentYear, currentMonth, 1));
       const billingEnd = new Date(Date.UTC(currentYear, currentMonth + 1, 0));
-      const contractStart = parseDateOnly(contract.startDate);
+      const contractStart = contract.startDate;
       const needsProration =
         contractStart > billingStart && contractStart <= billingEnd;
 

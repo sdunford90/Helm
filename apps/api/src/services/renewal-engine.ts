@@ -1,6 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { queues } from "../lib/queue.js";
-import { parseDateOnly, todayDateOnly } from "@helm/shared-types";
+import { todayDateOnly } from "@helm/shared-types";
 
 // ---------------------------------------------------------------------------
 // Renewal Engine Service
@@ -289,12 +289,9 @@ export async function executeBatch(
       const newRate = calculateNewRate(contract.rateCents, increaseType, increaseValue);
 
       // Calculate new term dates: start = old end (or today), end = +1 year.
-      // Slip-contract dates are calendar-only — keep both successor dates at
-      // UTC midnight using UTC math so DST or local-tz arithmetic can't drift
-      // the new contract into the prior or next day.
-      const newStartDate = contract.endDate
-        ? parseDateOnly(contract.endDate)
-        : todayDateOnly();
+      // UTC math below keeps the successor's anniversary on the same
+      // calendar day in any server timezone.
+      const newStartDate = contract.endDate ?? todayDateOnly();
       const newEndDate = new Date(
         Date.UTC(
           newStartDate.getUTCFullYear() + 1,

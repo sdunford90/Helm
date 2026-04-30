@@ -896,8 +896,10 @@ model SlipContract {
   slipId                String
   customerId            String
   boatId                String?
-  startDate             DateTime
-  endDate               DateTime?
+  // Calendar-only dates: stored as PostgreSQL DATE so a contract for
+  // May 1 reads back as May 1 in every timezone.
+  startDate             DateTime         @db.Date
+  endDate               DateTime?        @db.Date
   billingCycle          BillingCycle     @default(MONTHLY)
   billingAnchor         Int?
   rateCents             Int
@@ -910,7 +912,7 @@ model SlipContract {
   qboItemId             String?
   renewalBatchId        String?
   esignEnvelopeId       String?
-  signedAt              DateTime?
+  signedAt              DateTime?        @db.Date
   signedDocumentUrl     String?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
