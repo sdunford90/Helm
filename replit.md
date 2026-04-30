@@ -60,6 +60,11 @@ Versioned migrations live in `apps/api/prisma/migrations/`. Workflow:
 - **API Server**: `pnpm --filter @helm/api dev` → port 3001 (REST API)
 - **Admin App**: `pnpm --filter @helm/admin dev` → port 3003 (platform admin)
 
+## Docs
+- [`docs/accounting-setup-sop.md`](docs/accounting-setup-sop.md) — End-to-end runbook for tenant accounting setup: QuickBooks per-location connect, location posting-account pins, tax jurisdictions/rates, product categories with per-location GL mappings, rental product setup, tax-exempt customers, daily posting flows, and a troubleshooting matrix + per-location checklist.
+- [`docs/quickbooks-setup-and-testing.md`](docs/quickbooks-setup-and-testing.md) — QuickBooks Online integration setup and end-to-end testing guide.
+- [`docs/admin-subdomain-deployment.md`](docs/admin-subdomain-deployment.md) — DNS + Clerk dashboard rollout steps for the `admin.*` subdomain.
+
 ## Notes
 - The `workspace:*` protocol requires pnpm (not npm)
 - Prisma is at v6.x — uses `$extends` query extensions (NOT deprecated `$use` middleware)
