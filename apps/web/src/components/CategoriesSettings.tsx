@@ -445,17 +445,28 @@ export default function CategoriesSettings() {
   const [adding, setAdding] = useState(false);
   const [mappingFor, setMappingFor] = useState<ProductCategory | null>(null);
 
-  // Honor `?edit=<categoryId>` deep-links from elsewhere in the app
-  // (e.g. the Inventory page's "Edit on category" links). Once handled
-  // we strip the param so closing the modal doesn't immediately re-open it.
+  // Honor deep-links from elsewhere in the app:
+  //   ?edit=<categoryId>     → open the basic Edit Category modal
+  //   ?mappings=<categoryId> → open the per-location GL mappings editor
+  //                            (used by the Inventory page's "Edit GL
+  //                            mappings" / "Edit on category" links)
+  // Once handled we strip the param so closing the modal doesn't
+  // immediately re-open it.
   useEffect(() => {
     if (loading || categories.length === 0) return;
     const editId = searchParams.get('edit');
-    if (!editId) return;
-    const target = categories.find((c) => c.id === editId);
-    if (target) setEditing(target);
+    const mappingsId = searchParams.get('mappings');
+    if (!editId && !mappingsId) return;
+    if (mappingsId) {
+      const target = categories.find((c) => c.id === mappingsId);
+      if (target) setMappingFor(target);
+    } else if (editId) {
+      const target = categories.find((c) => c.id === editId);
+      if (target) setEditing(target);
+    }
     const sp = new URLSearchParams(searchParams);
     sp.delete('edit');
+    sp.delete('mappings');
     setSearchParams(sp, { replace: true });
   }, [loading, categories, searchParams, setSearchParams]);
 
