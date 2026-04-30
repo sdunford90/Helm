@@ -5,11 +5,13 @@ import { seedPlatformAdmin } from './seed/platform-admin.js';
 import { seedGlAccounts } from './seed/gl-accounts.js';
 import { seedLocations } from './seed/locations.js';
 import { seedSlips } from './seed/slips.js';
+import { seedDockageRates } from './seed/dockage-rates.js';
 import { seedCustomersAndBoats } from './seed/customers.js';
 import { seedContracts } from './seed/contracts.js';
 import { seedInvoicesAndPayments } from './seed/invoices.js';
 import { seedLeadsAndWaitlist } from './seed/leads.js';
 import { seedRentals } from './seed/rentals.js';
+import { seedProductCategories } from './seed/product-categories.js';
 import { seedPosAndInventory } from './seed/pos.js';
 import { seedOperations } from './seed/operations.js';
 
@@ -85,8 +87,10 @@ async function main() {
   const platformAdmin = await seedPlatformAdmin(prisma, tenant.id);
   console.log(`  ✓ Platform admin: ${platformAdmin.email}`);
 
-  const glAccounts = await seedGlAccounts(prisma, tenant.id);
-  console.log(`  ✓ ${glAccounts.length} GL accounts`);
+  // GL accounts are intentionally NOT seeded — tenants connect QuickBooks
+  // and import their real chart of accounts from Settings → Accounting.
+  await seedGlAccounts(prisma, tenant.id);
+  console.log('  ✓ GL accounts skipped (import from QuickBooks)');
 
   // Locations must come before slips, rentals, pos, leads, and operations
   const locations = await seedLocations(prisma, tenant.id);
@@ -95,6 +99,9 @@ async function main() {
   // Slips now receive locations so they can be assigned inline
   const slips = await seedSlips(prisma, tenant.id, locations);
   console.log(`  ✓ ${slips.length} slips across 3 docks`);
+
+  const dockageRateCount = await seedDockageRates(prisma, tenant.id, locations);
+  console.log(`  ✓ ${dockageRateCount} dockage rates`);
 
   const { customers, boats } = await seedCustomersAndBoats(prisma, tenant.id);
   console.log(`  ✓ ${customers.length} customers`);
@@ -115,7 +122,16 @@ async function main() {
   console.log(`  ✓ ${rentalProducts.length} rental products`);
   console.log(`  ✓ ${reservations.length} reservations`);
 
-  const { products: posProducts, transactions } = await seedPosAndInventory(prisma, tenant.id, users, locations);
+  const productCategories = await seedProductCategories(prisma, tenant.id);
+  console.log(`  ✓ ${Object.keys(productCategories).length} product categories`);
+
+  const { products: posProducts, transactions } = await seedPosAndInventory(
+    prisma,
+    tenant.id,
+    users,
+    locations,
+    productCategories,
+  );
   console.log(`  ✓ ${posProducts.length} POS products`);
   console.log(`  ✓ ${transactions.length} POS transactions`);
 
