@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import {
@@ -1201,14 +1202,14 @@ export async function postInventoryReturn(params: {
   lineItems: Array<{ productId: string; qty: number }>;
   sourceId: string; // e.g., refund ID
 }): Promise<void> {
-  await prisma.$transaction(async (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => {
+  await prisma.$transaction(async (tx) => {
     for (const item of params.lineItems) {
       const { unitCostCents, totalCostCents } = await restoreInventoryOnReturn({
         tenantId: params.tenantId,
         productId: item.productId,
         locationId: params.locationId,
         qtyReturned: item.qty,
-        tx,
+        tx: tx as unknown as Prisma.TransactionClient,
       });
 
       if (totalCostCents === 0) continue;

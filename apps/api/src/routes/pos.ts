@@ -11,7 +11,7 @@ import {
   createPaymentIntent as createTerminalPaymentIntent,
   capturePayment,
 } from "../services/stripe-terminal.js";
-import { getTaxProvider } from "../services/tax-engine.js";
+import { calculateTax, getTaxProvider } from "../services/tax-engine.js";
 import { resolveProductTaxCategory } from "../services/product-defaults.js";
 import { syncPosTicketAsReceipt } from "../services/qbo-sync.js";
 

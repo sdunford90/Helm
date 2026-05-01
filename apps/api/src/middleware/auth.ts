@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { requireAuth, getAuth } from "@clerk/express";
+import type { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 // --------------------------------------------------------------------------
@@ -198,7 +199,7 @@ export function clerkAuth(): RequestHandler[] {
     // Dev bypass: prefer the highest-privilege user in the tenant so the
     // local preview behaves like an owner/admin testing the full app.
     // Falls back to the oldest user if no privileged user exists.
-    const DEV_BYPASS_ROLE_PRIORITY = [
+    const DEV_BYPASS_ROLE_PRIORITY: UserRole[] = [
       "PLATFORM_ADMIN",
       "TENANT_ADMIN",
       "MARINA_OWNER",
