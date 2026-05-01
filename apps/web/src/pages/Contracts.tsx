@@ -3,6 +3,7 @@ import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, E
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 import { formatDateOnlyISO, todayDateOnlyISO } from '@helm/shared-types';
 import ESignatureFlow from '../components/ESignatureFlow';
 
@@ -1248,6 +1249,7 @@ function AlertTriangleInline() {
 /* ── Main Component ──────────────────────────────────────── */
 
 export default function Contracts() {
+  const { currentLocationId } = useModules();
   const [statusFilter, setStatusFilter] = useState('All');
   const [cycleFilter, setCycleFilter] = useState('All');
   const [expiringFilter, setExpiringFilter] = useState('All');
@@ -1259,9 +1261,16 @@ export default function Contracts() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchSending, setBatchSending] = useState(false);
 
+  const contractsQs = currentLocationId ? `&locationId=${encodeURIComponent(currentLocationId)}` : '';
   const { data: apiResp, loading, error, execute: refetchContracts } = useApi<{ data: ApiContract[]; pagination: { skip: number; take: number; total: number } }>(
-    'get', '/api/contracts?take=100', { immediate: true },
+    'get', `/api/contracts?take=100${contractsQs}`, { immediate: true },
   );
+
+  // Re-fetch when the location filter changes
+  useEffect(() => {
+    refetchContracts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
   const createContract = useApi<ApiContract>('post', '/api/contracts');
   const updateContractApi = useApi<ApiContract>('put', '/api/contracts/update');
   const transferContractApi = useApi<ApiContract>('post', '/api/contracts/transfer');

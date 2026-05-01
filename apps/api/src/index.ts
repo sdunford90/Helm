@@ -66,6 +66,7 @@ import portfolioRouter from "./routes/portfolio.js";
 import locationsRouter from "./routes/locations.js";
 import rolesRouter from "./routes/roles.js";
 import supportRouter from "./routes/support.js";
+import accountingRouter from "./routes/accounting.js";
 
 // --------------------------------------------------------------------------
 // App initialisation
@@ -212,6 +213,7 @@ app.use("/api/portfolio", portfolioRouter);
 app.use("/api/locations", locationsRouter);
 app.use("/api/roles", rolesRouter);
 app.use("/api/support", supportRouter);
+app.use("/api/accounting", accountingRouter);
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled

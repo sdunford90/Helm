@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Search, Plus } from 'lucide-react';
 import CustomerForm from '../components/CustomerForm';
 import { useApi } from '../hooks/useApi';
+import { useAuth } from '@clerk/clerk-react';
+import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 
 interface Boat {
   id: string;
@@ -179,16 +182,42 @@ const styles: Record<string, React.CSSProperties> = {
 
 export default function Customers() {
   const navigate = useNavigate();
+  const { currentLocationId } = useModules();
+  const { getToken } = useAuth();
   const [statusFilter, setStatusFilter] = useState<'All' | Customer['status']>('All');
   const [search, setSearch] = useState('');
   const [taxExemptFilter, setTaxExemptFilter] = useState(false);
   const [achBlockedFilter, setAchBlockedFilter] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const { data: apiResponse, loading, error, execute: refetchCustomers } = useApi<ApiResponse>('get', '/api/customers', { immediate: true });
+  const fetchCustomers = React.useCallback(async () => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const qs = new URLSearchParams();
+      if (currentLocationId) qs.set('locationId', currentLocationId);
+      const res = await api.get<ApiResponse>(`/api/customers?${qs}`, token);
+      if (!cancelled) setCustomers(res?.data ?? []);
+    } catch (e: any) {
+      if (!cancelled) setError(e?.message ?? 'Failed to load customers');
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+    return () => { cancelled = true; };
+  }, [currentLocationId, getToken]);
+
+  useEffect(() => {
+    fetchCustomers();
+  }, [fetchCustomers]);
+
   const createCustomerApi = useApi<Customer>('post', '/api/customers');
 
-  const customers = apiResponse?.data ?? [];
+  const refetchCustomers = fetchCustomers;
 
   const filtered = customers.filter((c) => {
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
 import { formatCents, formatDate } from '../lib/format';
+import { useModules } from '../context/ModulesContext';
 
 /* ─── Types ─── */
 type InvoiceStatus = 'Draft' | 'Issued' | 'Paid' | 'Past Due' | 'Void' | 'Collections';
@@ -118,15 +119,23 @@ const styles: Record<string, React.CSSProperties> = {
 
 export default function Billing() {
   const navigate = useNavigate();
+  const { currentLocationId } = useModules();
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [search, setSearch] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  const { data: apiResponse, loading } = useApi<{ data: ApiInvoice[] }>('get', '/api/invoices', { immediate: true });
+  const invoicesQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const { data: apiResponse, loading, execute: refetchInvoices } = useApi<{ data: ApiInvoice[] }>('get', `/api/invoices${invoicesQs}`, { immediate: true });
   const createInvoiceApi = useApi<{ id: string }>('post', '/api/invoices');
   const invoices = useMemo(() => (apiResponse?.data ?? []).map(toInvoice), [apiResponse]);
+
+  // Re-fetch when the location filter changes
+  useEffect(() => {
+    refetchInvoices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
 
   const filtered = invoices.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;

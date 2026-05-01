@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronRight, Loader2, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useModules } from '../context/ModulesContext';
 
 const NAVY = '#0A2342';
 
@@ -256,10 +257,20 @@ function AddRateForm({ jurisdictionId, glAccounts, onSave, loading }: AddRateFor
 }
 
 export default function SettingsTaxRates() {
+  const { currentLocationId } = useModules();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const glAccountsResp = useApi<{ data: GlAccount[] }>('get', '/api/settings/gl-accounts', { immediate: true });
-  const jurisdictions = useApi<{ data: Jurisdiction[] }>('get', '/api/tax/jurisdictions', { immediate: true });
+  const glAccountsQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const jurisdictionsQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const glAccountsResp = useApi<{ data: GlAccount[] }>('get', `/api/settings/gl-accounts${glAccountsQs}`, { immediate: true });
+  const jurisdictions = useApi<{ data: Jurisdiction[] }>('get', `/api/tax/jurisdictions${jurisdictionsQs}`, { immediate: true });
+
+  // Re-fetch when the location filter changes
+  useEffect(() => {
+    glAccountsResp.execute();
+    jurisdictions.execute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
   const createJurisdiction = useApi<{ data: Jurisdiction }>('post', '/api/tax/jurisdictions');
   const deleteJurisdiction = useApi<void>('delete', '/api/tax/jurisdictions/:id');
   const createRate = useApi<{ data: TaxRate }>('post', '/api/tax/rates');

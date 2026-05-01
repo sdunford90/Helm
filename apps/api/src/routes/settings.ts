@@ -13,6 +13,7 @@ import {
   getMissingGlAccountWarnings,
   isLocationQboConnected,
 } from "../services/gl-account-resolver.js";
+import { logAccountingChange } from "../lib/accounting-audit.js";
 
 const router: Router = Router();
 
@@ -1092,7 +1093,16 @@ router.put(
 
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId },
-        select: { id: true },
+        select: {
+          id: true,
+          arGlAccountId: true,
+          undepositedFundsGlAccountId: true,
+          deferredRevenueGlAccountId: true,
+          defaultRevenueGlAccountId: true,
+          salesTaxGlAccountId: true,
+          earlyTerminationGlAccountId: true,
+          achReturnFeeGlAccountId: true,
+        },
       });
       if (!location) {
         res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
@@ -1220,6 +1230,47 @@ router.put(
           achReturnFeeGlAccountId: true,
         },
       });
+
+      // Best-effort audit log — never fail the main request if logging fails
+      try {
+        const POSTING_FIELDS = [
+          "arGlAccountId",
+          "undepositedFundsGlAccountId",
+          "deferredRevenueGlAccountId",
+          "defaultRevenueGlAccountId",
+          "salesTaxGlAccountId",
+          "earlyTerminationGlAccountId",
+          "achReturnFeeGlAccountId",
+        ] as const;
+        type PostingField = typeof POSTING_FIELDS[number];
+        const changes: Record<string, { from: unknown; to: unknown }> = {};
+        for (const field of POSTING_FIELDS) {
+          if (body[field as PostingField] !== undefined) {
+            const from = location[field as PostingField];
+            const to = updated[field as PostingField];
+            if (from !== to) {
+              changes[field] = { from, to };
+            }
+          }
+        }
+        if (Object.keys(changes).length > 0) {
+          await logAccountingChange({
+            tenantId,
+            locationId,
+            userId: req.userId,
+            userName: req.userRecord
+              ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+              : undefined,
+            entity: "PostingAccount",
+            entityId: locationId,
+            action: "UPDATE",
+            changes,
+            ipAddress: req.ip,
+          });
+        }
+      } catch (_auditErr) {
+        // intentionally swallowed — audit failure must not affect the response
+      }
 
       res.json({
         locationId: updated.id,
@@ -1688,6 +1739,22 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
         update: { glAccountId: glAccountId ?? null },
       });
     }
+    // Best-effort audit log
+    try {
+      await logAccountingChange({
+        tenantId: req.tenantId!,
+        locationId,
+        userId: req.userId,
+        userName: req.userRecord
+          ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+          : undefined,
+        entity: "DockageRateGlMapping",
+        entityId: rate.id,
+        action: "CREATE",
+        changes: { glAccountId: { from: null, to: glAccountId ?? null } },
+        ipAddress: req.ip,
+      });
+    } catch (_auditErr) { /* intentionally swallowed */ }
     res.status(201).json({ data: rate });
   } catch (err) { next(err); }
 });
@@ -1751,6 +1818,24 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
         },
         update: { glAccountId: glAccountId ?? null },
       });
+    }
+    // Best-effort audit log
+    if (glAccountId !== undefined && existing.glAccountId !== glAccountId) {
+      try {
+        await logAccountingChange({
+          tenantId: req.tenantId!,
+          locationId: existing.locationId ?? "",
+          userId: req.userId,
+          userName: req.userRecord
+            ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+            : undefined,
+          entity: "DockageRateGlMapping",
+          entityId: req.params.id,
+          action: "UPDATE",
+          changes: { glAccountId: { from: existing.glAccountId, to: glAccountId ?? null } },
+          ipAddress: req.ip,
+        });
+      } catch (_auditErr) { /* intentionally swallowed */ }
     }
     res.json({ data: updated });
   } catch (err) { next(err); }
@@ -1824,6 +1909,22 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
         update: { glAccountId: glAccountId ?? null },
       });
     }
+    // Best-effort audit log
+    try {
+      await logAccountingChange({
+        tenantId: req.tenantId!,
+        locationId,
+        userId: req.userId,
+        userName: req.userRecord
+          ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+          : undefined,
+        entity: "ServiceFeeGlMapping",
+        entityId: fee.id,
+        action: "CREATE",
+        changes: { glAccountId: { from: null, to: glAccountId ?? null } },
+        ipAddress: req.ip,
+      });
+    } catch (_auditErr) { /* intentionally swallowed */ }
     res.status(201).json({ data: fee });
   } catch (err) { next(err); }
 });
@@ -1876,6 +1977,24 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
         },
         update: { glAccountId: glAccountId ?? null },
       });
+    }
+    // Best-effort audit log
+    if (glAccountId !== undefined && existing.glAccountId !== glAccountId) {
+      try {
+        await logAccountingChange({
+          tenantId: req.tenantId!,
+          locationId: existing.locationId ?? "",
+          userId: req.userId,
+          userName: req.userRecord
+            ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+            : undefined,
+          entity: "ServiceFeeGlMapping",
+          entityId: req.params.id,
+          action: "UPDATE",
+          changes: { glAccountId: { from: existing.glAccountId, to: glAccountId ?? null } },
+          ipAddress: req.ip,
+        });
+      } catch (_auditErr) { /* intentionally swallowed */ }
     }
     res.json({ data: updated });
   } catch (err) { next(err); }
@@ -2544,6 +2663,11 @@ router.put(
         cogsGlAccountId: body.cogsGlAccountId ?? null,
         inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
       };
+      // Fetch existing mapping for before-values
+      const existingCatMapping = await prisma.productCategoryGlMapping.findUnique({
+        where: { productCategoryId_locationId: { productCategoryId: id, locationId } },
+        select: { revenueGlAccountId: true, cogsGlAccountId: true, inventoryAssetGlAccountId: true },
+      });
       const result = await prisma.productCategoryGlMapping.upsert({
         where: {
           productCategoryId_locationId: { productCategoryId: id, locationId },
@@ -2551,6 +2675,34 @@ router.put(
         create: { tenantId, productCategoryId: id, locationId, ...data },
         update: data,
       });
+      // Best-effort audit log
+      try {
+        const catChanges: Record<string, { from: unknown; to: unknown }> = {};
+        if ((existingCatMapping?.revenueGlAccountId ?? null) !== result.revenueGlAccountId) {
+          catChanges.revenueGlAccountId = { from: existingCatMapping?.revenueGlAccountId ?? null, to: result.revenueGlAccountId };
+        }
+        if ((existingCatMapping?.cogsGlAccountId ?? null) !== result.cogsGlAccountId) {
+          catChanges.cogsGlAccountId = { from: existingCatMapping?.cogsGlAccountId ?? null, to: result.cogsGlAccountId };
+        }
+        if ((existingCatMapping?.inventoryAssetGlAccountId ?? null) !== result.inventoryAssetGlAccountId) {
+          catChanges.inventoryAssetGlAccountId = { from: existingCatMapping?.inventoryAssetGlAccountId ?? null, to: result.inventoryAssetGlAccountId };
+        }
+        if (Object.keys(catChanges).length > 0) {
+          await logAccountingChange({
+            tenantId,
+            locationId,
+            userId: req.userId,
+            userName: req.userRecord
+              ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+              : undefined,
+            entity: "ProductCategoryGlMapping",
+            entityId: result.id,
+            action: existingCatMapping ? "UPDATE" : "CREATE",
+            changes: catChanges,
+            ipAddress: req.ip,
+          });
+        }
+      } catch (_auditErr) { /* intentionally swallowed */ }
       res.json({ data: result });
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -2641,6 +2793,11 @@ router.put(
       }
       await validateGlAccountForLocation(tenantId, locationId, body.glAccountId);
       const data = { glAccountId: body.glAccountId ?? null };
+      // Fetch existing mapping for before-value
+      const existingMapping = await prisma.dockageRateGlMapping.findUnique({
+        where: { dockageRateId_locationId: { dockageRateId: id, locationId } },
+        select: { glAccountId: true },
+      });
       const result = await prisma.dockageRateGlMapping.upsert({
         where: {
           dockageRateId_locationId: { dockageRateId: id, locationId },
@@ -2648,6 +2805,25 @@ router.put(
         create: { tenantId, dockageRateId: id, locationId, ...data },
         update: data,
       });
+      // Best-effort audit log
+      try {
+        const prevGlAccountId = existingMapping?.glAccountId ?? null;
+        if (prevGlAccountId !== result.glAccountId) {
+          await logAccountingChange({
+            tenantId,
+            locationId,
+            userId: req.userId,
+            userName: req.userRecord
+              ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+              : undefined,
+            entity: "DockageRateGlMapping",
+            entityId: result.id,
+            action: existingMapping ? "UPDATE" : "CREATE",
+            changes: { glAccountId: { from: prevGlAccountId, to: result.glAccountId } },
+            ipAddress: req.ip,
+          });
+        }
+      } catch (_auditErr) { /* intentionally swallowed */ }
       res.json({ data: result });
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -2811,6 +2987,11 @@ router.put(
         cogsGlAccountId: body.cogsGlAccountId ?? null,
         inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
       };
+      // Fetch existing mapping for before-values
+      const existingRpMapping = await prisma.rentalProductGlMapping.findUnique({
+        where: { rentalProductId_locationId: { rentalProductId: id, locationId } },
+        select: { revenueGlAccountId: true, cogsGlAccountId: true, inventoryAssetGlAccountId: true },
+      });
       const result = await prisma.rentalProductGlMapping.upsert({
         where: {
           rentalProductId_locationId: { rentalProductId: id, locationId },
@@ -2818,6 +2999,34 @@ router.put(
         create: { tenantId, rentalProductId: id, locationId, ...data },
         update: data,
       });
+      // Best-effort audit log
+      try {
+        const rpChanges: Record<string, { from: unknown; to: unknown }> = {};
+        if ((existingRpMapping?.revenueGlAccountId ?? null) !== result.revenueGlAccountId) {
+          rpChanges.revenueGlAccountId = { from: existingRpMapping?.revenueGlAccountId ?? null, to: result.revenueGlAccountId };
+        }
+        if ((existingRpMapping?.cogsGlAccountId ?? null) !== result.cogsGlAccountId) {
+          rpChanges.cogsGlAccountId = { from: existingRpMapping?.cogsGlAccountId ?? null, to: result.cogsGlAccountId };
+        }
+        if ((existingRpMapping?.inventoryAssetGlAccountId ?? null) !== result.inventoryAssetGlAccountId) {
+          rpChanges.inventoryAssetGlAccountId = { from: existingRpMapping?.inventoryAssetGlAccountId ?? null, to: result.inventoryAssetGlAccountId };
+        }
+        if (Object.keys(rpChanges).length > 0) {
+          await logAccountingChange({
+            tenantId,
+            locationId,
+            userId: req.userId,
+            userName: req.userRecord
+              ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+              : undefined,
+            entity: "RentalProductGlMapping",
+            entityId: result.id,
+            action: existingRpMapping ? "UPDATE" : "CREATE",
+            changes: rpChanges,
+            ipAddress: req.ip,
+          });
+        }
+      } catch (_auditErr) { /* intentionally swallowed */ }
       res.json({ data: result });
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -2860,6 +3069,11 @@ router.put(
       }
       await validateGlAccountForLocation(tenantId, locationId, body.glAccountId);
       const data = { glAccountId: body.glAccountId ?? null };
+      // Fetch existing mapping for before-value
+      const existingSfMapping = await prisma.serviceFeeGlMapping.findUnique({
+        where: { serviceFeeId_locationId: { serviceFeeId: id, locationId } },
+        select: { glAccountId: true },
+      });
       const result = await prisma.serviceFeeGlMapping.upsert({
         where: {
           serviceFeeId_locationId: { serviceFeeId: id, locationId },
@@ -2867,6 +3081,25 @@ router.put(
         create: { tenantId, serviceFeeId: id, locationId, ...data },
         update: data,
       });
+      // Best-effort audit log
+      try {
+        const prevGlAccountId = existingSfMapping?.glAccountId ?? null;
+        if (prevGlAccountId !== result.glAccountId) {
+          await logAccountingChange({
+            tenantId,
+            locationId,
+            userId: req.userId,
+            userName: req.userRecord
+              ? `${(req.userRecord as any).firstName ?? ""} ${(req.userRecord as any).lastName ?? ""}`.trim() || undefined
+              : undefined,
+            entity: "ServiceFeeGlMapping",
+            entityId: result.id,
+            action: existingSfMapping ? "UPDATE" : "CREATE",
+            changes: { glAccountId: { from: prevGlAccountId, to: result.glAccountId } },
+            ipAddress: req.ip,
+          });
+        }
+      } catch (_auditErr) { /* intentionally swallowed */ }
       res.json({ data: result });
     } catch (err) {
       if (err instanceof z.ZodError) {

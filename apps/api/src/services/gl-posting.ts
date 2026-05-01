@@ -1201,7 +1201,7 @@ export async function postInventoryReturn(params: {
   lineItems: Array<{ productId: string; qty: number }>;
   sourceId: string; // e.g., refund ID
 }): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => {
     for (const item of params.lineItems) {
       const { unitCostCents, totalCostCents } = await restoreInventoryOnReturn({
         tenantId: params.tenantId,

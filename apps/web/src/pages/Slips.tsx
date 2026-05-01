@@ -7,6 +7,7 @@ import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
+import { useModules } from '../context/ModulesContext';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -791,6 +792,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
 
 export default function Slips() {
   const toast = useToast();
+  const { currentLocationId } = useModules();
   const [view, setView] = useState<'list' | 'map'>('list');
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -800,8 +802,15 @@ export default function Slips() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
 
-  const { data: apiResp, loading, error } = useApi<{ data: ApiSlip[] }>('get', '/api/slips', { immediate: true });
+  const slipsQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const { data: apiResp, loading, error, execute: refetchSlips } = useApi<{ data: ApiSlip[] }>('get', `/api/slips${slipsQs}`, { immediate: true });
   const createSlip = useApi<Slip>('post', '/api/slips');
+
+  // Re-fetch when the location filter changes
+  useEffect(() => {
+    refetchSlips();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
   const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
 
   const slips = (apiResp?.data ?? []).map((s) => ({ ...toSlip(s), ...localOverrides[s.id] }));

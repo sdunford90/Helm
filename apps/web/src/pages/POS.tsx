@@ -1461,9 +1461,17 @@ export default function POS() {
     return !!loc?.posAchEnabled;
   }, [currentLocationId, locations]);
 
-  const { data: apiProductsResp, loading: loadingProducts } = useApi<{ data: ApiProduct[]; pagination: unknown }>('get', '/api/pos/products', { immediate: true });
-  const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', '/api/pos/transactions', { immediate: true });
+  const posQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const { data: apiProductsResp, loading: loadingProducts, execute: refreshProducts } = useApi<{ data: ApiProduct[]; pagination: unknown }>('get', `/api/pos/products${posQs}`, { immediate: true });
+  const { data: apiTxnsResp, loading: loadingTxns, execute: refreshTransactions } = useApi<{ data: ApiTransaction[]; pagination: unknown }>('get', `/api/pos/transactions${posQs}`, { immediate: true });
   const { data: shiftsData, execute: fetchShifts } = useApi<{ data: ApiShift[] }>('get', '/api/pos/shifts', { immediate: true });
+
+  // Re-fetch products and transactions when the location filter changes
+  useEffect(() => {
+    refreshProducts();
+    refreshTransactions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
   const { execute: openShiftApi, loading: openingShift } = useApi<ApiShift>('post', '/api/pos/shifts/open');
   const createTransaction = useApi<unknown>('post', '/api/pos/transactions');
 

@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Fuel as FuelIcon, Plus, X, Truck, Edit2,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 
 /* ── API Response Types ─────────────────────────────────── */
 
@@ -382,13 +383,24 @@ function UpdatePriceModal({
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function Fuel() {
+  const { currentLocationId } = useModules();
   const [tab, setTab] = useState<'sales' | 'pricing' | 'deliveries' | 'tanks'>('sales');
   const [modal, setModal] = useState<'recordSale' | 'logDelivery' | { updatePrice: ApiFuelType } | null>(null);
 
-  const { data: typesResp, loading: loadingTypes, execute: refreshTypes } = useApi<{ fuelTypes: ApiFuelType[] }>('get', '/api/fuel/types', { immediate: true });
-  const { data: salesResp, loading: loadingSales, execute: refreshSales } = useApi<{ sales: ApiFuelSale[]; total: number }>('get', '/api/fuel/sales', { immediate: true });
-  const { data: deliveriesResp, loading: loadingDeliveries, execute: refreshDeliveries } = useApi<{ deliveries: ApiDelivery[]; total: number }>('get', '/api/fuel/deliveries', { immediate: true });
-  const { data: tanksResp, execute: refreshTanks } = useApi<{ tanks: ApiTank[] }>('get', '/api/fuel/tank-levels', { immediate: true });
+  const fuelQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const { data: typesResp, loading: loadingTypes, execute: refreshTypes } = useApi<{ fuelTypes: ApiFuelType[] }>('get', `/api/fuel/types${fuelQs}`, { immediate: true });
+  const { data: salesResp, loading: loadingSales, execute: refreshSales } = useApi<{ sales: ApiFuelSale[]; total: number }>('get', `/api/fuel/sales${fuelQs}`, { immediate: true });
+  const { data: deliveriesResp, loading: loadingDeliveries, execute: refreshDeliveries } = useApi<{ deliveries: ApiDelivery[]; total: number }>('get', `/api/fuel/deliveries${fuelQs}`, { immediate: true });
+  const { data: tanksResp, execute: refreshTanks } = useApi<{ tanks: ApiTank[] }>('get', `/api/fuel/tank-levels${fuelQs}`, { immediate: true });
+
+  // Re-fetch when the location filter changes
+  useEffect(() => {
+    refreshTypes();
+    refreshSales();
+    refreshDeliveries();
+    refreshTanks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
 
   const { getToken } = useAuth();
   const createSale = useApi<unknown>('post', '/api/fuel/sales');

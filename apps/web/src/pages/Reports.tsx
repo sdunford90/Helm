@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import { useAuth } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
+import { useModules } from '../context/ModulesContext';
 import ReportViewer from '../components/ReportViewer';
 import {
   DollarSign,
@@ -203,6 +204,7 @@ type Tab = 'library' | 'recent' | 'scheduled';
 export default function Reports() {
   const toast = useToast();
   const navigate = useNavigate();
+  const { currentLocationId } = useModules();
   const [activeTab, setActiveTab] = useState<Tab>('library');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalReportId, setModalReportId] = useState<string | null>(null);
@@ -241,14 +243,16 @@ export default function Reports() {
     setSchedulesLoading(true);
     try {
       const token = await getToken();
-      const data = await api.get<ScheduledReport[]>('/api/reports/schedules', token);
+      const qs = new URLSearchParams();
+      if (currentLocationId) qs.set('locationId', currentLocationId);
+      const data = await api.get<ScheduledReport[]>(`/api/reports/schedules?${qs}`, token);
       setScheduledReports(data);
     } catch {
       // silently fail — schedules stay empty
     } finally {
       setSchedulesLoading(false);
     }
-  }, [getToken]);
+  }, [getToken, currentLocationId]);
 
   useEffect(() => {
     loadSchedules();
@@ -754,6 +758,7 @@ export default function Reports() {
                   dateTo: modalDateTo,
                   dock: modalDock,
                   segment: modalSegment,
+                  ...(currentLocationId ? { locationId: currentLocationId } : {}),
                 });
                 if (result !== null && modalReportId) {
                   const card = reportCards.find((r) => r.id === modalReportId);

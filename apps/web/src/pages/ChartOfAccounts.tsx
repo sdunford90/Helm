@@ -5,6 +5,7 @@ import {
   Trash2, AlertTriangle, RefreshCw, ExternalLink,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 
 /* ─── Types ─── */
 type AccountType = 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE';
@@ -344,6 +345,7 @@ function AccountModal({
 /* ─── Main component ─── */
 
 export default function ChartOfAccounts() {
+  const { currentLocationId } = useModules();
   const [accounts, setAccounts] = useState<GLAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -358,14 +360,16 @@ export default function ChartOfAccounts() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get<{ data: GLAccount[] }>('/api/settings/gl-accounts');
+      const qs = new URLSearchParams();
+      if (currentLocationId) qs.set('locationId', currentLocationId);
+      const res = await api.get<{ data: GLAccount[] }>(`/api/settings/gl-accounts?${qs}`);
       setAccounts(res.data ?? []);
     } catch (e: any) {
       setError(e?.response?.data?.error ?? 'Failed to load GL accounts');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentLocationId]);
 
   useEffect(() => { load(); }, [load]);
 

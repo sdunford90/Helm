@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Download, Loader2, AlertCircle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '../lib/format';
+import { useModules } from '../context/ModulesContext';
 
 const NAVY = '#0A2342';
 
@@ -66,6 +67,7 @@ function effectiveRate(j: JurisdictionSummary) {
 }
 
 export default function ReportsSalesTax() {
+  const { currentLocationId } = useModules();
   const now = new Date();
   const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -75,7 +77,9 @@ export default function ReportsSalesTax() {
   const report = useApi<SalesTaxReport>('get', '/api/reports/sales-tax');
 
   const handleRun = () => {
-    report.execute({ query: { startDate, endDate } });
+    const query: Record<string, string> = { startDate, endDate };
+    if (currentLocationId) query.locationId = currentLocationId;
+    report.execute({ query });
   };
 
   const handleExportCsv = () => {

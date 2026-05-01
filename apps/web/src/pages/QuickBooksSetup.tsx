@@ -10,6 +10,7 @@ import {
   CreditCard,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useModules } from '../context/ModulesContext';
 
 interface LocationStatus {
   locationId: string;
@@ -162,6 +163,7 @@ function fmtDate(d: string | null): string {
 }
 
 export default function QuickBooksSetup() {
+  const { currentLocationId } = useModules();
   const [locations, setLocations] = useState<LocationStatus[]>([]);
   const [warnings, setWarnings] = useState<MissingWarning[]>([]);
   const [loading, setLoading] = useState(true);
@@ -188,8 +190,10 @@ export default function QuickBooksSetup() {
     setLoading(true);
     setError(null);
     try {
+      const qs = new URLSearchParams();
+      if (currentLocationId) qs.set('locationId', currentLocationId);
       const r = await api.get<{ data: LocationStatus[]; warnings: MissingWarning[] }>(
-        '/api/qbo/locations/status',
+        `/api/qbo/locations/status?${qs}`,
       );
       setLocations(r.data);
       setWarnings(r.warnings);
@@ -198,7 +202,7 @@ export default function QuickBooksSetup() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentLocationId]);
 
   useEffect(() => {
     load();
