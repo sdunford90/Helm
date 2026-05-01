@@ -239,7 +239,9 @@ export const mockPrisma = {
       findMany: vi.fn().mockResolvedValue([]),
     };
   })(),
-  inventory: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+  inventory: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null), updateMany: vi.fn().mockResolvedValue({ count: 0 }), update: vi.fn(), create: vi.fn() },
+  inventoryLot: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+  accountingPeriod: { findFirst: vi.fn().mockResolvedValue(null) },
   purchaseOrder: { findMany: vi.fn().mockResolvedValue([]) },
   tenant: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   tenantNote: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
