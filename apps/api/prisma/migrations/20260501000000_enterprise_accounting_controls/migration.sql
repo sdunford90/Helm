@@ -56,6 +56,9 @@ ALTER TABLE "gl_entries"
 CREATE INDEX IF NOT EXISTS "gl_entries_tenantId_locationId_idx"
   ON "gl_entries"("tenantId", "locationId");
 
+CREATE INDEX IF NOT EXISTS "gl_entries_tenantId_locationId_entryDate_idx"
+  ON "gl_entries" ("tenantId", "locationId", "entryDate");
+
 -- ─── product_categories ───────────────────────────────────────────────────────
 
 ALTER TABLE "product_categories"

@@ -680,6 +680,7 @@ router.post("/tenants", async (req, res, next) => {
           // Per the new model, the SaaS tier is attached to the location
           // (= the marina that gets billed) rather than the tenant.
           saasTierId: saasTierId ?? null,
+          accountingGracePeriodEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         },
       });
 
@@ -2498,6 +2499,7 @@ router.post("/tenants/:id/locations", async (req, res, next) => {
         phone: phone ?? null,
         timezone: timezone ?? "America/New_York",
         active: active !== false,
+        accountingGracePeriodEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
     res.status(201).json(location);

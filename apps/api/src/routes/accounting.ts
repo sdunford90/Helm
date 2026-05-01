@@ -820,6 +820,7 @@ router.post(
         data: {
           accountingSetupComplete: true,
           accountingSetupCompletedAt: now,
+          accountingGracePeriodEndsAt: null,  // clear grace period — setup is done
         },
       });
 
@@ -838,6 +839,7 @@ router.post(
           changes: {
             accountingSetupComplete: { from: false, to: true },
             accountingSetupCompletedAt: { from: null, to: now },
+            accountingGracePeriodEndsAt: { from: 'cleared', to: null },
           },
           ipAddress: req.ip,
         });

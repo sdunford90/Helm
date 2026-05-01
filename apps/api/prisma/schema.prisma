@@ -1419,6 +1419,7 @@ model GlEntry {
 
   @@index([tenantId])
   @@index([tenantId, locationId])
+  @@index([tenantId, locationId, entryDate])
   @@map("gl_entries")
 }
 
