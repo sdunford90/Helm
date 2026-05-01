@@ -28,6 +28,7 @@ import {
   MapPin,
   ChevronDown,
   Package,
+  ClipboardList,
   X,
   User,
   LogOut,
@@ -182,6 +183,7 @@ const NAV_SECTIONS = [
       { path: '/pos', label: 'POS', icon: ShoppingCart },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
       { path: '/inventory', label: 'Inventory', icon: Package },
+      { path: '/purchase-orders', label: 'Purchase Orders', icon: ClipboardList },
     ],
   },
   {

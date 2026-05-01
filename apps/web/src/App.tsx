@@ -36,6 +36,8 @@ import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import PurchaseOrders from './pages/PurchaseOrders';
+import PurchaseOrderDetail from './pages/PurchaseOrderDetail';
 import ESignPage from './pages/ESignPage';
 import OAuthComplete from './pages/OAuthComplete';
 import { ModulesProvider, useModules } from './context/ModulesContext';
@@ -73,6 +75,8 @@ function AppRoutes() {
         <Route path="/pos" element={<POS />} />
         <Route path="/fuel" element={<Fuel />} />
         <Route path="/inventory" element={<Inventory />} />
+        <Route path="/purchase-orders" element={<PurchaseOrders />} />
+        <Route path="/purchase-orders/:id" element={<PurchaseOrderDetail />} />
         <Route path="/rent-roll" element={<RentRoll />} />
         <Route path="/dock-walks" element={<DockWalks />} />
         <Route path="/reports" element={<Reports />} />

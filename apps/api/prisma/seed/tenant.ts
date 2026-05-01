@@ -55,7 +55,7 @@ export async function seedTenantAndUsers(prisma: PrismaClient, tierId: string) {
       data: {
         tenantId: tenant.id,
         email: 'sarahchen@sunsetharbormarinas.com',
-        role: 'TENANT_ADMIN',
+        role: 'MARINA_OWNER',
         firstName: 'Sarah',
         lastName: 'Chen',
         active: true,

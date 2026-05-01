@@ -6,7 +6,7 @@ import { formatCents, formatDate } from '../lib/format';
 import { useModules } from '../context/ModulesContext';
 
 /* ─── Types ─── */
-interface PoLineItem {
+export interface PoLineItem {
   id: string;
   productId: string;
   productName: string;
@@ -17,7 +17,7 @@ interface PoLineItem {
   unitCostAtReceipt: number | null;
 }
 
-interface PurchaseOrder {
+export interface PurchaseOrder {
   id: string;
   poNumber: string | null;
   vendorName: string | null;
@@ -49,7 +49,7 @@ interface DraftLineItem {
 
 const PO_STATUSES = ['All', 'draft', 'submitted', 'partial', 'received', 'cancelled'] as const;
 
-const STATUS_LABELS: Record<string, string> = {
+export const STATUS_LABELS: Record<string, string> = {
   All: 'All Statuses',
   draft: 'Draft',
   submitted: 'Submitted',
@@ -59,7 +59,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 /* ─── Helpers ─── */
-function statusBadge(status: string): React.CSSProperties {
+export function statusBadge(status: string): React.CSSProperties {
   const base: React.CSSProperties = {
     display: 'inline-block',
     padding: '2px 10px',
@@ -71,17 +71,17 @@ function statusBadge(status: string): React.CSSProperties {
     textTransform: 'capitalize',
   };
   switch (status) {
-    case 'draft': return { ...base, backgroundColor: '#F1F5F9', color: '#6B7280' };
+    case 'draft':     return { ...base, backgroundColor: '#F1F5F9', color: '#6B7280' };
     case 'submitted': return { ...base, backgroundColor: '#EFF6FF', color: '#3B82F6' };
-    case 'partial': return { ...base, backgroundColor: '#FFFBEB', color: '#F59E0B' };
-    case 'received': return { ...base, backgroundColor: '#ECFDF5', color: '#10B981' };
+    case 'partial':   return { ...base, backgroundColor: '#FFFBEB', color: '#F59E0B' };
+    case 'received':  return { ...base, backgroundColor: '#ECFDF5', color: '#10B981' };
     case 'cancelled': return { ...base, backgroundColor: '#FEF2F2', color: '#EF4444' };
-    default: return { ...base, backgroundColor: '#F1F5F9', color: '#6B7280' };
+    default:          return { ...base, backgroundColor: '#F1F5F9', color: '#6B7280' };
   }
 }
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+export const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
 
 const stl: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },
