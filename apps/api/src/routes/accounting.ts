@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { logAccountingChange } from "../lib/accounting-audit.js";
 import { queues } from "../lib/queue.js";
+import { syncInvoice, syncInventoryItem, syncReceivingBill } from "../services/qbo-sync.js";
 
 const router: Router = Router();
 
