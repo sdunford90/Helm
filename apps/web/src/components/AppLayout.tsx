@@ -200,7 +200,7 @@ const NAV_SECTIONS = [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
       { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
-      { path: '/accounting', label: 'Accounting Overview', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'PLATFORM_ADMIN'] },
+      { path: '/accounting', label: 'Accounting Overview', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
       { path: '/settings/accounting', label: 'Accounting Hub', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],

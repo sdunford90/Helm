@@ -154,13 +154,14 @@ export default function AccountingOverview() {
     void fetchOverview();
   };
 
-  // Role guard — only TENANT_ADMIN should see this page
-  if (!userLoading && user && user.role !== 'TENANT_ADMIN' && user.role !== 'PLATFORM_ADMIN') {
+  // Role guard — accounting personas only
+  const ACCOUNTING_ROLES = ['TENANT_ADMIN', 'PLATFORM_ADMIN', 'MARINA_OWNER', 'ACCOUNTING'];
+  if (!userLoading && user && !ACCOUNTING_ROLES.includes(user.role)) {
     return (
       <div style={stl.accessDenied}>
         <AlertTriangle size={32} style={{ marginBottom: '12px', color: '#F59E0B' }} />
         <div style={{ fontWeight: 700, fontSize: '16px', marginBottom: '6px' }}>Access Restricted</div>
-        <div style={{ fontSize: '14px' }}>The Accounting Overview is available to Tenant Administrators only.</div>
+        <div style={{ fontSize: '14px' }}>The Accounting Overview is available to marina owners, tenant administrators, and accounting staff.</div>
       </div>
     );
   }

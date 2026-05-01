@@ -857,12 +857,12 @@ router.post(
 );
 
 // ---------------------------------------------------------------------------
-// GET /api/accounting/overview  (TENANT_ADMIN only)
+// GET /api/accounting/overview  (accounting personas)
 // ---------------------------------------------------------------------------
 router.get(
   "/overview",
   ...clerkAuth(),
-  requireRole("TENANT_ADMIN"),
+  requireRole("TENANT_ADMIN", "MARINA_OWNER", "ACCOUNTING"),
   async (req, res, next) => {
     try {
       const tenantId = req.tenantId!;

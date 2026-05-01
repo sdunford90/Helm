@@ -195,13 +195,33 @@ export function assertAuthConfigOrExit(): void {
  */
 export function clerkAuth(): RequestHandler[] {
   if (isDevBypassEnabled()) {
+    // Dev bypass: prefer the highest-privilege user in the tenant so the
+    // local preview behaves like an owner/admin testing the full app.
+    // Falls back to the oldest user if no privileged user exists.
+    const DEV_BYPASS_ROLE_PRIORITY = [
+      "PLATFORM_ADMIN",
+      "TENANT_ADMIN",
+      "MARINA_OWNER",
+      "MARINA_MANAGER",
+      "ACCOUNTING",
+    ];
     return [
       async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
         try {
-          const user = await prisma.user.findFirst({
-            where: { tenantId: req.tenantId },
-            orderBy: { createdAt: "asc" },
-          });
+          let user = null;
+          for (const role of DEV_BYPASS_ROLE_PRIORITY) {
+            user = await prisma.user.findFirst({
+              where: { tenantId: req.tenantId, role },
+              orderBy: { createdAt: "asc" },
+            });
+            if (user) break;
+          }
+          if (!user) {
+            user = await prisma.user.findFirst({
+              where: { tenantId: req.tenantId },
+              orderBy: { createdAt: "asc" },
+            });
+          }
           req.userId = user?.id ?? "dev-user";
           req.userRole = user?.role ?? "MARINA_OWNER";
           req.userRecord = user as unknown as Express.Request["userRecord"];
