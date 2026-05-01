@@ -200,7 +200,8 @@ const NAV_SECTIONS = [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
       { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
-      { path: '/accounting', label: 'Accounting', icon: Landmark, requireRole: 'TENANT_ADMIN' },
+      { path: '/accounting', label: 'Accounting Overview', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'PLATFORM_ADMIN'] },
+      { path: '/settings/accounting', label: 'Accounting Hub', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],
   },
@@ -402,8 +403,8 @@ export default function AppLayout() {
             if (item.path === '/ramp' && !modules.ramp) return false;
             if (item.path === '/concierge' && !modules.concierge) return false;
             // Role-gated items: check against current user's role
-            const reqRole = (item as { requireRole?: string }).requireRole;
-            if (reqRole && currentUser?.role && currentUser.role !== reqRole && currentUser.role !== 'PLATFORM_ADMIN') return false;
+            const reqRoles = (item as { requireRoles?: string[] }).requireRoles;
+            if (reqRoles && currentUser?.role && !reqRoles.includes(currentUser.role)) return false;
             return true;
           });
           if (visibleItems.length === 0) return null;
