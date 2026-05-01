@@ -259,3 +259,19 @@ ALTER TABLE "inventory_layers" ADD CONSTRAINT "inventory_layers_receiptId_fkey"
   FOREIGN KEY ("receiptId") REFERENCES "inventory_receipts"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "inventory_layers" ADD CONSTRAINT "inventory_layers_productId_fkey"
   FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- CreateTable: tax_rates
+CREATE TABLE IF NOT EXISTS "tax_rates" (
+  "id"           TEXT NOT NULL,
+  "tenantId"     TEXT NOT NULL,
+  "jurisdiction" TEXT NOT NULL,
+  "taxClass"     TEXT NOT NULL,
+  "rate"         DOUBLE PRECISION NOT NULL,
+  "active"       BOOLEAN NOT NULL DEFAULT true,
+  "createdAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "tax_rates_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "tax_rates_tenantId_jurisdiction_taxClass_key"
+  ON "tax_rates"("tenantId", "jurisdiction", "taxClass");
+CREATE INDEX IF NOT EXISTS "tax_rates_tenantId_idx" ON "tax_rates"("tenantId");

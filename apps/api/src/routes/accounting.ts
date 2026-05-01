@@ -608,6 +608,78 @@ router.post(
   },
 );
 
+// ── Tax Rates CRUD ───────────────────────────────────────────────────────────
+
+router.get("/tax-rates", async (req, res) => {
+  try {
+    const tenantId = req.tenantId!;
+    const rates = await prisma.taxRate.findMany({
+      where: { tenantId, active: true },
+      orderBy: [{ jurisdiction: "asc" }, { taxClass: "asc" }],
+    });
+    res.json(rates);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post(
+  "/tax-rates",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      const { jurisdiction, taxClass, rate } = req.body;
+      const tenantId = req.tenantId!;
+      if (!jurisdiction?.trim() || !taxClass?.trim() || rate === undefined) {
+        return res.status(400).json({ error: "jurisdiction, taxClass, and rate required" });
+      }
+      const taxRate = await prisma.taxRate.upsert({
+        where: { tenantId_jurisdiction_taxClass: { tenantId, jurisdiction: jurisdiction.trim(), taxClass: taxClass.trim() } },
+        update: { rate: Number(rate), active: true },
+        create: { tenantId, jurisdiction: jurisdiction.trim(), taxClass: taxClass.trim(), rate: Number(rate) },
+      });
+      res.status(201).json(taxRate);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
+router.put(
+  "/tax-rates/:id",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      const { jurisdiction, taxClass, rate, active } = req.body;
+      const taxRate = await prisma.taxRate.update({
+        where: { id: req.params.id },
+        data: {
+          ...(jurisdiction !== undefined && { jurisdiction: jurisdiction.trim() }),
+          ...(taxClass !== undefined && { taxClass: taxClass.trim() }),
+          ...(rate !== undefined && { rate: Number(rate) }),
+          ...(active !== undefined && { active }),
+        },
+      });
+      res.json(taxRate);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
+router.delete(
+  "/tax-rates/:id",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      await prisma.taxRate.update({ where: { id: req.params.id }, data: { active: false } });
+      res.status(204).send();
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
 // ── Product Categories CRUD ──────────────────────────────────────────────────
 
 router.get("/categories", async (req, res) => {

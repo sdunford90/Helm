@@ -1474,6 +1474,21 @@ model AccountMappingAuditLog {
   @@map("account_mapping_audit_logs")
 }
 
+model TaxRate {
+  id           String   @id @default(uuid())
+  tenantId     String
+  jurisdiction String
+  taxClass     String
+  rate         Float
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, jurisdiction, taxClass])
+  @@index([tenantId])
+  @@map("tax_rates")
+}
+
 model DockWalk {
   id          String         @id @default(uuid())
   tenantId    String

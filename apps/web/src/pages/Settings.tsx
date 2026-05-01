@@ -81,6 +81,16 @@ interface ProductCategory {
   active: boolean;
 }
 
+interface TaxRate {
+  id: string;
+  jurisdiction: string;
+  taxClass: string;
+  rate: number;
+  active: boolean;
+}
+
+const TAX_CLASSES = ['STANDARD', 'FUEL_TAX', 'EXEMPT'] as const;
+
 /* ── Mock Data ─────────────────────────────────────────── */
 
 const MARINA_LOCATIONS = [
@@ -298,6 +308,55 @@ export default function Settings() {
     } catch { /* silent */ }
   }
 
+  // Tax rates state
+  const [taxRates, setTaxRates] = useState<TaxRate[]>([]);
+  const [addingTaxRate, setAddingTaxRate] = useState(false);
+  const [newTaxJurisdiction, setNewTaxJurisdiction] = useState('');
+  const [newTaxClass, setNewTaxClass] = useState<string>('STANDARD');
+  const [newTaxRate, setNewTaxRate] = useState('');
+  const [editingTaxId, setEditingTaxId] = useState<string | null>(null);
+  const [editingTax, setEditingTax] = useState<TaxRate | null>(null);
+
+  useEffect(() => {
+    getToken().then((token) =>
+      api.get<TaxRate[]>('/accounting/tax-rates', token)
+        .then(setTaxRates)
+        .catch(() => {})
+    );
+  }, [getToken]);
+
+  async function handleSaveTaxRate() {
+    if (!newTaxJurisdiction.trim() || !newTaxRate) return;
+    try {
+      const token = await getToken();
+      const rate = await api.post<TaxRate>('/accounting/tax-rates', { jurisdiction: newTaxJurisdiction.trim(), taxClass: newTaxClass, rate: parseFloat(newTaxRate) }, token);
+      setTaxRates((prev) => [...prev, rate].sort((a, b) => a.jurisdiction.localeCompare(b.jurisdiction)));
+      setAddingTaxRate(false);
+      setNewTaxJurisdiction('');
+      setNewTaxRate('');
+      setNewTaxClass('STANDARD');
+    } catch { /* silent */ }
+  }
+
+  async function handleUpdateTaxRate(id: string) {
+    if (!editingTax) return;
+    try {
+      const token = await getToken();
+      const updated = await api.put<TaxRate>(`/accounting/tax-rates/${id}`, { jurisdiction: editingTax.jurisdiction, taxClass: editingTax.taxClass, rate: editingTax.rate }, token);
+      setTaxRates((prev) => prev.map((r) => r.id === id ? updated : r));
+      setEditingTaxId(null);
+      setEditingTax(null);
+    } catch { /* silent */ }
+  }
+
+  async function handleDeleteTaxRate(id: string) {
+    try {
+      const token = await getToken();
+      await api.delete(`/accounting/tax-rates/${id}`, token);
+      setTaxRates((prev) => prev.filter((r) => r.id !== id));
+    } catch { /* silent */ }
+  }
+
   // Team invite modal state
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteName, setInviteName] = useState('');
@@ -483,10 +542,6 @@ export default function Settings() {
                 <input style={st.input} type="number" defaultValue="5" />
               </div>
               <div style={st.field}>
-                <label style={st.label}>Default Tax Rate (%)</label>
-                <input style={st.input} type="number" defaultValue="7.0" step="0.1" />
-              </div>
-              <div style={st.field}>
                 <label style={st.label}>Tax ID / EIN</label>
                 <input style={st.input} defaultValue="XX-XXXXXXX" />
               </div>
@@ -520,6 +575,103 @@ export default function Settings() {
                 </label>
               ))}
             </div>
+          </div>
+
+          {/* ── Tax Rates ── */}
+          <div style={st.card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+              <div>
+                <h3 style={{ ...st.sectionTitle, marginBottom: '4px' }}><ShieldCheck size={20} /> Tax Rates</h3>
+                <p style={{ fontSize: '13px', color: '#64748B', margin: 0 }}>
+                  Configure rates per jurisdiction and tax class. The effective rate applied to an invoice line is the sum of all active rows matching the item's tax class.
+                </p>
+              </div>
+              <button style={st.addBtn} onClick={() => setAddingTaxRate(true)}><Plus size={16} /> Add Rate</button>
+            </div>
+            <div style={st.tableWrap} className="helm-table-wrap">
+              <table style={st.table}>
+                <thead>
+                  <tr>
+                    <th style={st.th}>Jurisdiction</th>
+                    <th style={st.th}>Tax Class</th>
+                    <th style={st.th}>Rate (%)</th>
+                    <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                    <th style={st.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {addingTaxRate && (
+                    <tr>
+                      <td style={st.td}><input autoFocus style={{ ...st.input, width: '180px' }} value={newTaxJurisdiction} onChange={(e) => setNewTaxJurisdiction(e.target.value)} placeholder="e.g. State - FL" onKeyDown={(e) => e.key === 'Enter' && handleSaveTaxRate()} /></td>
+                      <td style={st.td}>
+                        <select style={{ ...st.select, width: '120px' }} value={newTaxClass} onChange={(e) => setNewTaxClass(e.target.value)}>
+                          {TAX_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </td>
+                      <td style={st.td}><input style={{ ...st.input, width: '80px' }} type="number" step="0.001" min="0" max="100" value={newTaxRate} onChange={(e) => setNewTaxRate(e.target.value)} placeholder="7.0" /></td>
+                      <td style={{ ...st.td, textAlign: 'center' }}>—</td>
+                      <td style={st.td}>
+                        <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={handleSaveTaxRate}>Save</button>
+                        <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setAddingTaxRate(false); setNewTaxJurisdiction(''); setNewTaxRate(''); }}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {taxRates.map((rate, idx) => {
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                    const isEditing = editingTaxId === rate.id;
+                    const ed = isEditing ? editingTax! : rate;
+                    return (
+                      <tr key={rate.id}>
+                        <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>
+                          {isEditing ? <input style={{ ...st.input, width: '180px' }} value={ed.jurisdiction} onChange={(e) => setEditingTax({ ...ed, jurisdiction: e.target.value })} /> : rate.jurisdiction}
+                        </td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <select style={{ ...st.select, width: '120px' }} value={ed.taxClass} onChange={(e) => setEditingTax({ ...ed, taxClass: e.target.value })}>
+                              {TAX_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          ) : (
+                            <span style={{ ...st.badge, backgroundColor: rate.taxClass === 'EXEMPT' ? '#F3F4F6' : rate.taxClass === 'FUEL_TAX' ? '#FEF9C3' : '#E0F2FE', color: rate.taxClass === 'EXEMPT' ? '#64748B' : rate.taxClass === 'FUEL_TAX' ? '#92400E' : '#0369A1' }}>{rate.taxClass}</span>
+                          )}
+                        </td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? <input style={{ ...st.input, width: '80px' }} type="number" step="0.001" min="0" max="100" value={ed.rate} onChange={(e) => setEditingTax({ ...ed, rate: parseFloat(e.target.value) })} /> : `${rate.rate.toFixed(3)}%`}
+                        </td>
+                        <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
+                          <span style={{ ...st.badge, backgroundColor: rate.active ? '#DEF7EC' : '#F3F4F6', color: rate.active ? '#03543F' : '#64748B' }}>{rate.active ? 'Yes' : 'No'}</span>
+                        </td>
+                        <td style={{ ...st.td, backgroundColor: rowBg }}>
+                          {isEditing ? (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleUpdateTaxRate(rate.id)}>Save</button>
+                              <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingTaxId(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingTaxId(rate.id); setEditingTax({ ...rate }); }}><Edit2 size={13} /> Edit</button>
+                              <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeleteTaxRate(rate.id)}><Trash2 size={13} /> Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {taxRates.length === 0 && !addingTaxRate && (
+                    <tr><td colSpan={5} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '24px' }}>No tax rates configured. Click "Add Rate" to set up your jurisdiction rates.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {taxRates.length > 0 && (
+              <div style={{ marginTop: '12px', padding: '10px 14px', background: '#F8FAFC', borderRadius: '6px', fontSize: '12px', color: '#64748B' }}>
+                Effective rates by class: {
+                  (['STANDARD', 'FUEL_TAX'] as const).map((cls) => {
+                    const total = taxRates.filter((r) => r.taxClass === cls && r.active).reduce((sum, r) => sum + r.rate, 0);
+                    return total > 0 ? <span key={cls} style={{ marginRight: '16px' }}><strong>{cls}</strong>: {total.toFixed(3)}%</span> : null;
+                  })
+                }
+              </div>
+            )}
           </div>
 
           {/* ── GL Account Mapping moved to Accounting Hub ── */}

@@ -10,6 +10,7 @@ import { seedLeadsAndWaitlist } from './seed/leads.js';
 import { seedRentals } from './seed/rentals.js';
 import { seedPosAndInventory } from './seed/pos.js';
 import { seedOperations } from './seed/operations.js';
+import { seedAccounting } from './seed/accounting.js';
 
 const prisma = new PrismaClient();
 
@@ -62,6 +63,15 @@ async function main() {
   const { walks, announcements } = await seedOperations(prisma, tenant.id, users, slips);
   console.log(`  ✓ ${walks.length} dock walks`);
   console.log(`  ✓ ${announcements.length} announcements`);
+
+  const { taxRates, periods, totalMappings, totalDockage, totalFees, totalCategories } =
+    await seedAccounting(prisma, tenant.id, locations.map((l) => l.id));
+  console.log(`  ✓ ${taxRates.length} tax rates (${taxRates.map((r) => r.jurisdiction).join(', ')})`);
+  console.log(`  ✓ ${periods.length} fiscal periods`);
+  console.log(`  ✓ ${totalMappings} account mappings`);
+  console.log(`  ✓ ${totalDockage} dockage rates`);
+  console.log(`  ✓ ${totalFees} service fees`);
+  console.log(`  ✓ ${totalCategories} product categories`);
 
   console.log('\n✅ Seed complete!');
 }

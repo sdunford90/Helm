@@ -395,57 +395,21 @@ export default function AccountingHub() {
   const [syncing, setSyncing] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
-  // QBO status (mock)
-  const [qboStatus] = useState<QboStatus>({
-    connected: true,
-    companyName: 'Bayshore Marina LLC',
-    lastSync: '2026-05-01T06:30:00Z',
-    tokenExpiresAt: '2026-05-02T06:30:00Z',
-  });
+  const [qboStatus, setQboStatus] = useState<QboStatus | null>(null);
+  const [accounts, setAccounts] = useState<GlAccount[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
 
-  // Accounts loaded from QBO cache
-  const accounts = MOCK_ACCOUNTS;
-
-  // Mapping state
-  const [systemMaps, setSystemMaps] = useState<Record<string, string>>({
-    ACCOUNTS_RECEIVABLE: 'a1', CASH: 'a2', CARD_CLEARING: 'a3',
-    ACH_CLEARING: 'a4', DEFERRED_REVENUE: 'a5', SECURITY_DEPOSITS_HELD: 'a6',
-    SALES_TAX_PAYABLE: 'a7', INVENTORY_ASSET: 'a8', ACCOUNTS_PAYABLE: 'a9',
-  });
-  const [revenueMaps, setRevenueMaps] = useState<Record<string, string>>({
-    DOCKAGE: 'a10', ELECTRICITY: 'a11', RENTAL: 'a12', FUEL: 'a13',
-    RETAIL: 'a14', TRANSIENT: 'a15', RAMP: 'a16', CONCIERGE: 'a17',
-  });
-  const [paymentMaps, setPaymentMaps] = useState<Record<string, string>>({
-    CARD: 'a3', ACH: 'a4', CASH: 'a2',
-  });
-  const [dockageRates] = useState<DockageRate[]>([
-    { id: 'dr1', slipType: '25ft Open', monthlyRate: 45000, glRevenueAccountId: 'a21' },
-    { id: 'dr2', slipType: '30ft Covered', monthlyRate: 72500, glRevenueAccountId: 'a21' },
-    { id: 'dr3', slipType: '40ft Open', monthlyRate: 85000, glRevenueAccountId: 'a10' },
-    { id: 'dr4', slipType: '50ft End-Tie', monthlyRate: 125000, glRevenueAccountId: 'a22' },
-  ]);
-  const [dockGlMaps, setDockGlMaps] = useState<Record<string, string>>(
-    Object.fromEntries(dockageRates.map((r) => [r.id, r.glRevenueAccountId || '']))
-  );
+  const [systemMaps, setSystemMaps] = useState<Record<string, string>>({});
+  const [revenueMaps, setRevenueMaps] = useState<Record<string, string>>({});
+  const [paymentMaps, setPaymentMaps] = useState<Record<string, string>>({});
+  const [dockageRates, setDockageRates] = useState<DockageRate[]>([]);
+  const [dockGlMaps, setDockGlMaps] = useState<Record<string, string>>({});
   const [rentalMode, setRentalMode] = useState<'SINGLE' | 'PER_PRODUCT'>('SINGLE');
-  const [singleRentalAccount, setSingleRentalAccount] = useState('a12');
-  const [rentalProducts] = useState<RentalProduct[]>([
-    { id: 'rp1', name: '20ft Pontoon — Sun Tracker', glRevenueAccountId: 'a12' },
-    { id: 'rp2', name: 'Yamaha WaveRunner EX', glRevenueAccountId: 'a12' },
-    { id: 'rp3', name: '17ft Boston Whaler', glRevenueAccountId: 'a12' },
-  ]);
-  const [rentalGlMaps, setRentalGlMaps] = useState<Record<string, string>>(
-    Object.fromEntries(rentalProducts.map((p) => [p.id, p.glRevenueAccountId || '']))
-  );
-  const [serviceFees] = useState<ServiceFee[]>([
-    { id: 'sf1', name: 'Late Payment Fee', amount: 2500, glAccountId: 'a20' },
-    { id: 'sf2', name: 'ACH Return Fee', amount: 3500, glAccountId: 'a20' },
-    { id: 'sf3', name: 'Pump-Out Service', amount: 4000, glAccountId: 'a17' },
-  ]);
-  const [feeGlMaps, setFeeGlMaps] = useState<Record<string, string>>(
-    Object.fromEntries(serviceFees.map((f) => [f.id, f.glAccountId || '']))
-  );
+  const [singleRentalAccount, setSingleRentalAccount] = useState('');
+  const [rentalProducts, setRentalProducts] = useState<RentalProduct[]>([]);
+  const [rentalGlMaps, setRentalGlMaps] = useState<Record<string, string>>({});
+  const [serviceFees, setServiceFees] = useState<ServiceFee[]>([]);
+  const [feeGlMaps, setFeeGlMaps] = useState<Record<string, string>>({});
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [catRevMaps, setCatRevMaps] = useState<Record<string, string>>({});
   const [catCogsMaps, setCatCogsMaps] = useState<Record<string, string>>({});
@@ -454,7 +418,10 @@ export default function AccountingHub() {
   const [newCatCosting, setNewCatCosting] = useState<'WAC' | 'FIFO'>('WAC');
 
   // Fiscal periods
-  const [fiscalPeriods, setFiscalPeriods] = useState<FiscalPeriod[]>(MOCK_FISCAL_PERIODS);
+  const [fiscalPeriods, setFiscalPeriods] = useState<FiscalPeriod[]>([]);
+  // Audit + journal
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [newPeriodName, setNewPeriodName] = useState('');
   const [newPeriodStart, setNewPeriodStart] = useState('');
   const [newPeriodEnd, setNewPeriodEnd] = useState('');
@@ -464,17 +431,67 @@ export default function AccountingHub() {
     setTimeout(() => setToast(null), 3500);
   }, []);
 
+  // Load all location-scoped data whenever locationId changes
   useEffect(() => {
     if (!locationId) return;
-    getToken().then((token) =>
-      api.get<ProductCategory[]>(`/accounting/categories?locationId=${locationId}`, token)
-        .then((cats) => {
+    setAccountsLoading(true);
+
+    getToken().then(async (token) => {
+      const q = `locationId=${locationId}`;
+
+      await Promise.allSettled([
+        // GL accounts (from QBO cache or seed)
+        api.get<GlAccount[]>(`/accounting/chart-of-accounts?${q}`, token)
+          .then(setAccounts).catch(() => setAccounts(MOCK_ACCOUNTS)),
+
+        // QBO connection status
+        api.get<QboStatus>(`/accounting/qbo/status?${q}`, token)
+          .then(setQboStatus).catch(() => {}),
+
+        // Account mappings (system / revenue / payment / dockage / fees / rentals / categories)
+        api.get<{
+          systemAccounts: { sourceKey: string; glAccountId: string }[];
+          revenueStreams: { sourceKey: string; glAccountId: string }[];
+          paymentMethods: { sourceKey: string; glAccountId: string }[];
+          dockageRates: DockageRate[];
+          serviceFees: ServiceFee[];
+          rentalProducts: RentalProduct[];
+          rentalGlMode: 'SINGLE' | 'PER_PRODUCT';
+        }>(`/accounting/mappings?${q}`, token).then((d) => {
+          setSystemMaps(Object.fromEntries(d.systemAccounts.map((m) => [m.sourceKey, m.glAccountId])));
+          setRevenueMaps(Object.fromEntries(d.revenueStreams.map((m) => [m.sourceKey, m.glAccountId])));
+          setPaymentMaps(Object.fromEntries(d.paymentMethods.map((m) => [m.sourceKey, m.glAccountId])));
+          setDockageRates(d.dockageRates);
+          setDockGlMaps(Object.fromEntries(d.dockageRates.map((r) => [r.id, (r as any).glRevenueAccountId || ''])));
+          setServiceFees(d.serviceFees);
+          setFeeGlMaps(Object.fromEntries(d.serviceFees.map((f) => [f.id, (f as any).glAccountId || ''])));
+          setRentalProducts(d.rentalProducts);
+          setRentalGlMaps(Object.fromEntries(d.rentalProducts.map((p) => [p.id, (p as any).glRevenueAccountId || ''])));
+          setRentalMode(d.rentalGlMode);
+        }).catch(() => {}),
+
+        // Product categories
+        api.get<ProductCategory[]>(`/accounting/categories?${q}`, token).then((cats) => {
           setCategories(cats);
           setCatRevMaps(Object.fromEntries(cats.map((c) => [c.id, c.glRevenueAccountId || ''])));
           setCatCogsMaps(Object.fromEntries(cats.map((c) => [c.id, c.glCogsAccountId || ''])));
-        })
-        .catch(() => {})
-    );
+        }).catch(() => {}),
+
+        // Fiscal periods
+        api.get<FiscalPeriod[]>(`/accounting/fiscal-periods?${q}`, token)
+          .then(setFiscalPeriods).catch(() => {}),
+
+        // Audit log
+        api.get<AuditEntry[]>(`/accounting/audit-log?${q}`, token)
+          .then(setAuditEntries).catch(() => {}),
+
+        // Journal entries
+        api.get<JournalEntry[]>(`/accounting/journal-entries?${q}`, token)
+          .then(setJournalEntries).catch(() => {}),
+      ]);
+
+      setAccountsLoading(false);
+    });
   }, [locationId, getToken]);
 
   async function handleCreateCategory() {
@@ -718,9 +735,19 @@ export default function AccountingHub() {
       {/* ── MAPPINGS TAB ───────────────────────────────────────── */}
       {activeTab === 'mappings' && (
         <div>
+          {accountsLoading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px', background: '#F0F9FF', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#0369A1' }}>
+              <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} /> Loading accounts and mappings…
+            </div>
+          )}
+          {!accountsLoading && accounts.length === 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px', background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#C2410C' }}>
+              <AlertTriangle size={14} /> No GL accounts found for this location. Connect QuickBooks or run the database seed to populate accounts.
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <p style={{ fontSize: '13px', color: '#64748B', margin: 0 }}>
-              Map every accounting event to a QuickBooks account for this location. All dropdowns pull live from your connected QBO chart of accounts.
+              Map every accounting event to a QuickBooks account for this location. Accounts are pulled from your connected QBO chart of accounts or the local GL account seed.
             </p>
             <button
               onClick={handleSaveMappings}
@@ -1122,7 +1149,10 @@ export default function AccountingHub() {
                 </tr>
               </thead>
               <tbody>
-                {MOCK_AUDIT.map((entry) => (
+                {auditEntries.length === 0 && (
+                  <tr><td colSpan={6} style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No mapping changes recorded yet.</td></tr>
+                )}
+                {auditEntries.map((entry) => (
                   <tr key={entry.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
                     <td style={{ padding: '12px 16px', fontSize: '12px', color: '#64748B', whiteSpace: 'nowrap' }}>
                       {new Date(entry.createdAt).toLocaleString()}
@@ -1158,7 +1188,10 @@ export default function AccountingHub() {
                 Auto-posted entries from invoices, payments, PO receipts, and COGS recognition.
               </span>
             </div>
-            {MOCK_JOURNAL.map((je) => (
+            {journalEntries.length === 0 && (
+              <div style={{ padding: '32px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No journal entries yet. They appear automatically as invoices, payments, and inventory receipts are posted.</div>
+            )}
+            {journalEntries.map((je) => (
               <div key={je.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
                 <div style={{ padding: '12px 20px', background: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '16px' }}>
                   <span style={{ fontSize: '12px', fontFamily: 'monospace', color: '#64748B', minWidth: '80px' }}>

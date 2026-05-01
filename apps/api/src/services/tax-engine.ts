@@ -49,26 +49,17 @@ const DEFAULT_TAX_RATE = 0;
 export async function getTaxRates(
   tenantId: string,
 ): Promise<{ jurisdiction: string; category: string; rate: number }[]> {
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: { invoiceTemplateJson: true },
+  const rates = await prisma.taxRate.findMany({
+    where: { tenantId, active: true },
+    orderBy: [{ jurisdiction: "asc" }, { taxClass: "asc" }],
   });
 
-  // Convention: tenant.invoiceTemplateJson.taxRates is an array of
-  // { jurisdiction, category, rate } objects.
-  const cfg = tenant?.invoiceTemplateJson as Record<string, unknown> | null;
-  if (cfg && Array.isArray(cfg.taxRates)) {
-    return cfg.taxRates as {
-      jurisdiction: string;
-      category: string;
-      rate: number;
-    }[];
+  if (rates.length > 0) {
+    return rates.map((r) => ({ jurisdiction: r.jurisdiction, category: r.taxClass, rate: r.rate }));
   }
 
   // Fallback — no configured rates, everything at 0%
-  return [
-    { jurisdiction: "default", category: "general", rate: DEFAULT_TAX_RATE },
-  ];
+  return [{ jurisdiction: "default", category: "general", rate: DEFAULT_TAX_RATE }];
 }
 
 /**
