@@ -19,10 +19,12 @@ export const PERMISSION_MODULES = [
   { key: "payments",      label: "Payments",               group: "Finance" },
   { key: "reports",       label: "Reports & Analytics",    group: "Finance" },
   { key: "billing",       label: "Billing & Subscription", group: "Finance" },
-  { key: "gl_accounts",   label: "GL / Chart of Accounts", group: "Finance" },
-  { key: "rentals",       label: "Rentals",                group: "Revenue" },
-  { key: "pos",           label: "Point of Sale",          group: "Revenue" },
-  { key: "inventory",     label: "Inventory",              group: "Revenue" },
+  { key: "gl_accounts",          label: "GL / Chart of Accounts", group: "Finance" },
+  { key: "accounting_setup",     label: "Accounting Setup",       group: "Finance" },
+  { key: "rentals",              label: "Rentals",                group: "Revenue" },
+  { key: "pos",                  label: "Point of Sale",          group: "Revenue" },
+  { key: "inventory",            label: "Inventory",              group: "Revenue" },
+  { key: "inventory_receiving",  label: "Inventory Receiving",    group: "Revenue" },
   { key: "announcements", label: "Announcements",          group: "Communication" },
   { key: "team",          label: "Team & Roles",           group: "Admin" },
   { key: "settings",      label: "Settings",               group: "Admin" },
@@ -40,8 +42,8 @@ const SYSTEM_ROLE_TEMPLATES: Record<string, Partial<Record<ModuleKey, { view: bo
   "Marina Admin": Object.fromEntries(
     PERMISSION_MODULES.map((m) => [
       m.key,
-      m.key === "billing" || m.key === "integrations"
-        ? { view: true, create: false, edit: false, delete: false }
+      m.key === "billing" || m.key === "integrations" || m.key === "accounting_setup"
+        ? { view: true, create: true, edit: true, delete: false }
         : { view: true, create: true, edit: true, delete: true },
     ])
   ) as Partial<Record<ModuleKey, { view: boolean; create: boolean; edit: boolean; delete: boolean }>>,
@@ -59,24 +61,27 @@ const SYSTEM_ROLE_TEMPLATES: Record<string, Partial<Record<ModuleKey, { view: bo
     payments:      { view: true,  create: true,  edit: false, delete: false },
     reports:       { view: true,  create: false, edit: false, delete: false },
     billing:       { view: true,  create: false, edit: false, delete: false },
-    gl_accounts:   { view: true,  create: false, edit: false, delete: false },
-    rentals:       { view: true,  create: true,  edit: true,  delete: false },
-    pos:           { view: true,  create: true,  edit: true,  delete: false },
-    inventory:     { view: true,  create: true,  edit: true,  delete: false },
-    announcements: { view: true,  create: true,  edit: true,  delete: false },
+    gl_accounts:         { view: true,  create: false, edit: false, delete: false },
+    accounting_setup:    { view: true,  create: false, edit: false, delete: false },
+    rentals:             { view: true,  create: true,  edit: true,  delete: false },
+    pos:                 { view: true,  create: true,  edit: true,  delete: false },
+    inventory:           { view: true,  create: true,  edit: true,  delete: false },
+    inventory_receiving: { view: true,  create: true,  edit: false, delete: false },
+    announcements:       { view: true,  create: true,  edit: true,  delete: false },
     team:          { view: true,  create: false, edit: false, delete: false },
     settings:      { view: true,  create: false, edit: false, delete: false },
     integrations:  { view: false, create: false, edit: false, delete: false },
   },
 
   "Dock Staff": {
-    dashboard:   { view: true,  create: false, edit: false, delete: false },
-    slips:       { view: true,  create: false, edit: true,  delete: false },
-    work_orders: { view: true,  create: true,  edit: true,  delete: false },
-    transient:   { view: true,  create: true,  edit: false, delete: false },
-    customers:   { view: true,  create: false, edit: false, delete: false },
-    waitlist:    { view: true,  create: false, edit: false, delete: false },
-    concierge:   { view: true,  create: false, edit: true,  delete: false },
+    dashboard:           { view: true,  create: false, edit: false, delete: false },
+    slips:               { view: true,  create: false, edit: true,  delete: false },
+    work_orders:         { view: true,  create: true,  edit: true,  delete: false },
+    transient:           { view: true,  create: true,  edit: false, delete: false },
+    customers:           { view: true,  create: false, edit: false, delete: false },
+    waitlist:            { view: true,  create: false, edit: false, delete: false },
+    concierge:           { view: true,  create: false, edit: true,  delete: false },
+    inventory_receiving: { view: true,  create: false, edit: false, delete: false },
   },
 
   "POS Cashier": {
@@ -87,13 +92,15 @@ const SYSTEM_ROLE_TEMPLATES: Record<string, Partial<Record<ModuleKey, { view: bo
   },
 
   "Accounting": {
-    dashboard:   { view: true,  create: false, edit: false, delete: false },
-    invoices:    { view: true,  create: true,  edit: true,  delete: false },
-    payments:    { view: true,  create: true,  edit: false, delete: false },
-    reports:     { view: true,  create: false, edit: false, delete: false },
-    gl_accounts: { view: true,  create: true,  edit: true,  delete: false },
-    billing:     { view: true,  create: false, edit: false, delete: false },
-    customers:   { view: true,  create: false, edit: false, delete: false },
+    dashboard:           { view: true,  create: false, edit: false, delete: false },
+    invoices:            { view: true,  create: true,  edit: true,  delete: false },
+    payments:            { view: true,  create: true,  edit: false, delete: false },
+    reports:             { view: true,  create: false, edit: false, delete: false },
+    gl_accounts:         { view: true,  create: true,  edit: true,  delete: false },
+    accounting_setup:    { view: true,  create: true,  edit: true,  delete: false },
+    billing:             { view: true,  create: false, edit: false, delete: false },
+    customers:           { view: true,  create: false, edit: false, delete: false },
+    inventory_receiving: { view: true,  create: true,  edit: false, delete: false },
   },
 };
 

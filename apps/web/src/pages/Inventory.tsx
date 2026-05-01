@@ -48,6 +48,8 @@ interface ApiGlAccount {
 interface PurchaseOrder {
   id: string; poNumber: string; vendor: string; status: 'Draft' | 'Submitted' | 'Partial' | 'Received' | 'Cancelled';
   items: number; totalCostCents: number; expectedDate: string; createdDate: string;
+  locationId: string | null;
+  lineItems: ApiPoLineItem[];
 }
 
 interface CountSession {
@@ -86,11 +88,19 @@ interface ApiCountSession {
   createdAt: string; completedAt: string | null;
 }
 
+interface ApiPoLineItem {
+  id: string; productId: string; productName: string;
+  quantity: number; unitCostCents: number; receivedQty: number;
+}
+
 interface ApiPurchaseOrder {
-  id: string; poNumber: string; vendor: string; status: string;
+  id: string; poNumber: string; vendor: string; vendorId: string | null;
+  status: string; locationId: string | null;
   expectedDate: string | null; notes: string | null;
-  lineItems: { quantity: number; unitCostCents: number }[];
+  lineItems: ApiPoLineItem[];
   totalCostCents: number; createdAt: string;
+  qboBillId: string | null; qboBillSyncedAt: string | null;
+  qboBillSyncError: string | null;
 }
 
 function toProduct(p: ApiProduct): Product {
@@ -158,6 +168,8 @@ function toPurchaseOrder(po: ApiPurchaseOrder): PurchaseOrder {
     totalCostCents: po.totalCostCents,
     expectedDate: po.expectedDate ?? '—',
     createdDate: po.createdAt.split('T')[0],
+    locationId: po.locationId ?? null,
+    lineItems: po.lineItems,
   };
 }
 
@@ -504,30 +516,152 @@ function ManualAdjustmentModal({ products, onClose }: { products: Product[]; onC
   );
 }
 
-function ReceivePOModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
-  const [received, setReceived] = useState(false);
-  const handleReceive = () => { setReceived(true); setTimeout(onClose, 1500); };
-  const [receivedDate, setReceivedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [notes, setNotes] = useState('');
+interface ReceiveLineState {
+  lineItemId: string;
+  productName: string;
+  orderedQty: number;
+  previouslyReceived: number;
+  receiveToday: string;     // input string, parsed to int on submit
+  unitCostCents: string;    // input string (dollars), parsed to cents on submit
+}
+
+function ReceivePOModal({ po, onClose, onReceived }: {
+  po: PurchaseOrder;
+  onClose: () => void;
+  onReceived: () => void;
+}) {
+  const { getToken } = useAuth();
+  const toast = useToast();
+  const [submitting, setSubmitting] = useState(false);
+
+  // Build per-line state from the PO's line items
+  const [lines, setLines] = useState<ReceiveLineState[]>(() =>
+    po.lineItems.map((li) => ({
+      lineItemId: li.id,
+      productName: li.productName,
+      orderedQty: li.quantity,
+      previouslyReceived: li.receivedQty,
+      receiveToday: String(Math.max(0, li.quantity - li.receivedQty)),
+      unitCostCents: String((li.unitCostCents / 100).toFixed(2)),
+    }))
+  );
+
+  const setLineField = (idx: number, field: 'receiveToday' | 'unitCostCents', value: string) => {
+    setLines((prev) => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
+  };
+
+  const handleSubmit = async () => {
+    const token = await getToken();
+    const payload = {
+      locationId: po.locationId ?? undefined,
+      lineItems: lines
+        .map((l) => ({
+          lineItemId: l.lineItemId,
+          receivedQty: Math.max(0, parseInt(l.receiveToday || '0', 10)),
+          unitCostCents: Math.round(parseFloat(l.unitCostCents || '0') * 100),
+        }))
+        .filter((l) => l.receivedQty > 0),
+    };
+    if (!payload.lineItems.length) {
+      toast.error('Nothing to receive', 'Enter at least one qty > 0.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/inventory/purchase-orders/${po.id}/receive`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      toast.success('Received', `PO ${po.poNumber} updated — QB Bill pushed.`);
+      onReceived();
+      onClose();
+    } catch (err) {
+      toast.error('Receive failed', err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const receiveModalStyle: React.CSSProperties = { ...st.modal, width: '680px' };
+
   return (
     <div style={st.overlay} onClick={onClose}>
-      <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
-        <div style={st.modalHeader}><h2 style={st.modalTitle}>Receive PO — {po.poNumber}</h2><button style={st.closeBtn} onClick={onClose}><X size={20} /></button></div>
-        {received && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>PO {po.poNumber} marked as received!</div>}
+      <div style={receiveModalStyle} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+        <div style={st.modalHeader}>
+          <h2 style={st.modalTitle}>Receive PO — {po.poNumber}</h2>
+          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+        </div>
         <div style={st.modalBody}>
+          {/* PO header summary */}
           <div style={{ padding: '12px 16px', background: '#F8FAFC', borderRadius: '6px', border: '1px solid #E2E8F0', marginBottom: '20px', fontSize: '13px' }}>
-            <div style={{ fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>{po.vendor}</div>
-            <div style={{ color: '#64748B' }}>{po.items} line items · Expected {po.expectedDate}</div>
+            <div style={{ fontWeight: 600, color: '#0A2342', marginBottom: '2px' }}>{po.vendor}</div>
+            <div style={{ color: '#64748B' }}>
+              {po.items} line item{po.items !== 1 ? 's' : ''} &middot; Expected {po.expectedDate}
+            </div>
           </div>
-          <div style={st.field}><label style={st.label}>Received Date</label><input style={st.input} type="date" value={receivedDate} onChange={(e) => setReceivedDate(e.target.value)} /></div>
-          <div style={st.field}><label style={st.label}>Receiving Notes</label><input style={st.input} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Any notes about the delivery..." /></div>
-          <div style={{ padding: '10px 14px', background: '#DEF7EC', borderRadius: '6px', fontSize: '13px', color: '#03543F' }}>
-            Marking as received will update inventory quantities for all items in this PO.
+
+          {/* Line items table */}
+          <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
+            <table style={{ ...st.table, fontSize: '13px' }}>
+              <thead>
+                <tr>
+                  <th style={st.th}>Item</th>
+                  <th style={{ ...st.th, textAlign: 'right' }}>Ordered</th>
+                  <th style={{ ...st.th, textAlign: 'right' }}>Prev. Recd</th>
+                  <th style={{ ...st.th, textAlign: 'right' }}>Receive Today</th>
+                  <th style={{ ...st.th, textAlign: 'right' }}>Unit Cost ($)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l, idx) => (
+                  <tr key={l.lineItemId} style={{ background: idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC' }}>
+                    <td style={{ ...st.td, fontWeight: 500 }}>{l.productName}</td>
+                    <td style={{ ...st.td, ...st.mono, textAlign: 'right' }}>{l.orderedQty}</td>
+                    <td style={{ ...st.td, ...st.mono, textAlign: 'right', color: l.previouslyReceived > 0 ? '#856404' : '#94A3B8' }}>{l.previouslyReceived}</td>
+                    <td style={{ ...st.td, textAlign: 'right' }}>
+                      <input
+                        type="number" min="0" max={l.orderedQty - l.previouslyReceived}
+                        value={l.receiveToday}
+                        onChange={(e) => setLineField(idx, 'receiveToday', e.target.value)}
+                        style={{ ...st.input, width: '72px', textAlign: 'right', padding: '4px 8px' }}
+                      />
+                    </td>
+                    <td style={{ ...st.td, textAlign: 'right' }}>
+                      <input
+                        type="number" min="0" step="0.01"
+                        value={l.unitCostCents}
+                        onChange={(e) => setLineField(idx, 'unitCostCents', e.target.value)}
+                        style={{ ...st.input, width: '88px', textAlign: 'right', padding: '4px 8px' }}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* GL impact preview */}
+          <div style={{ padding: '10px 14px', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '6px', fontSize: '12px', color: '#1E40AF', marginBottom: '4px' }}>
+            <strong>QB GL impact:</strong> DR [Category Inventory Asset GL] &middot; CR Accounts Payable
           </div>
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={handleReceive}>Mark as Received</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={submitting}>Cancel</button>
+          <button
+            style={{ ...st.saveBtn, opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}
+            disabled={submitting}
+            onClick={handleSubmit}
+          >
+            {submitting ? 'Receiving…' : 'Confirm Receipt & Push to QB'}
+          </button>
         </div>
       </div>
     </div>
@@ -657,9 +791,25 @@ export default function Inventory() {
     );
   };
 
-  const { data: posData, loading: posLoading } = useApi<{ data: ApiPurchaseOrder[]; total: number }>(
-    'get', '/api/inventory/purchase-orders', { immediate: true },
-  );
+  const [posLoading, setPosLoading] = useState(true);
+  const fetchPOs = React.useCallback(async () => {
+    setPosLoading(true);
+    try {
+      const token = await getToken();
+      const json = await api.get<{ data: ApiPurchaseOrder[]; total: number }>(
+        '/api/inventory/purchase-orders',
+        token,
+      );
+      setPurchaseOrders(json.data.map(toPurchaseOrder));
+    } catch {
+      setPurchaseOrders([]);
+    } finally {
+      setPosLoading(false);
+    }
+  }, [getToken]);
+
+  useEffect(() => { fetchPOs(); }, [fetchPOs]);
+
   const { data: countsData, loading: countsLoading } = useApi<{ data: ApiCountSession[]; total: number }>(
     'get', '/api/inventory/counts', { immediate: true },
   );
@@ -681,10 +831,6 @@ export default function Inventory() {
   }, [pageCategoriesData]);
   const displayCategory = (p: Product): string =>
     (p.productCategoryId && categoryNameById.get(p.productCategoryId)) || p.category || '';
-
-  React.useEffect(() => {
-    if (posData?.data) setPurchaseOrders(posData.data.map(toPurchaseOrder));
-  }, [posData]);
 
   React.useEffect(() => {
     if (countsData?.data) setCountSessions(countsData.data.map(toCountSession));
@@ -934,10 +1080,9 @@ export default function Inventory() {
               <td style={st.td}>{po.createdDate}</td>
               <td style={st.td}><span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{po.status}</span></td>
               <td style={st.td}>
-                {(po.status === 'Submitted' || po.status === 'Partial') && (
+                {(po.status === 'Draft' || po.status === 'Submitted' || po.status === 'Partial') && (
                   <button style={{ ...st.outlineBtn, padding: '4px 10px', fontSize: '12px' }} onClick={() => { setReceivingPO(po); setModal('receivePO'); }}><Truck size={12} /> Receive</button>
                 )}
-                {po.status === 'Draft' && <button style={{ ...st.outlineBtn, padding: '4px 10px', fontSize: '12px' }}>Submit</button>}
               </td>
             </tr>
           ); })}
@@ -1036,7 +1181,7 @@ export default function Inventory() {
       {modal === 'createPO' && <CreatePOModal onClose={() => setModal(null)} />}
       {modal === 'startCount' && <StartCountModal onClose={() => setModal(null)} />}
       {modal === 'adjustment' && <ManualAdjustmentModal products={products} onClose={() => setModal(null)} />}
-      {modal === 'receivePO' && receivingPO && <ReceivePOModal po={receivingPO} onClose={() => { setModal(null); setReceivingPO(null); }} />}
+      {modal === 'receivePO' && receivingPO && <ReceivePOModal po={receivingPO} onClose={() => { setModal(null); setReceivingPO(null); }} onReceived={fetchPOs} />}
     </div>
   );
 }

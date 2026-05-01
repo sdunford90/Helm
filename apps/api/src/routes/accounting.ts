@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { logAccountingChange } from "../lib/accounting-audit.js";
+import { queues } from "../lib/queue.js";
 
 const router: Router = Router();
 
@@ -649,6 +650,215 @@ router.post(
         locationId,
         completedAt: now.toISOString(),
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/accounting/overview  (TENANT_ADMIN only)
+// ---------------------------------------------------------------------------
+router.get(
+  "/overview",
+  ...clerkAuth(),
+  requireRole("TENANT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const locations = await prisma.location.findMany({
+        where: { tenantId },
+        select: {
+          id: true,
+          name: true,
+          accountingSetupComplete: true,
+          accountingSetupStep: true,
+          accountingGracePeriodEndsAt: true,
+          qboRealmId: true,
+          qboCompanyName: true,
+        },
+      });
+
+      // Gather open reconciliation alert counts and failed sync counts per location
+      const locationResults = await Promise.all(
+        locations.map(async (loc) => {
+          const [openAlertCount, failedProductCount, failedPOCount] = await Promise.all([
+            prisma.reconciliationAlert.count({
+              where: { locationId: loc.id, resolvedAt: null },
+            }).catch(() => 0),
+            prisma.product.count({
+              where: { tenantId, locationId: loc.id, qboItemSyncError: { not: null } },
+            }).catch(() => 0),
+            prisma.purchaseOrder.count({
+              where: { tenantId, locationId: loc.id, qboBillSyncError: { not: null } },
+            }).catch(() => 0),
+          ]);
+
+          return {
+            locationId: loc.id,
+            locationName: loc.name,
+            setupComplete: loc.accountingSetupComplete ?? false,
+            setupStep: loc.accountingSetupStep ?? 0,
+            gracePeriodEndsAt: loc.accountingGracePeriodEndsAt?.toISOString() ?? null,
+            qboConnected: !!loc.qboRealmId,
+            qboCompanyName: loc.qboCompanyName ?? null,
+            failedSyncCount: failedProductCount + failedPOCount,
+            openAlertCount,
+            openPeriod: null as { periodStart: string; periodEnd: string } | null,
+            mtdRevenueCents: 0,
+          };
+        }),
+      );
+
+      // Attach open (non-closed) accounting periods per location
+      try {
+        const openPeriods = await prisma.accountingPeriod.findMany({
+          where: {
+            tenantId,
+            closedAt: null,
+            locationId: { in: locations.map((l) => l.id) },
+          },
+          select: { locationId: true, periodStart: true, periodEnd: true },
+        });
+        for (const period of openPeriods) {
+          const loc = locationResults.find((l) => l.locationId === period.locationId);
+          if (loc) {
+            loc.openPeriod = {
+              periodStart: period.periodStart.toISOString(),
+              periodEnd: period.periodEnd.toISOString(),
+            };
+          }
+        }
+      } catch {
+        // AccountingPeriod table may not exist yet — ignore gracefully
+      }
+
+      const totalFailedSyncs = locationResults.reduce((s, l) => s + l.failedSyncCount, 0);
+      const totalOpenAlerts = locationResults.reduce((s, l) => s + l.openAlertCount, 0);
+      const locationsNeedingSetup = locationResults.filter((l) => !l.setupComplete).length;
+
+      res.json({
+        locations: locationResults,
+        totalMtdRevenueCents: 0, // TODO: aggregate from GlEntry when available
+        totalFailedSyncs,
+        totalOpenAlerts,
+        locationsNeedingSetup,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/accounting/reconciliation-alerts?locationId=X
+// Returns open ReconciliationAlert rows for the location, joined to category name.
+// ---------------------------------------------------------------------------
+router.get(
+  "/reconciliation-alerts",
+  ...clerkAuth(),
+  requireRole("ACCOUNTING", "TENANT_ADMIN", "MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const locationId = req.query.locationId as string | undefined;
+
+      const alerts = await prisma.reconciliationAlert.findMany({
+        where: {
+          tenantId,
+          ...(locationId ? { locationId } : {}),
+          resolvedAt: null,
+        },
+        select: {
+          id: true,
+          locationId: true,
+          categoryId: true,
+          helmValueCents: true,
+          qbValueCents: true,
+          deltaCents: true,
+          detectedAt: true,
+          resolvedAt: true,
+          resolvedByUserId: true,
+          notes: true,
+          category: { select: { name: true } },
+          location: { select: { name: true } },
+        },
+        orderBy: { detectedAt: "desc" },
+      });
+
+      res.json({ alerts });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/accounting/reconciliation-alerts/:id/resolve
+// Body: { notes? }
+// Resolves an open alert. Requires ACCOUNTING or TENANT_ADMIN role.
+// ---------------------------------------------------------------------------
+router.patch(
+  "/reconciliation-alerts/:id/resolve",
+  ...clerkAuth(),
+  requireRole("ACCOUNTING", "TENANT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const { id } = req.params;
+      const notes = req.body?.notes as string | undefined;
+
+      const alert = await prisma.reconciliationAlert.findFirst({
+        where: { id, tenantId },
+      });
+
+      if (!alert) {
+        res.status(404).json({ error: "Reconciliation alert not found" });
+        return;
+      }
+
+      if (alert.resolvedAt) {
+        res.status(409).json({ error: "Alert is already resolved" });
+        return;
+      }
+
+      const updated = await prisma.reconciliationAlert.update({
+        where: { id },
+        data: {
+          resolvedAt: new Date(),
+          resolvedByUserId: req.userId ?? null,
+          ...(notes !== undefined ? { notes } : {}),
+        },
+      });
+
+      res.json({ alert: updated });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/accounting/reconciliation/run
+// Triggers an immediate inventory reconciliation for the current location's
+// tenant. Runs asynchronously — returns immediately after enqueueing.
+// ---------------------------------------------------------------------------
+router.post(
+  "/reconciliation/run",
+  ...clerkAuth(),
+  requireRole("ACCOUNTING", "TENANT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+
+      await queues.billing.add(
+        "inventory-reconciliation",
+        { tenantId },
+        { jobId: `manual-reconciliation-${tenantId}-${Date.now()}` },
+      );
+
+      res.json({ queued: true, message: "Inventory reconciliation job enqueued" });
     } catch (err) {
       next(err);
     }

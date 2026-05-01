@@ -191,12 +191,12 @@ export async function getValidAccessTokenForLocation(locationId: string): Promis
 // --------------------------------------------------------------------------
 
 // Credential context: either tenant-level or location-level
-interface QboCredentialContext {
+export interface QboCredentialContext {
   tenantId: string;
   locationId?: string;
 }
 
-async function qboRequest(
+export async function qboRequest(
   ctx: string | QboCredentialContext,
   method: "GET" | "POST",
   path: string,
@@ -607,7 +607,94 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     (invoice.customer as any).qboCustomerId = (updatedCustomer as any).qboCustomerId;
   }
 
-  const lineItems = (invoice as any).lineItems?.map((item: any, idx: number) => ({
+  // Task 18 preflight: for PRODUCT-sourced line items that don't yet have a
+  // QBO Item ID, attempt to sync the QB Item now so the invoice can reference
+  // it via ItemRef (improves reporting + avoids orphaned revenue lines in QBO).
+  const rawLineItems: any[] = (invoice as any).lineItems ?? [];
+  const productLineItems = rawLineItems.filter(
+    (li: any) => li.sourceType?.toUpperCase() === "PRODUCT" && li.sourceId,
+  );
+  if (productLineItems.length > 0) {
+    // Batch-fetch qboItemId from the sync-ref table for all product IDs.
+    const productIds = [...new Set(productLineItems.map((li: any) => li.sourceId as string))];
+    const syncRefs = await (prisma as any).qboInventorySyncRef.findMany({
+      where: { tenantId, sourceType: "product", sourceId: { in: productIds } },
+      select: { sourceId: true, qboId: true },
+    });
+    const qboItemIdByProductId = new Map<string, string | null>(
+      syncRefs.map((r: any) => [r.sourceId as string, (r.qboId as string | null) ?? null]),
+    );
+
+    // For each product line item without a QBO Item ID, try to sync it now.
+    for (const li of productLineItems) {
+      const productId = li.sourceId as string;
+      if (qboItemIdByProductId.get(productId)) continue; // already synced
+
+      try {
+        const product = await prisma.product.findFirst({
+          where: { id: productId, tenantId },
+          select: {
+            id: true, name: true, sku: true, priceCents: true,
+            costCents: true, qoh: true, glAccountId: true,
+            productCategory: {
+              select: {
+                glMappings: {
+                  where: { locationId: ctx.locationId ?? undefined },
+                  select: {
+                    revenueGlAccountId: true,
+                    inventoryAssetGlAccountId: true,
+                    cogsGlAccountId: true,
+                  },
+                  take: 1,
+                },
+              },
+            },
+          },
+        });
+        if (!product) continue;
+
+        const mapping = (product as any).productCategory?.glMappings?.[0];
+        const incomeGlAccountId = mapping?.revenueGlAccountId ?? product.glAccountId ?? null;
+        const inventoryAssetGlAccountId = mapping?.inventoryAssetGlAccountId ?? null;
+        const cogsGlAccountId = mapping?.cogsGlAccountId ?? null;
+
+        const synced = await syncInventoryItem(
+          {
+            productId: product.id,
+            name: product.name,
+            sku: product.sku ?? null,
+            priceCents: product.priceCents,
+            costCents: (product as any).costCents ?? 0,
+            qoh: (product as any).qoh,
+            incomeGlAccountId,
+            inventoryAssetGlAccountId,
+            cogsGlAccountId,
+          },
+          tenantId,
+          ctx.locationId,
+        );
+        qboItemIdByProductId.set(productId, synced.qboItemId);
+      } catch (err) {
+        console.warn(
+          `[qbo-sync] syncInvoice preflight: could not sync QB Item for product ${productId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        // Continue — the line will be sent without ItemRef (falls back to
+        // AccountRef / manual revenue account in QBO).
+      }
+    }
+
+    // Stamp the resolved qboItemId onto each raw line item so the map below
+    // can include ItemRef without a second DB round-trip.
+    for (const li of rawLineItems) {
+      if (li.sourceType?.toUpperCase() === "PRODUCT" && li.sourceId) {
+        const qboItemId = qboItemIdByProductId.get(li.sourceId as string);
+        if (qboItemId) li._resolvedQboItemId = qboItemId;
+      }
+    }
+  }
+
+  const lineItems = rawLineItems.map((item: any, idx: number) => ({
     LineNum: idx + 1,
     Amount: item.totalCents / 100,
     DetailType: "SalesItemLineDetail",
@@ -615,9 +702,13 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     SalesItemLineDetail: {
       Qty: item.quantity || 1,
       UnitPrice: item.unitPriceCents / 100,
-      ...(item.qboItemId ? { ItemRef: { value: item.qboItemId } } : {}),
+      // Prefer the resolved QBO Item ID from preflight (Task 18), fall back
+      // to any legacy qboItemId already on the line item object.
+      ...(item._resolvedQboItemId || item.qboItemId
+        ? { ItemRef: { value: item._resolvedQboItemId ?? item.qboItemId } }
+        : {}),
     },
-  })) || [];
+  }));
 
   const qboInvoiceData: Record<string, unknown> = {
     CustomerRef: { value: (invoice.customer as any).qboCustomerId },
@@ -3064,4 +3155,137 @@ export async function pullVendorsAndBillsForTenant(tenantId: string): Promise<Te
   }
 
   return out;
+}
+
+// --------------------------------------------------------------------------
+// Entity Sync: POS Ticket → QBO SalesReceipt (Task 8b)
+// --------------------------------------------------------------------------
+
+/**
+ * Push a completed POS transaction to QuickBooks Online as a SalesReceipt.
+ * Must be called after the transaction is persisted. Non-fatal — callers
+ * should catch and log rather than failing the POS response.
+ *
+ * Payment method → DepositToAccountRef mapping:
+ *   CASH              → location.bankGlAccount   (physical cash drawer)
+ *   CARD / ACH / else → location.undepositedFundsGlAccount
+ */
+export async function syncPosTicketAsReceipt(
+  posTicketId: string,
+  tenantId: string,
+): Promise<void> {
+  // Load the transaction with line items and the shift's location
+  const tx = await prisma.posTransaction.findFirst({
+    where: { id: posTicketId, tenantId },
+    include: {
+      lineItems: {
+        include: {
+          product: {
+            select: {
+              id: true,
+              name: true,
+              qboItemId: true,
+              qboItemSyncedAt: true,
+            },
+          },
+        },
+      },
+      shift: {
+        select: { locationId: true },
+      },
+    },
+  });
+
+  if (!tx) {
+    throw new Error(`PosTransaction ${posTicketId} not found`);
+  }
+
+  // Derive the location from the shift (PosTransaction itself has no locationId column)
+  const locationId = (tx as any).shift?.locationId as string | null | undefined ?? null;
+
+  // Resolve QBO context — prefer location-level connection if the shift has one
+  const ctx = await resolveQboContext(tenantId, locationId);
+
+  // Resolve location-pinned GL accounts (cash drawer vs undeposited funds)
+  const locationPinned = locationId
+    ? await getLocationPostingAccounts(locationId)
+    : { ar: null, undepositedFunds: null, deferredRevenue: null, defaultRevenue: null, salesTax: null, earlyTermination: null, achReturnFee: null };
+
+  // For CASH payments use the cash-drawer bank account; for card/ACH use
+  // undeposited funds so reconciliation can batch them by deposit date.
+  let depositAccountQboId: string | null = null;
+  const paymentMethod = (tx as any).status as string; // POS uses status as the payment method value
+
+  if (paymentMethod === "CASH" && locationId) {
+    // bankGlAccountId → GlAccount.qboAccountId
+    const loc = await (prisma as any).location.findUnique({
+      where: { id: locationId },
+      select: {
+        bankGlAccount: {
+          select: { qboAccountId: true },
+        },
+      },
+    });
+    depositAccountQboId = loc?.bankGlAccount?.qboAccountId ?? null;
+  }
+
+  // Fall back to undepositedFunds for card/ACH, or when cash-drawer account is unmapped
+  if (!depositAccountQboId && locationPinned.undepositedFunds?.qboAccountId) {
+    depositAccountQboId = locationPinned.undepositedFunds.qboAccountId;
+  }
+
+  // Build SalesReceipt line items
+  const lines: Record<string, unknown>[] = ((tx as any).lineItems as any[]).map(
+    (li: any, idx: number) => {
+      const qboItemId = li.product?.qboItemId as string | null;
+      return {
+        LineNum: idx + 1,
+        Amount: li.extendedCents / 100,
+        DetailType: "SalesItemLineDetail",
+        Description: li.product?.name ?? `Line ${idx + 1}`,
+        SalesItemLineDetail: {
+          Qty: li.quantity,
+          UnitPrice: li.unitPriceCents / 100,
+          ...(qboItemId ? { ItemRef: { value: qboItemId } } : {}),
+        },
+      };
+    },
+  );
+
+  // Include tax as a separate line when non-zero (QBO handles tax lines explicitly)
+  if ((tx as any).taxCents > 0) {
+    lines.push({
+      Amount: (tx as any).taxCents / 100,
+      DetailType: "SalesItemLineDetail",
+      Description: "Sales Tax",
+      SalesItemLineDetail: {
+        Qty: 1,
+        UnitPrice: (tx as any).taxCents / 100,
+      },
+    });
+  }
+
+  const receiptData: Record<string, unknown> = {
+    TxnDate: (tx as any).createdAt instanceof Date
+      ? ((tx as any).createdAt as Date).toISOString().split("T")[0]
+      : new Date().toISOString().split("T")[0],
+    DocNumber: posTicketId.slice(0, 21),
+    PrivateNote: `Helm POS ${posTicketId}`,
+    Line: lines,
+    TotalAmt: (tx as any).totalCents / 100,
+  };
+
+  if (depositAccountQboId) {
+    receiptData.DepositToAccountRef = { value: depositAccountQboId };
+  }
+
+  const result = await qboRequest(ctx, "POST", "salesreceipt?minorversion=73", receiptData);
+  const qboSalesReceiptId = result.SalesReceipt.Id as string;
+
+  await auditLog(tenantId, "QBO_POS_SALESRECEIPT_SYNCED", {
+    posTicketId,
+    qboSalesReceiptId,
+    locationId: ctx.locationId ?? null,
+    paymentMethod,
+  });
 }

@@ -11,8 +11,9 @@ import {
   createPaymentIntent as createTerminalPaymentIntent,
   capturePayment,
 } from "../services/stripe-terminal.js";
-import { calculateTax } from "../services/tax-engine.js";
+import { getTaxProvider } from "../services/tax-engine.js";
 import { resolveProductTaxCategory } from "../services/product-defaults.js";
+import { syncPosTicketAsReceipt } from "../services/qbo-sync.js";
 
 const router: Router = Router();
 
@@ -411,12 +412,20 @@ router.post(
 
       // Resolve location for tax — taken from the open shift, if any.
       let locationId: string | null = null;
+      let locationTaxProvider: import("@prisma/client").TaxProvider | null = null;
       if (data.shiftId) {
         const shift = await prisma.shift.findFirst({
           where: { id: data.shiftId, tenantId },
           select: { locationId: true },
         });
         locationId = shift?.locationId ?? null;
+        if (locationId) {
+          const loc = await prisma.location.findUnique({
+            where: { id: locationId },
+            select: { taxProvider: true },
+          });
+          locationTaxProvider = loc?.taxProvider ?? null;
+        }
       }
 
       // Build tax engine input. Per-line tax category resolves via:
@@ -559,6 +568,24 @@ router.post(
           },
         },
       });
+
+      // Best-effort QB SalesReceipt push. Runs after the audit log so the POS
+      // transaction is fully committed before we touch QBO. Failure here is
+      // non-fatal — the POS sale has already succeeded and the cashier should
+      // not see a payment error because QBO is temporarily offline.
+      if (locationId) {
+        try {
+          const loc = await prisma.location.findUnique({
+            where: { id: locationId },
+            select: { qboRealmId: true } as any,
+          });
+          if ((loc as any)?.qboRealmId) {
+            await syncPosTicketAsReceipt(transaction.id, tenantId);
+          }
+        } catch (err) {
+          console.error("[pos] QB SalesReceipt push failed:", err);
+        }
+      }
 
       res.status(201).json(transaction);
     } catch (err) {

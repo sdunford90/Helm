@@ -1,7 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import { todayDateOnly } from "@helm/shared-types";
-import { calculateTax } from "./tax-engine.js";
+import { getTaxProvider, checkTaxExempt } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
 import { resolveDockageRateGlAccount } from "./gl-account-resolver.js";
@@ -213,16 +213,31 @@ export async function generateRecurringInvoices(
       if (lineItems.length === 0) continue;
 
       // 3. Calculate tax (multi-jurisdiction)
-      const taxResult = await calculateTax({
-        tenantId,
-        locationId: contract.slip.locationId,
-        customerId: contract.customerId,
-        lineItems: lineItems.map((li) => ({
-          description: li.description,
-          amountCents: li.unitPriceCents * li.quantity,
-          taxCategory: li.taxCategory,
-        })),
-      });
+      // Resolve the location's taxProvider so the factory can route to
+      // Avalara / TaxJar when the marina has configured an external provider.
+      const locationForTax = contract.slip.locationId
+        ? await prisma.location.findUnique({
+            where: { id: contract.slip.locationId },
+            select: { taxProvider: true },
+          })
+        : null;
+
+      const customerExempt = contract.customerId
+        ? await checkTaxExempt(contract.customerId, tenantId)
+        : false;
+
+      const taxResult = customerExempt || !contract.slip.locationId
+        ? { totalTaxCents: 0, items: lineItems.map((li) => ({ description: li.description, taxRate: 0, taxCents: 0, breakdowns: [] })) }
+        : await getTaxProvider(locationForTax?.taxProvider).calculateTax({
+            tenantId,
+            locationId: contract.slip.locationId,
+            lineItems: lineItems.map((li) => ({
+              description: li.description,
+              amountCents: li.unitPriceCents * li.quantity,
+              taxCategory: li.taxCategory,
+            })),
+            customerExempt,
+          });
 
       // 4. Create invoice in a transaction
       const invoiceId = uuid();

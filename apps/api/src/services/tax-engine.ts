@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { TaxProvider } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Multi-Jurisdiction Sales Tax Engine
@@ -67,6 +68,156 @@ export async function checkTaxExempt(
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Provider interface — every tax engine implementation must satisfy this.
+// ---------------------------------------------------------------------------
+
+export interface TaxEngineProvider {
+  calculateTax(params: {
+    locationId: string;
+    tenantId: string;
+    lineItems: TaxLineItem[];
+    customerExempt: boolean;
+    transactionDate?: Date;
+  }): Promise<TaxResult>;
+}
+
+// ---------------------------------------------------------------------------
+// InternalTaxProvider — the existing multi-jurisdiction engine.
+// ---------------------------------------------------------------------------
+
+class InternalTaxProvider implements TaxEngineProvider {
+  async calculateTax(params: {
+    locationId: string;
+    tenantId: string;
+    lineItems: TaxLineItem[];
+    customerExempt: boolean;
+    transactionDate?: Date;
+  }): Promise<TaxResult> {
+    const { locationId, tenantId, lineItems, customerExempt, transactionDate } = params;
+    const asOfDate = transactionDate ?? new Date();
+
+    if (!lineItems.length) return DEFAULT_TAX_RESULT(lineItems);
+
+    if (customerExempt) return DEFAULT_TAX_RESULT(lineItems);
+
+    // Load jurisdiction stack for the location, ordered by sortOrder
+    const locationLinks = await prisma.locationTaxJurisdiction.findMany({
+      where: { locationId, tenantId },
+      orderBy: { sortOrder: "asc" },
+      include: {
+        jurisdiction: {
+          include: {
+            rates: {
+              where: {
+                tenantId,
+                effectiveFrom: { lte: asOfDate },
+                OR: [
+                  { effectiveTo: null },
+                  { effectiveTo: { gt: asOfDate } },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!locationLinks.length) return DEFAULT_TAX_RESULT(lineItems);
+
+    let totalTaxCents = 0;
+
+    const items: TaxResultItem[] = lineItems.map((li) => {
+      const category = li.taxCategory ?? "general";
+      const breakdowns: TaxBreakdown[] = [];
+
+      for (const link of locationLinks) {
+        const { jurisdiction } = link;
+        const rates = jurisdiction.rates;
+
+        // Prefer exact category match, fall back to "general"
+        const rate =
+          rates.find((r) => r.category === category) ??
+          rates.find((r) => r.category === "general");
+
+        if (!rate || rate.ratePctBps === 0) continue;
+
+        const taxCents = Math.round((li.amountCents * rate.ratePctBps) / 10_000);
+
+        breakdowns.push({
+          jurisdictionId: jurisdiction.id,
+          jurisdictionCode: jurisdiction.code,
+          jurisdictionName: jurisdiction.name,
+          kind: jurisdiction.kind,
+          ratePctBps: rate.ratePctBps,
+          taxableAmountCents: li.amountCents,
+          taxCents,
+          glAccountId: rate.glAccountId,
+          taxRate: rate.ratePctBps / 10_000,
+          jurisdiction: jurisdiction.code,
+          category,
+        });
+      }
+
+      const itemTaxCents = breakdowns.reduce((s, b) => s + b.taxCents, 0);
+      const totalBps = breakdowns.reduce((s, b) => s + b.ratePctBps, 0);
+      totalTaxCents += itemTaxCents;
+
+      return {
+        description: li.description,
+        taxRate: totalBps / 10_000,
+        taxCents: itemTaxCents,
+        breakdowns,
+      };
+    });
+
+    return { totalTaxCents, items };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stub providers — throw descriptive errors until the integration is wired up.
+// ---------------------------------------------------------------------------
+
+class AvalaraTaxProvider implements TaxEngineProvider {
+  async calculateTax(): Promise<TaxResult> {
+    throw new Error(
+      "Avalara integration not yet configured. Contact support to enable.",
+    );
+  }
+}
+
+class TaxJarProvider implements TaxEngineProvider {
+  async calculateTax(): Promise<TaxResult> {
+    throw new Error(
+      "TaxJar integration not yet configured. Contact support to enable.",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory — callers resolve the correct provider from Location.taxProvider.
+// ---------------------------------------------------------------------------
+
+export function getTaxProvider(
+  taxProvider?: TaxProvider | null,
+): TaxEngineProvider {
+  switch (taxProvider) {
+    case "AVALARA":
+      return new AvalaraTaxProvider();
+    case "TAXJAR":
+      return new TaxJarProvider();
+    default:
+      return new InternalTaxProvider();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BACKWARD COMPATIBILITY: The original calculateTax export is preserved as a
+// shim so existing callers don't break.  New code should use getTaxProvider()
+// instead so the correct provider is selected per-location.
+// ---------------------------------------------------------------------------
+
 /**
  * Calculate tax for a set of line items using the jurisdiction stack
  * assigned to the given Location.
@@ -128,84 +279,22 @@ export async function calculateTax(
 
   // Customer-level exempt status only applies when a customer was supplied.
   // Anonymous POS sales fall through to the location jurisdiction stack.
+  let customerExempt = false;
   if (resolvedCustomerId) {
-    const isExempt = await checkTaxExempt(resolvedCustomerId, tenantId);
-    if (isExempt) return DEFAULT_TAX_RESULT(resolvedLineItems);
+    customerExempt = await checkTaxExempt(resolvedCustomerId, tenantId);
+    if (customerExempt) return DEFAULT_TAX_RESULT(resolvedLineItems);
   }
 
-  // Load jurisdiction stack for the location, ordered by sortOrder
-  const locationLinks = locationId
-    ? await prisma.locationTaxJurisdiction.findMany({
-        where: { locationId, tenantId },
-        orderBy: { sortOrder: "asc" },
-        include: {
-          jurisdiction: {
-            include: {
-              rates: {
-                where: {
-                  tenantId,
-                  effectiveFrom: { lte: asOfDate },
-                  OR: [
-                    { effectiveTo: null },
-                    { effectiveTo: { gt: asOfDate } },
-                  ],
-                },
-              },
-            },
-          },
-        },
-      })
-    : [];
+  // No locationId → no jurisdiction stack → zero tax.
+  if (!locationId) return DEFAULT_TAX_RESULT(resolvedLineItems);
 
-  if (!locationLinks.length) return DEFAULT_TAX_RESULT(resolvedLineItems);
-
-  let totalTaxCents = 0;
-
-  const items: TaxResultItem[] = resolvedLineItems.map((li) => {
-    const category = li.taxCategory ?? "general";
-    const breakdowns: TaxBreakdown[] = [];
-
-    for (const link of locationLinks) {
-      const { jurisdiction } = link;
-      const rates = jurisdiction.rates;
-
-      // Prefer exact category match, fall back to "general"
-      const rate =
-        rates.find((r) => r.category === category) ??
-        rates.find((r) => r.category === "general");
-
-      if (!rate || rate.ratePctBps === 0) continue;
-
-      const taxCents = Math.round((li.amountCents * rate.ratePctBps) / 10_000);
-
-      breakdowns.push({
-        jurisdictionId: jurisdiction.id,
-        jurisdictionCode: jurisdiction.code,
-        jurisdictionName: jurisdiction.name,
-        kind: jurisdiction.kind,
-        ratePctBps: rate.ratePctBps,
-        taxableAmountCents: li.amountCents,
-        taxCents,
-        glAccountId: rate.glAccountId,
-        taxRate: rate.ratePctBps / 10_000,
-        jurisdiction: jurisdiction.code,
-        category,
-      });
-    }
-
-    const itemTaxCents = breakdowns.reduce((s, b) => s + b.taxCents, 0);
-    const totalBps = breakdowns.reduce((s, b) => s + b.ratePctBps, 0);
-    totalTaxCents += itemTaxCents;
-
-    return {
-      description: li.description,
-      taxRate: totalBps / 10_000,
-      taxCents: itemTaxCents,
-      breakdowns,
-    };
+  return new InternalTaxProvider().calculateTax({
+    locationId,
+    tenantId,
+    lineItems: resolvedLineItems,
+    customerExempt,
+    transactionDate: asOfDate,
   });
-
-  return { totalTaxCents, items };
 }
 
 /** Legacy helper — returns all currently-active tax rates for the tenant. */

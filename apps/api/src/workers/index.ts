@@ -13,6 +13,7 @@ import { sendSms } from "../lib/sms.js";
 import { prisma } from "../lib/prisma.js";
 import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
 import { runTenantLifecycleCheck } from "../jobs/tenant-lifecycle.js";
+import { runInventoryReconciliation } from "../jobs/inventory-reconciliation.js";
 import { generateRecurringInvoices } from "../services/billing.js";
 import { recognizeDeferred } from "../services/deferred-revenue.js";
 import { runCardExpiryRemindersForAllTenants, runCardExpiryReminders } from "../services/card-expiry-reminders.js";
@@ -379,6 +380,16 @@ const billingWorker = new Worker(
         break;
       }
 
+      case "inventory-reconciliation": {
+        // Run for a specific tenant or all locations with QB connections
+        const tenantId = job.data?.tenantId as string | undefined;
+        await runInventoryReconciliation(tenantId);
+        console.log(
+          `[billing-worker] Inventory reconciliation complete${tenantId ? ` for tenant ${tenantId}` : " for all tenants"}`,
+        );
+        break;
+      }
+
       default:
         console.warn(`[billing-worker] Unknown job name: ${job.name}`);
     }
@@ -601,6 +612,16 @@ async function scheduleRepeatableJobs() {
       {
         repeat: { pattern: "0 0 * * 0" },
         jobId: "cron-algorithmic-pricing",
+      },
+    );
+
+    // Daily at 02:00 UTC — nightly inventory reconciliation (Helm QOH vs QB)
+    await queues.billing.add(
+      "inventory-reconciliation",
+      {},
+      {
+        repeat: { pattern: "0 2 * * *" },
+        jobId: "cron-inventory-reconciliation",
       },
     );
 
