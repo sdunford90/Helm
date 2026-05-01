@@ -5,43 +5,104 @@ export async function seedRentals(prisma: PrismaClient, tenantId: string, custom
   await prisma.pricingRule.deleteMany({ where: { rentalProduct: { tenantId } } });
   await prisma.rentalProduct.deleteMany({ where: { tenantId } });
 
-  const mainId = locations[0]?.id;
-  const northId = locations[1]?.id ?? mainId;
-  const southId = locations[2]?.id ?? mainId;
+  const mainId = locations[0]?.id;           // Sunset Harbor
+  const pelicanCoveId = locations[1]?.id ?? mainId; // Pelican Cove
 
   const products = await Promise.all([
-    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Bay Cruiser 24', description: '24ft pontoon boat, perfect for families', durationType: 'HOURLY', basePriceCents: 8500, floorPriceCents: 6000, ceilingPriceCents: 15000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Wave Runner Pro', description: 'High-performance jet ski', durationType: 'HOURLY', basePriceCents: 6500, floorPriceCents: 4500, ceilingPriceCents: 12000, damageWaiverCents: 1500, depositCents: 30000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, locationId: southId, name: 'Harbor Explorer', description: 'Tandem kayak for harbor touring', durationType: 'HOURLY', basePriceCents: 2500, floorPriceCents: 1500, ceilingPriceCents: 5000, damageWaiverCents: 0, depositCents: 0, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, locationId: northId, name: 'Sunset Sailor 28', description: '28ft sailboat with full rigging', durationType: 'HOURLY', basePriceCents: 9500, floorPriceCents: 7000, ceilingPriceCents: 18000, damageWaiverCents: 3500, depositCents: 75000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, locationId: mainId, name: 'Fishing Charter 30', description: '30ft center console with fishing gear', durationType: 'HOURLY', basePriceCents: 12000, floorPriceCents: 9000, ceilingPriceCents: 20000, damageWaiverCents: 3000, depositCents: 60000, active: true } }),
-    prisma.rentalProduct.create({ data: { tenantId, locationId: southId, name: 'Family Pontoon 28', description: 'Large pontoon for groups up to 12', durationType: 'HOURLY', basePriceCents: 11000, floorPriceCents: 8000, ceilingPriceCents: 18000, damageWaiverCents: 2500, depositCents: 50000, active: true } }),
+    prisma.rentalProduct.create({
+      data: {
+        tenantId,
+        locationId: mainId,
+        name: 'Bay Explorer 24',
+        description: '24ft center console, great for Sarasota Bay fishing and exploring',
+        durationType: 'HOURLY',
+        basePriceCents: 8500,
+        floorPriceCents: 6000,
+        ceilingPriceCents: 15000,
+        damageWaiverCents: 2500,
+        depositCents: 50000,
+        active: true,
+      },
+    }),
+    prisma.rentalProduct.create({
+      data: {
+        tenantId,
+        locationId: mainId,
+        name: 'Sunset Pontoon 22',
+        description: '22ft pontoon boat, perfect for family outings and sunset cruises',
+        durationType: 'HOURLY',
+        basePriceCents: 7500,
+        floorPriceCents: 5500,
+        ceilingPriceCents: 13000,
+        damageWaiverCents: 2000,
+        depositCents: 40000,
+        active: true,
+      },
+    }),
+    prisma.rentalProduct.create({
+      data: {
+        tenantId,
+        locationId: mainId,
+        name: 'Kayak Single',
+        description: 'Single-seat kayak for harbor and mangrove tours',
+        durationType: 'HOURLY',
+        basePriceCents: 2500,
+        floorPriceCents: 1500,
+        ceilingPriceCents: 5000,
+        damageWaiverCents: 0,
+        depositCents: 0,
+        active: true,
+      },
+    }),
+    prisma.rentalProduct.create({
+      data: {
+        tenantId,
+        locationId: pelicanCoveId,
+        name: 'Pelican Cruiser 28',
+        description: '28ft bowrider ideal for Venice Inlet and Shark River trips',
+        durationType: 'HOURLY',
+        basePriceCents: 9500,
+        floorPriceCents: 7000,
+        ceilingPriceCents: 17000,
+        damageWaiverCents: 3000,
+        depositCents: 60000,
+        active: true,
+      },
+    }),
   ]);
 
   // Pricing rules
   await Promise.all([
     prisma.pricingRule.create({ data: { rentalProductId: products[0].id, ruleType: 'SEASONAL', value: 25, startDate: new Date('2026-06-01'), endDate: new Date('2026-09-01'), priority: 1 } }),
     prisma.pricingRule.create({ data: { rentalProductId: products[0].id, ruleType: 'PEAK_DAY', value: 15, startDate: new Date('2026-01-01'), endDate: new Date('2026-12-31'), daysJson: [0, 6], priority: 2 } }),
-    prisma.pricingRule.create({ data: { rentalProductId: products[1].id, ruleType: 'SEASONAL', value: 25, startDate: new Date('2026-06-01'), endDate: new Date('2026-09-01'), priority: 1 } }),
+    prisma.pricingRule.create({ data: { rentalProductId: products[1].id, ruleType: 'SEASONAL', value: 20, startDate: new Date('2026-06-01'), endDate: new Date('2026-09-01'), priority: 1 } }),
     prisma.pricingRule.create({ data: { rentalProductId: products[1].id, ruleType: 'LEAD_TIME', value: -10, startDate: new Date('2026-01-01'), endDate: new Date('2026-12-31'), priority: 3 } }),
   ]);
 
   // Reservations
-  const statuses = ['CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT', 'CONFIRMED', 'CONFIRMED', 'CANCELLED', 'CONFIRMED', 'CHECKED_OUT', 'NO_SHOW', 'CONFIRMED'] as const;
-  const reservations = await Promise.all(statuses.map((status, i) => {
-    const dayOffset = i < 5 ? i : -(i - 4);
-    const startDt = new Date(2026, 2, 25 + dayOffset, 9, 0);
-    const endDt = new Date(startDt); endDt.setHours(endDt.getHours() + 4);
-    const product = products[i % products.length];
-    const customer = customers[i % customers.length];
-    return prisma.reservation.create({
-      data: {
-        tenantId, customerId: customer.id, rentalProductId: product.id,
-        startDt, endDt, totalCents: product.basePriceCents * 4,
-        status, waiverSelected: Math.random() > 0.3,
-      },
-    });
-  }));
+  const statuses = ['CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT', 'CONFIRMED', 'CONFIRMED', 'CANCELLED', 'CONFIRMED', 'CHECKED_OUT'] as const;
+  const reservations = await Promise.all(
+    statuses.map((status, i) => {
+      const dayOffset = i < 4 ? i : -(i - 3);
+      const startDt = new Date(2026, 3, 24 + dayOffset, 9, 0);
+      const endDt = new Date(startDt);
+      endDt.setHours(endDt.getHours() + 4);
+      const product = products[i % products.length];
+      const customer = customers[i % customers.length];
+      return prisma.reservation.create({
+        data: {
+          tenantId,
+          customerId: customer.id,
+          rentalProductId: product.id,
+          startDt,
+          endDt,
+          totalCents: product.basePriceCents * 4,
+          status,
+          waiverSelected: Math.random() > 0.4,
+        },
+      });
+    }),
+  );
 
   return { products, reservations };
 }
