@@ -30,6 +30,9 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
     where: { id: locationId, tenantId },
     select: {
       qboRealmId: true,
+      qboCompanyName: true,
+      stripeAccountId: true,
+      stripeOnboardingComplete: true,
       arGlAccountId: true,
       undepositedFundsGlAccountId: true,
       deferredRevenueGlAccountId: true,
@@ -95,7 +98,7 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
   return {
     step1_qbo: {
       complete: qboConnected,
-      companyName: null as string | null,
+      companyName: location.qboCompanyName ?? null,
       glAccountCount,
       missingMappings: 0,
     },
@@ -117,6 +120,12 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
       complete: dockageCount > 0 || serviceFeeCount > 0,
       dockageCount,
       serviceFeeCount,
+    },
+    step6_stripe: {
+      complete: !!location.stripeAccountId && !!location.stripeOnboardingComplete,
+      connected: !!location.stripeAccountId,
+      onboardingComplete: !!location.stripeOnboardingComplete,
+      accountId: location.stripeAccountId ?? null,
     },
     overallComplete: location.accountingSetupComplete,
     gracePeriodEndsAt: location.accountingGracePeriodEndsAt?.toISOString() ?? null,
@@ -193,7 +202,50 @@ router.get(
         prisma.auditLog.count({ where }),
       ]);
 
-      res.json({ items, total });
+      // Map Prisma AuditLog rows to the shape the AuditTrailPanel expects.
+      // The panel surfaces field/from/to per row when there's a single
+      // changed field; otherwise it falls back to a JSON description.
+      const data = items.map((row) => {
+        const changes = (row.changedFieldsJson ?? null) as Record<
+          string,
+          { from?: unknown; to?: unknown } | unknown
+        > | null;
+        let field: string | null = null;
+        let fromValue: string | null = null;
+        let toValue: string | null = null;
+        let description: string | null = null;
+        if (changes && typeof changes === "object") {
+          const keys = Object.keys(changes);
+          if (keys.length === 1) {
+            field = keys[0]!;
+            const v = (changes as Record<string, unknown>)[field];
+            if (v && typeof v === "object" && v !== null && ("from" in v || "to" in v)) {
+              const ft = v as { from?: unknown; to?: unknown };
+              fromValue = ft.from === undefined || ft.from === null ? null : String(ft.from);
+              toValue = ft.to === undefined || ft.to === null ? null : String(ft.to);
+            } else {
+              toValue = v === undefined || v === null ? null : String(v);
+            }
+          } else if (keys.length > 1) {
+            description = JSON.stringify(changes);
+          }
+        }
+        return {
+          id: row.id,
+          createdAt: row.createdAt.toISOString(),
+          userId: row.userId,
+          userName: row.userName,
+          userRole: null as string | null,
+          recordType: row.recordType,
+          action: row.action,
+          field,
+          fromValue,
+          toValue,
+          description,
+        };
+      });
+
+      res.json({ data, total });
     } catch (err) {
       next(err);
     }
@@ -590,10 +642,25 @@ router.get(
         }
       }
 
+      // Map to the shape the SyncHealthPanel expects.
+      const failedSyncsForPanel = failedSyncs.map((f) => ({
+        id: `${f.entityType}:${f.entityId}`,
+        entityType: f.entityType,
+        entityId: f.entityId,
+        entityName: f.entityLabel,
+        error: f.error,
+        attemptedAt: f.failedAt ?? new Date().toISOString(),
+        retryCount: f.retryCount,
+      }));
+
       res.json({
         connected,
+        queueDepth: failedSyncs.length,
+        failedSyncs: failedSyncsForPanel,
+        recentSuccesses: [],
+        lastSyncAt: lastChartSync,
+        // Backwards-compat fields (older callers)
         lastChartSync,
-        failedSyncs,
       });
     } catch (err) {
       next(err);
@@ -987,7 +1054,31 @@ router.get(
         orderBy: { detectedAt: "desc" },
       });
 
-      res.json({ alerts });
+      // Map to the shape the ReconciliationPanel expects.
+      const data = alerts.map((a) => {
+        const helmCents = a.helmValueCents;
+        const qbCents = a.qbValueCents;
+        const variance = a.deltaCents;
+        const variancePct = helmCents !== 0 ? (variance / helmCents) * 100 : null;
+        const absPct = variancePct === null ? null : Math.abs(variancePct);
+        let status: "OK" | "WARNING" | "ERROR" = "OK";
+        if (variance !== 0) {
+          status = absPct !== null && absPct < 1 ? "WARNING" : "ERROR";
+        }
+        return {
+          id: a.id,
+          categoryId: a.categoryId,
+          categoryName: a.category?.name ?? "Unknown",
+          helmValueCents: helmCents,
+          qbBalanceCents: qbCents,
+          varianceCents: variance,
+          variancePct,
+          lastCheckedAt: a.detectedAt.toISOString(),
+          status,
+        };
+      });
+
+      res.json({ data });
     } catch (err) {
       next(err);
     }

@@ -2,12 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Check, AlertTriangle, ChevronDown, ChevronRight,
   Plug, BookOpen, Tag, DollarSign, Percent, FileText,
-  Activity, BarChart2, Calendar, Clock,
+  Activity, BarChart2, Calendar, Clock, CreditCard,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import { api } from '../lib/api';
 
 import QBConnectionPanel from '../components/accounting/QBConnectionPanel';
+import StripeConnectionPanel from '../components/accounting/StripeConnectionPanel';
 import PostingAccountsPanel from '../components/accounting/PostingAccountsPanel';
 import CategoryGLPanel from '../components/accounting/CategoryGLPanel';
 import SalesTaxPanel from '../components/accounting/SalesTaxPanel';
@@ -25,6 +26,7 @@ interface SetupStatus {
   step3_categories: { complete: boolean; mappedCount: number; totalCount: number };
   step4_tax: { complete: boolean; jurisdictionCount: number };
   step5_rates: { complete: boolean; dockageCount: number; serviceFeeCount: number };
+  step6_stripe: { complete: boolean; connected: boolean; onboardingComplete: boolean; accountId: string | null };
   overallComplete: boolean;
   gracePeriodEndsAt: string | null;
 }
@@ -158,6 +160,21 @@ const STEPS: StepDef[] = [
     complete: (s) => s?.step5_rates.complete ?? false,
     component: <RatesFeesPanel />,
   },
+  {
+    id: 'stripe',
+    number: 6,
+    title: 'Stripe Payments',
+    icon: <CreditCard size={16} />,
+    getMetaText: (s) => s
+      ? s.step6_stripe.complete
+        ? `Connected · ${s.step6_stripe.accountId ? '****' + s.step6_stripe.accountId.slice(-4) : 'active'}`
+        : s.step6_stripe.connected
+          ? 'Onboarding incomplete'
+          : 'Not connected'
+      : 'Loading…',
+    complete: (s) => s?.step6_stripe.complete ?? false,
+    component: <StripeConnectionPanel />,
+  },
 ];
 
 /* ── Tab definition ─────────────────────────────────── */
@@ -200,7 +217,13 @@ export default function AccountingHub() {
   }, [loadStatus]);
 
   const completedCount = STEPS.filter((s) => s.complete(setupStatus)).length;
-  const overallComplete = setupStatus?.overallComplete ?? false;
+  // Banner truth: derive from the STEPS list itself so adding/removing steps
+  // can't desync from the persisted `accountingSetupComplete` flag (which
+  // historically only covered steps 1-5). When all step.complete() return
+  // true, surface the success banner; otherwise fall back to the persisted
+  // flag for the legacy "marked complete" copy.
+  const allStepsComplete = STEPS.every((s) => s.complete(setupStatus));
+  const overallComplete = allStepsComplete && (setupStatus?.overallComplete ?? false);
   const incompleteCount = STEPS.length - completedCount;
 
   return (
