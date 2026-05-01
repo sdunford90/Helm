@@ -401,7 +401,7 @@ export default function AppLayout() {
             if (item.path === '/concierge' && !modules.concierge) return false;
             // Role-gated items: check against current user's role
             const reqRole = (item as { requireRole?: string }).requireRole;
-            if (reqRole && currentUser && currentUser.role !== reqRole && currentUser.role !== 'PLATFORM_ADMIN') return false;
+            if (reqRole && currentUser?.role && currentUser.role !== reqRole && currentUser.role !== 'PLATFORM_ADMIN') return false;
             return true;
           });
           if (visibleItems.length === 0) return null;
