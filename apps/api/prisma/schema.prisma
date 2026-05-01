@@ -294,6 +294,17 @@ enum ChargebackStatus {
   LOST
 }
 
+enum CostingMethod {
+  FIFO
+  WAC
+}
+
+enum TaxProvider {
+  INTERNAL
+  AVALARA
+  TAXJAR
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 model Tenant {
@@ -449,11 +460,24 @@ model Location {
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 
+  // Accounting setup gate (Task 1 / Task 17)
+  accountingSetupComplete      Boolean   @default(false)
+  accountingSetupCompletedAt   DateTime?
+  accountingSetupStep          Int       @default(0)
+  accountingGracePeriodEndsAt  DateTime?
+
+  // Tax engine provider (Task 14)
+  taxProvider                  TaxProvider @default(INTERNAL)
+
+  // Bank/operating account for Stripe payout deposits (Task 19)
+  bankGlAccountId              String?
+
   // Per-location posting account pins (Tasks #210, #222).
   arGlAccountId               String?
   undepositedFundsGlAccountId String?
   deferredRevenueGlAccountId  String?
 
+  bankGlAccount             GlAccount? @relation(name: "LocationBankGlAccount", fields: [bankGlAccountId], references: [id])
   arGlAccount               GlAccount? @relation(name: "LocationArGlAccount", fields: [arGlAccountId], references: [id])
   undepositedFundsGlAccount GlAccount? @relation(name: "LocationUndepositedFundsGlAccount", fields: [undepositedFundsGlAccountId], references: [id])
   deferredRevenueGlAccount  GlAccount? @relation(name: "LocationDeferredRevenueGlAccount", fields: [deferredRevenueGlAccountId], references: [id])
@@ -496,6 +520,9 @@ model Location {
   serviceFeeGlMappings      ServiceFeeGlMapping[]      @relation(name: "LocationServiceFeeGlMappings")
   rentalProductGlMappings   RentalProductGlMapping[]   @relation(name: "LocationRentalProductGlMappings")
   securityDeposits          SecurityDeposit[]          @relation(name: "LocationSecurityDeposits")
+  accountingPeriods         AccountingPeriod[]
+  inventoryLots             InventoryLot[]
+  reconciliationAlerts      ReconciliationAlert[]
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -1266,6 +1293,7 @@ model GlAccount {
   dockageRateGlMappings                   DockageRateGlMapping[]
   serviceFeeGlMappings                    ServiceFeeGlMapping[]
 
+  locationsBankAccount      Location[] @relation(name: "LocationBankGlAccount")
   locationsAr               Location[] @relation(name: "LocationArGlAccount")
   locationsUndepositedFunds Location[] @relation(name: "LocationUndepositedFundsGlAccount")
   locationsDeferredRevenue  Location[] @relation(name: "LocationDeferredRevenueGlAccount")
@@ -1376,19 +1404,41 @@ model RentalProductGlMapping {
 model GlEntry {
   id          String   @id @default(uuid())
   tenantId    String
+  locationId  String?
   journalId   String?
   accountId   String
   debitCents  Int      @default(0)
   creditCents Int      @default(0)
   description String?
   postedAt    DateTime @default(now())
+  entryDate   DateTime @default(now())
   sourceType  String?
   sourceId    String?
 
   account GlAccount @relation(fields: [accountId], references: [id])
 
   @@index([tenantId])
+  @@index([tenantId, locationId])
   @@map("gl_entries")
+}
+
+model AccountingPeriod {
+  id               String    @id @default(uuid())
+  tenantId         String
+  locationId       String
+  periodStart      DateTime
+  periodEnd        DateTime
+  closedAt         DateTime?
+  closedByUserId   String?
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+
+  location         Location  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, periodStart])
+  @@index([tenantId, locationId])
+  @@map("accounting_periods")
 }
 
 model AuditLog {
@@ -1923,6 +1973,8 @@ model Product {
   qboItemSyncError   String?
   qboItemSyncErrorAt DateTime?
 
+  averageCostCents  Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
@@ -1934,6 +1986,7 @@ model Product {
   adjustments             InventoryAdjustment[]
   poLineItems             PoLineItem[]
   countItems              InventoryCountItem[]
+  inventoryLots           InventoryLot[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -1955,11 +2008,16 @@ model ProductCategory {
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @default(now()) @updatedAt
 
+  costingMethod     CostingMethod  @default(WAC)
+  isFuelCategory    Boolean        @default(false)
+  taxCategoryLabel  String?
+
   // GL accounts for inventory products in this category live entirely in
   // ProductCategoryGlMapping (per-location). The legacy tenant-wide
   // default*GlAccountId fields were dropped in 20260429080000.
-  products   Product[]
-  glMappings ProductCategoryGlMapping[]
+  products              Product[]
+  glMappings            ProductCategoryGlMapping[]
+  reconciliationAlerts  ReconciliationAlert[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -1981,6 +2039,44 @@ model Inventory {
   @@map("inventory")
 }
 
+model InventoryLot {
+  id               String    @id @default(uuid())
+  tenantId         String
+  productId        String
+  locationId       String
+  qtyRemaining     Int
+  unitCostCents    Int
+  receivedAt       DateTime  @default(now())
+  purchaseOrderId  String?
+
+  product          Product   @relation(fields: [productId], references: [id])
+  location         Location  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([productId, locationId, receivedAt])
+  @@map("inventory_lots")
+}
+
+model ReconciliationAlert {
+  id                String    @id @default(uuid())
+  tenantId          String
+  locationId        String
+  categoryId        String
+  helmValueCents    Int
+  qbValueCents      Int
+  deltaCents        Int
+  detectedAt        DateTime  @default(now())
+  resolvedAt        DateTime?
+  resolvedByUserId  String?
+  notes             String?
+
+  location          Location         @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  category          ProductCategory  @relation(fields: [categoryId], references: [id])
+
+  @@index([tenantId, locationId, resolvedAt])
+  @@map("reconciliation_alerts")
+}
+
 model PurchaseOrder {
   id           String    @id @default(uuid())
   tenantId     String
@@ -1990,10 +2086,12 @@ model PurchaseOrder {
   poNumber     String?
   status       String
   expectedDate DateTime?
-  notes        String?
-  totalCents   Int
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @default(now()) @updatedAt
+  notes              String?
+  totalCents         Int
+  receivedAt         DateTime?
+  receivedByUserId   String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @default(now()) @updatedAt
 
   // QuickBooks Online Bill sync state (populated when PO is received)
   qboBillId          String?
@@ -2016,9 +2114,11 @@ model PoLineItem {
   purchaseOrderId String
   productId       String
   productName     String
-  quantity        Int
-  unitCostCents   Int
-  receivedQty     Int    @default(0)
+  quantity           Int
+  unitCostCents      Int
+  receivedQty        Int    @default(0)
+  receivedAt         DateTime?
+  unitCostAtReceipt  Int?
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
