@@ -26,6 +26,7 @@ import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import AccountingHub from './pages/AccountingHub';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 
 function AppRoutes() {
@@ -63,6 +64,7 @@ function AppRoutes() {
         <Route path="/audit-log" element={<AuditLog />} />
         <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
+        <Route path="/accounting" element={<AccountingHub />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

@@ -28,6 +28,7 @@ import {
   ChevronDown,
   Package,
   FileSpreadsheet,
+  BookOpen,
 } from 'lucide-react';
 
 const LOCATIONS = [
@@ -77,6 +78,7 @@ const NAV_SECTIONS = [
     items: [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
+      { path: '/accounting', label: 'Accounting', icon: BookOpen },
       { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],
@@ -206,6 +208,7 @@ function getPageTitle(pathname: string): string {
     '/dock-walks': 'Dock Walks',
     '/reports': 'Reports',
     '/announcements': 'Announcements',
+    '/accounting': 'Accounting Hub',
     '/settings': 'Settings',
   };
   return map[pathname] || 'Helm';
