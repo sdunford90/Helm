@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
+import { PeriodLockedError } from "../services/period-guard.js";
 
 interface ErrorResponse {
   error: string;
@@ -19,6 +20,16 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  // --- Fiscal period locked ---
+  if (err instanceof PeriodLockedError) {
+    res.status(422).json({
+      error: err.message,
+      code: err.code,
+      periodLabel: err.periodLabel,
+    });
+    return;
+  }
+
   // --- Zod validation errors ---
   if (err instanceof ZodError) {
     const response: ErrorResponse = {

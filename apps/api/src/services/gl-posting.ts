@@ -3,7 +3,10 @@ import { v4 as uuid } from "uuid";
 import {
   isLocationQboConnected,
   resolveLocationSystemPostingAccount,
+  resolveProductGlAccounts,
 } from "./gl-account-resolver.js";
+import { assertPeriodOpen } from "./period-guard.js";
+import { restoreInventoryOnReturn } from "./costing-engine.js";
 
 /**
  * Loud-failure guard for posting consumers: when a stored line item carries a
@@ -110,6 +113,7 @@ async function postEntries(
   sourceType: string,
   sourceId: string,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  locationId?: string | null,
 ): Promise<string> {
   const totalDebits = lines.reduce((s, l) => s + l.debitCents, 0);
   const totalCredits = lines.reduce((s, l) => s + l.creditCents, 0);
@@ -124,6 +128,9 @@ async function postEntries(
     throw new Error("GL entries cannot all be zero");
   }
 
+  const entryDate = new Date();
+  await assertPeriodOpen(tenantId, locationId, entryDate, tx as Parameters<typeof assertPeriodOpen>[3]);
+
   const journalId = uuid();
   const db = tx ?? prisma;
 
@@ -132,6 +139,7 @@ async function postEntries(
       id: uuid(),
       tenantId,
       journalId,
+      locationId: locationId ?? null,
       accountId: l.accountId,
       debitCents: l.debitCents,
       creditCents: l.creditCents,
@@ -538,7 +546,7 @@ export async function postInvoice(
     }
   }
 
-  return postEntries(tenantId, lines, "INVOICE", invoice.id, tx);
+  return postEntries(tenantId, lines, "INVOICE", invoice.id, tx, locationId);
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +619,7 @@ export async function postPayment(
     "PAYMENT",
     payment.id,
     tx,
+    locationId,
   );
 }
 
@@ -680,6 +689,7 @@ export async function postRefund(
     "REFUND",
     payment.id,
     tx,
+    locationId,
   );
 }
 
@@ -751,6 +761,7 @@ export async function reversePostRefund(
     "REFUND_REVERSAL",
     payment.id,
     tx,
+    locationId,
   );
 }
 
@@ -785,7 +796,11 @@ export async function postVoid(
     description: `VOID reversal — ${e.description ?? ""}`,
   }));
 
-  return postEntries(tenantId, lines, "VOID", invoice.id, tx);
+  // Derive locationId from the original entries (all entries in a journal share
+  // the same location). Used for period-lock check and to tag the reversal rows.
+  const voidLocationId = originalEntries[0]?.locationId ?? null;
+
+  return postEntries(tenantId, lines, "VOID", invoice.id, tx, voidLocationId);
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +856,7 @@ export async function postSecurityDeposit(
     "SECURITY_DEPOSIT",
     deposit.id,
     tx,
+    locationId,
   );
 }
 
@@ -1163,4 +1179,69 @@ export async function postManualJournalEntry(
 ): Promise<string> {
   const sourceId = uuid();
   return postEntries(tenantId, entries, "MANUAL_JOURNAL", sourceId);
+}
+
+// ---------------------------------------------------------------------------
+// Inventory return — reverse COGS and restore QOH
+// ---------------------------------------------------------------------------
+//
+// Called when inventory items are returned by a customer (e.g. a refund on a
+// POS sale that included physical goods). Restores QOH at the current WAC
+// and posts the inverse of the original COGS entry:
+//   DR  Inventory Asset   (restore asset)
+//   CR  COGS              (reduce cost recognised)
+//
+// Returns always restore at current WAC regardless of the original costing
+// method (FIFO or WAC). This is standard accounting practice and avoids
+// reopening historical lots.
+
+export async function postInventoryReturn(params: {
+  tenantId: string;
+  locationId: string;
+  lineItems: Array<{ productId: string; qty: number }>;
+  sourceId: string; // e.g., refund ID
+}): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    for (const item of params.lineItems) {
+      const { unitCostCents, totalCostCents } = await restoreInventoryOnReturn({
+        tenantId: params.tenantId,
+        productId: item.productId,
+        locationId: params.locationId,
+        qtyReturned: item.qty,
+        tx,
+      });
+
+      if (totalCostCents === 0) continue;
+
+      // Resolve GL accounts for this product's category
+      const glAccounts = await resolveProductGlAccounts(
+        params.tenantId,
+        item.productId,
+        params.locationId,
+      );
+      if (!glAccounts.inventoryAssetGlAccountId || !glAccounts.cogsGlAccountId) continue;
+
+      // Reverse the COGS entry: DR Inventory Asset, CR COGS
+      await postEntries(
+        params.tenantId,
+        [
+          {
+            accountId: glAccounts.inventoryAssetGlAccountId,
+            debitCents: totalCostCents,
+            creditCents: 0,
+            description: `Inventory return ${params.sourceId} — restore asset`,
+          },
+          {
+            accountId: glAccounts.cogsGlAccountId,
+            debitCents: 0,
+            creditCents: totalCostCents,
+            description: `Inventory return ${params.sourceId} — COGS reversal`,
+          },
+        ],
+        "INVENTORY_RETURN",
+        params.sourceId,
+        tx,
+      );
+    }
+  });
 }
