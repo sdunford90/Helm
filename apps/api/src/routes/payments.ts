@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import type Stripe from "stripe";
 import { clerkAuth } from "../middleware/auth.js";
+import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
 import { postPayment, postRefund } from "../services/gl-posting.js";
@@ -201,6 +202,7 @@ router.get(
 
 router.post(
   "/",
+  requireAccountingSetup,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

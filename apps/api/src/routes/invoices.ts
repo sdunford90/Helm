@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
 import { postInvoice, postVoid } from "../services/gl-posting.js";
@@ -456,6 +457,7 @@ router.get(
 
 router.post(
   "/",
+  requireAccountingSetup,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -734,6 +736,7 @@ router.put(
 
 router.post(
   "/:id/finalize",
+  requireAccountingSetup,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

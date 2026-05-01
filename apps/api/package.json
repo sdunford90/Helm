@@ -11,7 +11,8 @@
     "postinstall": "prisma generate",
     "db:seed": "npx prisma db seed",
     "db:seed:prod": "npx prisma migrate deploy && npx prisma db seed",
-    "apply:r2-cors": "tsx scripts/apply-r2-cors.ts"
+    "apply:r2-cors": "tsx scripts/apply-r2-cors.ts",
+    "accounting:migrate-setup": "tsx scripts/accounting-setup-migration.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.1",

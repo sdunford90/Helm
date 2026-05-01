@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
+import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import {
   createConnectionToken,
@@ -389,6 +390,7 @@ router.delete(
 
 router.post(
   "/transactions",
+  requireAccountingSetup,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
