@@ -1590,8 +1590,9 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
 // PUT /purchase-orders/:id/cancel
 router.put("/purchase-orders/:id/cancel", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
     const po = await prisma.purchaseOrder.findFirst({
-      where: { id: req.params.id },
+      where: { id: req.params.id, tenantId },
       include: { lineItems: true },
     });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });
