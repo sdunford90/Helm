@@ -25,31 +25,92 @@ export async function seedTenantAndUsers(prisma: PrismaClient, tierId: string) {
 
   const tenant = await prisma.tenant.create({
     data: {
-      name: 'Demo Marina',
-      subdomain: 'demo',
-      customDomain: 'app.demomarina.example',
+      name: 'Sunset Harbor Marina Group',
+      subdomain: 'sunset-harbor',
+      customDomain: 'app.sunsetharbormarinas.example',
       status: 'ACTIVE',
       saasTierId: tierId,
       timezone: 'America/New_York',
       fiscalYearEnd: '12/31',
       brandingJson: {
         logo: null,
-        primaryColor: '#0A2342',
-        accentColor: '#00D4FF',
-        marinaName: 'Demo Marina',
-        tagline: 'Sample data for click-through testing',
+        primaryColor: '#0D4F6B',
+        accentColor: '#F4A623',
+        marinaName: 'Sunset Harbor Marina',
+        tagline: 'Your home on the water — Sarasota, FL',
       },
-      invoiceTemplateJson: { prefix: 'INV-', nextNumber: 1050, paymentTerms: 'NET_30', lateFeePercent: 1.5, gracePeriodDays: 5, defaultTaxRate: 7.0 },
+      invoiceTemplateJson: {
+        prefix: 'SHM-',
+        nextNumber: 1001,
+        paymentTerms: 'NET_30',
+        lateFeePercent: 1.5,
+        gracePeriodDays: 5,
+        defaultTaxRate: 7.0,
+      },
     },
   });
 
   const users = await Promise.all([
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'sarah@demomarina.example', role: 'MARINA_OWNER', firstName: 'Sarah', lastName: 'Dunford', active: true } }),
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'jake@demomarina.example', role: 'MARINA_MANAGER', firstName: 'Jake', lastName: 'Martinez', active: true } }),
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'maria@demomarina.example', role: 'DOCK_STAFF', firstName: 'Maria', lastName: 'Santos', active: true } }),
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'tom@demomarina.example', role: 'POS_CASHIER', firstName: 'Tom', lastName: 'Anderson', active: true } }),
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'lisa@demomarina.example', role: 'ACCOUNTING', firstName: 'Lisa', lastName: 'Chen', active: true } }),
-    prisma.user.create({ data: { tenantId: tenant.id, email: 'robert@demomarina.example', role: 'DOCK_STAFF', firstName: 'Robert', lastName: 'Garcia', active: true } }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'sarahchen@sunsetharbormarinas.com',
+        role: 'TENANT_ADMIN',
+        firstName: 'Sarah',
+        lastName: 'Chen',
+        active: true,
+      },
+    }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'miketorres@sunsetharbormarinas.com',
+        role: 'MARINA_MANAGER',
+        firstName: 'Mike',
+        lastName: 'Torres',
+        active: true,
+      },
+    }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'jessicanguyen@sunsetharbormarinas.com',
+        role: 'ACCOUNTING',
+        firstName: 'Jessica',
+        lastName: 'Nguyen',
+        active: true,
+      },
+    }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'tylerbrooks@sunsetharbormarinas.com',
+        role: 'DOCK_STAFF',
+        firstName: 'Tyler',
+        lastName: 'Brooks',
+        active: true,
+      },
+    }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'amandaross@sunsetharbormarinas.com',
+        role: 'POS_CASHIER',
+        firstName: 'Amanda',
+        lastName: 'Ross',
+        active: true,
+      },
+    }),
+    prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: 'carlosreyes@sunsetharbormarinas.com',
+        role: 'MARINA_MANAGER',
+        firstName: 'Carlos',
+        lastName: 'Reyes',
+        active: true,
+      },
+    }),
   ]);
 
   return { tenant, users };

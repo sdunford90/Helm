@@ -380,6 +380,9 @@ type PoWithLines = PurchaseOrderRow & {
     quantity: number;
     unitCostCents: number;
     receivedQty: number;
+    receivedAt?: Date | null;
+    unitCostAtReceipt?: number | null;
+    product?: { id: string; name: string; sku: string | null } | null;
   }>;
 };
 
@@ -387,13 +390,23 @@ function shapePo(po: PoWithLines) {
   return {
     id: po.id,
     tenantId: po.tenantId,
-    poNumber: po.poNumber ?? "",
-    vendor: po.vendorName ?? "",
-    vendorId: po.vendorId,
     locationId: po.locationId,
+    poNumber: po.poNumber ?? "",
     status: po.status,
+    vendorId: po.vendorId,
+    vendorName: po.vendorName ?? "",
+    vendor: po.vendorName ?? "",
     expectedDate: po.expectedDate ? po.expectedDate.toISOString() : null,
+    receivedAt: po.receivedAt ? (po.receivedAt as Date).toISOString() : null,
+    receivedByUserId: po.receivedByUserId ?? null,
+    totalCents: po.totalCents,
     notes: po.notes,
+    qboBillId: po.qboBillId,
+    qboBillSyncedAt: po.qboBillSyncedAt ? po.qboBillSyncedAt.toISOString() : null,
+    qboBillSyncError: po.qboBillSyncError,
+    qboBillSyncErrorAt: po.qboBillSyncErrorAt ? po.qboBillSyncErrorAt.toISOString() : null,
+    createdAt: po.createdAt.toISOString(),
+    updatedAt: po.updatedAt.toISOString(),
     lineItems: po.lineItems.map((li) => ({
       id: li.id,
       productId: li.productId,
@@ -401,14 +414,9 @@ function shapePo(po: PoWithLines) {
       quantity: li.quantity,
       unitCostCents: li.unitCostCents,
       receivedQty: li.receivedQty,
+      receivedAt: li.receivedAt ? li.receivedAt.toISOString() : null,
+      unitCostAtReceipt: li.unitCostAtReceipt ?? null,
     })),
-    totalCostCents: po.totalCents,
-    createdAt: po.createdAt.toISOString(),
-    updatedAt: po.updatedAt.toISOString(),
-    qboBillId: po.qboBillId,
-    qboBillSyncedAt: po.qboBillSyncedAt ? po.qboBillSyncedAt.toISOString() : null,
-    qboBillSyncError: po.qboBillSyncError,
-    qboBillSyncErrorAt: po.qboBillSyncErrorAt ? po.qboBillSyncErrorAt.toISOString() : null,
   };
 }
 
@@ -1249,14 +1257,14 @@ router.post("/purchase-orders", async (req: Request, res: Response, next: NextFu
     // Prefetch product names + validate vendor
     const productMap = new Map<string, string>();
     for (const li of body.lineItems) {
-      const product = await prisma.product.findFirst({ where: { id: li.productId } });
+      const product = await prisma.product.findFirst({ where: { id: li.productId, tenantId } });
       productMap.set(li.productId, product?.name ?? "Unknown");
     }
 
     let vendorId: string | null = body.vendorId ?? null;
     let vendorName = body.vendor ?? "";
     if (vendorId) {
-      const v = await prisma.vendor.findFirst({ where: { id: vendorId } });
+      const v = await prisma.vendor.findFirst({ where: { id: vendorId, tenantId } });
       if (!v) return res.status(400).json({ error: "Vendor not found" });
       vendorName = v.name;
     }
@@ -1302,19 +1310,29 @@ router.post("/purchase-orders", async (req: Request, res: Response, next: NextFu
 // GET /purchase-orders
 router.get("/purchase-orders", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
+    const locationId = req.query.locationId as string | undefined;
     const status = req.query.status as string | undefined;
-    const where: any = {};
-    if (status) where.status = status;
+    const vendorId = req.query.vendorId as string | undefined;
+    const take = Math.min(parseInt(req.query.take as string || "50", 10), 200);
+    const skip = parseInt(req.query.skip as string || "0", 10);
 
-    const results = await prisma.purchaseOrder.findMany({
-      where,
-      include: { lineItems: true },
-      orderBy: { createdAt: "desc" },
-    });
-    res.json({
-      data: results.map((po) => shapePo(po as PoWithLines)),
-      total: results.length,
-    });
+    const where: any = { tenantId };
+    if (locationId) where.locationId = locationId;
+    if (status) where.status = status;
+    if (vendorId) where.vendorId = vendorId;
+
+    const [results, total] = await Promise.all([
+      prisma.purchaseOrder.findMany({
+        where,
+        include: { lineItems: true },
+        orderBy: { createdAt: "desc" },
+        take,
+        skip,
+      }),
+      prisma.purchaseOrder.count({ where }),
+    ]);
+    res.json({ data: results.map((po) => shapePo(po as PoWithLines)), total, take, skip });
   } catch (err) {
     next(err);
   }
@@ -1323,12 +1341,120 @@ router.get("/purchase-orders", async (req: Request, res: Response, next: NextFun
 // GET /purchase-orders/:id
 router.get("/purchase-orders/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
     const po = await prisma.purchaseOrder.findFirst({
-      where: { id: req.params.id },
-      include: { lineItems: true },
+      where: { id: req.params.id, tenantId },
+      include: { lineItems: { include: { product: { select: { id: true, name: true, sku: true } } } } },
     });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });
     res.json(shapePo(po as PoWithLines));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /purchase-orders/:id — edit a DRAFT PO
+router.patch("/purchase-orders/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id, tenantId },
+      include: { lineItems: true },
+    });
+    if (!po) return res.status(404).json({ error: "Purchase order not found" });
+    if (po.status !== "draft")
+      return res.status(400).json({ error: "Only draft POs can be edited", code: "NOT_DRAFT" });
+
+    const { vendorName, vendorId, expectedDate, notes, lineItems } = req.body as {
+      vendorName?: string;
+      vendorId?: string;
+      expectedDate?: string;
+      notes?: string;
+      lineItems?: Array<{ productId: string; quantity: number; unitCostCents: number }>;
+    };
+
+    const updateData: Record<string, unknown> = {};
+    if (vendorName !== undefined) updateData.vendorName = vendorName;
+    if (vendorId !== undefined) updateData.vendorId = vendorId;
+    if (expectedDate !== undefined) updateData.expectedDate = expectedDate ? new Date(expectedDate) : null;
+    if (notes !== undefined) updateData.notes = notes;
+
+    // If lineItems are provided, replace them all
+    if (lineItems) {
+      // Fetch product names
+      const productMap = new Map<string, string>();
+      for (const li of lineItems) {
+        const p = await prisma.product.findFirst({ where: { id: li.productId, tenantId } });
+        if (!p) return res.status(400).json({ error: `Product ${li.productId} not found` });
+        productMap.set(li.productId, p.name);
+      }
+      const totalCents = lineItems.reduce((sum, li) => sum + li.quantity * li.unitCostCents, 0);
+      updateData.totalCents = totalCents;
+
+      await prisma.poLineItem.deleteMany({ where: { purchaseOrderId: po.id } });
+      await prisma.poLineItem.createMany({
+        data: lineItems.map((li) => ({
+          tenantId,
+          purchaseOrderId: po.id,
+          productId: li.productId,
+          productName: productMap.get(li.productId) ?? "Unknown",
+          quantity: li.quantity,
+          unitCostCents: li.unitCostCents,
+          receivedQty: 0,
+        })),
+      });
+    }
+
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: updateData,
+      include: { lineItems: true },
+    });
+    res.json(shapePo(updated as PoWithLines));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /purchase-orders/:id/submit — DRAFT → SUBMITTED
+router.post("/purchase-orders/:id/submit", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
+    if (!po) return res.status(404).json({ error: "Purchase order not found" });
+    if (po.status !== "draft")
+      return res.status(400).json({ error: `Cannot submit a PO with status: ${po.status}`, code: "INVALID_STATUS" });
+
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: "submitted" },
+      include: { lineItems: true },
+    });
+    res.json(shapePo(updated as PoWithLines));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /purchase-orders/:id/cancel — DRAFT/SUBMITTED → CANCELLED
+router.post("/purchase-orders/:id/cancel", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = getTenantId(req);
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
+    if (!po) return res.status(404).json({ error: "Purchase order not found" });
+    if (!["draft", "submitted"].includes(po.status))
+      return res.status(400).json({ error: `Cannot cancel a PO with status: ${po.status}`, code: "INVALID_STATUS" });
+
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: "cancelled" },
+      include: { lineItems: true },
+    });
+    res.json(shapePo(updated as PoWithLines));
   } catch (err) {
     next(err);
   }
@@ -1340,7 +1466,7 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
     const tenantId = getTenantId(req);
     const body = ReceivePOSchema.parse(req.body);
     const po = await prisma.purchaseOrder.findFirst({
-      where: { id: req.params.id },
+      where: { id: req.params.id, tenantId },
       include: { lineItems: true },
     });
     if (!po) return res.status(404).json({ error: "Purchase order not found" });

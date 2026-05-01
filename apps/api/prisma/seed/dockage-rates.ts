@@ -5,21 +5,16 @@ import {
 } from '@prisma/client';
 
 /**
- * Per-location, per-slip-type dockage rates. These are the "rack rates" the
- * marina lists publicly and that the slip-contract creation flow looks up
- * to pre-fill the contract rate. Real contracts can override these (the
- * 15 contracts seeded by `contracts.ts` carry their own `rateCents` and do
- * not depend on these rows existing).
+ * Per-location, per-slip-type dockage rates for Sunset Harbor Marina.
+ * These are the rack rates for transient and seasonal dockage.
  *
- * Coverage matches the slip types actually present in `slips.ts`:
- *   • Main Marina   — 35ft, 40ft (Dock A)
- *   • North Dock    — 45ft, 50ft, 55ft (Dock B)
- *   • South Cove    — 28ft, 30ft (Dock C)
+ * Sunset Harbor (Sarasota):
+ *   - 30ft slips: $90/ft/month → $2,700/month
+ *   - 40ft slips: $95/ft/month → $3,800/month (covered premium)
  *
- * Pricing model is per-foot per-month, with quarterly at a small discount
- * (~5%) and annual at a meaningful one (~10%) — typical US East Coast wet-
- * slip pricing. Premium location (Main) is priced higher per foot than the
- * budget location (South).
+ * Pelican Cove (Venice):
+ *   - 30ft slips: $75/ft/month
+ *   - 40ft slips: $80/ft/month
  */
 export async function seedDockageRates(
   prisma: PrismaClient,
@@ -28,69 +23,70 @@ export async function seedDockageRates(
 ) {
   await prisma.dockageRate.deleteMany({ where: { tenantId } });
 
-  const main = locations[0];
-  const north = locations[1];
-  const south = locations[2];
+  const sunsetHarbor = locations[0];
+  const pelicanCove = locations[1];
 
-  type Tier = { slipType: string; lengthFt: number };
+  const rows: any[] = [];
 
-  const planByLocation: Array<{
-    location: Location | undefined;
-    perFootMonthlyCents: number;
-    tiers: Tier[];
-  }> = [
-    {
-      // Premium: $20/ft/month, 12¢/kWh metered
-      location: main,
-      perFootMonthlyCents: 2000,
-      tiers: [
-        { slipType: '35ft Open',    lengthFt: 35 },
-        { slipType: '40ft Covered', lengthFt: 40 },
-      ],
-    },
-    {
-      // Mid: $24/ft/month — bigger boats, covered, deeper water
-      location: north,
-      perFootMonthlyCents: 2400,
-      tiers: [
-        { slipType: '45ft Covered', lengthFt: 45 },
-        { slipType: '50ft Covered', lengthFt: 50 },
-        { slipType: '55ft Covered', lengthFt: 55 },
-      ],
-    },
-    {
-      // Budget: $14/ft/month
-      location: south,
-      perFootMonthlyCents: 1400,
-      tiers: [
-        { slipType: '28ft Open', lengthFt: 28 },
-        { slipType: '30ft Open', lengthFt: 30 },
-      ],
-    },
-  ];
-
-  const rows = planByLocation.flatMap(({ location, perFootMonthlyCents, tiers }) => {
-    if (!location) return [];
-    return tiers.map((tier) => {
-      const monthly = tier.lengthFt * perFootMonthlyCents;
-      const quarterly = Math.round(monthly * 3 * 0.95); // 5% off
-      const annual = Math.round(monthly * 12 * 0.9); // 10% off
-      return {
-        tenantId,
-        locationId: location.id,
-        slipType: tier.slipType,
-        monthlyRateCents: monthly,
-        quarterlyRateCents: quarterly,
-        annualRateCents: annual,
-        electricityMode: ElectricityMode.METERED,
-        electricityRateCents: 12, // 12¢/kWh — matches slips.ts
-        // glAccountId is intentionally null — operator wires per-location
-        // GL accounts after connecting QBO.
-        taxClass: 'Standard',
-        active: true,
-      };
+  if (sunsetHarbor) {
+    // 30ft open slips (Dock A)
+    const monthly30 = 30 * 9000; // $90/ft × 30ft = $2,700
+    rows.push({
+      tenantId,
+      locationId: sunsetHarbor.id,
+      slipType: '30ft Open',
+      monthlyRateCents: monthly30,
+      quarterlyRateCents: Math.round(monthly30 * 3 * 0.95),
+      annualRateCents: Math.round(monthly30 * 12 * 0.90),
+      electricityMode: ElectricityMode.METERED,
+      electricityRateCents: 12,
+      taxClass: 'Standard',
+      active: true,
     });
-  });
+    // 40ft covered slips (Dock B)
+    const monthly40 = 40 * 9500; // $95/ft × 40ft = $3,800
+    rows.push({
+      tenantId,
+      locationId: sunsetHarbor.id,
+      slipType: '40ft Covered',
+      monthlyRateCents: monthly40,
+      quarterlyRateCents: Math.round(monthly40 * 3 * 0.95),
+      annualRateCents: Math.round(monthly40 * 12 * 0.90),
+      electricityMode: ElectricityMode.METERED,
+      electricityRateCents: 12,
+      taxClass: 'Standard',
+      active: true,
+    });
+  }
+
+  if (pelicanCove) {
+    const monthly30vc = 30 * 7500; // $75/ft
+    rows.push({
+      tenantId,
+      locationId: pelicanCove.id,
+      slipType: '30ft Open',
+      monthlyRateCents: monthly30vc,
+      quarterlyRateCents: Math.round(monthly30vc * 3 * 0.95),
+      annualRateCents: Math.round(monthly30vc * 12 * 0.90),
+      electricityMode: ElectricityMode.METERED,
+      electricityRateCents: 12,
+      taxClass: 'Standard',
+      active: true,
+    });
+    const monthly40vc = 40 * 8000;
+    rows.push({
+      tenantId,
+      locationId: pelicanCove.id,
+      slipType: '40ft Covered',
+      monthlyRateCents: monthly40vc,
+      quarterlyRateCents: Math.round(monthly40vc * 3 * 0.95),
+      annualRateCents: Math.round(monthly40vc * 12 * 0.90),
+      electricityMode: ElectricityMode.METERED,
+      electricityRateCents: 12,
+      taxClass: 'Standard',
+      active: true,
+    });
+  }
 
   await prisma.dockageRate.createMany({ data: rows });
   return rows.length;

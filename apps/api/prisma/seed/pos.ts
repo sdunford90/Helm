@@ -11,69 +11,127 @@ export async function seedPosAndInventory(
   await prisma.posTransaction.deleteMany({ where: { tenantId } });
   await prisma.shift.deleteMany({ where: { tenantId } });
   await prisma.inventory.deleteMany({ where: { tenantId } });
+  await prisma.inventoryLot.deleteMany({ where: { tenantId } });
   await prisma.product.deleteMany({ where: { tenantId } });
 
   const mainId = locations[0]?.id;
 
-  const fuelCat = categories['Fuel'].id;
-  const baitCat = categories['Bait & Tackle'].id;
-  const convCat = categories['Convenience'].id;
-  const hardwareCat = categories['Marine Hardware'].id;
-  const apparelCat = categories['Apparel'].id;
+  const fuelCatId = categories['Fuel'].id;
+  const shipStoreCatId = categories['Ship Store'].id;
+  const servicesCatId = categories['Marine Services'].id;
 
+  // ── Products ────────────────────────────────────────────────────────────────
   const productSeeds = [
-    { name: 'Regular Gas (gal)',     sku: 'FUEL-REG', barcode: '0012345000012', costCents: 365,  priceCents: 429,  taxClass: 'EXEMPT',   reorderQty: 500, productCategoryId: fuelCat },
-    { name: 'Diesel (gal)',          sku: 'FUEL-DSL', barcode: '0012345000029', costCents: 410,  priceCents: 489,  taxClass: 'EXEMPT',   reorderQty: 400, productCategoryId: fuelCat },
-    { name: 'Premium Gas (gal)',     sku: 'FUEL-PRM', barcode: '0012345000036', costCents: 408,  priceCents: 479,  taxClass: 'EXEMPT',   reorderQty: 300, productCategoryId: fuelCat },
-    { name: 'Bag of Ice (10lb)',     sku: 'ICE-10LB', barcode: '0012345000043', costCents: 199,  priceCents: 399,  taxClass: 'STANDARD', reorderQty: 20,  productCategoryId: convCat },
-    { name: 'Live Shrimp (dz)',      sku: 'BAIT-SHP', barcode: '0012345000050', costCents: 499,  priceCents: 899,  taxClass: 'STANDARD', reorderQty: 10,  productCategoryId: baitCat },
-    { name: 'Bottled Water',         sku: 'SNK-WTR',  barcode: '0012345000074', costCents: 89,   priceCents: 249,  taxClass: 'STANDARD', reorderQty: 48,  productCategoryId: convCat },
-    { name: 'Sunscreen SPF 50',      sku: 'SUN-SPF',  barcode: '0012345000098', costCents: 699,  priceCents: 1299, taxClass: 'STANDARD', reorderQty: 10,  productCategoryId: convCat },
-    { name: 'Dock Line 3/8" 15\'',   sku: 'MRN-LINE', barcode: '0012345000104', costCents: 999,  priceCents: 1899, taxClass: 'STANDARD', reorderQty: 5,   productCategoryId: hardwareCat },
-    { name: 'Marina Cap',            sku: 'APR-HAT',  barcode: '0012345000128', costCents: 800,  priceCents: 2200, taxClass: 'STANDARD', reorderQty: 12,  productCategoryId: apparelCat },
-    { name: 'Marina T-Shirt',        sku: 'APR-TEE',  barcode: '0012345000135', costCents: 1000, priceCents: 2800, taxClass: 'STANDARD', reorderQty: 10,  productCategoryId: apparelCat },
+    // Fuel
+    { name: 'Regular Unleaded (gal)', sku: 'FUEL-REG', costCents: 320, priceCents: 450, taxClass: 'EXEMPT', reorderQty: 1000, productCategoryId: fuelCatId, trackInventory: true },
+    { name: 'Premium Unleaded (gal)', sku: 'FUEL-PRM', costCents: 345, priceCents: 480, taxClass: 'EXEMPT', reorderQty: 500, productCategoryId: fuelCatId, trackInventory: true },
+    { name: 'Diesel (gal)', sku: 'FUEL-DSL', costCents: 310, priceCents: 420, taxClass: 'EXEMPT', reorderQty: 2000, productCategoryId: fuelCatId, trackInventory: true },
+    // Ship Store
+    { name: 'Marine Rope 50ft', sku: 'SS-ROPE50', costCents: 1399, priceCents: 2499, taxClass: 'STANDARD', reorderQty: 10, productCategoryId: shipStoreCatId, trackInventory: true },
+    { name: 'Dock Lines Set', sku: 'SS-DKLN', costCents: 2199, priceCents: 3999, taxClass: 'STANDARD', reorderQty: 10, productCategoryId: shipStoreCatId, trackInventory: true },
+    { name: 'Boat Cleaner 32oz', sku: 'SS-CLNR', costCents: 799, priceCents: 1499, taxClass: 'STANDARD', reorderQty: 20, productCategoryId: shipStoreCatId, trackInventory: true },
+    { name: 'Life Vest Adult', sku: 'SS-PFD', costCents: 2799, priceCents: 4999, taxClass: 'STANDARD', reorderQty: 12, productCategoryId: shipStoreCatId, trackInventory: true },
+    { name: 'Sunscreen SPF50', sku: 'SS-SUN50', costCents: 699, priceCents: 1299, taxClass: 'STANDARD', reorderQty: 24, productCategoryId: shipStoreCatId, trackInventory: true },
+    { name: 'Ice Bag 20lb', sku: 'SS-ICE20', costCents: 349, priceCents: 699, taxClass: 'STANDARD', reorderQty: 50, productCategoryId: shipStoreCatId, trackInventory: true },
+    // Services (not tracked in inventory)
+    { name: 'Bottom Paint (per ft)', sku: 'SVC-BPNT', costCents: 900, priceCents: 1800, taxClass: 'STANDARD', reorderQty: 0, productCategoryId: servicesCatId, trackInventory: false },
+    { name: 'Engine Service', sku: 'SVC-ENG', costCents: 19500, priceCents: 35000, taxClass: 'STANDARD', reorderQty: 0, productCategoryId: servicesCatId, trackInventory: false },
+    { name: 'Haul & Launch', sku: 'SVC-HAUL', costCents: 14000, priceCents: 25000, taxClass: 'STANDARD', reorderQty: 0, productCategoryId: servicesCatId, trackInventory: false },
   ];
 
   const products = await Promise.all(
     productSeeds.map((p) =>
       prisma.product.create({
-        data: { tenantId, trackInventory: true, ...p },
+        data: { tenantId, locationId: mainId, ...p },
       }),
     ),
   );
 
-  // Inventory levels (assigned to Main Marina location)
-  const qtyMap = [2400, 1800, 1200, 85, 24, 144, 32, 15, 48, 36];
-  await Promise.all(products.map((p, i) => prisma.inventory.create({ data: { tenantId, locationId: mainId, productId: p.id, qtyOnHand: qtyMap[i], qtyOnOrder: 0 } })));
+  // ── Inventory levels ────────────────────────────────────────────────────────
+  // Fuel quantities and lots
+  const fuelInventory = [
+    { idx: 0, qty: 5000, avgCost: 320, lotQty: 5000 }, // Regular Unleaded
+    { idx: 1, qty: 2000, avgCost: 345, lotQty: 2000 }, // Premium Unleaded
+    { idx: 2, qty: 8000, avgCost: 310, lotQty: 8000 }, // Diesel
+  ];
 
-  // Shifts + transactions (all at Main Marina)
-  const cashier = users.find((u: any) => u.role === 'POS_CASHIER') || users[0];
-  const shifts = await Promise.all([0, 1, 2, 3, 4].map((dayBack) => {
-    const d = new Date(2026, 2, 25 - dayBack, 8, 0);
-    return prisma.shift.create({
+  // Ship store quantities (indices 3-8)
+  const shipStoreInventory = [
+    { idx: 3, qty: 25 },  // Marine Rope
+    { idx: 4, qty: 30 },  // Dock Lines Set
+    { idx: 5, qty: 48 },  // Boat Cleaner
+    { idx: 6, qty: 20 },  // Life Vest
+    { idx: 7, qty: 36 },  // Sunscreen
+    { idx: 8, qty: 50 },  // Ice Bag
+  ];
+
+  // Create inventory records for all trackInventory products
+  const inventoryEntries = [...fuelInventory.map(f => ({ idx: f.idx, qty: f.qty })), ...shipStoreInventory];
+  await Promise.all(
+    inventoryEntries.map(({ idx, qty }) =>
+      prisma.inventory.create({
+        data: {
+          tenantId,
+          locationId: mainId,
+          productId: products[idx].id,
+          qtyOnHand: qty,
+          qtyOnOrder: 0,
+          lastCountDate: new Date('2026-04-01'),
+        },
+      }),
+    ),
+  );
+
+  // Create FIFO lots for fuel products
+  for (const f of fuelInventory) {
+    await prisma.inventoryLot.create({
       data: {
         tenantId,
-        locationId: mainId,
-        cashierId: cashier.id,
-        openedAt: d,
-        closedAt: dayBack > 0 ? new Date(d.getTime() + 10 * 3600000) : null,
-        openingFloatCents: 10000,
-        closingCashCents: dayBack > 0 ? 15000 + Math.floor(Math.random() * 5000) : 0,
-        tipTotalCents: Math.floor(Math.random() * 3000),
-        status: dayBack > 0 ? 'CLOSED' : 'OPEN',
+        productId: products[f.idx].id,
+        locationId: mainId!,
+        qtyRemaining: f.lotQty,
+        unitCostCents: f.avgCost,
+        receivedAt: new Date('2026-04-01'),
       },
     });
-  }));
+  }
+
+  // ── Shifts + POS Transactions ───────────────────────────────────────────────
+  const cashier = users.find((u: any) => u.role === 'POS_CASHIER') || users[0];
+  const shifts = await Promise.all(
+    [0, 1, 2, 3, 4].map((dayBack) => {
+      const d = new Date(2026, 3, 26 - dayBack, 8, 0); // April 22-26, 2026
+      return prisma.shift.create({
+        data: {
+          tenantId,
+          locationId: mainId,
+          cashierId: cashier.id,
+          openedAt: d,
+          closedAt: dayBack > 0 ? new Date(d.getTime() + 10 * 3600000) : null,
+          openingFloatCents: 10000,
+          closingCashCents: dayBack > 0 ? 15000 + Math.floor(Math.random() * 5000) : 0,
+          tipTotalCents: Math.floor(Math.random() * 2000),
+          status: dayBack > 0 ? 'CLOSED' : 'OPEN',
+        },
+      });
+    }),
+  );
 
   const transactions: any[] = [];
+  const fuelProducts = products.slice(0, 3);
+  const storeProducts = products.slice(3, 9);
+
   for (let i = 0; i < 15; i++) {
     const dayBack = Math.floor(i / 3);
-    const d = new Date(2026, 2, 25 - dayBack, 9 + (i % 8), Math.floor(Math.random() * 60));
-    const p1 = products[Math.floor(Math.random() * products.length)];
-    const qty = p1.sku!.startsWith('FUEL') ? Math.floor(Math.random() * 40) + 10 : Math.floor(Math.random() * 3) + 1;
+    const d = new Date(2026, 3, 26 - dayBack, 9 + (i % 7), Math.floor(Math.random() * 60));
+    const isFuelSale = i % 4 === 0;
+    const p1 = isFuelSale
+      ? fuelProducts[i % fuelProducts.length]
+      : storeProducts[i % storeProducts.length];
+    const qty = isFuelSale ? Math.floor(Math.random() * 50) + 10 : Math.floor(Math.random() * 3) + 1;
     const sub = p1.priceCents * qty;
     const tax = p1.taxClass === 'STANDARD' ? Math.round(sub * 0.07) : 0;
-    const tip = Math.random() > 0.7 ? Math.floor(Math.random() * 500) + 100 : 0;
+    const tip = !isFuelSale && Math.random() > 0.7 ? Math.floor(Math.random() * 500) + 100 : 0;
 
     const txn = await prisma.posTransaction.create({
       data: {
@@ -89,7 +147,14 @@ export async function seedPosAndInventory(
       },
     });
     await prisma.posLineItem.create({
-      data: { transactionId: txn.id, productId: p1.id, quantity: qty, unitPriceCents: p1.priceCents, taxCents: tax, extendedCents: sub },
+      data: {
+        transactionId: txn.id,
+        productId: p1.id,
+        quantity: qty,
+        unitPriceCents: p1.priceCents,
+        taxCents: tax,
+        extendedCents: sub,
+      },
     });
     transactions.push(txn);
   }
