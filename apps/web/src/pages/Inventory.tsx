@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useAuth } from '@clerk/clerk-react';
+import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
 import {
   Package, Search, Plus, X, Download, Truck,
@@ -128,8 +130,12 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Modals ─────────────────────────────────────────────── */
 
+const FALLBACK_CATEGORIES = ['Fuel', 'Provisions', 'Bait & Tackle', 'Marine Supplies', 'Apparel', 'Boat Parts'];
+
 function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
   const isEdit = !!product;
+  const { getToken } = useAuth();
+  const [categories, setCategories] = useState<string[]>(FALLBACK_CATEGORIES);
   const [form, setForm] = useState({
     sku: product?.sku ?? '',
     barcode: product?.barcode ?? '',
@@ -144,7 +150,14 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
     glCogs: product?.glCogs ?? '5200',
   });
   const f = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [field]: e.target.value }));
-  const categories = ['Fuel', 'Provisions', 'Bait & Tackle', 'Marine Supplies', 'Apparel', 'Boat Parts'];
+
+  useEffect(() => {
+    getToken().then((token) =>
+      api.get<{ id: string; name: string }[]>('/accounting/categories?locationId=main', token)
+        .then((cats) => { if (cats.length > 0) setCategories(cats.map((c) => c.name)); })
+        .catch(() => {})
+    );
+  }, [getToken]);
   return (
     <div style={st.overlay} onClick={onClose}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>

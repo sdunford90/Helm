@@ -608,4 +608,77 @@ router.post(
   },
 );
 
+// ── Product Categories CRUD ──────────────────────────────────────────────────
+
+router.get("/categories", async (req, res) => {
+  try {
+    const { locationId } = req.query;
+    const tenantId = req.tenantId!;
+    if (!locationId) return res.status(400).json({ error: "locationId required" });
+    const cats = await prisma.productCategory.findMany({
+      where: { locationId: String(locationId), tenantId, active: true },
+      orderBy: { name: "asc" },
+    });
+    res.json(cats);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post(
+  "/categories",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      const { locationId, name, costingMethod } = req.body;
+      const tenantId = req.tenantId!;
+      if (!locationId || !name?.trim())
+        return res.status(400).json({ error: "locationId and name required" });
+      const cat = await prisma.productCategory.create({
+        data: { tenantId, locationId, name: name.trim(), costingMethod: costingMethod ?? "WAC" },
+      });
+      res.status(201).json(cat);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
+router.put(
+  "/categories/:id",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      const { name, costingMethod, active } = req.body;
+      const cat = await prisma.productCategory.update({
+        where: { id: req.params.id },
+        data: {
+          ...(name !== undefined && { name: name.trim() }),
+          ...(costingMethod !== undefined && { costingMethod }),
+          ...(active !== undefined && { active }),
+        },
+      });
+      res.json(cat);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
+router.delete(
+  "/categories/:id",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res) => {
+    try {
+      await prisma.productCategory.update({
+        where: { id: req.params.id },
+        data: { active: false },
+      });
+      res.status(204).send();
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  },
+);
+
 export { router as accountingRouter };

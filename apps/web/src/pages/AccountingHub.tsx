@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import {
@@ -446,19 +446,12 @@ export default function AccountingHub() {
   const [feeGlMaps, setFeeGlMaps] = useState<Record<string, string>>(
     Object.fromEntries(serviceFees.map((f) => [f.id, f.glAccountId || '']))
   );
-  const [categories] = useState<ProductCategory[]>([
-    { id: 'cat1', name: 'Fuel', glRevenueAccountId: 'a13', glCogsAccountId: 'a18' },
-    { id: 'cat2', name: 'Bait & Tackle', glRevenueAccountId: 'a14', glCogsAccountId: 'a19' },
-    { id: 'cat3', name: 'Marine Supplies', glRevenueAccountId: 'a14', glCogsAccountId: 'a19' },
-    { id: 'cat4', name: 'Provisions', glRevenueAccountId: 'a14', glCogsAccountId: 'a19' },
-    { id: 'cat5', name: 'Apparel', glRevenueAccountId: 'a14', glCogsAccountId: 'a19' },
-  ]);
-  const [catRevMaps, setCatRevMaps] = useState<Record<string, string>>(
-    Object.fromEntries(categories.map((c) => [c.id, c.glRevenueAccountId || '']))
-  );
-  const [catCogsMaps, setCatCogsMaps] = useState<Record<string, string>>(
-    Object.fromEntries(categories.map((c) => [c.id, c.glCogsAccountId || '']))
-  );
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [catRevMaps, setCatRevMaps] = useState<Record<string, string>>({});
+  const [catCogsMaps, setCatCogsMaps] = useState<Record<string, string>>({});
+  const [addingCat, setAddingCat] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatCosting, setNewCatCosting] = useState<'WAC' | 'FIFO'>('WAC');
 
   // Fiscal periods
   const [fiscalPeriods, setFiscalPeriods] = useState<FiscalPeriod[]>(MOCK_FISCAL_PERIODS);
@@ -470,6 +463,51 @@ export default function AccountingHub() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   }, []);
+
+  useEffect(() => {
+    if (!locationId) return;
+    getToken().then((token) =>
+      api.get<ProductCategory[]>(`/accounting/categories?locationId=${locationId}`, token)
+        .then((cats) => {
+          setCategories(cats);
+          setCatRevMaps(Object.fromEntries(cats.map((c) => [c.id, c.glRevenueAccountId || ''])));
+          setCatCogsMaps(Object.fromEntries(cats.map((c) => [c.id, c.glCogsAccountId || ''])));
+        })
+        .catch(() => {})
+    );
+  }, [locationId, getToken]);
+
+  async function handleCreateCategory() {
+    if (!newCatName.trim()) return;
+    try {
+      const token = await getToken();
+      const cat = await api.post<ProductCategory>(
+        `/accounting/categories`,
+        { locationId, name: newCatName.trim(), costingMethod: newCatCosting },
+        token,
+      );
+      setCategories((prev) => [...prev, cat].sort((a, b) => a.name.localeCompare(b.name)));
+      setCatRevMaps((p) => ({ ...p, [cat.id]: '' }));
+      setCatCogsMaps((p) => ({ ...p, [cat.id]: '' }));
+      setNewCatName('');
+      setNewCatCosting('WAC');
+      setAddingCat(false);
+      showToast(`Category "${cat.name}" created`);
+    } catch {
+      showToast('Failed to create category', 'error');
+    }
+  }
+
+  async function handleDeleteCategory(id: string, name: string) {
+    try {
+      const token = await getToken();
+      await api.delete(`/accounting/categories/${id}`, token);
+      setCategories((prev) => prev.filter((c) => c.id !== id));
+      showToast(`Category "${name}" removed`);
+    } catch {
+      showToast('Failed to remove category', 'error');
+    }
+  }
 
   async function handleSaveMappings() {
     setSaving(true);
@@ -877,21 +915,70 @@ export default function AccountingHub() {
               <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748B' }}>Revenue Account</div>
               <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748B' }}>COGS Account</div>
             </div>
+            {categories.length === 0 && (
+              <div style={{ fontSize: '13px', color: '#94A3B8', padding: '12px 0' }}>No categories yet — add one below.</div>
+            )}
             {categories.map((cat) => (
-              <MappingRow
-                key={cat.id}
-                label={cat.name}
-                icon={<Package size={14} />}
-                value={catRevMaps[cat.id] || ''}
-                cogsValue={catCogsMaps[cat.id] || ''}
-                onChange={(v) => setCatRevMaps((p) => ({ ...p, [cat.id]: v }))}
-                onCogsChange={(v) => setCatCogsMaps((p) => ({ ...p, [cat.id]: v }))}
-                accounts={accounts}
-                showCogs
-                revenueFilter={incomeFilter}
-                cogsFilter={cogsFilter}
-              />
+              <div key={cat.id} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div style={{ flex: 1 }}>
+                  <MappingRow
+                    label={cat.name}
+                    icon={<Package size={14} />}
+                    value={catRevMaps[cat.id] || ''}
+                    cogsValue={catCogsMaps[cat.id] || ''}
+                    onChange={(v) => setCatRevMaps((p) => ({ ...p, [cat.id]: v }))}
+                    onCogsChange={(v) => setCatCogsMaps((p) => ({ ...p, [cat.id]: v }))}
+                    accounts={accounts}
+                    showCogs
+                    revenueFilter={incomeFilter}
+                    cogsFilter={cogsFilter}
+                  />
+                </div>
+                <button
+                  onClick={() => handleDeleteCategory(cat.id, cat.name)}
+                  title="Remove category"
+                  style={{ background: 'none', border: 'none', color: '#CBD5E1', cursor: 'pointer', padding: '4px', borderRadius: '4px', display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                  onMouseOver={(e) => (e.currentTarget.style.color = '#EF4444')}
+                  onMouseOut={(e) => (e.currentTarget.style.color = '#CBD5E1')}
+                >
+                  <X size={14} />
+                </button>
+              </div>
             ))}
+            {/* Inline create form */}
+            {addingCat ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', padding: '12px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                <input
+                  autoFocus
+                  value={newCatName}
+                  onChange={(e) => setNewCatName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreateCategory(); if (e.key === 'Escape') setAddingCat(false); }}
+                  placeholder="Category name (e.g. Safety Equipment)"
+                  style={{ flex: 1, padding: '6px 10px', fontSize: '13px', border: '1px solid #CBD5E1', borderRadius: '6px', outline: 'none' }}
+                />
+                <select
+                  value={newCatCosting}
+                  onChange={(e) => setNewCatCosting(e.target.value as 'WAC' | 'FIFO')}
+                  style={{ padding: '6px 8px', fontSize: '13px', border: '1px solid #CBD5E1', borderRadius: '6px' }}
+                >
+                  <option value="WAC">WAC</option>
+                  <option value="FIFO">FIFO</option>
+                </select>
+                <button onClick={handleCreateCategory} style={{ padding: '6px 14px', fontSize: '13px', fontWeight: 600, background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+                  Add
+                </button>
+                <button onClick={() => { setAddingCat(false); setNewCatName(''); }} style={{ padding: '6px 10px', fontSize: '13px', color: '#64748B', background: 'none', border: 'none', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setAddingCat(true)}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '12px', padding: '6px 14px', fontSize: '13px', fontWeight: 600, color: '#0A2342', background: '#F1F5F9', border: '1px solid #E2E8F0', borderRadius: '6px', cursor: 'pointer' }}
+              >
+                <Plus size={14} /> Add Category
+              </button>
+            )}
           </SectionCard>
         </div>
       )}

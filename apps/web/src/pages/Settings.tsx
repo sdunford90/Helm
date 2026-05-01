@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useAuth } from '@clerk/clerk-react';
+import { api } from '../lib/api';
 import { Link as RouterLink } from 'react-router-dom';
 import {
   Building2, Palette, CreditCard, Link, ShieldCheck,
@@ -70,6 +72,13 @@ interface ApiKeyEntry {
   key: string;
   created: string;
   lastUsed: string;
+}
+
+interface ProductCategory {
+  id: string;
+  name: string;
+  costingMethod: 'WAC' | 'FIFO';
+  active: boolean;
 }
 
 /* ── Mock Data ─────────────────────────────────────────── */
@@ -209,7 +218,7 @@ export default function Settings() {
 
   // Catalog state
   const [catalogLocation, setCatalogLocation] = useState('main');
-  const [catalogSection, setCatalogSection] = useState<'dockage' | 'rentals' | 'pos' | 'fees'>('dockage');
+  const [catalogSection, setCatalogSection] = useState<'dockage' | 'rentals' | 'pos' | 'fees' | 'categories'>('dockage');
   const [catalogSearch, setCatalogSearch] = useState('');
 
   const [dockageRates, setDockageRates] = useState<DockageRate[]>(DOCKAGE_RATES_DATA);
@@ -235,6 +244,59 @@ export default function Settings() {
   const [editingFee, setEditingFee] = useState<ServiceFee | null>(null);
   const [addingFee, setAddingFee] = useState(false);
   const [newFee, setNewFee] = useState<ServiceFee>({ id: '', name: '', amount: 0, active: true });
+
+  // Category state
+  const { getToken } = useAuth();
+  const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
+  const [catSearch, setCatSearch] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatCosting, setNewCatCosting] = useState<'WAC' | 'FIFO'>('WAC');
+  const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [editingCat, setEditingCat] = useState<ProductCategory | null>(null);
+
+  useEffect(() => {
+    getToken().then((token) =>
+      api.get<ProductCategory[]>(`/accounting/categories?locationId=${catalogLocation}`, token)
+        .then(setProductCategories)
+        .catch(() => {})
+    );
+  }, [catalogLocation, getToken]);
+
+  async function handleSaveCategory() {
+    if (!newCatName.trim()) return;
+    try {
+      const token = await getToken();
+      const cat = await api.post<ProductCategory>(
+        '/accounting/categories',
+        { locationId: catalogLocation, name: newCatName.trim(), costingMethod: newCatCosting },
+        token,
+      );
+      setProductCategories((prev) => [...prev, cat].sort((a, b) => a.name.localeCompare(b.name)));
+      setAddingCategory(false);
+      setNewCatName('');
+      setNewCatCosting('WAC');
+    } catch { /* silent */ }
+  }
+
+  async function handleUpdateCategory(id: string) {
+    if (!editingCat) return;
+    try {
+      const token = await getToken();
+      const updated = await api.put<ProductCategory>(`/accounting/categories/${id}`, { name: editingCat.name, costingMethod: editingCat.costingMethod }, token);
+      setProductCategories((prev) => prev.map((c) => c.id === id ? updated : c));
+      setEditingCatId(null);
+      setEditingCat(null);
+    } catch { /* silent */ }
+  }
+
+  async function handleDeleteCategory(id: string) {
+    try {
+      const token = await getToken();
+      await api.delete(`/accounting/categories/${id}`, token);
+      setProductCategories((prev) => prev.filter((c) => c.id !== id));
+    } catch { /* silent */ }
+  }
 
   // Team invite modal state
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -506,8 +568,9 @@ export default function Settings() {
               { key: 'rentals' as const, label: 'Rental Products' },
               { key: 'pos' as const, label: 'POS Items' },
               { key: 'fees' as const, label: 'Service Fees' },
+              { key: 'categories' as const, label: 'Inventory Categories' },
             ]).map((s) => (
-              <button key={s.key} style={{ ...st.tab, ...(catalogSection === s.key ? st.tabActive : {}) }} onClick={() => { setCatalogSection(s.key); setCatalogSearch(''); }}>
+              <button key={s.key} style={{ ...st.tab, ...(catalogSection === s.key ? st.tabActive : {}) }} onClick={() => { setCatalogSection(s.key); setCatalogSearch(''); setCatSearch(''); }}>
                 {s.label}
               </button>
             ))}
@@ -519,17 +582,19 @@ export default function Settings() {
               <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
               <input style={{ ...st.input, paddingLeft: '32px' }} placeholder="Search..." value={catalogSearch} onChange={(e) => setCatalogSearch(e.target.value)} />
             </div>
-            <button
-              style={st.addBtn}
-              onClick={() => {
-                if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, active: true }); }
-                if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, active: true }); }
-                if (catalogSection === 'pos') { setAddingPos(true); setNewPos({ id: '', sku: '', name: '', category: 'Marine', cost: 0, price: 0, taxClass: 'Standard', trackInventory: true, active: true }); }
-                if (catalogSection === 'fees') { setAddingFee(true); setNewFee({ id: '', name: '', amount: 0, active: true }); }
-              }}
-            >
-              <Plus size={16} /> Add {catalogSection === 'dockage' ? 'Rate' : catalogSection === 'rentals' ? 'Product' : catalogSection === 'pos' ? 'Item' : 'Fee'}
-            </button>
+            {catalogSection !== 'categories' && (
+              <button
+                style={st.addBtn}
+                onClick={() => {
+                  if (catalogSection === 'dockage') { setAddingDockage(true); setNewDockage({ id: '', slipType: '', monthlyRate: 0, quarterlyRate: 0, annualRate: 0, electricityMode: 'Metered', electricityRate: 0.14, active: true }); }
+                  if (catalogSection === 'rentals') { setAddingRental(true); setNewRental({ id: '', name: '', type: 'Pontoon', hourlyRate: 0, halfDayRate: 0, dailyRate: 0, damageWaiver: 0, deposit: 0, active: true }); }
+                  if (catalogSection === 'pos') { setAddingPos(true); setNewPos({ id: '', sku: '', name: '', category: productCategories[0]?.name ?? 'Marine', cost: 0, price: 0, taxClass: 'Standard', trackInventory: true, active: true }); }
+                  if (catalogSection === 'fees') { setAddingFee(true); setNewFee({ id: '', name: '', amount: 0, active: true }); }
+                }}
+              >
+                <Plus size={16} /> Add {catalogSection === 'dockage' ? 'Rate' : catalogSection === 'rentals' ? 'Product' : catalogSection === 'pos' ? 'Item' : 'Fee'}
+              </button>
+            )}
           </div>
 
           {/* ── Dockage Rates ── */}
@@ -710,7 +775,7 @@ export default function Settings() {
                       <tr>
                         <td style={st.td}><input style={{ ...st.input, width: '100px' }} value={newPos.sku} onChange={(e) => setNewPos({ ...newPos, sku: e.target.value })} placeholder="SKU" /></td>
                         <td style={st.td}><input style={{ ...st.input, width: '140px' }} value={newPos.name} onChange={(e) => setNewPos({ ...newPos, name: e.target.value })} placeholder="Name" /></td>
-                        <td style={st.td}><select style={{ ...st.select, width: '110px' }} value={newPos.category} onChange={(e) => setNewPos({ ...newPos, category: e.target.value })}><option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option></select></td>
+                        <td style={st.td}><select style={{ ...st.select, width: '110px' }} value={newPos.category} onChange={(e) => setNewPos({ ...newPos, category: e.target.value })}>{productCategories.length > 0 ? productCategories.map((c) => <option key={c.id}>{c.name}</option>) : <><option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option></>}</select></td>
                         <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newPos.cost || ''} onChange={(e) => setNewPos({ ...newPos, cost: +e.target.value })} /></td>
                         <td style={st.td}><input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={newPos.price || ''} onChange={(e) => setNewPos({ ...newPos, price: +e.target.value })} /></td>
                         <td style={st.td}><select style={{ ...st.select, width: '100px' }} value={newPos.taxClass} onChange={(e) => setNewPos({ ...newPos, taxClass: e.target.value })}><option>Standard</option><option>Fuel Tax</option><option>Tax Exempt</option></select></td>
@@ -730,7 +795,7 @@ export default function Settings() {
                         <tr key={p.id}>
                           <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono, fontSize: '12px' }}>{isEditing ? <input style={{ ...st.input, width: '100px' }} value={ed.sku} onChange={(e) => setEditingPos({ ...ed, sku: e.target.value })} /> : p.sku}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{isEditing ? <input style={{ ...st.input, width: '140px' }} value={ed.name} onChange={(e) => setEditingPos({ ...ed, name: e.target.value })} /> : p.name}</td>
-                          <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '110px' }} value={ed.category} onChange={(e) => setEditingPos({ ...ed, category: e.target.value })}><option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option></select> : <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{p.category}</span>}</td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '110px' }} value={ed.category} onChange={(e) => setEditingPos({ ...ed, category: e.target.value })}>{productCategories.length > 0 ? productCategories.map((c) => <option key={c.id}>{c.name}</option>) : <><option>Fuel</option><option>Bait</option><option>Marine</option><option>Provisions</option><option>Apparel</option></>}</select> : <span style={{ ...st.badge, backgroundColor: '#E0F7FF', color: '#0A2342' }}>{p.category}</span>}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.cost} onChange={(e) => setEditingPos({ ...ed, cost: +e.target.value })} /> : `$${p.cost.toFixed(2)}`}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <input style={{ ...st.input, width: '70px' }} type="number" step="0.01" value={ed.price} onChange={(e) => setEditingPos({ ...ed, price: +e.target.value })} /> : `$${p.price.toFixed(2)}`}</td>
                           <td style={{ ...st.td, backgroundColor: rowBg }}>{isEditing ? <select style={{ ...st.select, width: '100px' }} value={ed.taxClass} onChange={(e) => setEditingPos({ ...ed, taxClass: e.target.value })}><option>Standard</option><option>Fuel Tax</option><option>Tax Exempt</option></select> : p.taxClass}</td>
@@ -814,6 +879,96 @@ export default function Settings() {
                   })}
                 </tbody>
               </table>
+              </div>
+            </>
+          )}
+
+          {/* ── Inventory Categories ── */}
+          {catalogSection === 'categories' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '8px', marginBottom: '16px' }}>
+                <BookOpen size={16} style={{ color: '#0284C7', flexShrink: 0 }} />
+                <span style={{ fontSize: '13px', color: '#0369A1' }}>Categories created here appear in POS, Inventory, and <RouterLink to="/accounting" style={{ fontWeight: 600, color: '#0A2342' }}>Accounting Hub → Account Mappings → Product Categories</RouterLink> for GL assignment.</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ position: 'relative', width: '260px' }}>
+                  <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
+                  <input style={{ ...st.input, paddingLeft: '32px' }} placeholder="Search categories..." value={catSearch} onChange={(e) => setCatSearch(e.target.value)} />
+                </div>
+                <button style={st.addBtn} onClick={() => setAddingCategory(true)}>
+                  <Plus size={16} /> Add Category
+                </button>
+              </div>
+              <div style={st.tableWrap} className="helm-table-wrap">
+                <table style={st.table}>
+                  <thead>
+                    <tr>
+                      <th style={st.th}>Category Name</th>
+                      <th style={st.th}>Costing Method</th>
+                      <th style={{ ...st.th, textAlign: 'center' }}>Active</th>
+                      <th style={st.th}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {addingCategory && (
+                      <tr>
+                        <td style={st.td}><input autoFocus style={{ ...st.input, width: '200px' }} value={newCatName} onChange={(e) => setNewCatName(e.target.value)} placeholder="Category name" onKeyDown={(e) => e.key === 'Enter' && handleSaveCategory()} /></td>
+                        <td style={st.td}>
+                          <select style={{ ...st.select, width: '100px' }} value={newCatCosting} onChange={(e) => setNewCatCosting(e.target.value as 'WAC' | 'FIFO')}>
+                            <option value="WAC">WAC</option>
+                            <option value="FIFO">FIFO</option>
+                          </select>
+                        </td>
+                        <td style={{ ...st.td, textAlign: 'center' }}>—</td>
+                        <td style={st.td}>
+                          <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={handleSaveCategory}>Save</button>
+                          <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => { setAddingCategory(false); setNewCatName(''); }}>Cancel</button>
+                        </td>
+                      </tr>
+                    )}
+                    {productCategories.filter((c) => c.name.toLowerCase().includes(catSearch.toLowerCase())).map((cat, idx) => {
+                      const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
+                      const isEditing = editingCatId === cat.id;
+                      const ed = isEditing ? editingCat! : cat;
+                      return (
+                        <tr key={cat.id}>
+                          <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>
+                            {isEditing ? <input style={{ ...st.input, width: '200px' }} value={ed.name} onChange={(e) => setEditingCat({ ...ed, name: e.target.value })} /> : cat.name}
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            {isEditing ? (
+                              <select style={{ ...st.select, width: '100px' }} value={ed.costingMethod} onChange={(e) => setEditingCat({ ...ed, costingMethod: e.target.value as 'WAC' | 'FIFO' })}>
+                                <option value="WAC">WAC</option>
+                                <option value="FIFO">FIFO</option>
+                              </select>
+                            ) : (
+                              <span style={{ ...st.badge, backgroundColor: cat.costingMethod === 'FIFO' ? '#FEF9C3' : '#E0F2FE', color: cat.costingMethod === 'FIFO' ? '#92400E' : '#0369A1' }}>{cat.costingMethod}</span>
+                            )}
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
+                            <span style={{ ...st.badge, backgroundColor: cat.active ? '#DEF7EC' : '#F3F4F6', color: cat.active ? '#03543F' : '#64748B' }}>{cat.active ? 'Yes' : 'No'}</span>
+                          </td>
+                          <td style={{ ...st.td, backgroundColor: rowBg }}>
+                            {isEditing ? (
+                              <>
+                                <button style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => handleUpdateCategory(cat.id)}>Save</button>
+                                <button style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => setEditingCatId(null)}>Cancel</button>
+                              </>
+                            ) : (
+                              <>
+                                <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontWeight: 600, fontSize: '13px', marginRight: '8px' }} onClick={() => { setEditingCatId(cat.id); setEditingCat({ ...cat }); }}><Edit2 size={13} /> Edit</button>
+                                <button style={{ background: 'none', border: 'none', color: '#DC2626', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }} onClick={() => handleDeleteCategory(cat.id)}><Trash2 size={13} /> Delete</button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {productCategories.length === 0 && !addingCategory && (
+                      <tr><td colSpan={4} style={{ ...st.td, textAlign: 'center', color: '#94A3B8', padding: '24px' }}>No categories yet. Click "Add Category" to get started.</td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </>
           )}
