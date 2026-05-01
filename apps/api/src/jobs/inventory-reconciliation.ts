@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { prisma } from "../lib/prisma.js";
+import { sendEmail } from "../lib/email.js";
 import { qboRequest } from "../services/qbo-sync.js";
 
 const ALERT_THRESHOLD_CENTS = 5000; // $50.00 — alert if variance > $50
@@ -138,10 +139,10 @@ async function reconcileCategory(
     const balanceDollars = (response as any)?.Account?.CurrentBalance ?? 0;
     qbValueCents = Math.round(balanceDollars * 100);
   } catch (err) {
-    console.warn(
-      `[reconciliation] Could not fetch QB balance for ${mapping.productCategory.name} ` +
-        `(location: ${location.name}):`,
-      err,
+    console.error(
+      `[reconciliation] QB API unavailable for ${location.name} / ${mapping.productCategory.name}. ` +
+        `Check QB connection and token expiry. Error:`,
+      err instanceof Error ? err.message : String(err),
     );
     return; // can't compare without QB data
   }
@@ -179,6 +180,22 @@ async function reconcileCategory(
         },
       });
 
+      // Send email notification to the location's accounting contacts
+      try {
+        await sendReconciliationAlertEmail({
+          locationName: location.name,
+          categoryName: mapping.productCategory.name,
+          helmValueCents,
+          qbValueCents,
+          deltaCents,
+          tenantId: location.tenantId,
+          locationId: location.id,
+        });
+      } catch (emailErr) {
+        console.warn('[reconciliation] Could not send alert email:', emailErr);
+        // Swallow — alert is already in DB, email is best-effort
+      }
+
       console.log(
         `[reconciliation] ALERT: ${location.name} / ${mapping.productCategory.name} ` +
           `variance $${(deltaCents / 100).toFixed(2)} ` +
@@ -210,4 +227,53 @@ async function getWacInventoryValue(locationId: string, categoryId: string): Pro
     (sum, inv) => sum + inv.qtyOnHand * (inv.product.averageCostCents ?? 0),
     0,
   );
+}
+
+async function sendReconciliationAlertEmail(params: {
+  locationName: string;
+  categoryName: string;
+  helmValueCents: number;
+  qbValueCents: number;
+  deltaCents: number;
+  tenantId: string;
+  locationId: string;
+}): Promise<void> {
+  const { locationName, categoryName, helmValueCents, qbValueCents, deltaCents, tenantId } = params;
+
+  // Find accounting contacts for this location (TENANT_ADMIN, MARINA_OWNER, or ACCOUNTING role users)
+  const accountingUsers = await prisma.user.findMany({
+    where: {
+      tenantId,
+      role: { in: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING'] as any },
+      active: true,
+    },
+    select: { email: true, firstName: true, lastName: true },
+    take: 5, // cap at 5 recipients
+  });
+
+  if (accountingUsers.length === 0) return; // no one to notify
+
+  const helmDollars = (helmValueCents / 100).toFixed(2);
+  const qbDollars = (qbValueCents / 100).toFixed(2);
+  const deltaDollars = (deltaCents / 100).toFixed(2);
+
+  for (const user of accountingUsers) {
+    await sendEmail({
+      to: user.email,
+      subject: `Inventory Variance Alert — ${locationName}: ${categoryName} ($${deltaDollars})`,
+      tenantId,
+      html: [
+        `<p>Hi ${user.firstName ?? 'there'},</p>`,
+        `<p>A significant inventory variance was detected for <strong>${locationName}</strong>.</p>`,
+        `<table style="border-collapse:collapse;margin:16px 0;">`,
+        `  <tr><td style="padding:6px 12px 6px 0;font-weight:600;">Category</td><td style="padding:6px 0;">${categoryName}</td></tr>`,
+        `  <tr><td style="padding:6px 12px 6px 0;font-weight:600;">Helm value</td><td style="padding:6px 0;">$${helmDollars}</td></tr>`,
+        `  <tr><td style="padding:6px 12px 6px 0;font-weight:600;">QuickBooks balance</td><td style="padding:6px 0;">$${qbDollars}</td></tr>`,
+        `  <tr><td style="padding:6px 12px 6px 0;font-weight:600;">Variance</td><td style="padding:6px 0;color:#d73a49;font-weight:700;">$${deltaDollars}</td></tr>`,
+        `</table>`,
+        `<p>Please log in to Helm and visit <strong>Accounting → Reconciliation</strong> to review and resolve this alert.</p>`,
+        `<p style="font-size:13px;color:#666;">This is an automated notification from the Helm accounting system.</p>`,
+      ].join('\n'),
+    });
+  }
 }
