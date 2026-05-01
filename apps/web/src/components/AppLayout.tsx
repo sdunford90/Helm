@@ -4,6 +4,7 @@ import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import ImpersonationBanner from './ImpersonationBanner';
 import { useModules } from '../context/ModulesContext';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import {
   LayoutDashboard,
   Users,
@@ -30,6 +31,7 @@ import {
   X,
   User,
   LogOut,
+  Landmark,
 } from 'lucide-react';
 
 /* ── User Preferences ──────────────────────────────────── */
@@ -196,6 +198,7 @@ const NAV_SECTIONS = [
       { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
       { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
+      { path: '/accounting', label: 'Accounting', icon: Landmark, requireRole: 'TENANT_ADMIN' },
       { path: '/settings', label: 'Settings', icon: Settings },
     ],
   },
@@ -334,6 +337,7 @@ export default function AppLayout() {
   const { user, isLoaded } = useUser();
   const { isSignedIn } = useAuth();
   const { modules, locations, currentLocationId, setCurrentLocationId } = useModules();
+  const { user: currentUser } = useCurrentUser();
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -395,6 +399,9 @@ export default function AppLayout() {
             if (item.path === '/transient' && !modules.transient) return false;
             if (item.path === '/ramp' && !modules.ramp) return false;
             if (item.path === '/concierge' && !modules.concierge) return false;
+            // Role-gated items: check against current user's role
+            const reqRole = (item as { requireRole?: string }).requireRole;
+            if (reqRole && currentUser && currentUser.role !== reqRole && currentUser.role !== 'PLATFORM_ADMIN') return false;
             return true;
           });
           if (visibleItems.length === 0) return null;

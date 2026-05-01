@@ -556,11 +556,208 @@ router.get(
         }
       }
 
+      // Invoices issued (SENT/PAID) but not yet synced to QBO — no error
+      // column exists on the Invoice model, so we surface unsynced invoices
+      // as pending items for operator awareness.
+      if (connected) {
+        const unsyncedInvoices = await prisma.invoice.findMany({
+          where: {
+            tenantId,
+            locationId,
+            qboInvoiceId: null,
+            status: { in: ["SENT", "PAID"] as any },
+          },
+          select: {
+            id: true,
+            invoiceNumber: true,
+            customer: { select: { firstName: true, lastName: true } },
+          },
+          take: 20,
+          orderBy: { createdAt: "desc" },
+        });
+        for (const inv of unsyncedInvoices) {
+          const customerName = [inv.customer?.firstName, inv.customer?.lastName]
+            .filter(Boolean)
+            .join(" ") || `Invoice ${inv.invoiceNumber}`;
+          failedSyncs.push({
+            entityType: "Invoice",
+            entityId: inv.id,
+            entityLabel: `Invoice #${inv.invoiceNumber} — ${customerName}`,
+            error: "Invoice has not been synced to QuickBooks (no QBO invoice ID)",
+            failedAt: null,
+            retryCount: 0,
+          });
+        }
+      }
+
       res.json({
         connected,
         lastChartSync,
         failedSyncs,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/accounting/sync-health/retry
+// Re-queues (or directly retries) a failed QB sync for the given entity.
+// Body: { entityType: "Invoice" | "Product" | "PurchaseOrder", entityId: string, locationId: string }
+// ---------------------------------------------------------------------------
+router.post(
+  "/sync-health/retry",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING", "TENANT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const { entityType, entityId, locationId } = req.body as {
+        entityType?: string;
+        entityId?: string;
+        locationId?: string;
+      };
+
+      if (!entityType || !entityId) {
+        res.status(400).json({
+          error: "entityType and entityId are required",
+          code: "MISSING_PARAM",
+        });
+        return;
+      }
+
+      switch (entityType) {
+        case "Invoice": {
+          // Verify ownership before syncing
+          const invoice = await prisma.invoice.findFirst({
+            where: { id: entityId, tenantId },
+            select: { id: true },
+          });
+          if (!invoice) {
+            res.status(404).json({ error: "Invoice not found", code: "NOT_FOUND" });
+            return;
+          }
+          // Run sync in background (fire-and-forget) so the HTTP response is fast
+          syncInvoice(entityId, tenantId).catch((err: unknown) => {
+            console.error(`[accounting] sync-health/retry invoice ${entityId}:`, err);
+          });
+          res.json({ queued: true, entityType, entityId });
+          break;
+        }
+
+        case "Product": {
+          const product = await prisma.product.findFirst({
+            where: { id: entityId, tenantId },
+            select: {
+              id: true, name: true, sku: true, priceCents: true,
+              costCents: true, qoh: true, glAccountId: true,
+              locationId: true,
+              productCategory: {
+                select: {
+                  glMappings: {
+                    ...(locationId ? { where: { locationId } } : {}),
+                    select: {
+                      revenueGlAccountId: true,
+                      inventoryAssetGlAccountId: true,
+                      cogsGlAccountId: true,
+                    },
+                    take: 1,
+                  },
+                },
+              },
+            },
+          });
+          if (!product) {
+            res.status(404).json({ error: "Product not found", code: "NOT_FOUND" });
+            return;
+          }
+          const mapping = (product as any).productCategory?.glMappings?.[0];
+          const incomeGlAccountId = mapping?.revenueGlAccountId ?? product.glAccountId ?? null;
+          const inventoryAssetGlAccountId = mapping?.inventoryAssetGlAccountId ?? null;
+          const cogsGlAccountId = mapping?.cogsGlAccountId ?? null;
+
+          syncInventoryItem(
+            {
+              productId: product.id,
+              name: product.name,
+              sku: (product as any).sku ?? null,
+              priceCents: product.priceCents,
+              costCents: (product as any).costCents ?? 0,
+              qoh: (product as any).qoh,
+              incomeGlAccountId,
+              inventoryAssetGlAccountId,
+              cogsGlAccountId,
+            },
+            tenantId,
+            locationId ?? (product as any).locationId ?? null,
+          ).catch((err: unknown) => {
+            console.error(`[accounting] sync-health/retry product ${entityId}:`, err);
+          });
+          res.json({ queued: true, entityType, entityId });
+          break;
+        }
+
+        case "PurchaseOrder": {
+          const po = await (prisma.purchaseOrder as any).findFirst({
+            where: { id: entityId, tenantId },
+            select: {
+              id: true, poNumber: true, vendorId: true, expectedDate: true,
+              locationId: true,
+              lineItems: {
+                select: {
+                  productId: true,
+                  productName: true,
+                  receivedQty: true,
+                  unitCostAtReceipt: true,
+                  unitCostCents: true,
+                },
+              },
+            },
+          });
+          if (!po) {
+            res.status(404).json({ error: "PurchaseOrder not found", code: "NOT_FOUND" });
+            return;
+          }
+          const receivedLines = (po.lineItems ?? [])
+            .filter((li: any) => (li.receivedQty ?? 0) > 0)
+            .map((li: any) => ({
+              productId: li.productId,
+              productName: li.productName,
+              receivedQty: li.receivedQty,
+              unitCostCents: li.unitCostAtReceipt ?? li.unitCostCents,
+            }));
+          if (receivedLines.length === 0) {
+            res.status(400).json({
+              error: "No received line items on this PO — nothing to bill",
+              code: "NO_RECEIVED_LINES",
+            });
+            return;
+          }
+          syncReceivingBill(
+            {
+              purchaseOrderId: po.id,
+              poNumber: po.poNumber ?? po.id,
+              vendorId: po.vendorId ?? null,
+              expectedDate: po.expectedDate ?? null,
+              lines: receivedLines,
+              forcePush: false,
+            },
+            tenantId,
+            locationId ?? po.locationId ?? null,
+          ).catch((err: unknown) => {
+            console.error(`[accounting] sync-health/retry PO ${entityId}:`, err);
+          });
+          res.json({ queued: true, entityType, entityId });
+          break;
+        }
+
+        default:
+          res.status(400).json({
+            error: `Unsupported entityType: ${entityType}. Must be Invoice, Product, or PurchaseOrder.`,
+            code: "INVALID_ENTITY_TYPE",
+          });
+      }
     } catch (err) {
       next(err);
     }

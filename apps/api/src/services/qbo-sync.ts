@@ -639,7 +639,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
             productCategory: {
               select: {
                 glMappings: {
-                  where: { locationId: ctx.locationId ?? undefined },
+                  ...(ctx.locationId ? { where: { locationId: ctx.locationId } } : {}),
                   select: {
                     revenueGlAccountId: true,
                     inventoryAssetGlAccountId: true,
