@@ -7,6 +7,7 @@ import {
   resolveProductGlAccounts,
   resolveProductGlAccountsStrict,
 } from "../services/gl-account-resolver.js";
+import { recordInventoryReceipt } from "../services/costing-engine.js";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -306,8 +307,11 @@ const ReceivePOSchema = z.object({
     z.object({
       lineItemId: z.string().min(1),
       receivedQty: z.number().int().min(0),
+      // Unit cost at receipt — defaults to the PO line's original cost when omitted
+      unitCostCents: z.number().int().min(0).optional(),
     })
   ).min(1),
+  locationId: z.string().optional().nullable(),
   receivedBy: z.string().optional(),
 });
 
@@ -1333,6 +1337,7 @@ router.get("/purchase-orders/:id", async (req: Request, res: Response, next: Nex
 // PUT /purchase-orders/:id/receive
 router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
     const body = ReceivePOSchema.parse(req.body);
     const po = await prisma.purchaseOrder.findFirst({
       where: { id: req.params.id },
@@ -1344,7 +1349,13 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
     if (po.status === "received")
       return res.status(400).json({ error: "PO already fully received" });
 
+    // Resolve effective locationId: body override → PO's location
+    const effectiveLocationId: string | null = body.locationId ?? po.locationId ?? null;
+
     const receivedAdjustments: AdjustmentRow[] = [];
+    const billLines: Array<{ productId: string; productName: string; receivedQty: number; unitCostCents: number }> = [];
+
+    const now = new Date();
 
     for (const receiveLine of body.lineItems) {
       const poLine = po.lineItems.find((li) => li.id === receiveLine.lineItemId);
@@ -1354,9 +1365,16 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
       const qty = Math.min(receiveLine.receivedQty, maxReceivable);
       if (qty <= 0) continue;
 
+      // Unit cost at receipt: use caller-supplied value if provided, otherwise the PO line's original cost
+      const unitCostAtReceipt = receiveLine.unitCostCents ?? poLine.unitCostCents;
+
       await prisma.poLineItem.update({
         where: { id: poLine.id },
-        data: { receivedQty: poLine.receivedQty + qty },
+        data: {
+          receivedQty: poLine.receivedQty + qty,
+          receivedAt: now,
+          unitCostAtReceipt,
+        },
       });
 
       const product = await prisma.product.findFirst({ where: { id: poLine.productId } });
@@ -1366,9 +1384,26 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
           where: { id: product.id },
           data: { qoh: before + qty },
         });
+
+        // Call costing engine (WAC/FIFO) if we have a location
+        if (effectiveLocationId) {
+          try {
+            await recordInventoryReceipt({
+              tenantId,
+              productId: product.id,
+              locationId: effectiveLocationId,
+              qtyReceived: qty,
+              unitCostCents: unitCostAtReceipt,
+              purchaseOrderId: po.id,
+            });
+          } catch (costErr) {
+            console.warn(`[inventory] costing-engine receipt failed for ${product.id}: ${costErr instanceof Error ? costErr.message : String(costErr)}`);
+          }
+        }
+
         const adj = await prisma.inventoryAdjustment.create({
           data: {
-            tenantId: po.tenantId,
+            tenantId,
             productId: product.id,
             productName: product.name,
             quantityChange: qty,
@@ -1380,6 +1415,13 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
           },
         });
         receivedAdjustments.push(adj);
+
+        billLines.push({
+          productId: product.id,
+          productName: product.name,
+          receivedQty: qty,
+          unitCostCents: unitCostAtReceipt,
+        });
       }
     }
 
@@ -1391,26 +1433,18 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
     const anyReceived = refreshedLines.some((li) => li.receivedQty > 0);
     const newStatus = allReceived ? "received" : anyReceived ? "partial" : po.status;
 
+    const receivedByUserId: string | null = (req as any).userId ?? null;
     const updatedPo = await prisma.purchaseOrder.update({
       where: { id: po.id },
-      data: { status: newStatus },
+      data: {
+        status: newStatus,
+        receivedAt: allReceived ? now : po.receivedAt,
+        receivedByUserId: allReceived ? receivedByUserId : po.receivedByUserId,
+      },
       include: { lineItems: true },
     });
 
     // Best-effort QBO Bill for everything received in this batch
-    const billLines = receivedAdjustments
-      .map((adj) => {
-        const poLine = updatedPo.lineItems.find((li) => li.productId === adj.productId);
-        return poLine
-          ? {
-              productId: adj.productId,
-              productName: adj.productName,
-              receivedQty: adj.quantityChange,
-              unitCostCents: poLine.unitCostCents,
-            }
-          : null;
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
     await tryPushReceivingBill(updatedPo, billLines);
 
     const finalPo = await prisma.purchaseOrder.findFirst({
