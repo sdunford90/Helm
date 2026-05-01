@@ -24,6 +24,7 @@ import SettingsBilling from './pages/SettingsBilling';
 import SettingsTaxRates from './pages/SettingsTaxRates';
 import SettingsProducts from './pages/SettingsProducts';
 import QuickBooksSetup from './pages/QuickBooksSetup';
+import AccountingHub from './pages/AccountingHub';
 import ReportsSalesTax from './pages/ReportsSalesTax';
 import Onboarding from './pages/Onboarding';
 import Transient from './pages/Transient';
@@ -86,6 +87,7 @@ function AppRoutes() {
         <Route path="/settings/tax-rates" element={<SettingsTaxRates />} />
         <Route path="/settings/products" element={<SettingsProducts />} />
         <Route path="/settings/quickbooks" element={<QuickBooksSetup />} />
+        <Route path="/settings/accounting" element={<AccountingHub />} />
         <Route path="/reports/sales-tax" element={<ReportsSalesTax />} />
       </Route>
     </Routes>
