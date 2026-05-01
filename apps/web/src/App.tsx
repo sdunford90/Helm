@@ -27,6 +27,7 @@ import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
 import AccountingHub from './pages/AccountingHub';
+import PurchaseOrders from './pages/PurchaseOrders';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 
 function AppRoutes() {
@@ -65,6 +66,7 @@ function AppRoutes() {
         <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
         <Route path="/accounting" element={<AccountingHub />} />
+        <Route path="/purchase-orders" element={<PurchaseOrders />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

@@ -29,6 +29,7 @@ import {
   Package,
   FileSpreadsheet,
   BookOpen,
+  Truck,
 } from 'lucide-react';
 
 const LOCATIONS = [
@@ -63,6 +64,7 @@ const NAV_SECTIONS = [
       { path: '/pos', label: 'POS', icon: ShoppingCart },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
       { path: '/inventory', label: 'Inventory', icon: Package },
+      { path: '/purchase-orders', label: 'Purchase Orders', icon: Truck },
     ],
   },
   {
@@ -209,6 +211,7 @@ function getPageTitle(pathname: string): string {
     '/reports': 'Reports',
     '/announcements': 'Announcements',
     '/accounting': 'Accounting Hub',
+    '/purchase-orders': 'Purchase Orders',
     '/settings': 'Settings',
   };
   return map[pathname] || 'Helm';
