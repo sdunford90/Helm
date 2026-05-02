@@ -1,4 +1,7 @@
+import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from '@clerk/clerk-react';
+import { setAuthTokenGetter } from './lib/api';
 import AppLayout from './components/AppLayout';
 import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
@@ -100,9 +103,27 @@ function AppRoutes() {
   );
 }
 
+function ApiAuthBridge() {
+  // Wire Clerk's getToken into the global `api` helper so every panel that
+  // calls `api.get(...)` without explicitly passing a token still authenticates
+  // correctly. Without this bridge the raw fetch 302-redirects to the SPA
+  // shell in production and panels render empty / "save failed" silently.
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+  useEffect(() => {
+    if (isLoaded && isSignedIn) {
+      setAuthTokenGetter(() => getToken());
+    } else {
+      setAuthTokenGetter(null);
+    }
+    return () => { setAuthTokenGetter(null); };
+  }, [getToken, isLoaded, isSignedIn]);
+  return null;
+}
+
 export default function App() {
   return (
     <BrandingProvider>
+      <ApiAuthBridge />
       <ModulesProvider>
         <AppRoutes />
       </ModulesProvider>

@@ -617,7 +617,7 @@ router.get(
             tenantId,
             locationId,
             qboInvoiceId: null,
-            status: { in: ["SENT", "PAID"] as any },
+            status: { in: ["ISSUED", "PAID"] },
           },
           select: {
             id: true,

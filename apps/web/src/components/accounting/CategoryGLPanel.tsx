@@ -138,8 +138,12 @@ export default function CategoryGLPanel() {
     setLoading(true);
     setError(null);
     try {
+      // Use the api helper (which auto-injects the Clerk Bearer token via the
+      // global token getter wired in App.tsx) instead of raw fetch — without
+      // it, this call 302-redirects to the SPA shell in production and the
+      // panel renders an empty category list / "Save failed" alerts.
       const [catsRes, accsRes] = await Promise.all([
-        fetch('/api/inventory/categories?includeInactive=false').then((r) => r.json()),
+        api.get<{ categories: ProductCategory[] }>('/api/inventory/categories?includeInactive=false'),
         api.get<{ data: GlAccount[] }>(`/api/settings/gl-accounts`),
       ]);
       const cats: ProductCategory[] = catsRes.categories ?? [];
@@ -212,13 +216,7 @@ export default function CategoryGLPanel() {
   };
 
   const handleAddCategory = async (payload: { name: string; defaultTaxCategory: string; taxable: boolean; isFuelCategory: boolean }) => {
-    const res = await fetch('/api/inventory/categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    await api.post('/api/inventory/categories', payload);
     setShowAdd(false);
     await load();
   };

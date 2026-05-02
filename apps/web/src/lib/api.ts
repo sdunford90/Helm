@@ -11,6 +11,28 @@ class ApiClientError extends Error {
   }
 }
 
+// Global Clerk token getter, registered once at app bootstrap. Lets every
+// `api.*` call fall back to the user's current Clerk session token when no
+// token is passed explicitly, so call sites don't have to thread `getToken`
+// through every component. Without this, raw `api.get(...)` calls 302 to the
+// SPA index in production and JSON.parse fails silently.
+type TokenGetter = () => Promise<string | null>;
+let globalTokenGetter: TokenGetter | null = null;
+
+export function setAuthTokenGetter(getter: TokenGetter | null) {
+  globalTokenGetter = getter;
+}
+
+async function resolveToken(explicit?: string | null): Promise<string | null> {
+  if (explicit !== undefined) return explicit;
+  if (!globalTokenGetter) return null;
+  try {
+    return await globalTokenGetter();
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -21,8 +43,9 @@ async function request<T>(
     ...(options.headers as Record<string, string>),
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  const resolved = await resolveToken(token);
+  if (resolved) {
+    headers['Authorization'] = `Bearer ${resolved}`;
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -57,6 +80,9 @@ export const api = {
 
   put: <T>(path: string, body?: unknown, token?: string | null) =>
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }, token),
+
+  patch: <T>(path: string, body?: unknown, token?: string | null) =>
+    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }, token),
 
   delete: <T>(path: string, token?: string | null) =>
     request<T>(path, { method: 'DELETE' }, token),
