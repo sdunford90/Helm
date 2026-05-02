@@ -1282,7 +1282,9 @@ export default function Contracts() {
     const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);
     setLocalContracts(updated);
     if (viewingContract?.id === id) setViewingContract({ ...viewingContract, ...changes });
-    updateContractApi.execute({ body: { id, ...changes } }).catch(() => {});
+    // useApi.execute resolves (never rejects) and reports failures via
+    // reportApiError, so no .catch wrapper is needed here.
+    void updateContractApi.execute({ body: { id, ...changes } });
   };
 
   const handleTransfer = (contractId: string, newSlip: string, effectiveDate: string, notes: string) => {
@@ -1292,7 +1294,7 @@ export default function Contracts() {
       c.id === contractId ? { ...c, slip: newSlip, status: 'Active' as ContractStatus } : c
     );
     setLocalContracts(updated);
-    transferContractApi.execute({ body: { contractId, newSlip, effectiveDate, notes } }).catch(() => {});
+    void transferContractApi.execute({ body: { contractId, newSlip, effectiveDate, notes } });
   };
 
   const toggleSelect = (id: string) => {

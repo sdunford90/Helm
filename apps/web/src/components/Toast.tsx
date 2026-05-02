@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { CheckCircle2, AlertTriangle, XCircle, Info, X } from 'lucide-react';
+import { API_ERROR_EVENT, type ApiErrorToastDetail } from '../lib/apiError';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -200,6 +201,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     `;
     document.head.appendChild(style);
   }, []);
+
+  // Bridge for non-React callers (contexts, lib helpers, plain fetch blocks)
+  // to surface failed API calls as toasts via a window CustomEvent. Keeps
+  // `reportApiError` decoupled from the React tree.
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<ApiErrorToastDetail>).detail;
+      if (!detail) return;
+      addToast({ type: 'error', title: detail.title, message: detail.message, duration: 6000 });
+    };
+    window.addEventListener(API_ERROR_EVENT, handler);
+    return () => window.removeEventListener(API_ERROR_EVENT, handler);
+  }, [addToast]);
 
   return (
     <ToastContext.Provider value={{ addToast, success, error, warning, info, confirm }}>

@@ -14,6 +14,7 @@ import { isCardExpired } from '../components/PaymentModal';
 import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
 import { api, ApiClientError } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 import { cacheThumbUrls, getCachedThumbUrl, invalidateThumbUrl } from '../lib/thumbUrlCache';
 
 /* ── Document upload policy (mirrors apps/api/src/lib/file-validation.ts) ── */
@@ -1037,8 +1038,10 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
           token,
         );
       } catch (verifyErr) {
-        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch(() => {
-          /* best effort */
+        // Best-effort cleanup of the orphaned R2 object — log but don't
+        // toast (the outer catch already surfaces the verify failure).
+        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch((cleanupErr) => {
+          reportApiError({ endpoint: `DELETE /api/storage/${presign.key}`, error: cleanupErr, silent: true });
         });
         throw verifyErr;
       }
@@ -1058,8 +1061,8 @@ function BoatPhotosSection({ boatId }: { boatId: string }) {
           token,
         );
       } catch (persistErr) {
-        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch(() => {
-          /* best effort */
+        await api.delete(`/api/storage/${encodeURIComponent(presign.key)}`, token).catch((cleanupErr) => {
+          reportApiError({ endpoint: `DELETE /api/storage/${presign.key}`, error: cleanupErr, silent: true });
         });
         throw persistErr;
       }
@@ -1304,7 +1307,7 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
     if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
     setErr('');
     setSaving(true);
-    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } }).catch(() => {});
+    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } });
     setSaving(false);
     onClose();
   };
@@ -2953,8 +2956,9 @@ export default function CustomerDetailPage() {
           token,
         );
       } catch (verifyErr) {
-        await api.delete(`/api/storage/${presign.key}`, token).catch(() => {
-          /* best-effort cleanup; ignore secondary failure */
+        await api.delete(`/api/storage/${presign.key}`, token).catch((cleanupErr) => {
+          // Best-effort cleanup; outer catch surfaces the verify failure.
+          reportApiError({ endpoint: `DELETE /api/storage/${presign.key}`, error: cleanupErr, silent: true });
         });
         throw verifyErr;
       }
@@ -3016,8 +3020,9 @@ export default function CustomerDetailPage() {
     try {
       const token = await getToken();
       await api.delete(`/api/customers/${id}/documents/${doc.id}`, token);
-      await api.delete(`/api/storage/${doc.storageKey}`, token).catch(() => {
-        /* DB row already gone — orphaned object will be cleaned up by lifecycle policy */
+      await api.delete(`/api/storage/${doc.storageKey}`, token).catch((cleanupErr) => {
+        // DB row already gone — orphaned object will be cleaned up by lifecycle policy.
+        reportApiError({ endpoint: `DELETE /api/storage/${doc.storageKey}`, error: cleanupErr, silent: true });
       });
       await refetchDocuments();
     } catch (err) {

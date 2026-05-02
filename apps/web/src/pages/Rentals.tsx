@@ -2032,7 +2032,7 @@ export default function Rentals() {
 
   const handleAddProduct = (p: RentalProduct & { floorPriceCents?: number; ceilingPriceCents?: number; damageWaiverCents?: number }) => {
     setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : products)]);
-    createProduct.execute({
+    void createProduct.execute({
       body: {
         name: p.name,
         category: p.type,
@@ -2044,7 +2044,7 @@ export default function Rentals() {
         ...(p.damageWaiverCents != null && { damageWaiverCents: p.damageWaiverCents }),
         isActive: true,
       },
-    }).catch(() => {});
+    });
   };
 
   const products = useMemo(

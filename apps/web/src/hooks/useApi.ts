@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 
 interface UseApiState<T> {
   data: T | null;
@@ -54,6 +55,14 @@ export function useApi<T>(
         return result;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+        // Surface failures so they don't get silently swallowed by callers
+        // that do `.execute(...).catch(() => {})`. Each useApi instance is
+        // bound to a single endpoint, so we always know the path.
+        reportApiError({
+          endpoint: `${method.toUpperCase()} ${path}`,
+          status: err instanceof ApiClientError ? err.status : undefined,
+          error: err,
+        });
         if (mountedRef.current) {
           setState({ data: null, loading: false, error: message });
         }

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useCallback, useState, ReactNode } from 'react';
+import { reportApiError } from '../lib/apiError';
 
 const DEFAULT_PRIMARY = '#0A2342';
 const DEFAULT_SECONDARY = '#00D4FF';
@@ -27,8 +28,15 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setCssVars(DEFAULT_PRIMARY, DEFAULT_SECONDARY);
 
-    fetch('/api/settings/branding', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : null))
+    const endpoint = '/api/settings/branding';
+    fetch(endpoint, { credentials: 'include' })
+      .then(async (r) => {
+        if (!r.ok) {
+          reportApiError({ endpoint, status: r.status, label: 'Branding' });
+          return null;
+        }
+        return r.json();
+      })
       .then((data) => {
         if (!data) return;
         const primary = data.primaryColor || DEFAULT_PRIMARY;
@@ -37,7 +45,9 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
         setSecondaryColor(secondary);
         setCssVars(primary, secondary);
       })
-      .catch(() => {});
+      .catch((err) => {
+        reportApiError({ endpoint, error: err, label: 'Branding' });
+      });
   }, []);
 
   const applyBranding = useCallback((primary: string, secondary: string) => {

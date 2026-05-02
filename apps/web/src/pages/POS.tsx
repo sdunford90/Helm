@@ -9,6 +9,7 @@ import {
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
 import { loadStripeTerminal } from '@stripe/terminal-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -1411,8 +1412,15 @@ export default function POS() {
   const [locationTaxRates, setLocationTaxRates] = useState<Record<string, number>>({});
   useEffect(() => {
     if (!currentLocationId) return;
-    fetch(`/api/tax/locations/${currentLocationId}/jurisdictions`, { credentials: 'include' })
-      .then((r) => r.ok ? r.json() : null)
+    const endpoint = `/api/tax/locations/${currentLocationId}/jurisdictions`;
+    fetch(endpoint, { credentials: 'include' })
+      .then((r) => {
+        if (!r.ok) {
+          reportApiError({ endpoint, status: r.status, label: 'Tax jurisdictions' });
+          return null;
+        }
+        return r.json();
+      })
       .then((body: { data: Array<{ jurisdiction: { rates: Array<{ category: string; ratePctBps: number; effectiveFrom: string; effectiveTo: string | null }> } }> } | null) => {
         if (!body?.data) return;
         const now = new Date();
@@ -1426,7 +1434,9 @@ export default function POS() {
         }
         setLocationTaxRates(combined);
       })
-      .catch(() => {});
+      .catch((err) => {
+        reportApiError({ endpoint, error: err, label: 'Tax jurisdictions' });
+      });
   }, [currentLocationId]);
 
   const [tab, setTab] = useState<'sale' | 'transactions' | 'settings'>('sale');

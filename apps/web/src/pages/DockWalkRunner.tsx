@@ -6,6 +6,7 @@ import {
   Camera, ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { api, ApiClientError } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 import { useToast } from '../components/Toast';
 
 /* ── Upload error helpers (mirrors CustomerDetail boat-photo pipeline) ── */
@@ -780,7 +781,10 @@ export default function DockWalkRunner() {
       } catch (verifyErr) {
         await api
           .delete(`/api/storage/${encodeURIComponent(presign.key)}`, token)
-          .catch(() => {/* best effort */});
+          .catch((cleanupErr) => {
+            // Best-effort orphan cleanup; outer catch surfaces the verify failure.
+            reportApiError({ endpoint: `DELETE /api/storage/${presign.key}`, error: cleanupErr, silent: true });
+          });
         throw verifyErr;
       }
 
@@ -884,7 +888,9 @@ export default function DockWalkRunner() {
       // Best-effort R2 delete — the DB no longer points at this key.
       api
         .delete(`/api/storage/${encodeURIComponent(key)}`, token)
-        .catch(() => {/* best-effort */});
+        .catch((cleanupErr) => {
+          reportApiError({ endpoint: `DELETE /api/storage/${key}`, error: cleanupErr, silent: true });
+        });
       toast.success('Photo removed');
     } catch (err) {
       // Revert optimistic update.
@@ -969,7 +975,9 @@ export default function DockWalkRunner() {
         for (const k of orphans) {
           api
             .delete(`/api/storage/${encodeURIComponent(k)}`, token)
-            .catch(() => {/* best-effort */});
+            .catch((cleanupErr) => {
+              reportApiError({ endpoint: `DELETE /api/storage/${k}`, error: cleanupErr, silent: true });
+            });
         }
       }
 

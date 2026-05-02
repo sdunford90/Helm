@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import { useAuth } from '@clerk/clerk-react';
+import { reportApiError } from '../lib/apiError';
 
 export interface ApiLocation {
   id: string;
@@ -104,13 +105,19 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     setLocationsLoading(true);
     (async () => {
+      const endpoint = '/api/locations';
       try {
         const token = await getToken();
-        const res = await fetch('/api/locations', {
+        const res = await fetch(endpoint, {
           credentials: 'include',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          // Surface non-2xx responses (e.g. the 401 that previously
+          // caused the dropdown to silently render empty in prod).
+          reportApiError({ endpoint, status: res.status, label: 'Locations' });
+          return;
+        }
         const json = (await res.json()) as { data: ApiLocation[] } | null;
         if (cancelled || !json?.data?.length) return;
         setLocations(json.data);
@@ -131,8 +138,11 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
           setModules(featuresToModules(loc));
           return validId;
         });
-      } catch {
-        // swallow — dropdown stays empty rather than crashing the shell
+      } catch (err) {
+        // Network / parse failures still need a visible signal — the
+        // dropdown stays empty either way, but at least operators get
+        // a toast + structured console.warn instead of a silent shell.
+        reportApiError({ endpoint, error: err, label: 'Locations' });
       } finally {
         if (!cancelled) setLocationsLoading(false);
       }
@@ -171,9 +181,10 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
         ),
       );
 
+      const endpoint = `/api/locations/${currentLocationId}/features`;
       try {
         const token = await getToken();
-        const res = await fetch(`/api/locations/${currentLocationId}/features`, {
+        const res = await fetch(endpoint, {
           method: 'PATCH',
           credentials: 'include',
           headers: {
@@ -182,8 +193,17 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
           },
           body: JSON.stringify({ [apiKey]: enabled }),
         });
-        if (!res.ok) throw new Error(`PATCH failed with ${res.status}`);
-      } catch {
+        if (!res.ok) {
+          reportApiError({ endpoint, status: res.status, label: 'Module toggle' });
+          throw new Error(`PATCH failed with ${res.status}`);
+        }
+      } catch (err) {
+        // Roll back the optimistic update so the UI matches server state.
+        // The status-aware branch above already toasted; only report here
+        // if this was a non-HTTP failure (network/parse).
+        if (!(err instanceof Error) || !err.message.startsWith('PATCH failed')) {
+          reportApiError({ endpoint, error: err, label: 'Module toggle' });
+        }
         setModules((prev) => ({ ...prev, [key]: !enabled }));
         setLocations((prev) =>
           prev.map((l) =>
