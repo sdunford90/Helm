@@ -276,6 +276,22 @@ function CnpForm({
   const [cnpLoading, setCnpLoading] = useState(false);
   const [cnpError, setCnpError] = useState('');
 
+  // Stable per-checkout idempotency nonce. Generated once when the form
+  // mounts and reused for every "Charge Card" attempt on this same form,
+  // so a double-clicked button or a network-layer retry produces the same
+  // Stripe `Idempotency-Key` server-side and Stripe collapses the duplicate
+  // PaymentIntent. A fresh checkout (new CnpForm) gets a fresh nonce, so
+  // legitimate consecutive same-amount sales in the same shift don't
+  // collide. `useRef` (not `useState`) because we never need a re-render
+  // when the nonce is created — it's pure side-channel data for the API.
+  const clientNonceRef = useRef<string>('');
+  if (!clientNonceRef.current) {
+    clientNonceRef.current =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `cnp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
   const handleCharge = async () => {
     if (!stripe || !elements) return;
     setCnpLoading(true);
@@ -293,6 +309,7 @@ function CnpForm({
         total,
         locationId,
         fallbackReason,
+        clientNonce: clientNonceRef.current,
         stripe,
         cardEl,
         apiCall,

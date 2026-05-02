@@ -542,6 +542,7 @@ describe('POST /api/pos/payments/cnp — server-confirmed PaymentIntent', () => 
         amountCents: 5000,
         shiftId: 'shift-1',
         description: 'Tank top',
+        clientNonce: 'nonce-xyz',
       });
 
     expect(res.status).toBe(200);
@@ -554,7 +555,12 @@ describe('POST /api/pos/payments/cnp — server-confirmed PaymentIntent', () => 
 
     const [body, options] = mockedStripe.paymentIntents.create.mock.calls[0];
     // Direct-charge: connected account is in the request *options*, not body.
-    expect(options).toEqual({ stripeAccount: 'acct_marina' });
+    // Idempotency key (task #256) lives alongside `stripeAccount` in the
+    // Stripe SDK request options so retries collapse to the same PI.
+    expect(options).toEqual({
+      stripeAccount: 'acct_marina',
+      idempotencyKey: 'cnp:shift-1:5000:nonce-xyz',
+    });
     // No destination charge — `transfer_data` would re-introduce the
     // capability requirement we're trying to escape.
     expect(body).not.toHaveProperty('transfer_data');
@@ -586,6 +592,7 @@ describe('POST /api/pos/payments/cnp — server-confirmed PaymentIntent', () => 
         amountCents: 5000,
         paymentMethodId: 'pm_card_visa',
         shiftId: 'shift-1',
+        clientNonce: 'nonce-xyz',
       });
 
     expect(res.status).toBe(400);
@@ -603,10 +610,106 @@ describe('POST /api/pos/payments/cnp — server-confirmed PaymentIntent', () => 
       .send({
         amountCents: 5000,
         shiftId: 'shift-1',
+        clientNonce: 'nonce-xyz',
       });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('STRIPE_NOT_CONFIGURED');
+    expect(mockedStripe.paymentIntents.create).not.toHaveBeenCalled();
+  });
+
+  // Task #256 — double-click protection. The cashier hammering "Charge
+  // Card" or a network-layer retry must not mint a second PaymentIntent
+  // on the marina's connected account (every abandoned PI burns Radar
+  // review minutes and pollutes reconciliation). The fix is a stable
+  // Stripe `Idempotency-Key` derived from { shiftId, amountCents,
+  // clientNonce }: same inputs → same key → Stripe returns the SAME PI
+  // on the second call. We assert two things at once here:
+  //   1. The exact key string the server hands to Stripe (so the recipe
+  //      doesn't drift — e.g. someone reordering the components or
+  //      dropping shiftId would silently break dedup across cashiers).
+  //   2. Both calls hand Stripe the SAME key, which is the contract that
+  //      lets Stripe collapse the duplicate.
+  it('sends a stable Idempotency-Key so a double-clicked Charge collapses to one PaymentIntent', async () => {
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: 'acct_marina' });
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      applicationFeePctBps: 0,
+      applicationFeeFixedCents: 0,
+    });
+
+    const body = {
+      amountCents: 5000,
+      shiftId: 'shift-1',
+      clientNonce: 'click-nonce-1',
+    };
+
+    const res1 = await request(app).post('/api/pos/payments/cnp').send(body);
+    const res2 = await request(app).post('/api/pos/payments/cnp').send(body);
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    // Stripe collapses duplicates server-side; our mock just returns the
+    // canned PI for both calls, mirroring what real Stripe does — same
+    // key in, same `{ id, clientSecret }` out.
+    expect(res1.body.id).toBe(res2.body.id);
+    expect(res1.body.clientSecret).toBe(res2.body.clientSecret);
+
+    expect(mockedStripe.paymentIntents.create).toHaveBeenCalledTimes(2);
+    const opts1 = mockedStripe.paymentIntents.create.mock.calls[0][1];
+    const opts2 = mockedStripe.paymentIntents.create.mock.calls[1][1];
+    // Pin the key recipe — `cnp:` namespace, then shift, amount, nonce.
+    expect(opts1.idempotencyKey).toBe('cnp:shift-1:5000:click-nonce-1');
+    // Both calls must hand Stripe the SAME key, otherwise dedup is moot.
+    expect(opts2.idempotencyKey).toBe(opts1.idempotencyKey);
+    // Same connected account on both calls — Stripe scopes Idempotency-
+    // Keys per account, so a dedup across accounts wouldn't apply
+    // anyway, but we want them aligned for the same-shift case.
+    expect(opts1.stripeAccount).toBe('acct_marina');
+    expect(opts2.stripeAccount).toBe('acct_marina');
+  });
+
+  it('produces a different Idempotency-Key when the cart total changes between attempts', async () => {
+    // Cashier adds a forgotten line item and re-clicks Charge — that's a
+    // legitimately different sale and must NOT be deduped against the
+    // first attempt. Folding `amountCents` into the key handles this.
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: 'acct_marina' });
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      applicationFeePctBps: 0,
+      applicationFeeFixedCents: 0,
+    });
+
+    await request(app).post('/api/pos/payments/cnp').send({
+      amountCents: 5000,
+      shiftId: 'shift-1',
+      clientNonce: 'same-nonce',
+    });
+    await request(app).post('/api/pos/payments/cnp').send({
+      amountCents: 5500,
+      shiftId: 'shift-1',
+      clientNonce: 'same-nonce',
+    });
+
+    const opts1 = mockedStripe.paymentIntents.create.mock.calls[0][1];
+    const opts2 = mockedStripe.paymentIntents.create.mock.calls[1][1];
+    expect(opts1.idempotencyKey).not.toBe(opts2.idempotencyKey);
+  });
+
+  it('rejects requests missing clientNonce (idempotency is mandatory)', async () => {
+    // The schema is `.strict()` and `clientNonce` is required. Without
+    // it the server cannot build a stable Idempotency-Key and the whole
+    // double-click protection collapses, so we fail loudly rather than
+    // silently regress to the pre-#256 behavior of always minting a
+    // fresh PI.
+    const res = await request(app)
+      .post('/api/pos/payments/cnp')
+      .send({
+        amountCents: 5000,
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
     expect(mockedStripe.paymentIntents.create).not.toHaveBeenCalled();
   });
 });

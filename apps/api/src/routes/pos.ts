@@ -1579,18 +1579,27 @@ const CaptureSchema = z.object({
 // `paymentMethodId` we want the request to FAIL LOUDLY rather than silently
 // drop the field and confuse a debugging session ("but the browser is
 // sending it!"). Forces every client to be on the new server-confirmed flow.
+// `clientNonce` is required because it's the entropy that makes the
+// idempotency key unique per cashier "Charge Card" attempt. Without it,
+// two legitimate consecutive sales of the same amount in the same shift
+// would collide and the second cashier would silently receive the first
+// sale's PaymentIntent. The browser generates one nonce per CnpForm
+// instance (i.e. per checkout session) so a double-clicked / network-
+// retried request reuses it and Stripe collapses the duplicates, but a
+// fresh checkout always gets a fresh key.
 const CnpPaymentSchema = z.object({
   amountCents: z.number().int().min(50),
   description: z.string().optional(),
   shiftId: z.string().optional(),
   locationId: z.string().optional(),
+  clientNonce: z.string().min(1).max(128),
 }).strict();
 
 router.post(
   "/payments/cnp",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { amountCents, description, shiftId, locationId } = CnpPaymentSchema.parse(req.body);
+      const { amountCents, description, shiftId, locationId, clientNonce } = CnpPaymentSchema.parse(req.body);
       const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
       if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
@@ -1624,6 +1633,22 @@ router.post(
       // on the connected account (the `client_secret` is account-scoped). No
       // `payment_method`, no `confirm: true` here — that was the source of
       // the cross-account mismatch.
+      // Stable per-attempt idempotency key. Stripe collapses repeated
+      // create calls with the same key to the same PaymentIntent, so a
+      // double-click on "Charge Card" or a network-layer retry stops
+      // producing a second abandoned PI on the connected account (which
+      // would otherwise consume the marina's Radar review minutes and
+      // pollute reconciliation). Components:
+      //   - `cnp:` namespace so the key can never collide with another
+      //     route's idempotency space on the same connected account.
+      //   - `shiftId ?? "no-shift"` scopes per cashier session.
+      //   - `amountCents` so a corrected total (e.g. cashier added a
+      //     line item and re-clicked) gets a fresh PI rather than
+      //     replaying the stale one.
+      //   - `clientNonce` is the per-CnpForm random id from the browser
+      //     — without it, two legitimate same-amount sales in the same
+      //     shift would collide.
+      const idempotencyKey = `cnp:${shiftId ?? "no-shift"}:${amountCents}:${clientNonce}`;
       const intent = await stripeClient.paymentIntents.create(
         {
           amount: amountCents,
@@ -1632,7 +1657,7 @@ router.post(
           application_fee_amount: applicationFee,
           description: description ?? "POS card-not-present payment",
         },
-        { stripeAccount: stripeAccountId },
+        { stripeAccount: stripeAccountId, idempotencyKey },
       );
 
       res.json({

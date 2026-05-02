@@ -52,6 +52,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 50.0,
       locationId: "loc-A",
       fallbackReason: "MANUAL_CHOICE",
+      clientNonce: "nonce-abc",
       stripe,
       cardEl,
       apiCall,
@@ -62,7 +63,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
     expect((apiCall as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
       "POST",
       "/api/pos/payments/cnp",
-      { amountCents: 5000, locationId: "loc-A" },
+      { amountCents: 5000, clientNonce: "nonce-abc", locationId: "loc-A" },
     ]);
     // Create body must NOT carry paymentMethodId — that's the field that
     // caused the platform-vs-connected-account mismatch.
@@ -116,6 +117,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 12.34,
       locationId: null,
       fallbackReason: "NO_READER",
+      clientNonce: "nonce-def",
       stripe,
       cardEl: fakeCardEl(),
       apiCall,
@@ -124,9 +126,11 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
     expect(result.ok).toBe(true);
     expect(createPaymentMethod).not.toHaveBeenCalled();
     // No locationId on either request body when none is selected — backend
-    // falls back to tenant scope.
+    // falls back to tenant scope. clientNonce is always present so the
+    // backend can build a deterministic Stripe Idempotency-Key.
     expect((apiCall as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({
       amountCents: 1234,
+      clientNonce: "nonce-def",
     });
     expect((apiCall as ReturnType<typeof vi.fn>).mock.calls[1][2]).toEqual({
       paymentIntentId: "pi_cnp_2",
@@ -143,6 +147,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 10,
       locationId: "loc-A",
       fallbackReason: "MANUAL_CHOICE",
+      clientNonce: "nonce-3",
       stripe,
       cardEl: fakeCardEl(),
       apiCall,
@@ -165,6 +170,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 10,
       locationId: "loc-A",
       fallbackReason: "MANUAL_CHOICE",
+      clientNonce: "nonce-4",
       stripe,
       cardEl: fakeCardEl(),
       apiCall,
@@ -188,6 +194,7 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 10,
       locationId: "loc-A",
       fallbackReason: "MANUAL_CHOICE",
+      clientNonce: "nonce-5",
       stripe,
       cardEl: fakeCardEl(),
       apiCall,
@@ -220,11 +227,45 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
       total: 10,
       locationId: "loc-A",
       fallbackReason: "MANUAL_CHOICE",
+      clientNonce: "nonce-6",
       stripe,
       cardEl: fakeCardEl(),
       apiCall,
     });
 
     expect(result).toEqual({ ok: false, error: "AMOUNT_MISMATCH" });
+  });
+
+  // Task #256: a stable per-form clientNonce is what makes the backend's
+  // Stripe Idempotency-Key meaningful. If the same CnpForm is invoked
+  // twice (e.g. cashier double-clicks "Charge"), both POSTs MUST carry
+  // the same nonce so the server keys collapse and Stripe returns the
+  // same PaymentIntent rather than minting a second abandoned PI.
+  it("forwards the supplied clientNonce verbatim and reuses it across retries", async () => {
+    const apiCall = makeApiCall();
+    const confirmCardPayment = vi.fn().mockResolvedValue({
+      paymentIntent: { id: "pi_cnp_1", status: "succeeded" },
+    });
+    const stripe: CnpStripe = { confirmCardPayment } as unknown as CnpStripe;
+
+    const baseInput = {
+      total: 50,
+      locationId: "loc-A" as string | null,
+      fallbackReason: "MANUAL_CHOICE" as const,
+      clientNonce: "double-click-nonce",
+      stripe,
+      cardEl: fakeCardEl(),
+      apiCall,
+    };
+
+    await chargeCnp(baseInput);
+    await chargeCnp(baseInput);
+
+    const calls = (apiCall as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[1] === "/api/pos/payments/cnp",
+    );
+    expect(calls).toHaveLength(2);
+    expect((calls[0][2] as Record<string, unknown>).clientNonce).toBe("double-click-nonce");
+    expect((calls[1][2] as Record<string, unknown>).clientNonce).toBe("double-click-nonce");
   });
 });

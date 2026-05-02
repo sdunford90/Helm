@@ -48,6 +48,15 @@ export interface ChargeCnpInput {
   locationId: string | null;
   /** How the cashier landed on the keyed form (NO_READER / DISCOVERY_FAILED / MANUAL_CHOICE). */
   fallbackReason: CnpFallbackReason;
+  /**
+   * Per-CnpForm random id (e.g. crypto.randomUUID()). The backend folds it
+   * into the Stripe `Idempotency-Key` so a double-clicked or network-retried
+   * "Charge Card" stops creating a second abandoned PaymentIntent on the
+   * marina's connected account. Must be stable across retries of the SAME
+   * cashier attempt — generated once when the form mounts, reused across
+   * every charge of that form.
+   */
+  clientNonce: string;
   stripe: CnpStripe;
   cardEl: StripeCardElement;
   apiCall: CnpApiCall;
@@ -70,14 +79,17 @@ export interface ChargeCnpInput {
  * regressing into the cross-account mismatch this task was opened to fix.
  */
 export async function chargeCnp(input: ChargeCnpInput): Promise<ChargeCnpResult> {
-  const { total, locationId, fallbackReason, stripe, cardEl, apiCall } = input;
+  const { total, locationId, fallbackReason, clientNonce, stripe, cardEl, apiCall } = input;
 
   const amountCents = Math.round(total * 100);
 
   // Step 1 — backend creates an unconfirmed PaymentIntent on the location's
   // connected Stripe account and returns the account-scoped client_secret.
+  // `clientNonce` is forwarded so the server can build a stable Stripe
+  // `Idempotency-Key`; double-clicks / retries collapse to the same PI.
   const created = (await apiCall("POST", "/api/pos/payments/cnp", {
     amountCents,
+    clientNonce,
     ...(locationId ? { locationId } : {}),
   })) as { id?: string; clientSecret?: string } | null | undefined;
 
