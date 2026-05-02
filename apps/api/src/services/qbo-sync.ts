@@ -556,8 +556,38 @@ export async function syncCustomer(customerId: string, tenantId: string, locatio
 
     result = await qboRequest(ctx, "POST", "customer?minorversion=73", qboCustomerData);
   } else {
-    // Create new QBO customer
-    result = await qboRequest(ctx, "POST", "customer?minorversion=73", qboCustomerData);
+    // Create new QBO customer. If QBO already has a customer with the same
+    // DisplayName (error 6240 — common when the QBO file pre-existed our
+    // records, e.g. seeded sandbox data), look it up by DisplayName and
+    // bind to it instead of failing the whole invoice sync.
+    try {
+      result = await qboRequest(ctx, "POST", "customer?minorversion=73", qboCustomerData);
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      const isDuplicate = /"code":"?6240"?/.test(msg) || /Duplicate Name Exists/i.test(msg);
+      if (!isDuplicate) throw err;
+
+      const displayName = String(qboCustomerData.DisplayName ?? "").trim();
+      if (!displayName) throw err;
+      // Escape single quotes for QBO's SQL-like query language.
+      const escaped = displayName.replace(/'/g, "\\'");
+      const queryRes = await qboRequest(
+        ctx,
+        "GET",
+        `query?query=${encodeURIComponent(
+          `SELECT Id, DisplayName, SyncToken FROM Customer WHERE DisplayName = '${escaped}'`,
+        )}&minorversion=73`,
+      );
+      const existing = queryRes?.QueryResponse?.Customer?.[0];
+      if (!existing?.Id) {
+        // Truly couldn't find it — surface the original duplicate error.
+        throw err;
+      }
+      console.log(
+        `[qbo-sync] Bound local customer ${customerId} to existing QBO customer ${existing.Id} (${displayName}) via duplicate-name recovery`,
+      );
+      result = { Customer: { Id: String(existing.Id) } };
+    }
 
     // Store QBO customer ID on our record
     await prisma.customer.update({
@@ -694,9 +724,22 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     }
   }
 
-  const lineItems = rawLineItems.map((item: any, idx: number) => ({
+  const lineItems = rawLineItems.map((item: any, idx: number) => {
+    // The Prisma column is `extendedCents` (qty * unitPrice - discount + tax),
+    // NOT `totalCents` — reading the wrong field produced NaN -> null on the
+    // QBO payload and triggered "Required parameter Line.Amount is missing".
+    // Fall back to a computed value if extendedCents is somehow null/0.
+    const lineAmountCents =
+      typeof item.extendedCents === "number" && item.extendedCents > 0
+        ? item.extendedCents
+        : Math.round(
+            (Number(item.unitPriceCents) || 0) * (Number(item.quantity) || 1) -
+              (Number(item.discountCents) || 0) +
+              (Number(item.taxCents) || 0),
+          );
+    return {
     LineNum: idx + 1,
-    Amount: item.totalCents / 100,
+    Amount: lineAmountCents / 100,
     DetailType: "SalesItemLineDetail",
     Description: item.description || "",
     SalesItemLineDetail: {
@@ -708,7 +751,8 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
         ? { ItemRef: { value: item._resolvedQboItemId ?? item.qboItemId } }
         : {}),
     },
-  }));
+    };
+  });
 
   const qboInvoiceData: Record<string, unknown> = {
     CustomerRef: { value: (invoice.customer as any).qboCustomerId },

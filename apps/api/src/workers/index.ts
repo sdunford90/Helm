@@ -275,21 +275,15 @@ const qboSyncWorker = new Worker(
       return;
     }
 
-    // Proactively ensure the token is valid before any sync operation.
-    // getValidAccessToken will refresh if expiry is within 5 minutes.
-    let accessToken: string | null = null;
-    try {
-      const tokens = await getValidAccessToken(tenantId);
-      accessToken = tokens.accessToken;
-    } catch (err) {
-      console.warn(`[qbo-sync] Token refresh failed for tenant ${tenantId}:`, (err as Error).message);
-      return;
-    }
-
-    if (!accessToken) {
-      console.warn(`[qbo-sync] No valid QBO token for tenant ${tenantId} — skipping ${type}`);
-      return;
-    }
+    // NOTE: We intentionally do NOT pre-flight a tenant-level
+    // getValidAccessToken() here. With per-location QBO connections
+    // (Task #258), the entity-sync functions below resolve credentials
+    // from the entity's location via resolveQboContext(), so a tenant
+    // with no tenant-level QBO token can still sync invoices belonging
+    // to a connected location. The pre-flight was silently swallowing
+    // every job for such tenants and leaving invoices stuck with
+    // qboInvoiceId=null. The token-refresh path is preserved below for
+    // explicit "token-refresh" jobs.
 
     switch (type) {
       case "customer":
@@ -335,15 +329,30 @@ const qboSyncWorker = new Worker(
         break;
 
       case "token-refresh":
-        // Pure token refresh job — just calling getValidAccessToken above is sufficient.
-        console.log(`[qbo-sync] Token refresh complete for tenant ${tenantId}`);
+        // Pure token refresh job — explicitly call getValidAccessToken so
+        // the tenant-level token is refreshed if it's within 5 minutes of
+        // expiring. (Per-location tokens get refreshed inline by the
+        // entity-sync calls themselves.)
+        try {
+          await getValidAccessToken(tenantId);
+          console.log(`[qbo-sync] Token refresh complete for tenant ${tenantId}`);
+        } catch (err) {
+          console.warn(
+            `[qbo-sync] Token refresh skipped for tenant ${tenantId}:`,
+            (err as Error).message,
+          );
+        }
         break;
 
       default:
         console.warn(`[qbo-sync] Unknown job type: ${type}`);
     }
   },
-  { connection: redisConnection, concurrency: 3 },
+  // Concurrency 1: QBO sandbox aggressively rate-limits per-realm requests
+  // (HTTP 429 ThrottleExceeded). Each invoice sync now makes multiple QBO
+  // calls (customer create + duplicate-name query + invoice create), so
+  // serialising prevents bursts from exceeding the realm's QPS budget.
+  { connection: redisConnection, concurrency: 1 },
 );
 
 qboSyncWorker.on("failed", (job, err) => {
@@ -663,9 +672,16 @@ void scheduleRepeatableJobs();
 // --------------------------------------------------------------------------
 // Graceful shutdown
 // --------------------------------------------------------------------------
+//
+// NOTE: We do NOT register SIGTERM/SIGINT handlers here. Workers now run
+// in the same process as the HTTP API (see apps/api/src/index.ts), and
+// that file owns the single signal-handler entry point. It calls
+// closeWorkers() in the right order — after server.close() drains
+// in-flight requests, but before queues/redis/prisma are torn down — so
+// jobs already executing get a clean chance to finish or be re-queued.
 
-async function shutdown() {
-  console.log("[helm-workers] Shutting down...");
+export async function closeWorkers(): Promise<void> {
+  console.log("[helm-workers] Closing workers...");
   await Promise.all([
     emailWorker.close(),
     smsWorker.close(),
@@ -676,11 +692,7 @@ async function shutdown() {
     reportSchedulerWorker.close(),
   ]);
   console.log("[helm-workers] All workers stopped");
-  process.exit(0);
 }
-
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
 
 // --------------------------------------------------------------------------
 console.log("[helm-workers] All workers started");

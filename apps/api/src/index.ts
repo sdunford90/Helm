@@ -68,6 +68,17 @@ import rolesRouter from "./routes/roles.js";
 import supportRouter from "./routes/support.js";
 import accountingRouter from "./routes/accounting.js";
 
+// Side-effect import: instantiates the BullMQ Workers (email, sms,
+// automation, qbo-sync, billing, deferred-revenue, report-scheduler) and
+// registers the repeatable cron jobs. Without this, jobs enqueued onto
+// the queues (recurring-invoice -> sync-invoice, etc.) sit in Redis
+// forever and the Failed Syncs panel keeps showing "no QBO invoice ID".
+// The single-process model matches the rest of dev + the existing
+// graceful-shutdown comments in this file ("Close BullMQ queues so
+// workers stop picking up new jobs"). closeWorkers() is invoked from
+// gracefulShutdown below so this file owns the only signal handler.
+import { closeWorkers } from "./workers/index.js";
+
 // --------------------------------------------------------------------------
 // App initialisation
 // --------------------------------------------------------------------------
@@ -264,6 +275,16 @@ if (!process.env.VITEST) {
 
     // 1a. Stop the in-process QBO inventory retry scheduler.
     stopQboInventoryRetrySchedule();
+
+    // 1b. Close BullMQ Workers first so any in-flight jobs can finish (or
+    // be re-queued) before we tear down the queue/redis connections under
+    // them. Workers and the API run in the same process — see the
+    // side-effect import + closeWorkers comment near the top of this file.
+    try {
+      await closeWorkers();
+    } catch (err) {
+      console.error("[helm-api] closeWorkers error:", err);
+    }
 
     // 2. Close BullMQ queues so workers stop picking up new jobs.
     try {
