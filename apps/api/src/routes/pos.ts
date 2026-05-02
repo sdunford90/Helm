@@ -1561,20 +1561,36 @@ const CaptureSchema = z.object({
 });
 
 // ─── POST /payments/cnp — Card-not-present (keyed-in) payment ────────────────
+//
+// Returns an unconfirmed PaymentIntent's `client_secret` (and id) scoped to
+// the resolved location's connected account. The browser then runs
+// `stripe.confirmCardPayment(clientSecret, { payment_method: { card: cardEl } })`
+// against that same connected account so the card is tokenized on the right
+// Stripe account — eliminating the previous "platform-owned payment method ID"
+// mismatch that broke per-location marinas.
+//
+// Direct-charge on the connected account (header), with the platform's slice
+// collected as `application_fee_amount`. Mirrors checkout.ts / portal.ts /
+// stripe-terminal.ts so onboarding's existing `card_payments` capability is
+// sufficient — no `transfer_data`, no `transfers` capability requirement.
 
+// `.strict()` rejects unknown keys with a 400. This is deliberate belt-and-
+// suspenders for the task #254 migration: if a stale frontend ships the old
+// `paymentMethodId` we want the request to FAIL LOUDLY rather than silently
+// drop the field and confuse a debugging session ("but the browser is
+// sending it!"). Forces every client to be on the new server-confirmed flow.
 const CnpPaymentSchema = z.object({
   amountCents: z.number().int().min(50),
-  paymentMethodId: z.string().min(1),
   description: z.string().optional(),
   shiftId: z.string().optional(),
   locationId: z.string().optional(),
-});
+}).strict();
 
 router.post(
   "/payments/cnp",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { amountCents, paymentMethodId, description, shiftId, locationId } = CnpPaymentSchema.parse(req.body);
+      const { amountCents, description, shiftId, locationId } = CnpPaymentSchema.parse(req.body);
       const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
       if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
       const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
@@ -1590,17 +1606,6 @@ router.post(
         return;
       }
 
-      // Direct charge on the connected account (mirrors checkout.ts,
-      // portal.ts and stripe-terminal.ts). The PaymentIntent is created
-      // directly on the connected account via the `stripeAccount` header,
-      // so the platform's slice is collected as `application_fee_amount`
-      // and Stripe only requires `card_payments` capability — the same
-      // capability onboarding already requests.
-      // The previous destination-charge model required `transfers`
-      // capability on the connected account, which onboarding doesn't
-      // request, and Stripe rejected those PIs with the
-      // "needs at least one of: transfers, crypto_transfers,
-      // legacy_payments" error.
       const tenant = await prisma.tenant.findUnique({
         where: { id: req.tenantId! },
         select: {
@@ -1614,20 +1619,139 @@ router.post(
         tenant?.applicationFeeFixedCents ?? 0,
       );
 
+      // Create the PI **unconfirmed** — confirmation happens client-side via
+      // `confirmCardPayment(clientSecret, …)` so Stripe.js tokenizes the card
+      // on the connected account (the `client_secret` is account-scoped). No
+      // `payment_method`, no `confirm: true` here — that was the source of
+      // the cross-account mismatch.
       const intent = await stripeClient.paymentIntents.create(
         {
           amount: amountCents,
           currency: "usd",
-          payment_method: paymentMethodId,
           payment_method_types: ["card"],
-          confirm: true,
           application_fee_amount: applicationFee,
           description: description ?? "POS card-not-present payment",
         },
         { stripeAccount: stripeAccountId },
       );
 
-      res.json({ id: intent.id, status: intent.status, amount: intent.amount });
+      res.json({
+        id: intent.id,
+        clientSecret: intent.client_secret,
+        status: intent.status,
+        amount: intent.amount,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /payments/cnp/finalize — Verify a confirmed CNP PaymentIntent ─────
+//
+// Companion to /payments/cnp. After the browser runs `confirmCardPayment`,
+// it MUST round-trip through this endpoint before recording the
+// PosTransaction so the server can:
+//
+//   1. Re-resolve the connected account (same shift/location lookup as the
+//      create step) — guarantees the verification happens on the SAME
+//      account the PI lives on, even if a malicious client lies about it.
+//   2. `paymentIntents.retrieve(piId, { stripeAccount })` — read the truth
+//      from Stripe. Refuse to finalize unless `status === "succeeded"`.
+//   3. Cross-check the amount against what the client claimed. A mismatch
+//      means either replay against a stale PI or a tampered cart total —
+//      both should fail loudly.
+//   4. Audit-log the PI id (no schema change: stored on
+//      `auditLog.changedFieldsJson` so reconciliation jobs can join
+//      `pos_transactions.createdAt` ↔ `audit_logs.recordType=PosPayment`
+//      to recover the PI id without a migration).
+//
+// GL parity: POS sales DO NOT post to the GL ledger at sale time (per
+// task #235 — see comment on POST /transactions). End-of-day settlement
+// jobs are the GL boundary. By keeping that contract unchanged and only
+// adding a verification + audit row here, fee/GL reporting stays
+// bit-identical to the pre-fix code path.
+const CnpFinalizeSchema = z.object({
+  paymentIntentId: z.string().min(1),
+  expectedAmountCents: z.number().int().min(50),
+  shiftId: z.string().optional(),
+  locationId: z.string().optional(),
+}).strict();
+
+router.post(
+  "/payments/cnp/finalize",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { paymentIntentId, expectedAmountCents, shiftId, locationId } =
+        CnpFinalizeSchema.parse(req.body);
+      const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
+        return;
+      }
+
+      const stripeMod = await import("../lib/stripe.js");
+      const stripeClient = stripeMod.stripe;
+      if (!stripeClient) {
+        res.status(500).json({ error: "Stripe is not configured." });
+        return;
+      }
+
+      // Authoritative read on the connected account. Even if the client
+      // lies about the PI status, Stripe's view wins.
+      const intent = await stripeClient.paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { stripeAccount: stripeAccountId },
+      );
+
+      if (intent.status !== "succeeded") {
+        res.status(400).json({
+          error: "PAYMENT_NOT_SUCCEEDED",
+          status: intent.status,
+        });
+        return;
+      }
+
+      if (intent.amount !== expectedAmountCents) {
+        res.status(400).json({
+          error: "AMOUNT_MISMATCH",
+          expectedAmountCents,
+          stripeAmountCents: intent.amount,
+        });
+        return;
+      }
+
+      // Audit-log the verified PI so we can reconcile pos_transactions ↔
+      // Stripe charges later without a schema change. recordType is
+      // "PosPayment" (vs. PosTransaction) so it doesn't collide with the
+      // existing per-sale audit row written by POST /transactions.
+      await prisma.auditLog.create({
+        data: {
+          tenantId: req.tenantId!,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PosPayment",
+          recordId: paymentIntentId,
+          action: "FINALIZED",
+          changedFieldsJson: {
+            paymentIntentId,
+            stripeAccountId,
+            amountCents: intent.amount,
+            cardRail: "CNP",
+            shiftId: shiftId ?? null,
+            locationId: locationId ?? null,
+          },
+        },
+      });
+
+      res.json({
+        id: intent.id,
+        status: intent.status,
+        amount: intent.amount,
+      });
     } catch (err) {
       next(err);
     }

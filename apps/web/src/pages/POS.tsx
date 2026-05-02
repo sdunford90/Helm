@@ -14,6 +14,7 @@ import { useModules } from '../context/ModulesContext';
 import { loadStripeTerminal } from '@stripe/terminal-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { getStripe } from '../lib/stripe.js';
+import { chargeCnp } from '../lib/posCnp';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -281,15 +282,27 @@ function CnpForm({
     try {
       const cardEl = elements.getElement(CardElement);
       if (!cardEl) throw new Error('Card element not found');
-      const { paymentMethod, error: pmErr } = await stripe.createPaymentMethod({ type: 'card', card: cardEl });
-      if (pmErr) throw new Error(pmErr.message ?? 'Card error');
-      const chargeAmountCents = Math.round(total * 100);
-      await apiCall('POST', '/api/pos/payments/cnp', {
-        amountCents: chargeAmountCents,
-        paymentMethodId: paymentMethod!.id,
-        ...(locationId ? { locationId } : {}),
+
+      // Orchestration lives in `lib/posCnp.ts` so it can be unit-tested
+      // without a DOM/Stripe.js harness — see `lib/posCnp.test.ts` for
+      // the regression guards that pin the task #254 contract (no
+      // createPaymentMethod, no paymentMethodId on the wire, client_secret
+      // straight through to confirmCardPayment).
+      const result = await chargeCnp({
+        total,
+        locationId,
+        fallbackReason,
+        stripe,
+        cardEl,
+        apiCall,
       });
-      onComplete('Card Not Present', { cardRail: 'CNP', cnpFallbackReason: fallbackReason });
+
+      if (!result.ok) {
+        setCnpError(result.error);
+        setCnpLoading(false);
+        return;
+      }
+      onComplete('Card Not Present', result.meta);
     } catch (err: any) {
       setCnpError((err as Error).message ?? 'Payment failed');
       setCnpLoading(false);

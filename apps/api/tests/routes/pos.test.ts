@@ -500,26 +500,34 @@ describe('GET /api/pos/reports/card-rail-mix', () => {
   });
 });
 
-// Direct-charge migration: the POS keyed-in (CNP) path used to be a
-// destination charge with `transfer_data.destination`, which required the
-// `transfers` capability on the connected account. Onboarding only requests
-// `card_payments`, so those PIs were rejected by Stripe with the dreaded
-// "needs at least one of: transfers, crypto_transfers, legacy_payments"
-// error. We now do a direct charge on the connected account (header) with
-// `application_fee_amount` for the platform's slice — same model as
-// checkout/portal/terminal — so the existing onboarding capability set is
-// sufficient.
-describe('POST /api/pos/payments/cnp — direct charge', () => {
+// Server-confirmed PaymentIntent migration (task #254): the POS keyed-in
+// (CNP) path used to take a `paymentMethodId` from the browser and create+
+// confirm the PI server-side. The browser tokenized the card against the
+// platform Stripe account (Stripe.js was loaded with only the platform
+// publishable key), so when the backend tried to confirm on the **connected
+// location's** account Stripe rejected the mismatch with
+//   "platform-owned payment method ID".
+// We now create the PI **unconfirmed** on the connected account (header) and
+// hand the `client_secret` back to the browser, which calls
+//   stripe.confirmCardPayment(clientSecret, { payment_method: { card: cardEl } })
+// against the same connected account — the cross-account mismatch becomes
+// structurally impossible because the client_secret is account-scoped.
+//
+// Direct-charge model is preserved (no `transfer_data`, application fee
+// collected via `application_fee_amount`) so onboarding's existing
+// `card_payments` capability is still sufficient.
+describe('POST /api/pos/payments/cnp — server-confirmed PaymentIntent', () => {
   beforeEach(() => {
     mockedStripe.paymentIntents.create.mockReset();
     mockedStripe.paymentIntents.create.mockResolvedValue({
       id: 'pi_cnp_1',
-      status: 'succeeded',
+      client_secret: 'pi_cnp_1_secret_abc',
+      status: 'requires_confirmation',
       amount: 5000,
     });
   });
 
-  it('creates the PaymentIntent on the connected account via header (no transfer_data)', async () => {
+  it('creates an unconfirmed PaymentIntent on the connected account and returns its client_secret', async () => {
     // Resolve to a connected account via shift -> location lookup.
     mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
     mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: 'acct_marina' });
@@ -532,13 +540,16 @@ describe('POST /api/pos/payments/cnp — direct charge', () => {
       .post('/api/pos/payments/cnp')
       .send({
         amountCents: 5000,
-        paymentMethodId: 'pm_card_visa',
         shiftId: 'shift-1',
         description: 'Tank top',
       });
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: 'pi_cnp_1', status: 'succeeded' });
+    expect(res.body).toMatchObject({
+      id: 'pi_cnp_1',
+      clientSecret: 'pi_cnp_1_secret_abc',
+      status: 'requires_confirmation',
+    });
     expect(mockedStripe.paymentIntents.create).toHaveBeenCalledTimes(1);
 
     const [body, options] = mockedStripe.paymentIntents.create.mock.calls[0];
@@ -548,14 +559,38 @@ describe('POST /api/pos/payments/cnp — direct charge', () => {
     // capability requirement we're trying to escape.
     expect(body).not.toHaveProperty('transfer_data');
     expect(body).not.toHaveProperty('on_behalf_of');
+    // The whole point of the fix: the server must NOT attach a payment
+    // method or auto-confirm — the browser confirms client-side via
+    // confirmCardPayment so the card is tokenized on the connected account.
+    expect(body).not.toHaveProperty('payment_method');
+    expect(body.confirm).toBeUndefined();
     // Application fee = ceil(5000 * 50 / 10000) + 30 = 25 + 30 = 55.
     expect(body.application_fee_amount).toBe(55);
     expect(body).toMatchObject({
       amount: 5000,
       currency: 'usd',
-      payment_method: 'pm_card_visa',
-      confirm: true,
+      payment_method_types: ['card'],
     });
+  });
+
+  it('rejects requests that still send a paymentMethodId (legacy clients) with a 400', async () => {
+    // Belt-and-suspenders: the schema is `.strict()` so a stale frontend
+    // that still ships `paymentMethodId` (the field that caused the
+    // platform-vs-connected-account mismatch) gets a hard 400 instead of
+    // having the field silently ignored. This forces every client onto the
+    // new server-confirmed flow rather than degrading to confusing
+    // "the browser is sending it but Stripe says it's missing" debugging.
+    const res = await request(app)
+      .post('/api/pos/payments/cnp')
+      .send({
+        amountCents: 5000,
+        paymentMethodId: 'pm_card_visa',
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
+    // No PI should ever be created when the request itself is invalid.
+    expect(mockedStripe.paymentIntents.create).not.toHaveBeenCalled();
   });
 
   it('returns STRIPE_NOT_CONFIGURED when no Stripe account resolves', async () => {
@@ -567,12 +602,148 @@ describe('POST /api/pos/payments/cnp — direct charge', () => {
       .post('/api/pos/payments/cnp')
       .send({
         amountCents: 5000,
-        paymentMethodId: 'pm_card_visa',
         shiftId: 'shift-1',
       });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('STRIPE_NOT_CONFIGURED');
     expect(mockedStripe.paymentIntents.create).not.toHaveBeenCalled();
+  });
+});
+
+// Companion endpoint for the server-confirmed flow. After the browser runs
+// `confirmCardPayment` it must round-trip through /finalize so the server
+// can re-fetch the PI on the connected account and refuse to record the
+// sale unless Stripe agrees it succeeded for the expected amount. Without
+// this the browser could lie about the payment outcome.
+describe('POST /api/pos/payments/cnp/finalize — server-side verification', () => {
+  beforeEach(() => {
+    mockedStripe.paymentIntents.retrieve.mockReset();
+    mockPrisma.auditLog.create.mockReset();
+    mockPrisma.auditLog.create.mockResolvedValue({ id: 'audit-1' });
+  });
+
+  function arrangeConnected() {
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: 'acct_marina' });
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_marina' });
+  }
+
+  it('retrieves the PI on the connected account and audit-logs success', async () => {
+    arrangeConnected();
+    mockedStripe.paymentIntents.retrieve.mockResolvedValue({
+      id: 'pi_cnp_1',
+      status: 'succeeded',
+      amount: 5000,
+    });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp/finalize')
+      .send({
+        paymentIntentId: 'pi_cnp_1',
+        expectedAmountCents: 5000,
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'pi_cnp_1', status: 'succeeded', amount: 5000 });
+
+    // Critical: PI is re-read on the **connected account**, not the
+    // platform — same account header as create. This is what makes the
+    // verification trustworthy.
+    expect(mockedStripe.paymentIntents.retrieve).toHaveBeenCalledWith(
+      'pi_cnp_1',
+      {},
+      { stripeAccount: 'acct_marina' },
+    );
+
+    // Audit row pins the PI id to this sale for downstream
+    // reconciliation (no schema change required).
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledTimes(1);
+    const auditArgs = mockPrisma.auditLog.create.mock.calls[0][0] as any;
+    expect(auditArgs.data).toMatchObject({
+      recordType: 'PosPayment',
+      recordId: 'pi_cnp_1',
+      action: 'FINALIZED',
+    });
+    expect(auditArgs.data.changedFieldsJson).toMatchObject({
+      paymentIntentId: 'pi_cnp_1',
+      stripeAccountId: 'acct_marina',
+      amountCents: 5000,
+      cardRail: 'CNP',
+    });
+  });
+
+  it('refuses to finalize when Stripe says the PI did not succeed', async () => {
+    // The browser can claim "succeeded" all it wants — the server reads
+    // Stripe directly and refuses if Stripe disagrees. This stops a
+    // malicious or buggy client from booking a sale that never paid.
+    arrangeConnected();
+    mockedStripe.paymentIntents.retrieve.mockResolvedValue({
+      id: 'pi_cnp_2',
+      status: 'requires_payment_method',
+      amount: 5000,
+    });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp/finalize')
+      .send({
+        paymentIntentId: 'pi_cnp_2',
+        expectedAmountCents: 5000,
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error: 'PAYMENT_NOT_SUCCEEDED',
+      status: 'requires_payment_method',
+    });
+    // No audit row when verification fails.
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to finalize when the Stripe amount does not match what the client claimed', async () => {
+    // Defends against a tampered cart total or a replay against a stale
+    // PI for a different sale.
+    arrangeConnected();
+    mockedStripe.paymentIntents.retrieve.mockResolvedValue({
+      id: 'pi_cnp_3',
+      status: 'succeeded',
+      amount: 9999,
+    });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp/finalize')
+      .send({
+        paymentIntentId: 'pi_cnp_3',
+        expectedAmountCents: 5000,
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error: 'AMOUNT_MISMATCH',
+      expectedAmountCents: 5000,
+      stripeAmountCents: 9999,
+    });
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('returns STRIPE_NOT_CONFIGURED if no connected account resolves', async () => {
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    mockPrisma.location.findFirst.mockResolvedValue({ stripeAccountId: null });
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: null });
+
+    const res = await request(app)
+      .post('/api/pos/payments/cnp/finalize')
+      .send({
+        paymentIntentId: 'pi_cnp_4',
+        expectedAmountCents: 5000,
+        shiftId: 'shift-1',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('STRIPE_NOT_CONFIGURED');
+    expect(mockedStripe.paymentIntents.retrieve).not.toHaveBeenCalled();
   });
 });
