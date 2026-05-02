@@ -72,6 +72,11 @@ const CreateTransactionSchema = z.object({
   lineItems: z.array(TransactionLineItemSchema).min(1),
   customerId: z.string().optional().nullable(),
   shiftId: z.string().optional().nullable(),
+  // Optional explicit location for sales made without an open shift (and to
+  // anchor refunds to the connected Stripe account at sale time, even when
+  // the row carries no shiftId). Server uses this as the location signal for
+  // both tax calculation and Stripe-account resolution.
+  locationId: z.string().optional().nullable(),
   paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT"]).default("CASH"),
   tipCents: z.number().int().min(0).default(0),
   // Card-only metadata so reports can show the Terminal-vs-CNP split per
@@ -82,6 +87,13 @@ const CreateTransactionSchema = z.object({
     .enum(["NO_READER", "DISCOVERY_FAILED", "MANUAL_CHOICE"])
     .optional()
     .nullable(),
+  // Stripe PaymentIntent id from `confirmCardPayment` (CNP) or Terminal
+  // capture. Persisted on the row so end-of-day reconciliation, refunds,
+  // and Stripe dispute matching can join the POS sale to the Stripe charge
+  // by id instead of amount + timestamp. Server scrubs it for non-card
+  // sales the same way it scrubs `cardRail` so the field can't be misused
+  // as a free-form note on cash/ACH/charge rows.
+  stripePaymentIntentId: z.string().min(1).optional().nullable(),
 });
 
 const ListTransactionsQuerySchema = z.object({
@@ -397,6 +409,22 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateTransactionSchema.parse(req.body);
 
+      // Authorize the caller for the location this sale will be attributed to.
+      // Mirrors the guards on the payment endpoints (ensurePaymentLocationAccess)
+      // so a cashier scoped to one location can't post sales (or bind PI ids /
+      // Stripe accounts) under a sibling location they don't have access to.
+      // Both signals are checked: explicit `locationId` on the request AND the
+      // location derived from `shiftId` (so passing only shiftId still gates
+      // through the shift's location).
+      const guard = await ensurePaymentLocationAccess(req, {
+        shiftId: data.shiftId ?? null,
+        locationId: data.locationId ?? null,
+      });
+      if (!guard.ok) {
+        res.status(guard.status).json(guard.body);
+        return;
+      }
+
       // Look up products and compute line item totals
       const productIds = data.lineItems.map((li) => li.productId);
       const products = await prisma.product.findMany({
@@ -410,7 +438,9 @@ router.post(
 
       const productMap = new Map(products.map((p) => [p.id, p]));
 
-      // Resolve location for tax — taken from the open shift, if any.
+      // Resolve location for tax — taken from the open shift, if any, then
+      // falling back to an explicit `locationId` on the request (sales made
+      // outside of an open shift, e.g. CNP fallback).
       let locationId: string | null = null;
       let locationTaxProvider: import("@prisma/client").TaxProvider | null = null;
       if (data.shiftId) {
@@ -419,13 +449,16 @@ router.post(
           select: { locationId: true },
         });
         locationId = shift?.locationId ?? null;
-        if (locationId) {
-          const loc = await prisma.location.findUnique({
-            where: { id: locationId },
-            select: { taxProvider: true },
-          });
-          locationTaxProvider = loc?.taxProvider ?? null;
-        }
+      }
+      if (!locationId && data.locationId) {
+        locationId = data.locationId;
+      }
+      if (locationId) {
+        const loc = await prisma.location.findUnique({
+          where: { id: locationId },
+          select: { taxProvider: true },
+        });
+        locationTaxProvider = loc?.taxProvider ?? null;
       }
 
       // Build tax engine input. Per-line tax category resolves via:
@@ -497,6 +530,56 @@ router.post(
       const cardRail = data.paymentMethod === "CARD" ? data.cardRail ?? null : null;
       const cnpFallbackReason =
         cardRail === "CNP" ? data.cnpFallbackReason ?? null : null;
+      // Same rule as `cardRail`: only CARD sales can carry a Stripe PI id.
+      // A buggy (or malicious) client sending one on a cash/ACH row should
+      // be silently dropped so the reconciliation join key only exists where
+      // it's actually meaningful.
+      const stripePaymentIntentId =
+        data.paymentMethod === "CARD" ? data.stripePaymentIntentId ?? null : null;
+
+      // Proof-of-payment binding: before we trust a client-supplied PI id as
+      // the reconciliation / refund key, the server MUST have already verified
+      // that PI itself. Both legitimate paths write a `recordType=PosPayment`
+      // audit row scoped to this tenant:
+      //   - CNP keyed sales: POST /api/pos/payments/cnp/finalize (action=FINALIZED)
+      //     after `paymentIntents.retrieve` returned `succeeded` + amount-match.
+      //   - Terminal sales:  POST /api/pos/terminal/payment-intents/:id/capture
+      //     (action=CAPTURED) after the connected-account capture succeeded.
+      // Anything else is a forged / replayed id — refuse to persist it so the
+      // refund handler can never call stripe.refunds.create against an
+      // attacker-chosen PaymentIntent.
+      if (stripePaymentIntentId) {
+        const proof = await prisma.auditLog.findFirst({
+          where: {
+            tenantId,
+            recordType: "PosPayment",
+            recordId: stripePaymentIntentId,
+          },
+          select: { id: true },
+        });
+        if (!proof) {
+          throw appError(
+            "PaymentIntent has not been verified server-side",
+            400,
+            "PAYMENT_INTENT_NOT_VERIFIED",
+          );
+        }
+      }
+
+      // Capture the connected Stripe account at sale time so refunds remain
+      // deterministic. Re-resolving via shift→location at refund time is
+      // unsafe: the sale may have had no shift, or location ↔ Stripe-account
+      // assignments may have changed in between. We only resolve when the
+      // sale actually carried a PI id (i.e. it really hit Stripe), and we
+      // accept the resolution being null — that just means the refund will
+      // skip Stripe, same as a legacy pre-task-#255 row.
+      let stripeAccountId: string | null = null;
+      if (stripePaymentIntentId) {
+        stripeAccountId = await resolveStripeAccount(tenantId, {
+          shiftId: data.shiftId ?? null,
+          locationId: locationId,
+        });
+      }
 
       // GL contract note (Task #235 — inventory category-only GL collapse):
       // POS sales record `posTransaction` rows + decrement inventory but
@@ -524,6 +607,8 @@ router.post(
           status: data.paymentMethod,
           cardRail,
           cnpFallbackReason,
+          stripePaymentIntentId,
+          stripeAccountId,
           offlineQueued: false,
           lineItems: {
             create: lineItemsData,
@@ -565,6 +650,7 @@ router.post(
             lineItemCount: data.lineItems.length,
             ...(cardRail ? { cardRail } : {}),
             ...(cnpFallbackReason ? { cnpFallbackReason } : {}),
+            ...(stripePaymentIntentId ? { stripePaymentIntentId } : {}),
           },
         },
       });
@@ -765,7 +851,52 @@ router.post(
 
       const refundTotal = refundSubtotal + refundTax;
 
-      // Create refund transaction
+      // If the original sale was a Stripe-backed card payment, issue the
+      // refund on the connected account by PaymentIntent id. We only do
+      // this when the original carries a `stripePaymentIntentId` — older
+      // pre-task-#255 rows are silently treated as offline refunds (no
+      // Stripe call) so refunding legacy sales doesn't 500 the cashier.
+      //
+      // Account resolution is deterministic: we prefer the `stripeAccountId`
+      // captured on the original row at sale time. That's the same account
+      // the PaymentIntent was created on, so we don't have to re-resolve via
+      // shift→location (which can drift if the location's Stripe account is
+      // changed after the sale, or which would fail outright for sales made
+      // without an open shift). Only if the original row has no stored
+      // account (very early task-#255 rows that captured a PI id before this
+      // column existed) do we fall back to live shift→location lookup.
+      let stripeRefundId: string | null = null;
+      if (original.stripePaymentIntentId) {
+        const stripeAccountId =
+          original.stripeAccountId ??
+          (await resolveStripeAccount(tenantId, {
+            shiftId: original.shiftId ?? null,
+          }));
+        if (!stripeAccountId) {
+          throw appError(
+            "Stripe is not configured for this location",
+            400,
+            "STRIPE_NOT_CONFIGURED",
+          );
+        }
+        const stripeMod = await import("../lib/stripe.js");
+        const stripeClient = stripeMod.stripe;
+        if (!stripeClient) {
+          throw appError("Stripe is not configured.", 500, "STRIPE_NOT_CONFIGURED");
+        }
+        const stripeRefund = await stripeClient.refunds.create(
+          {
+            payment_intent: original.stripePaymentIntentId,
+            amount: refundTotal,
+          },
+          { stripeAccount: stripeAccountId },
+        );
+        stripeRefundId = stripeRefund.id;
+      }
+
+      // Create refund transaction. Mirror the original's PI id onto the
+      // refund row so the negative-amount audit row also joins back to
+      // the same Stripe charge for end-of-day reconciliation.
       const refund = await prisma.posTransaction.create({
         data: {
           tenantId,
@@ -776,6 +907,10 @@ router.post(
           tipCents: 0,
           totalCents: -refundTotal,
           status: "REFUNDED",
+          stripePaymentIntentId: original.stripePaymentIntentId ?? null,
+          // Mirror the original's connected account so the negative-amount
+          // refund row also reconciles cleanly per-account.
+          stripeAccountId: original.stripeAccountId ?? null,
           offlineQueued: false,
           lineItems: {
             create: refundLineItems,
@@ -823,6 +958,10 @@ router.post(
             originalTransactionId: original.id,
             refundTotalCents: refundTotal,
             reason: data.reason ?? null,
+            ...(original.stripePaymentIntentId
+              ? { stripePaymentIntentId: original.stripePaymentIntentId }
+              : {}),
+            ...(stripeRefundId ? { stripeRefundId } : {}),
           },
         },
       });
@@ -1828,6 +1967,31 @@ router.post(
         stripeAccountId,
         tipAmountCents,
       );
+
+      // Mirror the CNP-finalize audit row so Terminal-captured PIs also have
+      // a server-verified proof-of-payment record. POST /transactions checks
+      // for the presence of this row before persisting `stripePaymentIntentId`
+      // — without it, a malicious client could attach an arbitrary PI id to a
+      // POS sale and trigger a real Stripe refund against it later.
+      await prisma.auditLog.create({
+        data: {
+          tenantId: req.tenantId!,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PosPayment",
+          recordId: req.params.id,
+          action: "CAPTURED",
+          changedFieldsJson: {
+            paymentIntentId: req.params.id,
+            stripeAccountId,
+            cardRail: "TERMINAL",
+            tipAmountCents: tipAmountCents ?? 0,
+            shiftId: shiftId ?? null,
+            locationId: locationId ?? null,
+          },
+        },
+      });
+
       res.json({ captured: true });
     } catch (err) {
       next(err);

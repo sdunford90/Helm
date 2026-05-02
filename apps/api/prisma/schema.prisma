@@ -1896,6 +1896,18 @@ model PosTransaction {
   // Null otherwise. Lets owners see how often "keyed" was a silent fallback
   // vs. a deliberate cashier choice.
   cnpFallbackReason String?
+  // Stripe PaymentIntent id for card sales (Terminal capture or CNP confirm).
+  // Null for non-card sales and for legacy rows from before this column existed.
+  // Mirrors `Payment.stripePaymentIntentId` so end-of-day reconciliation, refunds,
+  // and Stripe disputes can join POS sales straight to the Stripe charge by id
+  // instead of the fragile amount + timestamp matching we had to fall back to.
+  stripePaymentIntentId String?
+  // Connected Stripe account the PaymentIntent above was created on, captured
+  // at sale time. Persisted here (instead of re-resolving via shift→location at
+  // refund time) so refunds remain deterministic even when the original sale
+  // was made without an open shift, or when location/Stripe-account assignments
+  // change after the sale. Null for non-card sales and legacy rows.
+  stripeAccountId   String?
   createdAt         DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])

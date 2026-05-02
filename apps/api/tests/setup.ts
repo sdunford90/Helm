@@ -159,7 +159,7 @@ export const mockPrisma = {
     };
   })(),
   glEntry: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]), aggregate: vi.fn().mockResolvedValue({ _sum: { debitCents: 0, creditCents: 0 } }), createMany: vi.fn().mockResolvedValue({ count: 0 }) },
-  auditLog: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
+  auditLog: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   insuranceRecord: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   renewalBatch: { findMany: vi.fn().mockResolvedValue([]) },
   referralPartner: { findMany: vi.fn().mockResolvedValue([]) },

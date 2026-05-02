@@ -366,6 +366,327 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
   });
 });
 
+describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id (task #255)', () => {
+  // The cashier client forwards the PaymentIntent id returned by
+  // confirmCardPayment / Terminal capture so the row stores Stripe's id at
+  // sale time. End-of-day reconciliation, refunds, and dispute matching
+  // all join on this id instead of the fragile amount + timestamp pairing
+  // we had to use before.
+  function captureCreate() {
+    let captured: any = null;
+    mockPrisma.posTransaction.create.mockImplementation(async ({ data }: any) => {
+      captured = data;
+      return { id: 'txn-pi', ...data, lineItems: data.lineItems?.create ?? [] };
+    });
+    mockPrisma.product.findMany.mockResolvedValue([
+      buildPosProduct({ id: 'p1', priceCents: 1000, taxClass: null }),
+    ]);
+    mockPrisma.inventory.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+    // Default: pretend the PI was already verified server-side (CNP finalize
+    // / Terminal capture wrote a PosPayment audit row). Tests that want to
+    // exercise the unverified path can override this with mockResolvedValue(null).
+    mockPrisma.auditLog.findFirst.mockResolvedValue({ id: 'audit-row-1' } as any);
+    return () => captured;
+  }
+
+  it('persists the Stripe PaymentIntent id on a CARD sale', async () => {
+    const get = captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'CNP',
+        cnpFallbackReason: 'MANUAL_CHOICE',
+        stripePaymentIntentId: 'pi_card_abc123',
+      });
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.stripePaymentIntentId).toBe('pi_card_abc123');
+  });
+
+  it('drops the PaymentIntent id on non-card sales so the join key only exists where it is meaningful', async () => {
+    // A buggy / malicious client could attach a PI id to a CASH row.
+    // Same scrubbing rule as cardRail — non-card rows must not carry the
+    // reconciliation key.
+    const get = captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CASH',
+        stripePaymentIntentId: 'pi_should_be_dropped',
+      });
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.stripePaymentIntentId).toBeNull();
+  });
+
+  it('persists null when the client omits the PI id (e.g. legacy clients)', async () => {
+    const get = captureCreate();
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'TERMINAL',
+      });
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.stripePaymentIntentId).toBeNull();
+  });
+
+  // The connected Stripe account that captured the PaymentIntent must be
+  // resolved AT SALE TIME and persisted on the row, not re-derived later by
+  // the refund handler. Otherwise refunds on sales made without an open
+  // shift, or sales whose location's Stripe-account assignment changes
+  // afterwards, would route to the wrong account (or fail outright).
+  it('captures and persists the connected Stripe account on the row when a CARD sale carries a PI id', async () => {
+    const get = captureCreate();
+    // No shift, but explicit locationId — the per-location Stripe account
+    // (acct_loc_per_location) must be the one that ends up on the row.
+    // location.findUnique is hit twice: once by the accounting-gate
+    // middleware (needs accountingSetupComplete), once by the route to
+    // resolve taxProvider. Returning a row that satisfies both lets the
+    // request pass through and lets the tax lookup no-op.
+    mockPrisma.shift.findFirst.mockResolvedValue(null);
+    mockPrisma.location.findUnique.mockResolvedValue({
+      accountingSetupComplete: true,
+      accountingGracePeriodEndsAt: null,
+      taxProvider: null,
+    } as any);
+    mockPrisma.location.findFirst.mockResolvedValue({
+      stripeAccountId: 'acct_loc_per_location',
+    } as any);
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'CNP',
+        locationId: 'loc-A',
+        stripePaymentIntentId: 'pi_card_loc_A',
+      });
+
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.stripePaymentIntentId).toBe('pi_card_loc_A');
+    expect(captured.stripeAccountId).toBe('acct_loc_per_location');
+  });
+
+  it('rejects a CARD sale that carries an unverified PaymentIntent id (no PosPayment audit row)', async () => {
+    // Without server-side proof of payment (CNP-finalize / Terminal-capture
+    // audit row), a forged or replayed PI id must NOT be persisted —
+    // otherwise the refund handler would later issue a real Stripe refund
+    // against an attacker-chosen PaymentIntent. Belt-and-braces against the
+    // "trusted-client PI id" attack flagged in code review.
+    captureCreate();
+    // Override: pretend NO PosPayment audit row exists for this PI.
+    mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CARD',
+        cardRail: 'CNP',
+        stripePaymentIntentId: 'pi_attacker_chosen',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('PAYMENT_INTENT_NOT_VERIFIED');
+    // Critically: no Stripe refund / posTransaction row was created.
+    expect(mockPrisma.posTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve / persist a Stripe account for non-card sales', async () => {
+    // Belt-and-braces: even if the lookup somehow returned an account, a
+    // CASH row must never carry one — the column is meaningful only for
+    // sales that actually hit Stripe.
+    const get = captureCreate();
+    mockPrisma.location.findUnique.mockResolvedValue({
+      accountingSetupComplete: true,
+      accountingGracePeriodEndsAt: null,
+      taxProvider: null,
+    } as any);
+    mockPrisma.location.findFirst.mockResolvedValue({
+      stripeAccountId: 'acct_should_not_be_used',
+    } as any);
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CASH',
+        locationId: 'loc-A',
+      });
+
+    expect(res.status).toBe(201);
+    const captured = get();
+    expect(captured.stripeAccountId).toBeNull();
+  });
+});
+
+describe('POST /api/pos/transactions/:id/refund — Stripe refund via stored PI id (task #255)', () => {
+  // When the original POS sale carries a stripePaymentIntentId, the refund
+  // endpoint must call stripe.refunds.create on the connected account
+  // referencing that PI id. Without the stored id, refund matching had to
+  // be done manually in the Stripe Dashboard.
+  beforeEach(() => {
+    mockedStripe.refunds = {
+      create: vi.fn().mockResolvedValue({ id: 're_test_12345' }),
+    } as any;
+    // The shared mockPrisma in tests/setup.ts doesn't define every method
+    // on posTransaction (refund-style endpoints aren't covered elsewhere),
+    // so wire the ones the refund handler needs locally.
+    (mockPrisma.posTransaction as any).findFirst = vi.fn();
+    (mockPrisma.posTransaction as any).update = vi.fn().mockResolvedValue({});
+    mockPrisma.product.findFirst.mockResolvedValue(null);
+    mockPrisma.inventory.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+    // No shift lookup → resolveStripeAccount falls back to the tenant's
+    // stripeAccountId. Wire that here so the refund flow finds an account.
+    mockPrisma.shift.findFirst.mockResolvedValue(null);
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_test' } as any);
+    mockPrisma.location.findFirst.mockResolvedValue(null as any);
+  });
+
+  it('issues a Stripe refund on the connected account using the stored PI id and the per-row stripeAccountId', async () => {
+    // Per-location Stripe account scenario: no open shift, but the original
+    // sale was stamped with the location's connected account at sale time.
+    // The refund must hit THAT account, not the tenant default — re-resolving
+    // via shift would have failed (null shift) and fallen back to the tenant
+    // account, breaking refunds for per-location Connect setups.
+    mockPrisma.tenant.findUnique.mockResolvedValue({ stripeAccountId: 'acct_tenant_default' } as any);
+    (mockPrisma.posTransaction as any).findFirst.mockResolvedValue({
+      id: 'txn-orig',
+      tenantId: 'test-tenant-id',
+      status: 'CARD',
+      stripePaymentIntentId: 'pi_orig_xyz',
+      stripeAccountId: 'acct_loc_per_location',
+      shiftId: null,
+      subtotalCents: 1000,
+      taxCents: 0,
+      lineItems: [
+        {
+          id: 'li-1',
+          productId: null,
+          quantity: 1,
+          unitPriceCents: 1000,
+          discountCents: 0,
+          taxCents: 0,
+          extendedCents: 1000,
+        },
+      ],
+    } as any);
+    let capturedRefundCreate: any = null;
+    mockPrisma.posTransaction.create.mockImplementation(async ({ data }: any) => {
+      capturedRefundCreate = data;
+      return { id: 'txn-refund', ...data, lineItems: data.lineItems?.create ?? [] };
+    });
+
+    const res = await request(app)
+      .post('/api/pos/transactions/txn-orig/refund')
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(mockedStripe.refunds.create).toHaveBeenCalledTimes(1);
+    const [body, opts] = (mockedStripe.refunds.create as any).mock.calls[0];
+    expect(body).toEqual(
+      expect.objectContaining({
+        payment_intent: 'pi_orig_xyz',
+        amount: 1000,
+      }),
+    );
+    // Critically: refund hits the per-location account stored on the row,
+    // NOT the tenant-default account a re-resolution would have returned.
+    expect(opts).toEqual({ stripeAccount: 'acct_loc_per_location' });
+    // Refund row mirrors the original PI id + account so the negative-amount
+    // entry is also joined to the same Stripe charge during reconciliation.
+    expect(capturedRefundCreate.stripePaymentIntentId).toBe('pi_orig_xyz');
+    expect(capturedRefundCreate.stripeAccountId).toBe('acct_loc_per_location');
+  });
+
+  it('falls back to live shift→location resolution when the original row predates stripeAccountId capture', async () => {
+    // Very early task-#255 rows might have a PI id but no stored account
+    // (rows written between the two migration steps). For those, fall back
+    // to live resolveStripeAccount via shift→location, then tenant default.
+    (mockPrisma.posTransaction as any).findFirst.mockResolvedValue({
+      id: 'txn-early',
+      tenantId: 'test-tenant-id',
+      status: 'CARD',
+      stripePaymentIntentId: 'pi_early_abc',
+      stripeAccountId: null,
+      shiftId: null,
+      subtotalCents: 500,
+      taxCents: 0,
+      lineItems: [
+        {
+          id: 'li-e',
+          productId: null,
+          quantity: 1,
+          unitPriceCents: 500,
+          discountCents: 0,
+          taxCents: 0,
+          extendedCents: 500,
+        },
+      ],
+    } as any);
+    mockPrisma.posTransaction.create.mockResolvedValue({
+      id: 'txn-refund',
+      lineItems: [],
+    } as any);
+
+    const res = await request(app)
+      .post('/api/pos/transactions/txn-early/refund')
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(mockedStripe.refunds.create).toHaveBeenCalledTimes(1);
+    const [, opts] = (mockedStripe.refunds.create as any).mock.calls[0];
+    // Falls all the way back to the tenant default since shift+location are null.
+    expect(opts).toEqual({ stripeAccount: 'acct_test' });
+  });
+
+  it('skips the Stripe call for legacy rows that have no stored PI id (offline refund)', async () => {
+    // Refunding a sale recorded before this column existed must not 500
+    // the cashier — fall back to a database-only refund.
+    (mockPrisma.posTransaction as any).findFirst.mockResolvedValue({
+      id: 'txn-legacy',
+      tenantId: 'test-tenant-id',
+      status: 'CARD',
+      stripePaymentIntentId: null,
+      shiftId: null,
+      subtotalCents: 500,
+      taxCents: 0,
+      lineItems: [
+        {
+          id: 'li-2',
+          productId: null,
+          quantity: 1,
+          unitPriceCents: 500,
+          discountCents: 0,
+          taxCents: 0,
+          extendedCents: 500,
+        },
+      ],
+    } as any);
+    mockPrisma.posTransaction.create.mockResolvedValue({
+      id: 'txn-refund',
+      lineItems: [],
+    } as any);
+
+    const res = await request(app)
+      .post('/api/pos/transactions/txn-legacy/refund')
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(mockedStripe.refunds.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('GET /api/pos/reports/card-rail-mix', () => {
   // The rail-mix report aggregates raw card rows into per-location buckets so
   // owners can spot locations that are silently routing sales through CNP.

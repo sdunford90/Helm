@@ -257,7 +257,14 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
 // owners can tell silent fallback from explicit choice.
 export type CardRail = 'TERMINAL' | 'CNP';
 export type CnpFallbackReason = 'NO_READER' | 'DISCOVERY_FAILED' | 'MANUAL_CHOICE';
-export type CardPaymentMeta = { cardRail: CardRail; cnpFallbackReason: CnpFallbackReason | null };
+export type CardPaymentMeta = {
+  cardRail: CardRail;
+  cnpFallbackReason: CnpFallbackReason | null;
+  // Stripe PaymentIntent id from `confirmCardPayment` (CNP) or Terminal
+  // capture, threaded into POST /api/pos/transactions for reconciliation
+  // and refunds (task #255).
+  stripePaymentIntentId: string | null;
+};
 
 /* ── Card-Not-Present inner form (must be inside Elements) ── */
 
@@ -498,7 +505,14 @@ function CardPaymentModal({
       );
       setStatus('terminal_done');
       setTimeout(() => {
-        onComplete('Card (Terminal)', { cardRail: 'TERMINAL', cnpFallbackReason: null });
+        // `piId` is the same PaymentIntent the connected account just
+        // captured — persist it on the POS row so reconciliation /
+        // refunds can join straight to the Stripe charge (task #255).
+        onComplete('Card (Terminal)', {
+          cardRail: 'TERMINAL',
+          cnpFallbackReason: null,
+          stripePaymentIntentId: piId ?? null,
+        });
         onClose();
       }, 1800);
     } catch (err: any) {
@@ -1667,11 +1681,22 @@ export default function POS() {
     const result = await createTransaction.execute({
       lineItems,
       paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
+      // Anchor the row to the cashier's open shift (when there is one) AND to
+      // the active location. The server uses both signals to resolve which
+      // connected Stripe account to capture on the row at sale time, which is
+      // what makes refunds deterministic later — without locationId, sales
+      // made outside an open shift would refund against a (possibly wrong)
+      // tenant-default account (task #255).
+      ...(shiftId ? { shiftId } : {}),
+      ...(currentLocationId ? { locationId: currentLocationId } : {}),
       // Forward the rail tag so the server can store it on the transaction.
       // Only sent for card sales — server also defensively scrubs non-CARD rows.
+      // The PI id is the reconciliation join key for end-of-day GL / refunds /
+      // dispute matching — server persists it on `pos_transactions` (task #255).
       ...(cardMeta ? {
         cardRail: cardMeta.cardRail,
         cnpFallbackReason: cardMeta.cnpFallbackReason ?? null,
+        stripePaymentIntentId: cardMeta.stripePaymentIntentId ?? null,
       } : {}),
     });
 

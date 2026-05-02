@@ -89,7 +89,15 @@ describe("chargeCnp — POS keyed-card flow (task #254)", () => {
 
     expect(result).toEqual({
       ok: true,
-      meta: { cardRail: "CNP", cnpFallbackReason: "MANUAL_CHOICE" },
+      // `stripePaymentIntentId` mirrors paymentIntent.id and is what
+      // `handlePaymentComplete` forwards to POST /api/pos/transactions so
+      // the row stores the PI id for end-of-day reconciliation, refunds,
+      // and Stripe dispute matching (task #255).
+      meta: {
+        cardRail: "CNP",
+        cnpFallbackReason: "MANUAL_CHOICE",
+        stripePaymentIntentId: "pi_cnp_1",
+      },
       paymentIntent: { id: "pi_cnp_1", status: "succeeded" },
     });
   });

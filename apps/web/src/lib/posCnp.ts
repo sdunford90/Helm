@@ -19,7 +19,15 @@ import type { Stripe, StripeCardElement, PaymentIntent } from "@stripe/stripe-js
 
 export type CardRail = "TERMINAL" | "CNP";
 export type CnpFallbackReason = "NO_READER" | "DISCOVERY_FAILED" | "MANUAL_CHOICE";
-export type CardPaymentMeta = { cardRail: CardRail; cnpFallbackReason: CnpFallbackReason | null };
+export type CardPaymentMeta = {
+  cardRail: CardRail;
+  cnpFallbackReason: CnpFallbackReason | null;
+  // Stripe PaymentIntent id from `confirmCardPayment` (CNP) or Terminal
+  // capture. Threaded into `POST /api/pos/transactions` so the row stores
+  // the PI id for end-of-day reconciliation, refunds, and dispute matching
+  // (task #255).
+  stripePaymentIntentId: string | null;
+};
 
 /**
  * Subset of the Stripe.js client surface we actually use, narrowed so tests
@@ -138,7 +146,11 @@ export async function chargeCnp(input: ChargeCnpInput): Promise<ChargeCnpResult>
 
   return {
     ok: true,
-    meta: { cardRail: "CNP", cnpFallbackReason: fallbackReason },
+    meta: {
+      cardRail: "CNP",
+      cnpFallbackReason: fallbackReason,
+      stripePaymentIntentId: paymentIntent.id,
+    },
     paymentIntent: { id: paymentIntent.id, status: paymentIntent.status },
   };
 }
