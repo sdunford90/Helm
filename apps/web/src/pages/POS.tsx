@@ -1513,7 +1513,12 @@ export default function POS() {
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
   const [closingShift, setClosingShift] = useState(false);
   const [closeShiftError, setCloseShiftError] = useState('');
-  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[] } | null>(null);
+  // `totalSnapshot` pins the dollar amount at the moment the cashier picked
+  // a payment method. Without it, after a successful sale `setCart([])`
+  // would re-render the still-mounted CardPaymentModal with a fresh
+  // `total = 0`, making the "Payment Complete — $0.00" screen and the
+  // printed receipt show $0 even though Stripe charged the correct amount.
+  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[]; totalSnapshot: number } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
@@ -2065,17 +2070,17 @@ export default function POS() {
                         // closes the race where the button could be clicked
                         // between render and the disabled state taking effect.
                         if (!stripeReady) return;
-                        if (total > 0) setPaymentModal({ method: 'Card', cartSnapshot: cart });
+                        if (total > 0) setPaymentModal({ method: 'Card', cartSnapshot: cart, totalSnapshot: total });
                       }}
                     >
                       <CreditCard size={16} />
                       {stripeChecking ? ' Checking…' : ' Card'}
                     </button>
-                    <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart })}><Banknote size={16} /> Cash</button>
+                    <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart, totalSnapshot: total })}><Banknote size={16} /> Cash</button>
                     {achEnabled && (
-                      <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart })}><Building2 size={16} /> ACH</button>
+                      <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart, totalSnapshot: total })}><Building2 size={16} /> ACH</button>
                     )}
-                    <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart })}><DollarSign size={16} /> Charge to Slip</button>
+                    <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart, totalSnapshot: total })}><DollarSign size={16} /> Charge to Slip</button>
                   </div>
                 </div>
               </>
@@ -2190,8 +2195,8 @@ export default function POS() {
       )}
       {paymentModal && paymentModal.method === 'Card' && stripeReady && (
         <CardPaymentModal
-          total={total}
-          amountCents={Math.round(total * 100)}
+          total={paymentModal.totalSnapshot}
+          amountCents={Math.round(paymentModal.totalSnapshot * 100)}
           cartItems={paymentModal.cartSnapshot}
           onClose={() => setPaymentModal(null)}
           onComplete={(method, meta) => { handlePaymentComplete(method, meta); }}
@@ -2201,7 +2206,7 @@ export default function POS() {
       )}
       {paymentModal && paymentModal.method !== 'Card' && (
         <PaymentModal
-          total={total}
+          total={paymentModal.totalSnapshot}
           method={paymentModal.method}
           onClose={() => setPaymentModal(null)}
           onComplete={(method) => handlePaymentComplete(method)}
