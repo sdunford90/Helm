@@ -96,7 +96,13 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
     // getToken() returns null and the API call falls back to a 302 → SPA
     // index.html redirect, which silently fails and leaves the dropdown empty.
     if (!isLoaded) return;
-    if (!isSignedIn) {
+    // Mirror AppLayout's dev-bypass: when VITE_ENABLE_AUTH_DEV_BYPASS=true
+    // the app shell renders without a Clerk session and the API server has
+    // its own matching ENABLE_AUTH_DEV_BYPASS that returns the tenant's
+    // locations without needing a verified token. Without this, the location
+    // picker stays empty in the local preview because we'd skip the fetch.
+    const devBypass = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
+    if (!isSignedIn && !devBypass) {
       // Public/unauthenticated pages have no locations to load — make that
       // state explicit so callers don't render perpetual loading skeletons.
       setLocationsLoading(false);
@@ -107,7 +113,7 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
     (async () => {
       const endpoint = '/api/locations';
       try {
-        const token = await getToken();
+        const token = isSignedIn ? await getToken() : null;
         const res = await fetch(endpoint, {
           credentials: 'include',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
