@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 
 export interface ApiLocation {
   id: string;
@@ -79,6 +80,7 @@ function unionModules(locations: ApiLocation[]): ModulesConfig {
 }
 
 export function ModulesProvider({ children }: { children: ReactNode }) {
+  const { getToken, isLoaded, isSignedIn } = useAuth();
   const [locations, setLocations] = useState<ApiLocation[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(true);
   const [currentLocationId, setCurrentLocationIdState] = useState<string | null>(() => {
@@ -89,11 +91,28 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
   const [modules, setModules] = useState<ModulesConfig>(FALLBACK);
 
   useEffect(() => {
+    // Wait until Clerk has hydrated and the user is signed in. Otherwise
+    // getToken() returns null and the API call falls back to a 302 → SPA
+    // index.html redirect, which silently fails and leaves the dropdown empty.
+    if (!isLoaded) return;
+    if (!isSignedIn) {
+      // Public/unauthenticated pages have no locations to load — make that
+      // state explicit so callers don't render perpetual loading skeletons.
+      setLocationsLoading(false);
+      return;
+    }
+    let cancelled = false;
     setLocationsLoading(true);
-    fetch('/api/locations', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json: { data: ApiLocation[] } | null) => {
-        if (!json?.data?.length) return;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch('/api/locations', {
+          credentials: 'include',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as { data: ApiLocation[] } | null;
+        if (cancelled || !json?.data?.length) return;
         setLocations(json.data);
 
         const stored = localStorage.getItem(LOCATION_STORAGE_KEY);
@@ -112,10 +131,16 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
           setModules(featuresToModules(loc));
           return validId;
         });
-      })
-      .catch(() => {})
-      .finally(() => setLocationsLoading(false));
-  }, []);
+      } catch {
+        // swallow — dropdown stays empty rather than crashing the shell
+      } finally {
+        if (!cancelled) setLocationsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn, getToken]);
 
   const setCurrentLocationId = useCallback((id: string | null) => {
     if (id === null) {
@@ -147,12 +172,17 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
       );
 
       try {
-        await fetch(`/api/locations/${currentLocationId}/features`, {
+        const token = await getToken();
+        const res = await fetch(`/api/locations/${currentLocationId}/features`, {
           method: 'PATCH',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({ [apiKey]: enabled }),
         });
+        if (!res.ok) throw new Error(`PATCH failed with ${res.status}`);
       } catch {
         setModules((prev) => ({ ...prev, [key]: !enabled }));
         setLocations((prev) =>
@@ -162,7 +192,7 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
         );
       }
     },
-    [currentLocationId],
+    [currentLocationId, getToken],
   );
 
   // When in All-locations mode, keep `modules` in sync as locations are
