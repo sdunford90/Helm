@@ -1283,7 +1283,6 @@ model GlAccount {
   location                                Location?                  @relation(name: "LocationGlAccounts", fields: [locationId], references: [id])
   entries                                 GlEntry[]
   lineItems                               InvoiceLineItem[]
-  products                                Product[]                  @relation(name: "ProductGlAccount")
   rentalProductGlMappingsRevenue          RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingRevenue")
   rentalProductGlMappingsCogs             RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingCogs")
   rentalProductGlMappingsInventoryAsset   RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingInventoryAsset")
@@ -1966,7 +1965,6 @@ model Product {
   reorderPoint      Int     @default(0)
   qoh               Int     @default(0)
   active            Boolean @default(true)
-  glAccountId       String?
 
   // QuickBooks Online sync state (populated by qbo-sync.syncInventoryItem)
   qboItemId          String?
@@ -1979,7 +1977,6 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
-  glAccount       GlAccount?            @relation(name: "ProductGlAccount", fields: [glAccountId], references: [id])
   productCategory ProductCategory       @relation(fields: [productCategoryId], references: [id])
   location        Location?             @relation(fields: [locationId], references: [id])
   inventory       Inventory[]

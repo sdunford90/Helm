@@ -635,7 +635,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
           where: { id: productId, tenantId },
           select: {
             id: true, name: true, sku: true, priceCents: true,
-            costCents: true, qoh: true, glAccountId: true,
+            costCents: true, qoh: true,
             productCategory: {
               select: {
                 glMappings: {
@@ -654,7 +654,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
         if (!product) continue;
 
         const mapping = (product as any).productCategory?.glMappings?.[0];
-        const incomeGlAccountId = mapping?.revenueGlAccountId ?? product.glAccountId ?? null;
+        const incomeGlAccountId = mapping?.revenueGlAccountId ?? null;
         const inventoryAssetGlAccountId = mapping?.inventoryAssetGlAccountId ?? null;
         const cogsGlAccountId = mapping?.cogsGlAccountId ?? null;
 

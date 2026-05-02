@@ -2230,16 +2230,32 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
       return;
     }
 
-    // Check if any catalog products still reference this GL account.
+    // Check if any catalog items still reference this GL account.
     // Deleting (or NULL-ing) the FK on these would silently break GL posting,
-    // so block the delete until the operator reassigns them. Rental products
-    // no longer carry a tenant-wide FK; their references live in the
-    // per-location `rental_product_gl_mappings` table across any of the
-    // revenue / COGS / inventory-asset slots.
-    const [dockageRateRefs, serviceFeeRefs, productRefs, rentalProductMappingRows] = await Promise.all([
+    // so block the delete until the operator reassigns them. Inventory
+    // products no longer carry their own glAccountId — they resolve through
+    // the per-(category, location) ProductCategoryGlMapping row, so check
+    // those instead. Rental products use the per-location
+    // RentalProductGlMapping table across the revenue / COGS / asset slots.
+    const [
+      dockageRateRefs,
+      serviceFeeRefs,
+      categoryMappingRows,
+      rentalProductMappingRows,
+    ] = await Promise.all([
       prisma.dockageRate.count({ where: { tenantId, glAccountId: req.params.id } }),
       prisma.serviceFee.count({ where: { tenantId, glAccountId: req.params.id } }),
-      prisma.product.count({ where: { tenantId, glAccountId: req.params.id } }),
+      prisma.productCategoryGlMapping.findMany({
+        where: {
+          tenantId,
+          OR: [
+            { revenueGlAccountId: req.params.id },
+            { cogsGlAccountId: req.params.id },
+            { inventoryAssetGlAccountId: req.params.id },
+          ],
+        },
+        select: { productCategoryId: true },
+      }),
       prisma.rentalProductGlMapping.findMany({
         where: {
           tenantId,
@@ -2252,18 +2268,21 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
         select: { rentalProductId: true },
       }),
     ]);
-    // Distinct rental products affected — multiple per-location mapping
-    // rows can reference the same product, but the operator only needs to
-    // know how many unique products require reassignment.
+    // Distinct categories / rental products affected — one GL account can
+    // be referenced by multiple per-location mapping rows, but the operator
+    // only needs to know how many unique entities require reassignment.
+    const categoryRefs = new Set(
+      categoryMappingRows.map((m) => m.productCategoryId),
+    ).size;
     const rentalProductRefs = new Set(
       rentalProductMappingRows.map((m) => m.rentalProductId),
     ).size;
-    const totalRefs = dockageRateRefs + serviceFeeRefs + productRefs + rentalProductRefs;
+    const totalRefs = dockageRateRefs + serviceFeeRefs + categoryRefs + rentalProductRefs;
     if (totalRefs > 0) {
       const parts: string[] = [];
       if (dockageRateRefs > 0) parts.push(`${dockageRateRefs} dockage rate${dockageRateRefs === 1 ? "" : "s"}`);
       if (serviceFeeRefs > 0) parts.push(`${serviceFeeRefs} service fee${serviceFeeRefs === 1 ? "" : "s"}`);
-      if (productRefs > 0) parts.push(`${productRefs} product${productRefs === 1 ? "" : "s"}`);
+      if (categoryRefs > 0) parts.push(`${categoryRefs} product categor${categoryRefs === 1 ? "y" : "ies"}`);
       if (rentalProductRefs > 0) parts.push(`${rentalProductRefs} rental product${rentalProductRefs === 1 ? "" : "s"}`);
       res.status(409).json({
         error: `This GL account is assigned to ${parts.join(", ")}. Reassign them before deleting.`,
@@ -2271,7 +2290,7 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
         references: {
           dockageRates: dockageRateRefs,
           serviceFees: serviceFeeRefs,
-          products: productRefs,
+          productCategories: categoryRefs,
           rentalProducts: rentalProductRefs,
           total: totalRefs,
         },

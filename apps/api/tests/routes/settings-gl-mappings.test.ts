@@ -31,11 +31,13 @@ beforeEach(async () => {
   };
   (mockPrisma as any).dockageRateGlMapping = {
     findMany: vi.fn().mockResolvedValue([]),
-    upsert: vi.fn().mockResolvedValue({ id: 'drm-1' }),
+    findUnique: vi.fn().mockResolvedValue(null),
+    upsert: vi.fn().mockResolvedValue({ id: 'drm-1', glAccountId: null }),
   };
   (mockPrisma as any).serviceFeeGlMapping = {
     findMany: vi.fn().mockResolvedValue([]),
-    upsert: vi.fn().mockResolvedValue({ id: 'sfm-1' }),
+    findUnique: vi.fn().mockResolvedValue(null),
+    upsert: vi.fn().mockResolvedValue({ id: 'sfm-1', glAccountId: null }),
   };
 });
 
