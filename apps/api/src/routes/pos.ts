@@ -1758,6 +1758,34 @@ router.post(
   },
 );
 
+// ─── GET /payments/cnp/account — Resolve the connected Stripe account ──────
+//
+// The browser needs the connected Stripe account id BEFORE it mounts the
+// Elements provider for the keyed-card form, because Stripe.js must be
+// initialized with `{ stripeAccount }` so that `confirmCardPayment` runs
+// against the same account the PaymentIntent is minted on. Without this,
+// confirmCardPayment queries the platform account and fails with
+// "No such payment_intent".
+router.get(
+  "/payments/cnp/account",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const locationId = (req.query.locationId as string | undefined) ?? null;
+      const shiftId = (req.query.shiftId as string | undefined) ?? null;
+      const guard = await ensurePaymentLocationAccess(req, { shiftId, locationId });
+      if (!guard.ok) { res.status(guard.status).json(guard.body); return; }
+      const stripeAccountId = await resolveStripeAccount(req.tenantId!, { shiftId, locationId });
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "STRIPE_NOT_CONFIGURED" });
+        return;
+      }
+      res.json({ stripeAccountId });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.post(
   "/terminal/payment-intents/:id/capture",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {

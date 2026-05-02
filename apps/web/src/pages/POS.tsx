@@ -13,7 +13,8 @@ import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
 import { loadStripeTerminal } from '@stripe/terminal-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
-import { getStripe } from '../lib/stripe.js';
+import { getStripeForAccount } from '../lib/stripe.js';
+import type { Stripe } from '@stripe/stripe-js';
 import { chargeCnp } from '../lib/posCnp';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -372,6 +373,11 @@ function CardPaymentModal({
   // 'discovery_failed' = discovery threw (SDK/network); same fallback, but
   // copy makes clear we couldn't actually check.
   const [noReaderWarning, setNoReaderWarning] = useState<'none' | 'no_reader' | 'discovery_failed'>('none');
+  // Stripe.js promise scoped to the location's connected Stripe account.
+  // MUST be set before the keyed-card <Elements> mounts so confirmCardPayment
+  // queries the right account (otherwise: "No such payment_intent").
+  const [cnpStripePromise, setCnpStripePromise] = useState<Promise<Stripe | null> | null>(null);
+  const [cnpAccountError, setCnpAccountError] = useState<string>('');
   const terminalRef = useRef<any>(null);
   // Stores the raw SDK reader objects (needed by connectReader — the reshaped StripeReader objects are only for display)
   const rawReadersRef = useRef<Map<string, any>>(new Map());
@@ -490,6 +496,34 @@ function CardPaymentModal({
   }, [cartItems, total, onClose]);
 
   useEffect(() => { void discoverReaders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resolve the location's connected Stripe account once the cashier lands on
+  // the keyed-card form, then load a Stripe.js instance scoped to that
+  // account. The <Elements> wrapper above renders only after this resolves so
+  // that confirmCardPayment runs against the correct connected account.
+  useEffect(() => {
+    if (status !== 'cnp') return;
+    if (cnpStripePromise || cnpAccountError) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const path = locationId
+          ? `/api/pos/payments/cnp/account?locationId=${encodeURIComponent(locationId)}`
+          : '/api/pos/payments/cnp/account';
+        const { stripeAccountId } = await apiCall('GET', path) as { stripeAccountId: string };
+        if (cancelled) return;
+        if (!stripeAccountId) {
+          setCnpAccountError('Stripe is not configured for this location.');
+          return;
+        }
+        setCnpStripePromise(getStripeForAccount(stripeAccountId));
+      } catch (err) {
+        if (cancelled) return;
+        setCnpAccountError((err as Error).message ?? 'Could not load payment form');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [status, locationId, apiCall, cnpStripePromise, cnpAccountError]);
 
   const canClose = ['readers', 'terminal_error', 'cnp', 'cnp_done'].includes(status);
 
@@ -617,6 +651,11 @@ function CardPaymentModal({
           {/* ── Card Not Present entry ── */}
           {status === 'cnp' && (
             <>
+              {cnpAccountError && (
+                <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', color: '#DC2626', fontSize: '13px', marginBottom: '14px' }}>
+                  {cnpAccountError}
+                </div>
+              )}
               {noReaderWarning !== 'none' && (
                 <div
                   role="status"
@@ -648,25 +687,35 @@ function CardPaymentModal({
                   </div>
                 </div>
               )}
-              <Elements stripe={getStripe()}>
-                <CnpForm
-                  total={total}
-                  onBack={noReaderWarning !== 'none' ? () => void discoverReaders() : () => setStatus('readers')}
-                  backLabel={noReaderWarning !== 'none' ? '↻ Check for readers again' : '← Back to readers'}
-                  onComplete={(method, meta) => { setStatus('cnp_done'); onComplete(method, meta); }}
-                  apiCall={apiCall}
-                  locationId={locationId}
-                  // Tag the CNP sale with how the cashier ended up here so the
-                  // rail-mix report can split silent fallback from explicit choice.
-                  fallbackReason={
-                    noReaderWarning === 'no_reader'
-                      ? 'NO_READER'
-                      : noReaderWarning === 'discovery_failed'
-                        ? 'DISCOVERY_FAILED'
-                        : 'MANUAL_CHOICE'
-                  }
-                />
-              </Elements>
+              {/* Stripe.js MUST be initialized with the location's connected
+                  Stripe account id; otherwise `confirmCardPayment` queries
+                  the platform account and fails with "No such payment_intent"
+                  for connected-account PaymentIntents (task #254 follow-up). */}
+              {cnpStripePromise ? (
+                <Elements stripe={cnpStripePromise}>
+                  <CnpForm
+                    total={total}
+                    onBack={noReaderWarning !== 'none' ? () => void discoverReaders() : () => setStatus('readers')}
+                    backLabel={noReaderWarning !== 'none' ? '↻ Check for readers again' : '← Back to readers'}
+                    onComplete={(method, meta) => { setStatus('cnp_done'); onComplete(method, meta); }}
+                    apiCall={apiCall}
+                    locationId={locationId}
+                    // Tag the CNP sale with how the cashier ended up here so the
+                    // rail-mix report can split silent fallback from explicit choice.
+                    fallbackReason={
+                      noReaderWarning === 'no_reader'
+                        ? 'NO_READER'
+                        : noReaderWarning === 'discovery_failed'
+                          ? 'DISCOVERY_FAILED'
+                          : 'MANUAL_CHOICE'
+                    }
+                  />
+                </Elements>
+              ) : !cnpAccountError ? (
+                <div style={{ padding: '24px', textAlign: 'center', color: '#64748B', fontSize: '14px' }}>
+                  Loading payment form…
+                </div>
+              ) : null}
             </>
           )}
 
