@@ -4,9 +4,13 @@ import { todayDateOnly } from "@helm/shared-types";
 import { getTaxProvider, checkTaxExempt } from "./tax-engine.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
-import { resolveDockageRateGlAccount } from "./gl-account-resolver.js";
+import {
+  resolveDockageRateGlAccount,
+  isLocationQboConnected,
+} from "./gl-account-resolver.js";
 import { stripe, requireStripe } from "../lib/stripe.js";
 import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
+import { queues } from "../lib/queue.js";
 
 // ---------------------------------------------------------------------------
 // Billing Engine Service
@@ -498,6 +502,39 @@ export async function generateRecurringInvoices(
         totalCents,
         autoChargeResult,
       });
+
+      // Hand the freshly-finalized invoice off to the QBO sync worker so it
+      // gets pushed to QuickBooks (mirrors the manual finalize route at
+      // POST /api/invoices/:id/finalize). Without this, recurring invoices
+      // stay stuck with qboInvoiceId=null and surface in the Failed Syncs
+      // panel as "never attempted". Gate on per-location connection first,
+      // then fall back to tenant-level realm so multi-location marinas with
+      // a single tenant-level QBO realm still get queued. Enqueue failures
+      // must not block invoice creation — log and continue.
+      try {
+        const locationConnected = contract.slip.locationId
+          ? await isLocationQboConnected(contract.slip.locationId)
+          : false;
+        let shouldEnqueue = locationConnected;
+        if (!shouldEnqueue) {
+          const tenantForQbo = await prisma.tenant.findUnique({
+            where: { id: tenantId },
+            select: { qboRealmId: true },
+          });
+          shouldEnqueue = !!tenantForQbo?.qboRealmId;
+        }
+        if (shouldEnqueue) {
+          await queues["qbo-sync"].add("sync-invoice", {
+            tenantId,
+            invoiceId,
+          });
+        }
+      } catch (err) {
+        console.error(
+          `[billing] failed to enqueue qbo-sync for invoice ${invoiceId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     } catch (err) {
       console.error(
         `Failed to generate invoice for contract ${contract.id}:`,

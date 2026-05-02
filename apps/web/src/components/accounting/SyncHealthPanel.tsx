@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, RefreshCw, Check, Clock, Zap } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useModules } from '../../context/ModulesContext';
+import { useToast } from '../Toast';
 
 interface FailedSync {
   id: string;
@@ -51,11 +52,13 @@ function fmtDateTime(d: string | null) {
 
 export default function SyncHealthPanel() {
   const { currentLocationId } = useModules();
+  const toast = useToast();
   const [health, setHealth] = useState<SyncHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
 
   const load = useCallback(async () => {
     if (!currentLocationId) { setLoading(false); return; }
@@ -90,6 +93,47 @@ export default function SyncHealthPanel() {
       alert(e instanceof Error ? e.message : 'Retry failed');
     } finally {
       setRetrying(null);
+    }
+  };
+
+  const handleSyncAllUnsynced = async () => {
+    setSyncingAll(true);
+    try {
+      const r = await api.post<{
+        enqueued: number;
+        skippedNoConnection: number;
+        enqueueFailed: number;
+        skipped: number;
+        total: number;
+      }>('/api/accounting/sync-health/sync-all-unsynced');
+
+      const detailParts: string[] = [];
+      if (r.skippedNoConnection > 0) {
+        detailParts.push(`${r.skippedNoConnection} skipped (no QuickBooks connection)`);
+      }
+      if (r.enqueueFailed > 0) {
+        detailParts.push(`${r.enqueueFailed} could not be queued`);
+      }
+
+      if (r.enqueued > 0) {
+        toast.success(
+          `Queued ${r.enqueued} invoice${r.enqueued === 1 ? '' : 's'} for sync`,
+          detailParts.length > 0 ? detailParts.join(' · ') : undefined,
+        );
+      } else if (r.total === 0) {
+        toast.info('Nothing to sync', 'No unsynced invoices found.');
+      } else {
+        toast.warning(
+          'No invoices were queued',
+          detailParts.length > 0 ? detailParts.join(' · ') : undefined,
+        );
+      }
+
+      await load();
+    } catch (e: unknown) {
+      toast.error('Sync failed', e instanceof Error ? e.message : 'Unable to queue invoice syncs.');
+    } finally {
+      setSyncingAll(false);
     }
   };
 
@@ -169,8 +213,30 @@ export default function SyncHealthPanel() {
       {/* Failed syncs */}
       {failed.length > 0 && (
         <div style={{ ...stl.card, border: '1px solid #FECACA' }}>
-          <div style={{ ...stl.sectionTitle, color: '#B91C1C', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <AlertTriangle size={16} /> Failed Syncs ({failed.length})
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ ...stl.sectionTitle, color: '#B91C1C', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: 0 }}>
+              <AlertTriangle size={16} /> Failed Syncs ({failed.length})
+            </div>
+            <button
+              style={{
+                ...stl.retryBtn,
+                opacity: syncingAll || failed.length === 0 ? 0.6 : 1,
+                cursor: syncingAll || failed.length === 0 ? 'not-allowed' : 'pointer',
+              }}
+              disabled={syncingAll || failed.length === 0}
+              onClick={() => void handleSyncAllUnsynced()}
+            >
+              <RefreshCw size={12} /> {syncingAll ? 'Queuing…' : 'Sync all unsynced'}
+            </button>
           </div>
           <table style={stl.table}>
             <thead>

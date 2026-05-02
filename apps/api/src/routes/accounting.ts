@@ -4,6 +4,7 @@ import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { logAccountingChange } from "../lib/accounting-audit.js";
 import { queues } from "../lib/queue.js";
 import { syncInvoice, syncInventoryItem, syncReceivingBill } from "../services/qbo-sync.js";
+import { isLocationQboConnected } from "../services/gl-account-resolver.js";
 
 const router: Router = Router();
 
@@ -825,6 +826,99 @@ router.post(
             code: "INVALID_ENTITY_TYPE",
           });
       }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/accounting/sync-health/sync-all-unsynced
+// Bulk-enqueue every invoice that the Failed Syncs panel surfaces as
+// "unsynced" (status IN ('ISSUED','PAID') AND qboInvoiceId IS NULL),
+// scoped to the caller's tenant. Skips invoices whose location has no
+// QBO connection. Returns {enqueued, skipped} so the UI can give the
+// operator meaningful feedback after one click.
+// ---------------------------------------------------------------------------
+router.post(
+  "/sync-health/sync-all-unsynced",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING", "TENANT_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+
+      const unsynced = await prisma.invoice.findMany({
+        where: {
+          tenantId,
+          qboInvoiceId: null,
+          status: { in: ["ISSUED", "PAID"] },
+        },
+        select: { id: true, locationId: true },
+      });
+
+      // Cache per-location connection results so a backlog of invoices
+      // from the same location only triggers one DB lookup.
+      const locConnCache = new Map<string, boolean>();
+      let tenantConnected: boolean | null = null;
+      const checkTenantConnection = async (): Promise<boolean> => {
+        if (tenantConnected !== null) return tenantConnected;
+        const tenant = await prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { qboRealmId: true },
+        });
+        tenantConnected = !!tenant?.qboRealmId;
+        return tenantConnected;
+      };
+
+      let enqueued = 0;
+      let skippedNoConnection = 0;
+      let enqueueFailed = 0;
+
+      for (const inv of unsynced) {
+        let connected = false;
+        if (inv.locationId) {
+          if (!locConnCache.has(inv.locationId)) {
+            locConnCache.set(
+              inv.locationId,
+              await isLocationQboConnected(inv.locationId),
+            );
+          }
+          connected = locConnCache.get(inv.locationId) ?? false;
+        }
+        if (!connected) {
+          connected = await checkTenantConnection();
+        }
+
+        if (!connected) {
+          skippedNoConnection++;
+          continue;
+        }
+
+        try {
+          await queues["qbo-sync"].add("sync-invoice", {
+            tenantId,
+            invoiceId: inv.id,
+          });
+          enqueued++;
+        } catch (err) {
+          console.error(
+            `[accounting] sync-all-unsynced failed to enqueue invoice ${inv.id}:`,
+            err instanceof Error ? err.message : err,
+          );
+          enqueueFailed++;
+        }
+      }
+
+      res.json({
+        enqueued,
+        skippedNoConnection,
+        enqueueFailed,
+        // Aggregate "not synced" counter the UI can show without doing
+        // its own arithmetic.
+        skipped: skippedNoConnection + enqueueFailed,
+        total: unsynced.length,
+      });
     } catch (err) {
       next(err);
     }

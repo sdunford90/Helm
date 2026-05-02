@@ -237,11 +237,38 @@ automationWorker.on("failed", (job, err) => {
 const qboSyncWorker = new Worker(
   "qbo-sync",
   async (job) => {
-    const { type, tenantId, entityId } = job.data as {
-      type: string;
+    // Two enqueue conventions are in use across the codebase:
+    //   (a) { type: "invoice"|"customer"|"payment", tenantId, entityId }
+    //   (b) job.name === "sync-invoice"|"sync-customer"|"sync-payment"
+    //       with { tenantId, invoiceId|customerId|paymentId }
+    // Normalise both to the (type, entityId) pair the switch below expects.
+    const data = job.data as {
+      type?: string;
       tenantId: string;
       entityId?: string;
+      invoiceId?: string;
+      customerId?: string;
+      paymentId?: string;
     };
+    const { tenantId } = data;
+    let { type, entityId } = data;
+
+    if (!type) {
+      switch (job.name) {
+        case "sync-invoice":
+          type = "invoice";
+          entityId = data.invoiceId ?? entityId;
+          break;
+        case "sync-customer":
+          type = "customer";
+          entityId = data.customerId ?? entityId;
+          break;
+        case "sync-payment":
+          type = "payment";
+          entityId = data.paymentId ?? entityId;
+          break;
+      }
+    }
 
     if (!tenantId) {
       console.warn("[qbo-sync] Missing tenantId — skipping job");
