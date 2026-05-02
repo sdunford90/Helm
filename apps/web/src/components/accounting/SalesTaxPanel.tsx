@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, AlertTriangle, Loader2 } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronRight, AlertTriangle, Loader2, MapPin } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useModules } from '../../context/ModulesContext';
 
 interface GlAccount {
   id: string;
@@ -197,9 +198,19 @@ function AddRateForm({ jurisdictionId, glAccounts, onSave, loading, onCancel }: 
   );
 }
 
+interface LocationJurisdictionAssignment {
+  jurisdictionId: string;
+}
+
 export default function SalesTaxPanel() {
+  const { currentLocationId } = useModules();
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([]);
   const [glAccounts, setGlAccounts] = useState<GlAccount[]>([]);
+  // Set of jurisdictionIds attached to currentLocationId. The accounting hub's
+  // "X jurisdictions configured" badge counts THIS set (not all tenant
+  // jurisdictions), so adding a jurisdiction without attaching it leaves the
+  // hub stuck at 0 — which is exactly what the user reported.
+  const [attached, setAttached] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -208,31 +219,89 @@ export default function SalesTaxPanel() {
   const [addJurError, setAddJurError] = useState('');
   const [addRateFor, setAddRateFor] = useState<string | null>(null);
   const [addRateLoading, setAddRateLoading] = useState(false);
+  const [savingAttach, setSavingAttach] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [jRes, aRes] = await Promise.all([
+      const calls: Array<Promise<unknown>> = [
         api.get<{ data: Jurisdiction[] }>('/api/tax/jurisdictions'),
         api.get<{ data: GlAccount[] }>('/api/settings/gl-accounts'),
-      ]);
+      ];
+      if (currentLocationId) {
+        calls.push(
+          api.get<{ data: Array<{ jurisdictionId: string }> }>(
+            `/api/tax/locations/${encodeURIComponent(currentLocationId)}/jurisdictions`,
+          ),
+        );
+      }
+      const [jRes, aRes, locRes] = (await Promise.all(calls)) as [
+        { data: Jurisdiction[] },
+        { data: GlAccount[] },
+        { data: LocationJurisdictionAssignment[] } | undefined,
+      ];
       setJurisdictions(jRes.data ?? []);
       setGlAccounts(aRes.data ?? []);
+      setAttached(new Set((locRes?.data ?? []).map((r) => r.jurisdictionId)));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentLocationId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Push the current attachment set to the API. The endpoint is a full
+  // replace ("here are the jurisdictionIds for this location"), so we send
+  // the entire set every time.
+  const writeAttached = useCallback(async (next: Set<string>) => {
+    if (!currentLocationId) return;
+    await api.put('/api/tax/locations/assign', {
+      locationId: currentLocationId,
+      jurisdictionIds: Array.from(next),
+    });
+  }, [currentLocationId]);
+
+  const toggleAttached = async (jurisdictionId: string) => {
+    if (!currentLocationId) return;
+    const prev = attached;
+    const next = new Set(prev);
+    if (next.has(jurisdictionId)) next.delete(jurisdictionId);
+    else next.add(jurisdictionId);
+    setAttached(next);
+    setSavingAttach(jurisdictionId);
+    try {
+      await writeAttached(next);
+    } catch (e: unknown) {
+      setAttached(prev);
+      alert(e instanceof Error ? e.message : 'Failed to update location attachment');
+    } finally {
+      setSavingAttach(null);
+    }
+  };
 
   const handleAddJurisdiction = async (body: { code: string; name: string; kind: 'STATE' | 'COUNTY' | 'CITY' | 'SPECIAL' }) => {
     setAddJurLoading(true);
     setAddJurError('');
     try {
-      await api.post('/api/tax/jurisdictions', body);
+      // Capture the new id from the create response so we can auto-attach
+      // it to the current location (otherwise the AccountingHub's tax
+      // badge would still read "0 jurisdictions" right after the create).
+      const created = await api.post<{ data: { id: string } } | { id: string }>(
+        '/api/tax/jurisdictions',
+        body,
+      );
+      const newId =
+        ('data' in created && created.data ? created.data.id : undefined) ??
+        ('id' in created ? created.id : undefined);
+      if (currentLocationId && newId) {
+        const next = new Set(attached);
+        next.add(newId);
+        try { await writeAttached(next); setAttached(next); }
+        catch { /* surface via toast bus already */ }
+      }
       setShowAddJur(false);
       await load();
     } catch (e: unknown) {
@@ -296,14 +365,25 @@ export default function SalesTaxPanel() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px', flexWrap: 'wrap' as const }}>
         <div style={{ fontSize: '13px', color: '#64748B' }}>
           {jurisdictions.length} jurisdiction{jurisdictions.length !== 1 ? 's' : ''} configured
+          {currentLocationId && (
+            <>
+              {' · '}
+              <strong style={{ color: '#0A2342' }}>{attached.size}</strong> attached to this location
+            </>
+          )}
         </div>
         <button style={stl.addBtn} onClick={() => setShowAddJur(true)}>
           <Plus size={14} /> Add Jurisdiction
         </button>
       </div>
+      {currentLocationId && jurisdictions.length > 0 && attached.size === 0 && !showAddJur && (
+        <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '8px', padding: '12px 14px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#92400E' }}>
+          <AlertTriangle size={14} /> No jurisdictions attached to this location yet — toggle <strong>Apply at this location</strong> on each row that should charge tax here.
+        </div>
+      )}
 
       {showAddJur && (
         <AddJurForm
@@ -323,6 +403,8 @@ export default function SalesTaxPanel() {
       {jurisdictions.map((j) => {
         const colors = KIND_COLORS[j.kind] ?? KIND_COLORS.SPECIAL;
         const isExpanded = expandedId === j.id;
+        const isAttached = attached.has(j.id);
+        const isAttachSaving = savingAttach === j.id;
 
         return (
           <div key={j.id} style={stl.card}>
@@ -337,6 +419,25 @@ export default function SalesTaxPanel() {
               <span style={{ marginLeft: 'auto', color: '#94A3B8', fontSize: '13px' }}>
                 {j.rates.length} rate{j.rates.length !== 1 ? 's' : ''}
               </span>
+              {currentLocationId && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); void toggleAttached(j.id); }}
+                  disabled={isAttachSaving}
+                  title={isAttached ? 'Click to detach from this location' : 'Click to apply at this location'}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                    padding: '6px 10px', fontSize: '12px', fontWeight: 600,
+                    borderRadius: '6px', cursor: isAttachSaving ? 'wait' : 'pointer',
+                    border: isAttached ? '1px solid #15803D' : '1px solid #CBD5E1',
+                    color: isAttached ? '#15803D' : '#475569',
+                    background: isAttached ? '#DCFCE7' : '#FFFFFF',
+                  }}
+                >
+                  {isAttachSaving ? <Loader2 size={11} /> : <MapPin size={11} />}
+                  {isAttached ? 'Applied here' : 'Apply at this location'}
+                </button>
+              )}
               <button
                 style={stl.dangerBtn}
                 onClick={(e) => { e.stopPropagation(); void handleDeleteJurisdiction(j.id); }}

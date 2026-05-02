@@ -39,6 +39,18 @@ interface ProductsSummary {
   glAccounts: GlAccount[];
 }
 
+// Per-location GL mapping endpoint shape:
+//   { locationId, locationName, qboConnected,
+//     override:  { glAccountId },
+//     effective: { glAccountId } }
+interface SingleGlMappingRow {
+  locationId: string;
+  locationName: string;
+  qboConnected: boolean;
+  override?: { glAccountId: string | null };
+  effective?: { glAccountId: string | null };
+}
+
 const stl = {
   card: { background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px', marginBottom: '16px' } as React.CSSProperties,
   sectionTitle: { fontSize: '15px', fontWeight: 700, color: '#0A2342', marginBottom: '12px' } as React.CSSProperties,
@@ -70,8 +82,13 @@ export default function RatesFeesPanel() {
     setLoading(true);
     setError(null);
     try {
+      // The catalog summary returns { dockageRates, serviceFees, glAccounts }
+      // pre-overlaid with each row's effective per-location GL mapping in
+      // `glAccountId`. Earlier this called /api/settings/products which
+      // doesn't exist, so the panel reported "No dockage rates configured"
+      // even when the tenant had several active rates.
       const r = await api.get<ProductsSummary>(
-        `/api/settings/products?locationId=${encodeURIComponent(currentLocationId)}`,
+        `/api/settings/catalog/products-summary?locationId=${encodeURIComponent(currentLocationId)}`,
       );
       setData(r);
       const dGl: Record<string, string | null> = {};
@@ -91,11 +108,22 @@ export default function RatesFeesPanel() {
   useEffect(() => { void load(); }, [load]);
 
   const saveDockageGl = async (rateId: string) => {
+    if (!currentLocationId) return;
     setSavingDockage(rateId);
     try {
-      await api.put(`/api/settings/dockage-rates/${rateId}/gl`, {
-        glAccountId: dockageGl[rateId] || null,
-      });
+      // Real route is the per-location GL-mapping endpoint, not
+      // /api/settings/dockage-rates/:id/gl (which 404s).
+      await api.put<{ data: SingleGlMappingRow }>(
+        `/api/settings/catalog/dockage-rates/${rateId}/gl-mappings/${currentLocationId}`,
+        { glAccountId: dockageGl[rateId] || null },
+      );
+      // Reflect saved value in local state so the "Save" button hides.
+      setData((prev) => prev ? {
+        ...prev,
+        dockageRates: prev.dockageRates.map((d) =>
+          d.id === rateId ? { ...d, glAccountId: dockageGl[rateId] || null } : d,
+        ),
+      } : prev);
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : 'Save failed');
     } finally {
@@ -104,11 +132,19 @@ export default function RatesFeesPanel() {
   };
 
   const saveServiceFeeGl = async (feeId: string) => {
+    if (!currentLocationId) return;
     setSavingFee(feeId);
     try {
-      await api.put(`/api/settings/service-fees/${feeId}/gl`, {
-        glAccountId: serviceFeeGl[feeId] || null,
-      });
+      await api.put<{ data: SingleGlMappingRow }>(
+        `/api/settings/catalog/service-fees/${feeId}/gl-mappings/${currentLocationId}`,
+        { glAccountId: serviceFeeGl[feeId] || null },
+      );
+      setData((prev) => prev ? {
+        ...prev,
+        serviceFees: prev.serviceFees.map((f) =>
+          f.id === feeId ? { ...f, glAccountId: serviceFeeGl[feeId] || null } : f,
+        ),
+      } : prev);
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : 'Save failed');
     } finally {

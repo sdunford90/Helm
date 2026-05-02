@@ -154,19 +154,44 @@ export default function CategoryGLPanel() {
       );
       setGlAccounts(locationAccs);
 
-      // Load mappings for each category at this location
+      // Load mappings for each category at this location.
+      //
+      // The endpoint returns one row per location of the form:
+      //   { locationId, locationName, qboConnected,
+      //     override:  { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId },
+      //     effective: { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId } }
+      // We previously read the flat shape, so saved mappings looked
+      // "Not mapped" after every reload — and the AccountingHub
+      // category counter (which reads the DB directly via setup-status)
+      // disagreed with the panel ("5/6 mapped" but every dropdown empty).
+      type CategoryGlRow = {
+        locationId: string;
+        locationName: string;
+        qboConnected: boolean;
+        override?: { revenueGlAccountId: string | null; cogsGlAccountId: string | null; inventoryAssetGlAccountId: string | null };
+        effective?: { revenueGlAccountId: string | null; cogsGlAccountId: string | null; inventoryAssetGlAccountId: string | null };
+      };
       const mapEntries: Record<string, GlMapping> = {};
       await Promise.all(
         cats.map(async (cat) => {
+          const empty: GlMapping = { categoryId: cat.id, locationId: currentLocationId, revenueGlAccountId: null, cogsGlAccountId: null, inventoryAssetGlAccountId: null };
           try {
-            const m = await api.get<{ data: GlMapping[] }>(
+            const m = await api.get<{ data: CategoryGlRow[] }>(
               `/api/settings/product-categories/${cat.id}/gl-mappings`,
             );
-            const locMapping = m.data.find((x) => x.locationId === currentLocationId);
-            if (locMapping) mapEntries[cat.id] = locMapping;
-            else mapEntries[cat.id] = { categoryId: cat.id, locationId: currentLocationId, revenueGlAccountId: null, cogsGlAccountId: null, inventoryAssetGlAccountId: null };
+            const row = (m.data ?? []).find((x) => x.locationId === currentLocationId);
+            const slots = row?.effective ?? row?.override ?? null;
+            mapEntries[cat.id] = slots
+              ? {
+                  categoryId: cat.id,
+                  locationId: currentLocationId,
+                  revenueGlAccountId: slots.revenueGlAccountId ?? null,
+                  cogsGlAccountId: slots.cogsGlAccountId ?? null,
+                  inventoryAssetGlAccountId: slots.inventoryAssetGlAccountId ?? null,
+                }
+              : empty;
           } catch {
-            mapEntries[cat.id] = { categoryId: cat.id, locationId: currentLocationId, revenueGlAccountId: null, cogsGlAccountId: null, inventoryAssetGlAccountId: null };
+            mapEntries[cat.id] = empty;
           }
         }),
       );
