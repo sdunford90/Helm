@@ -82,21 +82,24 @@ export default function RatesFeesPanel() {
     setLoading(true);
     setError(null);
     try {
-      // The catalog summary returns { dockageRates, serviceFees, glAccounts }
-      // pre-overlaid with each row's effective per-location GL mapping in
-      // `glAccountId`. Earlier this called /api/settings/products which
-      // doesn't exist, so the panel reported "No dockage rates configured"
-      // even when the tenant had several active rates.
-      const r = await api.get<ProductsSummary>(
+      // The catalog summary returns { data: { dockageRates, serviceFees,
+      // glAccounts, ... } } — a `{ data }` envelope wrapping the payload.
+      // Each row is pre-overlaid with its effective per-location GL
+      // mapping in `glAccountId`. Earlier this read `r.dockageRates`
+      // directly off the envelope (always undefined), so the panel
+      // reported "No dockage rates configured" even when the tenant had
+      // several active rates. Unwrap `.data` so the row arrays surface.
+      const r = await api.get<{ data: ProductsSummary }>(
         `/api/settings/catalog/products-summary?locationId=${encodeURIComponent(currentLocationId)}`,
       );
-      setData(r);
+      const payload = r.data;
+      setData(payload);
       const dGl: Record<string, string | null> = {};
-      (r.dockageRates ?? []).forEach((d) => { dGl[d.id] = d.glAccountId; });
+      (payload.dockageRates ?? []).forEach((d) => { dGl[d.id] = d.glAccountId; });
       setDockageGl(dGl);
 
       const fGl: Record<string, string | null> = {};
-      (r.serviceFees ?? []).forEach((f) => { fGl[f.id] = f.glAccountId; });
+      (payload.serviceFees ?? []).forEach((f) => { fGl[f.id] = f.glAccountId; });
       setServiceFeeGl(fGl);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load');
