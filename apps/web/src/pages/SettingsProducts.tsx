@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   AlertTriangle, ChevronRight, Settings, Package,
   Anchor, DollarSign, Edit2, Check, X, ExternalLink,
-  Info, ChevronDown,
+  Info, ChevronDown, Plus, Trash2,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useModules } from '../context/ModulesContext';
@@ -195,6 +195,64 @@ const s: Record<string, React.CSSProperties> = {
   emptyRow: {
     padding: '32px 16px', textAlign: 'center' as const,
     color: '#94A3B8', fontSize: '14px',
+  },
+  addBtn: {
+    display: 'inline-flex', alignItems: 'center', gap: '4px',
+    padding: '6px 12px', borderRadius: '6px', border: '1px solid #0A2342',
+    backgroundColor: '#FFFFFF', color: '#0A2342',
+    fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+  },
+  rowActionBtn: {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: '28px', height: '28px', borderRadius: '6px',
+    border: 'none', cursor: 'pointer', backgroundColor: '#F1F5F9', color: '#475569',
+    marginRight: '4px',
+  },
+  rowDeleteBtn: {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: '28px', height: '28px', borderRadius: '6px',
+    border: 'none', cursor: 'pointer', backgroundColor: '#FEE2E2', color: '#DC2626',
+  },
+  modalOverlay: {
+    position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modal: {
+    backgroundColor: '#FFFFFF', borderRadius: '12px', width: '480px',
+    maxWidth: '92vw', maxHeight: '92vh', overflowY: 'auto' as const,
+    boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+  },
+  modalHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '16px 20px', borderBottom: '1px solid #E2E8F0',
+  },
+  modalTitle: { fontSize: '16px', fontWeight: 700, color: '#0A2342', margin: 0 },
+  modalBody: { padding: '20px' },
+  modalFooter: {
+    display: 'flex', justifyContent: 'flex-end', gap: '8px',
+    padding: '14px 20px', borderTop: '1px solid #E2E8F0',
+  },
+  field: { marginBottom: '14px' },
+  label: { display: 'block', fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '6px' },
+  input: {
+    width: '100%', padding: '8px 10px', borderRadius: '6px',
+    border: '1px solid #CBD5E1', fontSize: '14px', color: '#0A2342',
+    backgroundColor: '#FFFFFF', boxSizing: 'border-box' as const,
+  },
+  primaryBtn: {
+    padding: '8px 14px', borderRadius: '6px', border: 'none',
+    backgroundColor: '#0A2342', color: '#FFFFFF',
+    fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+  },
+  secondaryBtn: {
+    padding: '8px 14px', borderRadius: '6px', border: '1px solid #CBD5E1',
+    backgroundColor: '#FFFFFF', color: '#475569',
+    fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+  },
+  errorText: {
+    background: '#FEF2F2', color: '#991B1B', borderRadius: '6px',
+    padding: '8px 12px', marginBottom: '10px', fontSize: '12px',
   },
 };
 
@@ -638,6 +696,316 @@ function FlatRentalProductRow({
   );
 }
 
+/* ── Dockage Rate Modal ─────────────────────────────────── */
+
+interface DockageRateForm {
+  id?: string;
+  locationId: string;
+  slipType: string;
+  monthlyRateCents: number | '';
+  electricityMode: 'METERED' | 'FLAT_FEE';
+  electricityRateCents: number | '';
+  active: boolean;
+}
+
+function DockageRateModal({
+  initial,
+  locations,
+  onClose,
+  onSave,
+}: {
+  initial: DockageRateForm | null;
+  locations: LocationLite[];
+  onClose: () => void;
+  onSave: (form: DockageRateForm) => Promise<void>;
+}) {
+  const [form, setForm] = useState<DockageRateForm>(
+    initial ?? {
+      locationId: locations[0]?.id ?? '',
+      slipType: '',
+      monthlyRateCents: '',
+      electricityMode: 'METERED',
+      electricityRateCents: '',
+      active: true,
+    },
+  );
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const upd = <K extends keyof DockageRateForm>(k: K, v: DockageRateForm[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSave = async () => {
+    setErr(null);
+    if (!form.locationId) { setErr('Location is required'); return; }
+    if (!form.slipType.trim()) { setErr('Slip type is required'); return; }
+    if (form.monthlyRateCents === '' || Number(form.monthlyRateCents) < 0) {
+      setErr('Monthly rate is required'); return;
+    }
+    setSaving(true);
+    try {
+      await onSave(form);
+      onClose();
+    } catch (e: any) {
+      setErr(e?.response?.data?.error ?? e?.message ?? 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={s.modalOverlay} onClick={onClose}>
+      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={s.modalHeader}>
+          <h3 style={s.modalTitle}>{initial?.id ? 'Edit Dockage Rate' : 'Add Dockage Rate'}</h3>
+          <button style={s.cancelBtn} onClick={onClose}><X size={14} /></button>
+        </div>
+        <div style={s.modalBody}>
+          {err ? <div style={s.errorText}>{err}</div> : null}
+          <div style={s.field}>
+            <label style={s.label}>Location *</label>
+            <select
+              style={s.input}
+              value={form.locationId}
+              disabled={!!initial?.id}
+              onChange={(e) => upd('locationId', e.target.value)}
+            >
+              <option value="">— Select location —</option>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Slip Type *</label>
+            <input
+              style={s.input}
+              type="text"
+              placeholder='e.g. "30ft Open" or "40ft Covered"'
+              value={form.slipType}
+              onChange={(e) => upd('slipType', e.target.value)}
+            />
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Monthly Rate (USD) *</label>
+            <input
+              style={s.input}
+              type="number"
+              step="0.01"
+              min="0"
+              value={form.monthlyRateCents === '' ? '' : (Number(form.monthlyRateCents) / 100).toFixed(2)}
+              onChange={(e) => {
+                const v = e.target.value;
+                upd('monthlyRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+              }}
+            />
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Electricity</label>
+            <select
+              style={s.input}
+              value={form.electricityMode}
+              onChange={(e) => upd('electricityMode', e.target.value as 'METERED' | 'FLAT_FEE')}
+            >
+              <option value="METERED">Metered</option>
+              <option value="FLAT_FEE">Flat fee</option>
+            </select>
+          </div>
+          {form.electricityMode === 'FLAT_FEE' ? (
+            <div style={s.field}>
+              <label style={s.label}>Flat electricity fee (USD)</label>
+              <input
+                style={s.input}
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.electricityRateCents === '' ? '' : (Number(form.electricityRateCents) / 100).toFixed(2)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('electricityRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+                }}
+              />
+            </div>
+          ) : null}
+          <div style={s.field}>
+            <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input
+                type="checkbox"
+                checked={form.active}
+                onChange={(e) => upd('active', e.target.checked)}
+              />
+              Active
+            </label>
+          </div>
+        </div>
+        <div style={s.modalFooter}>
+          <button style={s.secondaryBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={s.primaryBtn} onClick={handleSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Service Fee Modal ─────────────────────────────────── */
+
+interface ServiceFeeForm {
+  id?: string;
+  locationId: string;
+  name: string;
+  feeType: 'FLAT' | 'PERCENT';
+  amountCents: number | '';
+  pct: number | '';
+  active: boolean;
+}
+
+function ServiceFeeModal({
+  initial,
+  locations,
+  onClose,
+  onSave,
+}: {
+  initial: ServiceFeeForm | null;
+  locations: LocationLite[];
+  onClose: () => void;
+  onSave: (form: ServiceFeeForm) => Promise<void>;
+}) {
+  const [form, setForm] = useState<ServiceFeeForm>(
+    initial ?? {
+      locationId: locations[0]?.id ?? '',
+      name: '',
+      feeType: 'FLAT',
+      amountCents: '',
+      pct: '',
+      active: true,
+    },
+  );
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const upd = <K extends keyof ServiceFeeForm>(k: K, v: ServiceFeeForm[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSave = async () => {
+    setErr(null);
+    if (!form.locationId) { setErr('Location is required'); return; }
+    if (!form.name.trim()) { setErr('Fee name is required'); return; }
+    if (form.feeType === 'FLAT' && (form.amountCents === '' || Number(form.amountCents) < 0)) {
+      setErr('Flat amount is required'); return;
+    }
+    if (form.feeType === 'PERCENT' && (form.pct === '' || Number(form.pct) < 0)) {
+      setErr('Percentage is required'); return;
+    }
+    setSaving(true);
+    try {
+      await onSave(form);
+      onClose();
+    } catch (e: any) {
+      setErr(e?.response?.data?.error ?? e?.message ?? 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={s.modalOverlay} onClick={onClose}>
+      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={s.modalHeader}>
+          <h3 style={s.modalTitle}>{initial?.id ? 'Edit Service Fee' : 'Add Service Fee'}</h3>
+          <button style={s.cancelBtn} onClick={onClose}><X size={14} /></button>
+        </div>
+        <div style={s.modalBody}>
+          {err ? <div style={s.errorText}>{err}</div> : null}
+          <div style={s.field}>
+            <label style={s.label}>Location *</label>
+            <select
+              style={s.input}
+              value={form.locationId}
+              disabled={!!initial?.id}
+              onChange={(e) => upd('locationId', e.target.value)}
+            >
+              <option value="">— Select location —</option>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Fee Name *</label>
+            <input
+              style={s.input}
+              type="text"
+              placeholder='e.g. "Pump-out", "Late Payment Fee"'
+              value={form.name}
+              onChange={(e) => upd('name', e.target.value)}
+            />
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Fee Type *</label>
+            <select
+              style={s.input}
+              value={form.feeType}
+              onChange={(e) => upd('feeType', e.target.value as 'FLAT' | 'PERCENT')}
+            >
+              <option value="FLAT">Flat amount</option>
+              <option value="PERCENT">Percentage</option>
+            </select>
+          </div>
+          {form.feeType === 'FLAT' ? (
+            <div style={s.field}>
+              <label style={s.label}>Amount (USD) *</label>
+              <input
+                style={s.input}
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.amountCents === '' ? '' : (Number(form.amountCents) / 100).toFixed(2)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('amountCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+                }}
+              />
+            </div>
+          ) : (
+            <div style={s.field}>
+              <label style={s.label}>Percentage (%) *</label>
+              <input
+                style={s.input}
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.pct === '' ? '' : String(form.pct)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('pct', v === '' ? '' : parseFloat(v));
+                }}
+              />
+            </div>
+          )}
+          <div style={s.field}>
+            <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input
+                type="checkbox"
+                checked={form.active}
+                onChange={(e) => upd('active', e.target.checked)}
+              />
+              Active
+            </label>
+          </div>
+        </div>
+        <div style={s.modalFooter}>
+          <button style={s.secondaryBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={s.primaryBtn} onClick={handleSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main component ─────────────────────────────────────── */
 
 export default function SettingsProducts() {
@@ -645,6 +1013,10 @@ export default function SettingsProducts() {
   const [data, setData] = useState<ProductsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingDockage, setEditingDockage] = useState<DockageRateForm | null>(null);
+  const [showDockageModal, setShowDockageModal] = useState(false);
+  const [editingFee, setEditingFee] = useState<ServiceFeeForm | null>(null);
+  const [showFeeModal, setShowFeeModal] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -711,6 +1083,66 @@ export default function SettingsProducts() {
       const next = { ...prev, serviceFees: fees };
       return { ...next, unconfiguredCount: recountUnconfigured(next) };
     });
+  };
+
+  const saveDockageRate = async (form: DockageRateForm) => {
+    const payload = {
+      locationId: form.locationId,
+      slipType: form.slipType.trim(),
+      monthlyRateCents: Number(form.monthlyRateCents),
+      electricityMode: form.electricityMode,
+      electricityRateCents: form.electricityMode === 'FLAT_FEE' && form.electricityRateCents !== ''
+        ? Number(form.electricityRateCents)
+        : null,
+      active: form.active,
+    };
+    if (form.id) {
+      await api.put(`/api/settings/catalog/dockage-rates/${form.id}`, payload);
+    } else {
+      await api.post('/api/settings/catalog/dockage-rates', payload);
+    }
+    await load();
+  };
+
+  const deleteDockageRate = async (rateId: string, label: string) => {
+    if (!window.confirm(`Delete dockage rate "${label}"?`)) return;
+    try {
+      await api.delete(`/api/settings/catalog/dockage-rates/${rateId}`);
+      await load();
+    } catch (e: any) {
+      window.alert(e?.response?.data?.error ?? 'Failed to delete dockage rate');
+    }
+  };
+
+  const saveServiceFee = async (form: ServiceFeeForm) => {
+    const payload = {
+      locationId: form.locationId,
+      name: form.name.trim(),
+      feeType: form.feeType,
+      amountCents: form.feeType === 'FLAT' && form.amountCents !== ''
+        ? Number(form.amountCents)
+        : null,
+      pct: form.feeType === 'PERCENT' && form.pct !== ''
+        ? Number(form.pct)
+        : null,
+      active: form.active,
+    };
+    if (form.id) {
+      await api.put(`/api/settings/catalog/service-fees/${form.id}`, payload);
+    } else {
+      await api.post('/api/settings/catalog/service-fees', payload);
+    }
+    await load();
+  };
+
+  const deleteServiceFee = async (feeId: string, label: string) => {
+    if (!window.confirm(`Delete service fee "${label}"?`)) return;
+    try {
+      await api.delete(`/api/settings/catalog/service-fees/${feeId}`);
+      await load();
+    } catch (e: any) {
+      window.alert(e?.response?.data?.error ?? 'Failed to delete service fee');
+    }
   };
 
   const saveRentalProductPerLocationGl = async (
@@ -864,12 +1296,13 @@ export default function SettingsProducts() {
             Dockage Rates
             <span style={s.sectionCount}>{dockageRates.length}</span>
           </div>
-          <Link
-            to="/settings"
-            style={{ fontSize: '13px', color: '#0A2342', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+          <button
+            type="button"
+            style={s.addBtn}
+            onClick={() => { setEditingDockage(null); setShowDockageModal(true); }}
           >
-            <Settings size={13} /> Manage rates
-          </Link>
+            <Plus size={14} /> Add rate
+          </button>
         </div>
         <table style={s.table}>
           <thead>
@@ -879,13 +1312,14 @@ export default function SettingsProducts() {
               <th style={s.th}>Monthly Rate</th>
               <th style={s.th}>Electricity</th>
               <th style={s.th}>GL Account (Revenue)</th>
+              <th style={s.th}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {dockageRates.length === 0 ? (
               <tr>
-                <td colSpan={5} style={s.emptyRow}>
-                  No dockage rates configured. Add them in Settings → Catalog.
+                <td colSpan={6} style={s.emptyRow}>
+                  No dockage rates configured. Click "Add rate" to create one.
                 </td>
               </tr>
             ) : (
@@ -917,6 +1351,35 @@ export default function SettingsProducts() {
                       onSave={(id) => saveDockageRateGl(rate.id, id)}
                     />
                   </td>
+                  <td style={s.td}>
+                    <button
+                      type="button"
+                      style={s.rowActionBtn}
+                      title="Edit dockage rate"
+                      onClick={() => {
+                        setEditingDockage({
+                          id: rate.id,
+                          locationId: rate.locationId,
+                          slipType: rate.slipType,
+                          monthlyRateCents: rate.monthlyRateCents,
+                          electricityMode: (rate.electricityMode === 'FLAT_FEE' ? 'FLAT_FEE' : 'METERED'),
+                          electricityRateCents: rate.electricityRateCents ?? '',
+                          active: rate.active,
+                        });
+                        setShowDockageModal(true);
+                      }}
+                    >
+                      <Edit2 size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      style={s.rowDeleteBtn}
+                      title="Delete dockage rate"
+                      onClick={() => deleteDockageRate(rate.id, `${rate.location.name} · ${rate.slipType}`)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </td>
                 </tr>
               ))
             )}
@@ -932,12 +1395,13 @@ export default function SettingsProducts() {
             Service Fees
             <span style={s.sectionCount}>{serviceFees.length}</span>
           </div>
-          <Link
-            to="/settings"
-            style={{ fontSize: '13px', color: '#0A2342', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+          <button
+            type="button"
+            style={s.addBtn}
+            onClick={() => { setEditingFee(null); setShowFeeModal(true); }}
           >
-            <Settings size={13} /> Manage fees
-          </Link>
+            <Plus size={14} /> Add fee
+          </button>
         </div>
         <table style={s.table}>
           <thead>
@@ -947,13 +1411,14 @@ export default function SettingsProducts() {
               <th style={s.th}>Type</th>
               <th style={s.th}>Amount</th>
               <th style={s.th}>GL Account (Revenue)</th>
+              <th style={s.th}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {serviceFees.length === 0 ? (
               <tr>
-                <td colSpan={5} style={s.emptyRow}>
-                  No service fees configured. Add them in Settings → Catalog.
+                <td colSpan={6} style={s.emptyRow}>
+                  No service fees configured. Click "Add fee" to create one.
                 </td>
               </tr>
             ) : (
@@ -982,6 +1447,35 @@ export default function SettingsProducts() {
                       locationId={fee.locationId}
                       onSave={(id) => saveServiceFeeGl(fee.id, id)}
                     />
+                  </td>
+                  <td style={s.td}>
+                    <button
+                      type="button"
+                      style={s.rowActionBtn}
+                      title="Edit service fee"
+                      onClick={() => {
+                        setEditingFee({
+                          id: fee.id,
+                          locationId: fee.locationId,
+                          name: fee.name,
+                          feeType: (fee.feeType === 'PERCENT' ? 'PERCENT' : 'FLAT'),
+                          amountCents: fee.amountCents ?? '',
+                          pct: fee.pct ?? '',
+                          active: fee.active,
+                        });
+                        setShowFeeModal(true);
+                      }}
+                    >
+                      <Edit2 size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      style={s.rowDeleteBtn}
+                      title="Delete service fee"
+                      onClick={() => deleteServiceFee(fee.id, fee.name)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </td>
                 </tr>
               ))
@@ -1075,6 +1569,24 @@ export default function SettingsProducts() {
         </Link>
         {' '}to add or edit revenue accounts, then assign them to products here.
       </div>
+
+      {showDockageModal ? (
+        <DockageRateModal
+          initial={editingDockage}
+          locations={data?.locations ?? []}
+          onClose={() => { setShowDockageModal(false); setEditingDockage(null); }}
+          onSave={saveDockageRate}
+        />
+      ) : null}
+
+      {showFeeModal ? (
+        <ServiceFeeModal
+          initial={editingFee}
+          locations={data?.locations ?? []}
+          onClose={() => { setShowFeeModal(false); setEditingFee(null); }}
+          onSave={saveServiceFee}
+        />
+      ) : null}
     </div>
   );
 }
