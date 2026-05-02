@@ -7,6 +7,7 @@ import {
   buildInvoice,
   buildMeterReading,
 } from '../helpers.js';
+import { queues } from '../../src/lib/queue.js';
 
 vi.mock('../../src/services/gl-posting.js', () => ({
   postInvoice: vi.fn().mockResolvedValue(undefined),
@@ -14,6 +15,33 @@ vi.mock('../../src/services/gl-posting.js', () => ({
   postPayment: vi.fn().mockResolvedValue(undefined),
   postRefund: vi.fn().mockResolvedValue(undefined),
   postManualJournalEntry: vi.fn().mockResolvedValue('je-test-id'),
+}));
+
+// Replace the gl-account-resolver module so the QBO-enqueue gating tests
+// below can flip per-location connection state without standing up the
+// full prisma mock surface that isLocationQboConnected normally uses.
+// resolveDockageRateGlAccount is also exported by billing.ts; existing
+// tests never trigger it (slip.locationId/slipType are null) so a no-op
+// default is safe.
+vi.mock('../../src/services/gl-account-resolver.js', () => ({
+  resolveDockageRateGlAccount: vi.fn().mockResolvedValue(null),
+  isLocationQboConnected: vi.fn().mockResolvedValue(false),
+}));
+
+// The tax-engine mock in tests/setup.ts only covers calculateTax — but
+// billing.ts also imports getTaxProvider and checkTaxExempt. Without
+// these the recurring-billing run throws inside its catch block and
+// returns 0 invoices, which masks every assertion below. Provide both
+// here so the engine is fully stubbed for billing-service tests.
+vi.mock('../../src/services/tax-engine.js', () => ({
+  calculateTax: vi.fn().mockResolvedValue({
+    items: [],
+    totalTaxCents: 0,
+  }),
+  getTaxProvider: vi.fn(() => ({
+    calculateTax: vi.fn().mockResolvedValue({ items: [], totalTaxCents: 0 }),
+  })),
+  checkTaxExempt: vi.fn().mockResolvedValue(false),
 }));
 
 let generateRecurringInvoices: typeof import('../../src/services/billing.js').generateRecurringInvoices;
@@ -310,6 +338,277 @@ describe('generateRecurringInvoices', () => {
 
     expect(results).toHaveLength(0);
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+// ─── QBO sync enqueue gate ───────────────────────────────────────────────
+// Task #257 wired the recurring billing engine to enqueue a `sync-invoice`
+// job after each finalised invoice. The job-name shape ("sync-invoice")
+// has to match what the qbo-sync worker switches on, the gating must
+// honour both per-location and tenant-level QBO connections, and an
+// enqueue failure must never break invoice creation.
+describe('QBO sync enqueue', () => {
+  const qboSyncQueue = queues['qbo-sync'] as { add: ReturnType<typeof vi.fn> };
+  let isLocationQboConnected: ReturnType<typeof vi.fn>;
+
+  function setupBilledContract(opts: {
+    locationId?: string | null;
+    tenantQboRealmId?: string | null;
+  }) {
+    const today = new Date();
+    const customer = buildCustomer({ stripeCustomerId: null });
+    const slip = buildSlip({ slipNumber: 'A-1' });
+    const contract = buildContract({
+      status: 'ACTIVE',
+      billingAnchor: today.getDate(),
+      rateCents: 100000,
+      customerId: customer.id,
+      slipId: slip.id,
+      billingCycle: 'MONTHLY',
+      startDate: new Date(today.getFullYear(), today.getMonth() - 1, 1),
+    });
+
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      {
+        ...contract,
+        customer: {
+          id: customer.id,
+          stripeCustomerId: null,
+          achBlocked: false,
+          firstName: 'Test',
+          lastName: 'User',
+        },
+        slip: {
+          id: slip.id,
+          slipNumber: 'A-1',
+          locationId: opts.locationId ?? null,
+          slipType: null,
+          electricityMode: null,
+          flatFeeCents: null,
+          kwhRateCents: null,
+        },
+      },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      qboRealmId: opts.tenantQboRealmId ?? null,
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const inv = buildInvoice({
+        id: 'inv-recurring-1',
+        tenantId: 'tenant-1',
+        customerId: customer.id,
+        totalCents: 100000,
+        balanceCents: 100000,
+        lineItems: [{ id: 'li-1', extendedCents: 100000, taxCents: 0, isDeferred: false }],
+      });
+      const tx = {
+        invoice: {
+          create: vi.fn().mockResolvedValue(inv),
+          update: vi.fn().mockResolvedValue(inv),
+        },
+        invoiceLineItemTax: { createMany: vi.fn() },
+        payment: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+  }
+
+  beforeEach(async () => {
+    qboSyncQueue.add.mockReset();
+    qboSyncQueue.add.mockResolvedValue({ id: 'job-1' } as any);
+    const resolver = await import('../../src/services/gl-account-resolver.js');
+    isLocationQboConnected = vi.mocked(resolver.isLocationQboConnected);
+    isLocationQboConnected.mockReset();
+    isLocationQboConnected.mockResolvedValue(false);
+  });
+
+  it('enqueues exactly one sync-invoice job per new invoice when the location has QBO connected', async () => {
+    setupBilledContract({ locationId: 'loc-connected', tenantQboRealmId: null });
+    isLocationQboConnected.mockResolvedValue(true);
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(qboSyncQueue.add).toHaveBeenCalledTimes(1);
+    // Job-name shape MUST match what the qbo-sync worker switches on
+    // (case "sync-invoice" in apps/api/src/workers/index.ts) — drift
+    // here would silently route every recurring invoice to "Unknown
+    // job type" and they'd never reach QuickBooks.
+    // billing.ts mints the invoice UUID itself BEFORE the tx insert, so
+    // the queue payload must carry that same id verbatim — that's the
+    // contract the qbo-sync worker uses to look the invoice back up.
+    expect(qboSyncQueue.add).toHaveBeenCalledWith(
+      'sync-invoice',
+      expect.objectContaining({
+        tenantId: 'tenant-1',
+        invoiceId: expect.any(String),
+      }),
+    );
+    const enqueuedInvoiceId = qboSyncQueue.add.mock.calls[0][1].invoiceId;
+    expect(results[0].invoiceId).toBe(enqueuedInvoiceId);
+  });
+
+  it('falls back to the tenant-level qboRealmId when the location is not connected', async () => {
+    setupBilledContract({ locationId: 'loc-disconnected', tenantQboRealmId: 'realm-tenant' });
+    isLocationQboConnected.mockResolvedValue(false);
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(qboSyncQueue.add).toHaveBeenCalledTimes(1);
+    expect(qboSyncQueue.add).toHaveBeenCalledWith(
+      'sync-invoice',
+      expect.objectContaining({
+        tenantId: 'tenant-1',
+        invoiceId: results[0].invoiceId,
+      }),
+    );
+  });
+
+  it('enqueues nothing when neither the location nor the tenant has a QBO connection', async () => {
+    setupBilledContract({ locationId: 'loc-disconnected', tenantQboRealmId: null });
+    isLocationQboConnected.mockResolvedValue(false);
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(qboSyncQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('still enqueues via the tenant-realm fallback when the contract has no location', async () => {
+    // Slip with no locationId at all — the per-location gate is
+    // skipped entirely and we drop straight into the tenant check.
+    setupBilledContract({ locationId: null, tenantQboRealmId: 'realm-tenant' });
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(qboSyncQueue.add).toHaveBeenCalledTimes(1);
+    // We never even consulted isLocationQboConnected because there's
+    // no locationId to gate on.
+    expect(isLocationQboConnected).not.toHaveBeenCalled();
+  });
+
+  it('enqueues exactly one job per invoice across a multi-contract run (no duplicates, no skips)', async () => {
+    // Single-contract tests can't catch a regression where the engine
+    // enqueues once per RUN instead of once per invoice, or where it
+    // re-enqueues the same invoice on every iteration. Drive THREE due
+    // contracts through one call and pin the per-invoice 1:1 mapping.
+    const today = new Date();
+    const customerA = buildCustomer({ id: 'cust-A', stripeCustomerId: null });
+    const customerB = buildCustomer({ id: 'cust-B', stripeCustomerId: null });
+    const customerC = buildCustomer({ id: 'cust-C', stripeCustomerId: null });
+    const baseContract = (id: string, customerId: string, slipNumber: string) =>
+      buildContract({
+        id,
+        status: 'ACTIVE',
+        billingAnchor: today.getDate(),
+        rateCents: 100000,
+        customerId,
+        slipId: `slip-${id}`,
+        billingCycle: 'MONTHLY',
+        startDate: new Date(today.getFullYear(), today.getMonth() - 1, 1),
+      });
+
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      {
+        ...baseContract('con-A', customerA.id, 'A-1'),
+        customer: { id: customerA.id, stripeCustomerId: null, achBlocked: false, firstName: 'A', lastName: 'A' },
+        slip: {
+          id: 'slip-con-A', slipNumber: 'A-1', locationId: 'loc-connected',
+          slipType: null, electricityMode: null, flatFeeCents: null, kwhRateCents: null,
+        },
+      },
+      {
+        ...baseContract('con-B', customerB.id, 'B-1'),
+        customer: { id: customerB.id, stripeCustomerId: null, achBlocked: false, firstName: 'B', lastName: 'B' },
+        slip: {
+          id: 'slip-con-B', slipNumber: 'B-1', locationId: 'loc-connected',
+          slipType: null, electricityMode: null, flatFeeCents: null, kwhRateCents: null,
+        },
+      },
+      {
+        ...baseContract('con-C', customerC.id, 'C-1'),
+        customer: { id: customerC.id, stripeCustomerId: null, achBlocked: false, firstName: 'C', lastName: 'C' },
+        slip: {
+          id: 'slip-con-C', slipNumber: 'C-1', locationId: 'loc-connected',
+          slipType: null, electricityMode: null, flatFeeCents: null, kwhRateCents: null,
+        },
+      },
+    ]);
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+    mockPrisma.tenant.findUnique.mockResolvedValue({ qboRealmId: null });
+    isLocationQboConnected.mockResolvedValue(true);
+    // Each $transaction call is for ONE contract — return a fresh
+    // invoice each time so all three look like real distinct creates.
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        invoice: {
+          create: vi.fn().mockImplementation(({ data }: any) =>
+            Promise.resolve(buildInvoice({
+              id: data.id,
+              tenantId: 'tenant-1',
+              customerId: data.customerId,
+              totalCents: 100000,
+              balanceCents: 100000,
+              lineItems: [{ id: `li-${data.id}`, extendedCents: 100000, taxCents: 0, isDeferred: false }],
+            })),
+          ),
+          update: vi.fn().mockImplementation(({ where }: any) =>
+            Promise.resolve(buildInvoice({ id: where.id })),
+          ),
+        },
+        invoiceLineItemTax: { createMany: vi.fn() },
+        payment: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(3);
+    // Three invoices in, three jobs out — never two, never four.
+    expect(qboSyncQueue.add).toHaveBeenCalledTimes(3);
+    // Every enqueued invoiceId corresponds to a result invoiceId, and
+    // there are no duplicates in either set. This kills the "enqueued
+    // the same invoice three times" regression as well as the "only
+    // enqueued the last/first one" regression.
+    const enqueuedIds = qboSyncQueue.add.mock.calls.map((call) => call[1].invoiceId);
+    const resultIds = results.map((r: any) => r.invoiceId);
+    expect(new Set(enqueuedIds).size).toBe(3);
+    expect(new Set(enqueuedIds)).toEqual(new Set(resultIds));
+    // And the job-name shape stays consistent across the run.
+    qboSyncQueue.add.mock.calls.forEach((call) => {
+      expect(call[0]).toBe('sync-invoice');
+      expect(call[1]).toMatchObject({ tenantId: 'tenant-1' });
+    });
+  });
+
+  it('does not break invoice creation when the queue.add throws', async () => {
+    // If Redis is degraded the enqueue can throw — the recurring billing
+    // run must NOT lose the invoice it just finalised. The error gets
+    // logged and the next contract iteration continues.
+    setupBilledContract({ locationId: 'loc-connected', tenantQboRealmId: null });
+    isLocationQboConnected.mockResolvedValue(true);
+    qboSyncQueue.add.mockRejectedValueOnce(new Error('redis down'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toHaveProperty('invoiceId');
+    expect(typeof results[0].invoiceId).toBe('string');
+    // The enqueue was attempted exactly once and failed loudly via
+    // console.error rather than bubbling out of the billing engine.
+    expect(qboSyncQueue.add).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalled();
+    const loggedAny = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes('failed to enqueue qbo-sync'),
+    );
+    expect(loggedAny).toBe(true);
+
+    consoleSpy.mockRestore();
   });
 });
 
