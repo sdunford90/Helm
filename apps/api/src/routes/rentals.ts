@@ -384,10 +384,15 @@ router.get(
     try {
       const tenantId = req.tenantId!;
 
+      const locationId = typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+
       const [products, total] = await Promise.all([
         prisma.rentalProduct.findMany({
           where: { tenantId },
           orderBy: { name: "asc" },
+          include: locationId
+            ? { glMappings: { where: { locationId } } }
+            : undefined,
         }),
         prisma.rentalProduct.count({ where: { tenantId } }),
       ]);

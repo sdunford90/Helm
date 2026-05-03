@@ -1679,7 +1679,7 @@ async function assertGlAccountForCatalogItem(
 // ==========================================================================
 
 // GET /api/settings/catalog/dockage-rates?locationId=xxx
-router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING", "FRONT_DESK", "CASHIER"), async (req, res, next) => {
   try {
     const { locationId } = req.query as { locationId?: string };
     const where: any = { tenantId: req.tenantId! };
@@ -1687,6 +1687,9 @@ router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER",
     const data = await prisma.dockageRate.findMany({
       where,
       orderBy: [{ slipType: "asc" }, { createdAt: "asc" }],
+      include: locationId
+        ? { glMappings: { where: { locationId } } }
+        : undefined,
     });
     res.json({ data });
   } catch (err) { next(err); }
@@ -1856,7 +1859,7 @@ router.delete("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_
 // ==========================================================================
 
 // GET /api/settings/catalog/service-fees?locationId=xxx
-router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
+router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING", "FRONT_DESK", "CASHIER"), async (req, res, next) => {
   try {
     const { locationId } = req.query as { locationId?: string };
     const where: any = { tenantId: req.tenantId! };
@@ -1864,6 +1867,9 @@ router.get("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER", 
     const data = await prisma.serviceFee.findMany({
       where,
       orderBy: { name: "asc" },
+      include: locationId
+        ? { glMappings: { where: { locationId } } }
+        : undefined,
     });
     res.json({ data });
   } catch (err) { next(err); }

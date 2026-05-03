@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react';
-import { X, Plus, Trash2, Save, Send, Package, Tag } from 'lucide-react';
+import { X, Plus, Trash2, Save, Send, Package, Tag, Anchor, Wrench, Sailboat } from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
 
@@ -56,6 +56,53 @@ interface ApiGlAccount {
   type: string;
   active: boolean;
   isActive: boolean;
+}
+
+interface ApiServiceFee {
+  id: string;
+  name: string;
+  feeType: 'FLAT' | 'PERCENT';
+  amountCents: number | null;
+  pct: number | null;
+  glAccountId: string | null;
+  active: boolean;
+  glMappings?: { glAccountId: string | null }[];
+}
+
+interface ApiDockageRate {
+  id: string;
+  slipType: string;
+  monthlyRateCents: number;
+  quarterlyRateCents: number | null;
+  annualRateCents: number | null;
+  glAccountId: string | null;
+  active: boolean;
+  glMappings?: { glAccountId: string | null }[];
+}
+
+interface ApiRentalProduct {
+  id: string;
+  name: string;
+  category: string | null;
+  basePriceCents: number;
+  hourlyRateCents: number | null;
+  dailyRateCents: number | null;
+  weeklyRateCents: number | null;
+  active: boolean;
+  glMappings?: { revenueGlAccountId: string | null }[];
+}
+
+type CatalogKind = 'PRODUCT' | 'SERVICE_FEE' | 'DOCKAGE' | 'RENTAL';
+
+interface CatalogItem {
+  kind: CatalogKind;
+  id: string;
+  label: string;
+  sublabel?: string;
+  priceCents: number;
+  glAccountId: string | null;     // resolved revenue GL (per-location mapping → fallback)
+  productId: string | null;        // only set for true Product items
+  needsManualPrice: boolean;       // true for percent service fees etc.
 }
 
 /* ─── Styles ─── */
@@ -258,6 +305,15 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
   const { data: apiGlResp } = useApi<{ data: ApiGlAccount[] }>(
     'get', `/api/settings/gl-accounts${locQs}`, { immediate: true },
   );
+  const { data: apiServiceFeesResp } = useApi<{ data: ApiServiceFee[] }>(
+    'get', `/api/settings/catalog/service-fees${locQs}`, { immediate: true },
+  );
+  const { data: apiDockageResp } = useApi<{ data: ApiDockageRate[] }>(
+    'get', `/api/settings/catalog/dockage-rates${locQs}`, { immediate: true },
+  );
+  const { data: apiRentalsResp } = useApi<{ data: ApiRentalProduct[] }>(
+    'get', `/api/rentals/products${locQs}`, { immediate: true },
+  );
 
   const customers = apiCustomers?.data ?? [];
   const products = useMemo(() => apiProductsResp?.data ?? [], [apiProductsResp]);
@@ -272,19 +328,87 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
     );
   }, [apiGlResp]);
 
+  // ── Build a unified catalog (products + service fees + dockage rates +
+  // rental products) so the cashier can pick anything sellable from one
+  // typeahead. Resolved GL prefers the per-location mapping, falling back to
+  // the catalog item's own glAccountId, then null (which forces the cashier to
+  // pick a revenue GL inline). All cents prices are best-effort defaults; the
+  // user can still adjust qty/unit price per line.
+  const catalog: CatalogItem[] = useMemo(() => {
+    const items: CatalogItem[] = [];
+
+    for (const p of products) {
+      items.push({
+        kind: 'PRODUCT', id: p.id,
+        label: p.name,
+        sublabel: p.sku ?? undefined,
+        priceCents: p.priceCents,
+        glAccountId: null,
+        productId: p.id,
+        needsManualPrice: false,
+      });
+    }
+
+    for (const f of (apiServiceFeesResp?.data ?? []).filter((f) => f.active)) {
+      const mappingGl = f.glMappings?.[0]?.glAccountId ?? null;
+      const isPct = f.feeType === 'PERCENT';
+      items.push({
+        kind: 'SERVICE_FEE', id: `fee:${f.id}`,
+        label: f.name,
+        sublabel: isPct ? `Service fee · ${f.pct ?? 0}%` : 'Flat service fee',
+        priceCents: isPct ? 0 : (f.amountCents ?? 0),
+        glAccountId: mappingGl ?? f.glAccountId ?? null,
+        productId: null,
+        needsManualPrice: isPct || (f.amountCents ?? 0) <= 0,
+      });
+    }
+
+    for (const d of (apiDockageResp?.data ?? []).filter((d) => d.active)) {
+      const mappingGl = d.glMappings?.[0]?.glAccountId ?? null;
+      items.push({
+        kind: 'DOCKAGE', id: `dock:${d.id}`,
+        label: `${d.slipType} — Monthly Slip`,
+        sublabel: 'Dockage rate',
+        priceCents: d.monthlyRateCents,
+        glAccountId: mappingGl ?? d.glAccountId ?? null,
+        productId: null,
+        needsManualPrice: false,
+      });
+    }
+
+    for (const r of (apiRentalsResp?.data ?? []).filter((r) => r.active)) {
+      const mappingGl = r.glMappings?.[0]?.revenueGlAccountId ?? null;
+      const price = r.dailyRateCents ?? r.basePriceCents ?? r.hourlyRateCents ?? 0;
+      const period = r.dailyRateCents != null ? 'per day'
+        : r.hourlyRateCents != null && r.basePriceCents === 0 ? 'per hour'
+        : 'base';
+      items.push({
+        kind: 'RENTAL', id: `rent:${r.id}`,
+        label: r.name,
+        sublabel: r.category ? `Rental · ${r.category} (${period})` : `Rental (${period})`,
+        priceCents: price,
+        glAccountId: mappingGl,
+        productId: null,
+        needsManualPrice: price <= 0,
+      });
+    }
+
+    return items;
+  }, [products, apiServiceFeesResp, apiDockageResp, apiRentalsResp]);
+
   const filteredCustomers = customers.filter((c) =>
     customerDisplayName(c).toLowerCase().includes(customerName.toLowerCase())
   );
 
-  const productMatches = (q: string): ApiProduct[] => {
+  const catalogMatches = (q: string): CatalogItem[] => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return products.slice(0, 25);
-    return products
-      .filter((p) => {
-        const hay = `${p.name} ${p.sku ?? ''}`.toLowerCase();
-        return hay.includes(needle);
-      })
-      .slice(0, 25);
+    const list = needle
+      ? catalog.filter((i) => `${i.label} ${i.sublabel ?? ''}`.toLowerCase().includes(needle))
+      : catalog;
+    // Keep grouped output: products first, then services/dockage/rentals,
+    // up to 30 total to keep the dropdown usable on phones.
+    const order: Record<CatalogKind, number> = { PRODUCT: 0, SERVICE_FEE: 1, DOCKAGE: 2, RENTAL: 3 };
+    return [...list].sort((a, b) => order[a.kind] - order[b.kind]).slice(0, 30);
   };
 
   const updateLine = useCallback((id: number, patch: Partial<LineItem>) => {
@@ -297,16 +421,33 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
 
   const addLine = () => setLines((prev) => [...prev, blankLine()]);
 
-  const selectProductForLine = (lineId: number, p: ApiProduct) => {
-    updateLine(lineId, {
-      kind: 'PRODUCT',
-      productId: p.id,
-      glAccountId: null,
-      description: p.name,
-      unitPrice: p.priceCents,
-      pickerOpen: false,
-      pickerQuery: p.name,
-    });
+  const selectCatalogItemForLine = (lineId: number, item: CatalogItem) => {
+    if (item.kind === 'PRODUCT') {
+      updateLine(lineId, {
+        kind: 'PRODUCT',
+        productId: item.productId,
+        glAccountId: null,
+        description: item.label,
+        unitPrice: item.priceCents,
+        pickerOpen: false,
+        pickerQuery: item.label,
+      });
+    } else {
+      // Service fees, dockage rates, and rental products are sent as
+      // CUSTOM lines with the resolved revenue GL. If we couldn't resolve
+      // a GL (no per-location mapping and no fallback) the cashier will
+      // see the inline GL dropdown and pick one.
+      const desc = item.sublabel ? `${item.label} — ${item.sublabel}` : item.label;
+      updateLine(lineId, {
+        kind: 'CUSTOM',
+        productId: null,
+        glAccountId: item.glAccountId,
+        description: desc,
+        unitPrice: item.priceCents,
+        pickerOpen: false,
+        pickerQuery: '',
+      });
+    }
   };
 
   const switchToCustom = (lineId: number) => {
@@ -502,7 +643,8 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
           </div>
           {lines.map((line) => {
             const linkedProduct = line.productId ? productById.get(line.productId) : null;
-            const matches = productMatches(line.pickerQuery);
+            const hasLinkedItem = line.kind === 'PRODUCT' ? !!linkedProduct : false;
+            const matches = catalogMatches(line.pickerQuery);
             return (
               <div key={line.id} style={s.lineCard}>
                 <div style={s.lineGrid}>
@@ -510,15 +652,17 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                   <div style={s.pickerWrap}>
                     <input
                       style={s.lineInput}
-                      placeholder={line.kind === 'CUSTOM' ? 'Description (custom service charge)' : 'Search products by name or SKU...'}
-                      value={line.kind === 'CUSTOM' ? line.description : (linkedProduct ? line.description : line.pickerQuery)}
+                      placeholder={line.kind === 'CUSTOM' && !line.glAccountId
+                        ? 'Description (custom service charge)'
+                        : 'Search products, services, dockage, rentals...'}
+                      value={line.kind === 'CUSTOM' || hasLinkedItem
+                        ? line.description
+                        : line.pickerQuery}
                       onChange={(e) => {
-                        if (line.kind === 'CUSTOM') {
-                          updateLine(line.id, { description: e.target.value });
-                        } else if (linkedProduct) {
-                          // Editing description after a product was picked — keep
-                          // the productId, just update the displayed description
-                          // so the user can append context like "— slip B14".
+                        if (line.kind === 'CUSTOM' || hasLinkedItem) {
+                          // Description is editable after picking — keep the
+                          // resolved productId/glAccountId so the cashier can
+                          // append context like "— slip B14".
                           updateLine(line.id, { description: e.target.value });
                         } else {
                           updateLine(line.id, { pickerQuery: e.target.value, pickerOpen: true });
@@ -534,18 +678,35 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                     {line.pickerOpen && line.kind === 'PRODUCT' && !linkedProduct && (
                       <div style={s.pickerDropdown as React.CSSProperties}>
                         {matches.length === 0 && (
-                          <div style={s.pickerOptionMuted}>No products match. Try the custom option below.</div>
+                          <div style={s.pickerOptionMuted}>
+                            No catalog items match. Try the custom option below.
+                          </div>
                         )}
-                        {matches.map((p) => (
+                        {matches.map((m) => (
                           <div
-                            key={p.id}
+                            key={`${m.kind}:${m.id}`}
                             style={s.pickerOption}
-                            onMouseDown={() => selectProductForLine(line.id, p)}
+                            onMouseDown={() => selectCatalogItemForLine(line.id, m)}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#D6E8F4'; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
                           >
-                            <span>{p.name}{p.sku ? ` · ${p.sku}` : ''}</span>
-                            <span style={mono}>{formatCents(p.priceCents)}</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                              {m.kind === 'PRODUCT' && <Package size={12} style={{ color: '#075985', flexShrink: 0 }} />}
+                              {m.kind === 'SERVICE_FEE' && <Wrench size={12} style={{ color: '#92400E', flexShrink: 0 }} />}
+                              {m.kind === 'DOCKAGE' && <Anchor size={12} style={{ color: '#0A2342', flexShrink: 0 }} />}
+                              {m.kind === 'RENTAL' && <Sailboat size={12} style={{ color: '#166534', flexShrink: 0 }} />}
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {m.label}
+                                {m.sublabel && (
+                                  <span style={{ color: '#64748B', marginLeft: 6, fontSize: 11 }}>
+                                    {m.sublabel}
+                                  </span>
+                                )}
+                              </span>
+                            </span>
+                            <span style={mono}>
+                              {m.priceCents > 0 ? formatCents(m.priceCents) : '—'}
+                            </span>
                           </div>
                         ))}
                         <div
