@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import { useAuth } from '@clerk/clerk-react';
+import { api } from '../lib/api';
 import {
   DollarSign,
   Search,
@@ -129,6 +131,11 @@ export default function Billing() {
   const invoicesQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
   const { data: apiResponse, loading, execute: refetchInvoices } = useApi<{ data: ApiInvoice[] }>('get', `/api/invoices${invoicesQs}`, { immediate: true });
   const createInvoiceApi = useApi<{ id: string }>('post', '/api/invoices');
+  const { getToken } = useAuth();
+  const finalizeInvoice = async (id: string) => {
+    const token = await getToken();
+    return api.post(`/api/invoices/${id}/finalize`, {}, token);
+  };
   const invoices = useMemo(() => (apiResponse?.data ?? []).map(toInvoice), [apiResponse]);
 
   // Re-fetch when the location filter changes
@@ -268,8 +275,24 @@ export default function Billing() {
       {showForm && (
         <InvoiceForm
           onClose={() => setShowForm(false)}
-          onSaveDraft={(data) => createInvoiceApi.execute({ ...data, status: 'Draft' })}
-          onFinalize={(data) => createInvoiceApi.execute({ ...data, status: 'Issued' })}
+          onSaveDraft={async (data) => {
+            const created = await createInvoiceApi.execute(data);
+            if (created?.id) refetchInvoices();
+            return created;
+          }}
+          onFinalize={async (data) => {
+            const created = await createInvoiceApi.execute(data);
+            if (!created?.id) return created;
+            try {
+              await finalizeInvoice(created.id);
+            } catch (e) {
+              // Surface finalize failure but the draft did save — list refresh
+              // will show it as DRAFT so the cashier can retry from detail.
+              console.error('Failed to finalize invoice', e);
+            }
+            refetchInvoices();
+            return created;
+          }}
         />
       )}
     </div>

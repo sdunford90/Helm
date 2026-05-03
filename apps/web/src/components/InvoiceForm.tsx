@@ -14,8 +14,8 @@ interface LineItem {
 
 interface InvoiceFormProps {
   onClose: () => void;
-  onSaveDraft?: (data: Record<string, unknown>) => void;
-  onFinalize?: (data: Record<string, unknown>) => void;
+  onSaveDraft?: (data: Record<string, unknown>) => Promise<{ id: string } | null | undefined>;
+  onFinalize?: (data: Record<string, unknown>) => Promise<{ id: string } | null | undefined>;
 }
 
 /* ─── Styles ─── */
@@ -132,18 +132,23 @@ interface CustomerOption {
   company?: string | null;
 }
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: InvoiceFormProps) {
   const [customerId, setCustomerId] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerOpen, setCustomerOpen] = useState(false);
+  const [issuedDate, setIssuedDate] = useState(todayIso());
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineItem[]>([blankLine()]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const { data: apiCustomers } = useApi<CustomerOption[]>('get', '/api/customers', { immediate: true });
-  const customers = apiCustomers ?? [];
+  const { data: apiCustomers } = useApi<{ data: CustomerOption[] }>('get', '/api/customers', { immediate: true });
+  const customers = apiCustomers?.data ?? [];
   const customerDisplayName = (c: CustomerOption) =>
     c.company ?? `${c.firstName} ${c.lastName}`.trim();
 
@@ -169,26 +174,28 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
   const total = subtotal + totalTax;
 
-  const buildPayload = () => ({
-    customerId,
-    customer: customerName,
-    dueDate,
-    notes,
-    lines: lines.map((l) => ({
-      description: l.description,
-      qty: l.qty,
-      unitPriceCents: l.unitPrice,
-      taxRate: l.taxRate,
-    })),
-    subtotalCents: subtotal,
-    taxCents: totalTax,
-    totalCents: total,
-  });
+  const buildPayload = () => {
+    const validLines = lines.filter((l) => l.description.trim() && l.unitPrice > 0 && l.qty > 0);
+    return {
+      customerId,
+      issuedDate,
+      dueDate,
+      notes,
+      lineItems: validLines.map((l) => ({
+        description: l.description.trim(),
+        quantity: l.qty,
+        unitPriceCents: l.unitPrice,
+        discountCents: 0,
+      })),
+    };
+  };
 
   const validate = (): boolean => {
-    if (!customerName.trim()) { setError('Please select a customer.'); return false; }
+    if (!customerId) { setError('Please select a customer from the list.'); return false; }
+    if (!issuedDate) { setError('Please set an issue date.'); return false; }
     if (!dueDate) { setError('Please set a due date.'); return false; }
-    if (lines.every((l) => !l.description.trim() && l.unitPrice === 0)) { setError('Please add at least one line item.'); return false; }
+    const validLines = lines.filter((l) => l.description.trim() && l.unitPrice > 0 && l.qty > 0);
+    if (validLines.length === 0) { setError('Please add at least one line item with a description and price.'); return false; }
     setError('');
     return true;
   };
@@ -196,17 +203,35 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const handleSaveDraft = async () => {
     if (!validate()) return;
     setSaving(true);
-    await onSaveDraft?.(buildPayload());
-    setSaving(false);
-    onClose();
+    try {
+      const result = await onSaveDraft?.(buildPayload());
+      if (result && result.id) {
+        onClose();
+      } else {
+        setError('Failed to create invoice. Please review the fields and try again.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create invoice.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleFinalize = async () => {
     if (!validate()) return;
     setSaving(true);
-    await onFinalize?.(buildPayload());
-    setSaving(false);
-    onClose();
+    try {
+      const result = await onFinalize?.(buildPayload());
+      if (result && result.id) {
+        onClose();
+      } else {
+        setError('Failed to create invoice. Please review the fields and try again.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create invoice.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -251,8 +276,17 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
             )}
           </div>
 
-          {/* Due date & Notes */}
+          {/* Issue date, Due date & Notes */}
           <div style={{ ...s.row, marginBottom: '24px' }}>
+            <div style={{ flex: 1 }}>
+              <label style={s.label}>Issue Date</label>
+              <input
+                type="date"
+                style={s.input}
+                value={issuedDate}
+                onChange={(e) => setIssuedDate(e.target.value)}
+              />
+            </div>
             <div style={{ flex: 1 }}>
               <label style={s.label}>Due Date</label>
               <input
