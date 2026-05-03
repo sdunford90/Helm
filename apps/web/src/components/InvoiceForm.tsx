@@ -6,6 +6,7 @@ import { useApi } from '../hooks/useApi';
 /* ─── Types ─── */
 
 type LineKind = 'PRODUCT' | 'CUSTOM';
+type DiscountMode = 'AMOUNT' | 'PERCENT';
 
 interface LineItem {
   id: number;
@@ -16,6 +17,12 @@ interface LineItem {
   qty: number;
   unitPrice: number; // cents
   taxRate: number;   // percentage e.g. 7
+  // Per-line discount. Stored as the raw cashier input (dollars or percent)
+  // plus a mode flag; cents are derived in lineDiscount(). Toggling $/%
+  // resets the value to 0 so a "10" never silently flips between $10 and
+  // 10% — the cashier always re-enters the number in the new unit.
+  discountMode: DiscountMode;
+  discountValue: number; // dollars when AMOUNT, percent (0-100) when PERCENT
   pickerOpen: boolean;
   pickerQuery: string;
 }
@@ -98,12 +105,26 @@ const s: Record<string, React.CSSProperties> = {
     marginBottom: '8px', backgroundColor: '#FAFBFC',
   },
   lineGrid: {
-    display: 'grid', gridTemplateColumns: '2.4fr 0.6fr 1fr 0.7fr 1fr 32px',
+    display: 'grid', gridTemplateColumns: '2.1fr 0.5fr 0.9fr 1.1fr 0.6fr 0.9fr 32px',
     gap: '8px', alignItems: 'center',
   },
   lineHeader: {
-    display: 'grid', gridTemplateColumns: '2.4fr 0.6fr 1fr 0.7fr 1fr 32px',
+    display: 'grid', gridTemplateColumns: '2.1fr 0.5fr 0.9fr 1.1fr 0.6fr 0.9fr 32px',
     gap: '8px', marginBottom: '8px', padding: '0 12px',
+  },
+  discountWrap: {
+    display: 'flex', alignItems: 'stretch', border: '1px solid #CCCCCC',
+    borderRadius: '6px', overflow: 'hidden', backgroundColor: '#FFFFFF',
+  },
+  discountInput: {
+    flex: 1, padding: '8px 8px', border: 'none', fontSize: '13px',
+    color: '#0A2342', boxSizing: 'border-box', width: '100%', outline: 'none',
+    ...mono, textAlign: 'right',
+  },
+  discountToggle: {
+    padding: '0 8px', fontSize: '12px', fontWeight: 700, color: '#2E4A6B',
+    backgroundColor: '#F2F4F6', border: 'none', borderLeft: '1px solid #CCCCCC',
+    cursor: 'pointer', minWidth: '28px',
   },
   lineInput: {
     padding: '8px 10px', borderRadius: '6px', border: '1px solid #CCCCCC',
@@ -202,6 +223,8 @@ function blankLine(): LineItem {
     qty: 1,
     unitPrice: 0,
     taxRate: 7,
+    discountMode: 'AMOUNT',
+    discountValue: 0,
     pickerOpen: false,
     pickerQuery: '',
   };
@@ -305,9 +328,20 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
     });
   };
 
-  const lineTotal = (l: LineItem) => l.qty * l.unitPrice;
-  const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
-  const subtotal = lines.reduce((sum, l) => sum + lineTotal(l), 0);
+  const lineGross = (l: LineItem) => l.qty * l.unitPrice;
+  const lineDiscount = (l: LineItem): number => {
+    const gross = lineGross(l);
+    if (gross <= 0 || l.discountValue <= 0) return 0;
+    if (l.discountMode === 'PERCENT') {
+      const pct = Math.min(100, l.discountValue);
+      return Math.min(gross, Math.round(gross * (pct / 100)));
+    }
+    // AMOUNT — cashier types dollars; clamp to gross so we never go negative.
+    return Math.min(gross, Math.round(l.discountValue * 100));
+  };
+  const lineNet = (l: LineItem) => Math.max(0, lineGross(l) - lineDiscount(l));
+  const lineTax = (l: LineItem) => Math.round(lineNet(l) * (l.taxRate / 100));
+  const subtotal = lines.reduce((sum, l) => sum + lineNet(l), 0);
   const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
   const total = subtotal + totalTax;
 
@@ -329,7 +363,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
         description: l.description.trim(),
         quantity: l.qty,
         unitPriceCents: l.unitPrice,
-        discountCents: 0,
+        discountCents: lineDiscount(l),
         productId: l.kind === 'PRODUCT' ? l.productId : null,
         glAccountId: l.kind === 'CUSTOM' ? l.glAccountId : null,
       })),
@@ -461,6 +495,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
             <span style={s.colLabel as React.CSSProperties}>Item</span>
             <span style={s.colLabel as React.CSSProperties}>Qty</span>
             <span style={s.colLabel as React.CSSProperties}>Unit Price</span>
+            <span style={s.colLabel as React.CSSProperties}>Discount</span>
             <span style={s.colLabel as React.CSSProperties}>Tax %</span>
             <span style={{ ...s.colLabel as React.CSSProperties, textAlign: 'right' }}>Total</span>
             <span />
@@ -541,6 +576,28 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                     value={line.unitPrice ? (line.unitPrice / 100).toFixed(2) : ''}
                     onChange={(e) => updateLine(line.id, { unitPrice: Math.round(parseFloat(e.target.value || '0') * 100) })}
                   />
+                  <div style={s.discountWrap as React.CSSProperties} title="Per-line discount">
+                    <input
+                      style={s.discountInput as React.CSSProperties}
+                      type="number"
+                      min={0}
+                      step={line.discountMode === 'PERCENT' ? 1 : 0.01}
+                      placeholder={line.discountMode === 'PERCENT' ? '0' : '0.00'}
+                      value={line.discountValue ? line.discountValue : ''}
+                      onChange={(e) => updateLine(line.id, { discountValue: Math.max(0, parseFloat(e.target.value || '0') || 0) })}
+                    />
+                    <button
+                      type="button"
+                      style={s.discountToggle as React.CSSProperties}
+                      onClick={() => updateLine(line.id, {
+                        discountMode: line.discountMode === 'AMOUNT' ? 'PERCENT' : 'AMOUNT',
+                        discountValue: 0,
+                      })}
+                      title={line.discountMode === 'AMOUNT' ? 'Switch to percent' : 'Switch to dollar amount'}
+                    >
+                      {line.discountMode === 'AMOUNT' ? '$' : '%'}
+                    </button>
+                  </div>
                   <input
                     style={s.lineInputMono as React.CSSProperties}
                     type="number"
@@ -550,7 +607,12 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                     onChange={(e) => updateLine(line.id, { taxRate: parseFloat(e.target.value) || 0 })}
                   />
                   <div style={{ ...mono, textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#0A2342', padding: '8px 4px' }}>
-                    {formatCents(lineTotal(line) + lineTax(line))}
+                    {formatCents(lineNet(line) + lineTax(line))}
+                    {lineDiscount(line) > 0 && (
+                      <div style={{ fontSize: '11px', fontWeight: 500, color: '#64748B' }}>
+                        −{formatCents(lineDiscount(line))} off
+                      </div>
+                    )}
                   </div>
                   <button
                     style={s.removeBtn}
@@ -619,6 +681,26 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
           {/* Totals */}
           <div style={s.totalsSection}>
             <div style={s.totalsTable}>
+              {(() => {
+                const totalDiscount = lines.reduce((sum, l) => sum + lineDiscount(l), 0);
+                const grossSubtotal = subtotal + totalDiscount;
+                return (
+                  <>
+                    {totalDiscount > 0 && (
+                      <div style={s.totalsRow}>
+                        <span>Items Total</span>
+                        <span style={{ ...mono, fontWeight: 600 }}>{formatCents(grossSubtotal)}</span>
+                      </div>
+                    )}
+                    {totalDiscount > 0 && (
+                      <div style={{ ...s.totalsRow, color: '#B45309' }}>
+                        <span>Discounts</span>
+                        <span style={{ ...mono, fontWeight: 600 }}>−{formatCents(totalDiscount)}</span>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               <div style={s.totalsRow}>
                 <span>Subtotal</span>
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(subtotal)}</span>
