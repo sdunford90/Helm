@@ -314,6 +314,19 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
   const { data: apiRentalsResp } = useApi<{ data: ApiRentalProduct[] }>(
     'get', `/api/rentals/products${locQs}`, { immediate: true },
   );
+  // Per-location pinned posting accounts — we only need defaultRevenueGlAccountId
+  // here, used as a fallback so service fees / dockage / rentals without an
+  // explicit per-(item, location) mapping still land on a valid revenue GL
+  // instead of forcing the cashier to pick one inline.
+  // Endpoint shape: { locationId, qboConnected, accounts: { …gl ids… }, candidates }
+  const { data: apiPostingAccts } = useApi<{
+    accounts: { defaultRevenueGlAccountId: string | null };
+  }>(
+    'get',
+    currentLocationId ? `/api/settings/locations/${currentLocationId}/posting-accounts` : '',
+    { immediate: !!currentLocationId },
+  );
+  const defaultRevenueGlId = apiPostingAccts?.accounts?.defaultRevenueGlAccountId ?? null;
 
   const customers = apiCustomers?.data ?? [];
   const products = useMemo(() => apiProductsResp?.data ?? [], [apiProductsResp]);
@@ -357,7 +370,10 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
         label: f.name,
         sublabel: isPct ? `Service fee · ${f.pct ?? 0}%` : 'Flat service fee',
         priceCents: isPct ? 0 : (f.amountCents ?? 0),
-        glAccountId: mappingGl ?? f.glAccountId ?? null,
+        // Resolution chain: per-(item, location) mapping → item's own GL →
+        // location's pinned defaultRevenueGlAccountId (set in QuickBooks
+        // Setup) → null (cashier picks inline).
+        glAccountId: mappingGl ?? f.glAccountId ?? defaultRevenueGlId ?? null,
         productId: null,
         needsManualPrice: isPct || (f.amountCents ?? 0) <= 0,
       });
@@ -370,7 +386,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
         label: `${d.slipType} — Monthly Slip`,
         sublabel: 'Dockage rate',
         priceCents: d.monthlyRateCents,
-        glAccountId: mappingGl ?? d.glAccountId ?? null,
+        glAccountId: mappingGl ?? d.glAccountId ?? defaultRevenueGlId ?? null,
         productId: null,
         needsManualPrice: false,
       });
@@ -387,14 +403,14 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
         label: r.name,
         sublabel: r.category ? `Rental · ${r.category} (${period})` : `Rental (${period})`,
         priceCents: price,
-        glAccountId: mappingGl,
+        glAccountId: mappingGl ?? defaultRevenueGlId ?? null,
         productId: null,
         needsManualPrice: price <= 0,
       });
     }
 
     return items;
-  }, [products, apiServiceFeesResp, apiDockageResp, apiRentalsResp]);
+  }, [products, apiServiceFeesResp, apiDockageResp, apiRentalsResp, defaultRevenueGlId]);
 
   const filteredCustomers = customers.filter((c) =>
     customerDisplayName(c).toLowerCase().includes(customerName.toLowerCase())
@@ -512,6 +528,14 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
   };
 
   const validate = (): boolean => {
+    // A locationId is required so AR / revenue / tax accounts resolve to the
+    // correct location-pinned chart row at finalize time. Without it the
+    // posting engine falls back to tenant-wide lookups that fail on
+    // QBO-imported tenants whose chart uses QBO Ids as account numbers.
+    if (!currentLocationId) {
+      setError('Please pick a location from the top-right selector before creating an invoice.');
+      return false;
+    }
     if (!customerId) { setError('Please select a customer from the list.'); return false; }
     if (!issuedDate) { setError('Please set an issue date.'); return false; }
     if (!dueDate) { setError('Please set a due date.'); return false; }

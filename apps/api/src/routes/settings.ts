@@ -996,7 +996,16 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
 router.get(
   "/locations/:id/posting-accounts",
   ...clerkAuth(),
-  requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"),
+  // Cashiers/front-desk read this to surface the per-location default revenue
+  // account as a fallback when picking service fees / dockage / rentals on a
+  // new invoice. Write access (PUT below) is still owner/manager/accounting.
+  requireRole(
+    "MARINA_OWNER",
+    "MARINA_MANAGER",
+    "ACCOUNTING",
+    "FRONT_DESK",
+    "CASHIER",
+  ),
   async (req, res, next) => {
     try {
       if (!requireLocationAccess(req, req.params.id)) {

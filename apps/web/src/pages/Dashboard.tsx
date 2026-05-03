@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
+import { useModules } from '../context/ModulesContext';
 
 type TimePeriod = 'Today' | 'This Week' | 'This Month' | 'This Quarter';
 
@@ -37,6 +38,7 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('This Month');
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
+  const { currentLocationId } = useModules();
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [taskDrawer, setTaskDrawer] = useState<{ title: string; items: { label: string; sub: string; urgent: boolean }[] } | null>(null);
 
@@ -1164,7 +1166,7 @@ const Dashboard: React.FC = () => {
     {showInvoiceModal && (
       <InvoiceForm
         onClose={() => setShowInvoiceModal(false)}
-        currentLocationId={null}
+        currentLocationId={currentLocationId}
       />
     )}
 

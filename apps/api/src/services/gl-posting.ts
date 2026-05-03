@@ -158,6 +158,16 @@ async function postEntries(
 // Account resolution helpers
 // ---------------------------------------------------------------------------
 
+// Map well-known account numbers to QBO-style subTypes. When the chart of
+// accounts was imported from QuickBooks, account numbers carry the QBO Id
+// (e.g. "QBO-84") rather than the conventional Helm number ("1200"), so we
+// fall back to matching the subType the QBO importer assigned. Only the
+// system-critical posting accounts have a known subType — others stay
+// number-only.
+const ACCOUNT_NUMBER_TO_SUBTYPE: Record<string, string> = {
+  "1200": "AccountsReceivable",
+};
+
 async function getAccountByNumber(
   tenantId: string,
   accountNumber: string,
@@ -182,15 +192,51 @@ async function getAccountByNumber(
       select: { id: true },
     });
     if (tenantWide) return tenantWide.id;
+  } else {
+    // No location context: only legacy tenant-wide rows are safe to consider —
+    // matching a row that's location-scoped to a sibling location would
+    // cross-post to the wrong chart of accounts (and the wrong QBO realm).
+    const tenantWide = await (db as typeof prisma).glAccount.findFirst({
+      where: { tenantId, locationId: null, accountNumber },
+      select: { id: true },
+    });
+    if (tenantWide) return tenantWide.id;
   }
-  const account = await (db as typeof prisma).glAccount.findFirst({
-    where: { tenantId, accountNumber },
-    select: { id: true },
-  });
-  if (!account) {
-    throw new Error(`GL account ${accountNumber} not found for tenant ${tenantId}`);
+  // QBO-imported charts use QBO Ids as accountNumber (e.g. "QBO-84" for A/R)
+  // rather than Helm's "1200" convention, so the number lookup misses. For
+  // the system-critical accounts we have a known subType, fall back to it
+  // before failing — this lets QBO-only tenants post without first having to
+  // pin every system account on every Location. The fallback follows the same
+  // location-scoped → tenant-wide-only chain to avoid cross-location posting.
+  const subType = ACCOUNT_NUMBER_TO_SUBTYPE[accountNumber];
+  if (subType) {
+    if (locationId) {
+      const locScopedBySub = await (db as typeof prisma).glAccount.findFirst({
+        where: { tenantId, locationId, subType }, select: { id: true },
+      });
+      if (locScopedBySub) return locScopedBySub.id;
+      const tenantWideBySub = await (db as typeof prisma).glAccount.findFirst({
+        where: { tenantId, locationId: null, subType }, select: { id: true },
+      });
+      if (tenantWideBySub) return tenantWideBySub.id;
+      // No location-scoped or tenant-wide row matched. Refuse to fall through
+      // to a sibling location's chart — that would cross-post to the wrong
+      // QBO realm. Caller must pin the account on this location.
+    } else {
+      const tenantWideBySub = await (db as typeof prisma).glAccount.findFirst({
+        where: { tenantId, locationId: null, subType }, select: { id: true },
+      });
+      if (tenantWideBySub) return tenantWideBySub.id;
+      // No location context: if exactly one row in the tenant matches the
+      // subType (typical single-location QBO-imported tenant) accept it;
+      // otherwise refuse rather than guess between siblings.
+      const anyMatches = await (db as typeof prisma).glAccount.findMany({
+        where: { tenantId, subType }, select: { id: true }, take: 2,
+      });
+      if (anyMatches.length === 1) return anyMatches[0].id;
+    }
   }
-  return account.id;
+  throw new Error(`GL account ${accountNumber} not found for tenant ${tenantId}`);
 }
 
 // Well-known account numbers (convention).
