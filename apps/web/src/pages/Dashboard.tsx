@@ -1164,8 +1164,7 @@ const Dashboard: React.FC = () => {
     {showInvoiceModal && (
       <InvoiceForm
         onClose={() => setShowInvoiceModal(false)}
-        onSaveDraft={() => setShowInvoiceModal(false)}
-        onFinalize={() => setShowInvoiceModal(false)}
+        currentLocationId={null}
       />
     )}
 

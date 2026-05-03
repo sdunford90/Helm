@@ -275,6 +275,7 @@ export default function Billing() {
       {showForm && (
         <InvoiceForm
           onClose={() => setShowForm(false)}
+          currentLocationId={currentLocationId}
           onSaveDraft={async (data) => {
             const created = await createInvoiceApi.execute(data);
             if (created?.id) refetchInvoices();
@@ -285,13 +286,16 @@ export default function Billing() {
             if (!created?.id) return created;
             try {
               await finalizeInvoice(created.id);
+              refetchInvoices();
+              return created;
             } catch (e) {
-              // Surface finalize failure but the draft did save — list refresh
-              // will show it as DRAFT so the cashier can retry from detail.
-              console.error('Failed to finalize invoice', e);
+              // Draft was saved but finalize failed — make the user aware so
+              // they can retry instead of silently closing the modal.
+              refetchInvoices();
+              throw e instanceof Error
+                ? new Error(`Invoice saved as draft but finalize failed: ${e.message}`)
+                : new Error('Invoice saved as draft but finalize failed.');
             }
-            refetchInvoices();
-            return created;
           }}
         />
       )}

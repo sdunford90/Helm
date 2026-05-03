@@ -1,21 +1,54 @@
-import { useState, useCallback } from 'react';
-import { X, Plus, Trash2, Save, Send } from 'lucide-react';
+import { useState, useCallback, useMemo } from 'react';
+import { X, Plus, Trash2, Save, Send, Package, Tag } from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
 
 /* ─── Types ─── */
+
+type LineKind = 'PRODUCT' | 'CUSTOM';
+
 interface LineItem {
   id: number;
+  kind: LineKind;
+  productId: string | null;
+  glAccountId: string | null;
   description: string;
   qty: number;
   unitPrice: number; // cents
   taxRate: number;   // percentage e.g. 7
+  pickerOpen: boolean;
+  pickerQuery: string;
 }
 
 interface InvoiceFormProps {
   onClose: () => void;
+  currentLocationId: string | null;
   onSaveDraft?: (data: Record<string, unknown>) => Promise<{ id: string } | null | undefined>;
   onFinalize?: (data: Record<string, unknown>) => Promise<{ id: string } | null | undefined>;
+}
+
+interface CustomerOption {
+  id: string;
+  firstName: string;
+  lastName: string;
+  company?: string | null;
+}
+
+interface ApiProduct {
+  id: string;
+  name: string;
+  sku: string | null;
+  priceCents: number;
+  taxClass: string | null;
+}
+
+interface ApiGlAccount {
+  id: string;
+  accountNumber: string;
+  name: string;
+  type: string;
+  active: boolean;
+  isActive: boolean;
 }
 
 /* ─── Styles ─── */
@@ -27,7 +60,7 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
   },
   modal: {
-    backgroundColor: '#FFFFFF', borderRadius: '8px', width: '800px', maxHeight: '90vh',
+    backgroundColor: '#FFFFFF', borderRadius: '8px', width: '880px', maxHeight: '90vh',
     overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
   },
   header: {
@@ -60,13 +93,17 @@ const s: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid #F2F4F6',
   },
   row: { display: 'flex', gap: '16px' },
-  lineHeader: {
-    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 0.7fr 1fr 40px',
-    gap: '8px', marginBottom: '8px',
+  lineCard: {
+    border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px',
+    marginBottom: '8px', backgroundColor: '#FAFBFC',
   },
-  lineRow: {
-    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 0.7fr 1fr 40px',
-    gap: '8px', marginBottom: '8px', alignItems: 'center',
+  lineGrid: {
+    display: 'grid', gridTemplateColumns: '2.4fr 0.6fr 1fr 0.7fr 1fr 32px',
+    gap: '8px', alignItems: 'center',
+  },
+  lineHeader: {
+    display: 'grid', gridTemplateColumns: '2.4fr 0.6fr 1fr 0.7fr 1fr 32px',
+    gap: '8px', marginBottom: '8px', padding: '0 12px',
   },
   lineInput: {
     padding: '8px 10px', borderRadius: '6px', border: '1px solid #CCCCCC',
@@ -85,12 +122,46 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '13px', fontWeight: 600, color: '#0A2342', backgroundColor: '#F2F4F6',
     border: '1px solid #CCCCCC', borderRadius: '6px', cursor: 'pointer', marginTop: '4px',
   },
+  pickerWrap: { position: 'relative' },
+  pickerDropdown: {
+    position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: '#FFFFFF',
+    border: '1px solid #CCCCCC', borderRadius: '0 0 6px 6px', maxHeight: '220px',
+    overflowY: 'auto', zIndex: 20, boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+  },
+  pickerOption: {
+    padding: '8px 12px', fontSize: '13px', color: '#0A2342', cursor: 'pointer',
+    borderBottom: '1px solid #F2F4F6', display: 'flex', justifyContent: 'space-between', gap: '8px',
+  },
+  pickerOptionMuted: {
+    padding: '10px 12px', fontSize: '12px', color: '#64748B', borderBottom: '1px solid #F2F4F6',
+  },
+  pickerCustomOption: {
+    padding: '10px 12px', fontSize: '13px', fontWeight: 600, color: '#0A2342', cursor: 'pointer',
+    backgroundColor: '#F2F4F6', display: 'flex', alignItems: 'center', gap: '8px',
+  },
+  lineMeta: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: '8px', fontSize: '12px', color: '#64748B', gap: '12px',
+  },
+  metaTag: {
+    display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px',
+    borderRadius: '12px', fontSize: '11px', fontWeight: 600,
+  },
+  metaTagProduct: { backgroundColor: '#E0F2FE', color: '#075985' },
+  metaTagCustom: { backgroundColor: '#FEF3C7', color: '#92400E' },
+  metaTagMissing: { backgroundColor: '#FEE2E2', color: '#991B1B' },
+  glSelect: {
+    flex: 1, padding: '6px 10px', borderRadius: '6px', border: '1px solid #CCCCCC',
+    fontSize: '12px', color: '#0A2342', backgroundColor: '#FFFFFF',
+  },
+  linkBtn: {
+    background: 'none', border: 'none', color: '#0A2342', textDecoration: 'underline',
+    cursor: 'pointer', fontSize: '12px', padding: 0,
+  },
   totalsSection: {
     display: 'flex', justifyContent: 'flex-end', marginTop: '24px',
   },
-  totalsTable: {
-    width: '280px',
-  },
+  totalsTable: { width: '280px' },
   totalsRow: {
     display: 'flex', justifyContent: 'space-between', padding: '6px 0',
     fontSize: '14px', color: '#0A2342',
@@ -122,21 +193,28 @@ const s: Record<string, React.CSSProperties> = {
 
 let nextId = 1;
 function blankLine(): LineItem {
-  return { id: nextId++, description: '', qty: 1, unitPrice: 0, taxRate: 7 };
-}
-
-interface CustomerOption {
-  id: string;
-  firstName: string;
-  lastName: string;
-  company?: string | null;
+  return {
+    id: nextId++,
+    kind: 'PRODUCT',
+    productId: null,
+    glAccountId: null,
+    description: '',
+    qty: 1,
+    unitPrice: 0,
+    taxRate: 7,
+    pickerOpen: false,
+    pickerQuery: '',
+  };
 }
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: InvoiceFormProps) {
+const customerDisplayName = (c: CustomerOption) =>
+  c.company ?? `${c.firstName} ${c.lastName}`.trim();
+
+export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, onFinalize }: InvoiceFormProps) {
   const [customerId, setCustomerId] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerOpen, setCustomerOpen] = useState(false);
@@ -147,26 +225,85 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const { data: apiCustomers } = useApi<{ data: CustomerOption[] }>('get', '/api/customers', { immediate: true });
+  const locQs = currentLocationId ? `?locationId=${encodeURIComponent(currentLocationId)}` : '';
+  const { data: apiCustomers } = useApi<{ data: CustomerOption[] }>(
+    'get', '/api/customers', { immediate: true },
+  );
+  const { data: apiProductsResp } = useApi<{ data: ApiProduct[] }>(
+    'get', `/api/pos/products${locQs}`, { immediate: true },
+  );
+  const { data: apiGlResp } = useApi<{ data: ApiGlAccount[] }>(
+    'get', `/api/settings/gl-accounts${locQs}`, { immediate: true },
+  );
+
   const customers = apiCustomers?.data ?? [];
-  const customerDisplayName = (c: CustomerOption) =>
-    c.company ?? `${c.firstName} ${c.lastName}`.trim();
+  const products = useMemo(() => apiProductsResp?.data ?? [], [apiProductsResp]);
+  const productById = useMemo(() => {
+    const m = new Map<string, ApiProduct>();
+    for (const p of products) m.set(p.id, p);
+    return m;
+  }, [products]);
+  const revenueGlAccounts = useMemo(() => {
+    return (apiGlResp?.data ?? []).filter(
+      (g) => g.type === 'REVENUE' && g.active && g.isActive,
+    );
+  }, [apiGlResp]);
 
   const filteredCustomers = customers.filter((c) =>
     customerDisplayName(c).toLowerCase().includes(customerName.toLowerCase())
   );
 
-  const updateLine = useCallback((id: number, field: keyof LineItem, value: string | number) => {
-    setLines((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, [field]: value } : l))
-    );
+  const productMatches = (q: string): ApiProduct[] => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return products.slice(0, 25);
+    return products
+      .filter((p) => {
+        const hay = `${p.name} ${p.sku ?? ''}`.toLowerCase();
+        return hay.includes(needle);
+      })
+      .slice(0, 25);
+  };
+
+  const updateLine = useCallback((id: number, patch: Partial<LineItem>) => {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   }, []);
 
   const removeLine = (id: number) => {
-    setLines((prev) => prev.filter((l) => l.id !== id));
+    setLines((prev) => (prev.length === 1 ? prev : prev.filter((l) => l.id !== id)));
   };
 
   const addLine = () => setLines((prev) => [...prev, blankLine()]);
+
+  const selectProductForLine = (lineId: number, p: ApiProduct) => {
+    updateLine(lineId, {
+      kind: 'PRODUCT',
+      productId: p.id,
+      glAccountId: null,
+      description: p.name,
+      unitPrice: p.priceCents,
+      pickerOpen: false,
+      pickerQuery: p.name,
+    });
+  };
+
+  const switchToCustom = (lineId: number) => {
+    updateLine(lineId, {
+      kind: 'CUSTOM',
+      productId: null,
+      glAccountId: null,
+      pickerOpen: false,
+    });
+  };
+
+  const switchToProduct = (lineId: number) => {
+    updateLine(lineId, {
+      kind: 'PRODUCT',
+      productId: null,
+      glAccountId: null,
+      description: '',
+      pickerQuery: '',
+    });
+  };
 
   const lineTotal = (l: LineItem) => l.qty * l.unitPrice;
   const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
@@ -174,18 +311,27 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
   const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
   const total = subtotal + totalTax;
 
+  const lineHasResolvedAccount = (l: LineItem): boolean =>
+    (l.kind === 'PRODUCT' && !!l.productId) ||
+    (l.kind === 'CUSTOM' && !!l.glAccountId);
+
   const buildPayload = () => {
-    const validLines = lines.filter((l) => l.description.trim() && l.unitPrice > 0 && l.qty > 0);
+    const validLines = lines.filter(
+      (l) => l.description.trim() && l.unitPrice > 0 && l.qty > 0 && lineHasResolvedAccount(l),
+    );
     return {
       customerId,
       issuedDate,
       dueDate,
       notes,
+      locationId: currentLocationId,
       lineItems: validLines.map((l) => ({
         description: l.description.trim(),
         quantity: l.qty,
         unitPriceCents: l.unitPrice,
         discountCents: 0,
+        productId: l.kind === 'PRODUCT' ? l.productId : null,
+        glAccountId: l.kind === 'CUSTOM' ? l.glAccountId : null,
       })),
     };
   };
@@ -194,17 +340,33 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
     if (!customerId) { setError('Please select a customer from the list.'); return false; }
     if (!issuedDate) { setError('Please set an issue date.'); return false; }
     if (!dueDate) { setError('Please set a due date.'); return false; }
-    const validLines = lines.filter((l) => l.description.trim() && l.unitPrice > 0 && l.qty > 0);
-    if (validLines.length === 0) { setError('Please add at least one line item with a description and price.'); return false; }
+    const nonEmpty = lines.filter((l) => l.description.trim() || l.unitPrice > 0 || l.productId || l.glAccountId);
+    if (nonEmpty.length === 0) {
+      setError('Please add at least one line item.');
+      return false;
+    }
+    for (const l of nonEmpty) {
+      if (!lineHasResolvedAccount(l)) {
+        setError('Each line must be linked to a product or to a revenue account.');
+        return false;
+      }
+      if (!l.description.trim()) { setError('Each line needs a description.'); return false; }
+      if (l.qty <= 0) { setError('Quantities must be greater than zero.'); return false; }
+      if (l.unitPrice <= 0) { setError('Unit prices must be greater than zero.'); return false; }
+    }
     setError('');
     return true;
   };
 
-  const handleSaveDraft = async () => {
+  const submit = async (
+    handler: ((data: Record<string, unknown>) => Promise<{ id: string } | null | undefined>) | undefined,
+  ) => {
     if (!validate()) return;
     setSaving(true);
     try {
-      const result = await onSaveDraft?.(buildPayload());
+      // No handler wired (e.g. Dashboard quick action stub) — just close.
+      if (!handler) { onClose(); return; }
+      const result = await handler(buildPayload());
       if (result && result.id) {
         onClose();
       } else {
@@ -217,22 +379,8 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
     }
   };
 
-  const handleFinalize = async () => {
-    if (!validate()) return;
-    setSaving(true);
-    try {
-      const result = await onFinalize?.(buildPayload());
-      if (result && result.id) {
-        onClose();
-      } else {
-        setError('Failed to create invoice. Please review the fields and try again.');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create invoice.');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const handleSaveDraft = () => submit(onSaveDraft);
+  const handleFinalize = () => submit(onFinalize);
 
   return (
     <div style={s.overlay} onClick={onClose}>
@@ -310,58 +458,160 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
           {/* Line Items */}
           <label style={{ ...s.label, marginBottom: '12px' }}>Line Items</label>
           <div style={s.lineHeader}>
-            <span style={s.colLabel as React.CSSProperties}>Description</span>
+            <span style={s.colLabel as React.CSSProperties}>Item</span>
             <span style={s.colLabel as React.CSSProperties}>Qty</span>
             <span style={s.colLabel as React.CSSProperties}>Unit Price</span>
             <span style={s.colLabel as React.CSSProperties}>Tax %</span>
             <span style={{ ...s.colLabel as React.CSSProperties, textAlign: 'right' }}>Total</span>
             <span />
           </div>
-          {lines.map((line) => (
-            <div key={line.id} style={s.lineRow}>
-              <input
-                style={s.lineInput}
-                placeholder="Description..."
-                value={line.description}
-                onChange={(e) => updateLine(line.id, 'description', e.target.value)}
-              />
-              <input
-                style={s.lineInputMono as React.CSSProperties}
-                type="number"
-                min={1}
-                value={line.qty}
-                onChange={(e) => updateLine(line.id, 'qty', parseInt(e.target.value) || 0)}
-              />
-              <input
-                style={s.lineInputMono as React.CSSProperties}
-                type="number"
-                min={0}
-                step={0.01}
-                placeholder="0.00"
-                value={line.unitPrice ? (line.unitPrice / 100).toFixed(2) : ''}
-                onChange={(e) => updateLine(line.id, 'unitPrice', Math.round(parseFloat(e.target.value || '0') * 100))}
-              />
-              <input
-                style={s.lineInputMono as React.CSSProperties}
-                type="number"
-                min={0}
-                step={0.5}
-                value={line.taxRate}
-                onChange={(e) => updateLine(line.id, 'taxRate', parseFloat(e.target.value) || 0)}
-              />
-              <div style={{ ...mono, textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#0A2342', padding: '8px 4px' }}>
-                {formatCents(lineTotal(line) + lineTax(line))}
+          {lines.map((line) => {
+            const linkedProduct = line.productId ? productById.get(line.productId) : null;
+            const matches = productMatches(line.pickerQuery);
+            return (
+              <div key={line.id} style={s.lineCard}>
+                <div style={s.lineGrid}>
+                  {/* Item picker */}
+                  <div style={s.pickerWrap}>
+                    <input
+                      style={s.lineInput}
+                      placeholder={line.kind === 'CUSTOM' ? 'Description (custom service charge)' : 'Search products by name or SKU...'}
+                      value={line.kind === 'CUSTOM' ? line.description : (linkedProduct ? line.description : line.pickerQuery)}
+                      onChange={(e) => {
+                        if (line.kind === 'CUSTOM') {
+                          updateLine(line.id, { description: e.target.value });
+                        } else if (linkedProduct) {
+                          // Editing description after a product was picked — keep
+                          // the productId, just update the displayed description
+                          // so the user can append context like "— slip B14".
+                          updateLine(line.id, { description: e.target.value });
+                        } else {
+                          updateLine(line.id, { pickerQuery: e.target.value, pickerOpen: true });
+                        }
+                      }}
+                      onFocus={() => {
+                        if (line.kind === 'PRODUCT' && !linkedProduct) {
+                          updateLine(line.id, { pickerOpen: true });
+                        }
+                      }}
+                      onBlur={() => setTimeout(() => updateLine(line.id, { pickerOpen: false }), 150)}
+                    />
+                    {line.pickerOpen && line.kind === 'PRODUCT' && !linkedProduct && (
+                      <div style={s.pickerDropdown as React.CSSProperties}>
+                        {matches.length === 0 && (
+                          <div style={s.pickerOptionMuted}>No products match. Try the custom option below.</div>
+                        )}
+                        {matches.map((p) => (
+                          <div
+                            key={p.id}
+                            style={s.pickerOption}
+                            onMouseDown={() => selectProductForLine(line.id, p)}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#D6E8F4'; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
+                          >
+                            <span>{p.name}{p.sku ? ` · ${p.sku}` : ''}</span>
+                            <span style={mono}>{formatCents(p.priceCents)}</span>
+                          </div>
+                        ))}
+                        <div
+                          style={s.pickerCustomOption}
+                          onMouseDown={() => switchToCustom(line.id)}
+                          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E7EE'; }}
+                          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F4F6'; }}
+                        >
+                          <Tag size={14} /> Use a custom service charge instead
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <input
+                    style={s.lineInputMono as React.CSSProperties}
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={line.qty}
+                    onChange={(e) => updateLine(line.id, { qty: parseFloat(e.target.value) || 0 })}
+                  />
+                  <input
+                    style={s.lineInputMono as React.CSSProperties}
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    placeholder="0.00"
+                    value={line.unitPrice ? (line.unitPrice / 100).toFixed(2) : ''}
+                    onChange={(e) => updateLine(line.id, { unitPrice: Math.round(parseFloat(e.target.value || '0') * 100) })}
+                  />
+                  <input
+                    style={s.lineInputMono as React.CSSProperties}
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={line.taxRate}
+                    onChange={(e) => updateLine(line.id, { taxRate: parseFloat(e.target.value) || 0 })}
+                  />
+                  <div style={{ ...mono, textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#0A2342', padding: '8px 4px' }}>
+                    {formatCents(lineTotal(line) + lineTax(line))}
+                  </div>
+                  <button
+                    style={s.removeBtn}
+                    onClick={() => removeLine(line.id)}
+                    disabled={lines.length === 1}
+                    title="Remove line"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+
+                {/* Line meta — shows the linked product or the GL picker for custom */}
+                <div style={s.lineMeta}>
+                  {line.kind === 'PRODUCT' && linkedProduct && (
+                    <>
+                      <span style={{ ...s.metaTag, ...s.metaTagProduct }}>
+                        <Package size={11} /> {linkedProduct.name}{linkedProduct.sku ? ` · ${linkedProduct.sku}` : ''}
+                      </span>
+                      <button style={s.linkBtn} onClick={() => switchToProduct(line.id)}>
+                        Change item
+                      </button>
+                    </>
+                  )}
+                  {line.kind === 'PRODUCT' && !linkedProduct && (
+                    <>
+                      <span style={{ ...s.metaTag, ...s.metaTagMissing }}>
+                        Pick a product or switch to custom
+                      </span>
+                      <button style={s.linkBtn} onClick={() => switchToCustom(line.id)}>
+                        Use custom service charge
+                      </button>
+                    </>
+                  )}
+                  {line.kind === 'CUSTOM' && (
+                    <>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                        <span style={{ ...s.metaTag, ...s.metaTagCustom, whiteSpace: 'nowrap' }}>
+                          <Tag size={11} /> Custom
+                        </span>
+                        <select
+                          style={s.glSelect as React.CSSProperties}
+                          value={line.glAccountId ?? ''}
+                          onChange={(e) => updateLine(line.id, { glAccountId: e.target.value || null })}
+                        >
+                          <option value="">— Pick a revenue account —</option>
+                          {revenueGlAccounts.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.accountNumber} · {g.name}
+                            </option>
+                          ))}
+                        </select>
+                      </span>
+                      <button style={s.linkBtn} onClick={() => switchToProduct(line.id)}>
+                        Pick a product instead
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <button
-                style={s.removeBtn}
-                onClick={() => removeLine(line.id)}
-                disabled={lines.length === 1}
-                title="Remove line"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
           <button style={s.addLineBtn} onClick={addLine}>
             <Plus size={14} /> Add Line Item
           </button>
@@ -374,12 +624,15 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(subtotal)}</span>
               </div>
               <div style={s.totalsRow}>
-                <span>Tax</span>
+                <span>Tax (preview)</span>
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(totalTax)}</span>
               </div>
               <div style={s.totalsFinal}>
                 <span>Total</span>
                 <span style={mono}>{formatCents(total)}</span>
+              </div>
+              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px', textAlign: 'right' }}>
+                Final tax is computed by the server using the location's tax rules.
               </div>
             </div>
           </div>
