@@ -96,40 +96,93 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
     prisma.serviceFeeGlMapping.count({ where: { tenantId, locationId } }),
   ]);
 
+  const step1Complete = qboConnected;
+  const step2Complete = mappedPostingCount === totalPostingCount;
+  const step3Complete = totalCategories === 0 || mappedCategories === totalCategories;
+  const step4Complete = jurisdictionCount > 0;
+  const step5Complete = dockageCount > 0 || serviceFeeCount > 0;
+  const step6Complete = !!location.stripeAccountId && !!location.stripeOnboardingComplete;
+
+  // Self-heal: if every step is satisfied but the persisted flag still says
+  // setup isn't complete, flip it now and clear the grace period. This means
+  // users never have to click a "Mark setup complete" button — finishing the
+  // last step is enough. Skipped silently on update errors so a transient
+  // write failure can't block reads of the status itself.
+  let overallComplete = location.accountingSetupComplete;
+  let gracePeriodEndsAt = location.accountingGracePeriodEndsAt;
+  const allStepsComplete =
+    step1Complete && step2Complete && step3Complete && step4Complete && step5Complete && step6Complete;
+  if (allStepsComplete && !overallComplete) {
+    const now = new Date();
+    try {
+      await prisma.location.update({
+        where: { id: locationId },
+        data: {
+          accountingSetupComplete: true,
+          accountingSetupCompletedAt: now,
+          accountingGracePeriodEndsAt: null,
+        },
+      });
+      overallComplete = true;
+      gracePeriodEndsAt = null;
+      // Best-effort audit trail mirroring the explicit /setup-complete path.
+      try {
+        await logAccountingChange({
+          tenantId,
+          locationId,
+          entity: "QboConnection",
+          entityId: locationId,
+          action: "CONNECT",
+          changes: {
+            accountingSetupComplete: { from: false, to: true },
+            accountingSetupCompletedAt: { from: null, to: now },
+            accountingGracePeriodEndsAt: { from: gracePeriodEndsAt ?? null, to: null },
+            trigger: "auto-on-status-check",
+          },
+        });
+      } catch (_auditErr) { /* intentionally swallowed */ }
+    } catch (err) {
+      console.warn(
+        `[accounting] Auto-complete self-heal failed for location ${locationId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
   return {
     step1_qbo: {
-      complete: qboConnected,
+      complete: step1Complete,
       companyName: location.qboCompanyName ?? null,
       glAccountCount,
       missingMappings: 0,
     },
     step2_posting: {
-      complete: mappedPostingCount === totalPostingCount,
+      complete: step2Complete,
       mappedCount: mappedPostingCount,
       totalCount: totalPostingCount,
     },
     step3_categories: {
-      complete: totalCategories === 0 || mappedCategories === totalCategories,
+      complete: step3Complete,
       mappedCount: mappedCategories,
       totalCount: totalCategories,
     },
     step4_tax: {
-      complete: jurisdictionCount > 0,
+      complete: step4Complete,
       jurisdictionCount,
     },
     step5_rates: {
-      complete: dockageCount > 0 || serviceFeeCount > 0,
+      complete: step5Complete,
       dockageCount,
       serviceFeeCount,
     },
     step6_stripe: {
-      complete: !!location.stripeAccountId && !!location.stripeOnboardingComplete,
+      complete: step6Complete,
       connected: !!location.stripeAccountId,
       onboardingComplete: !!location.stripeOnboardingComplete,
       accountId: location.stripeAccountId ?? null,
     },
-    overallComplete: location.accountingSetupComplete,
-    gracePeriodEndsAt: location.accountingGracePeriodEndsAt?.toISOString() ?? null,
+    overallComplete,
+    gracePeriodEndsAt: gracePeriodEndsAt?.toISOString() ?? null,
   };
 }
 
