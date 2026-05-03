@@ -236,8 +236,10 @@ interface ApiInvoice {
   invoiceNumber?: string;
   description?: string;
   totalCents: number;
+  balanceCents?: number;
   status: string;
   issuedDate: string;
+  dueDate?: string | null;
   _count?: { lineItems: number; payments: number };
 }
 
@@ -355,12 +357,32 @@ function mapApiBoat(b: ApiBoat): Boat {
 }
 
 function mapApiInvoice(inv: ApiInvoice): Invoice {
+  const rawStatus = inv.status;
+  const dueDate = inv.dueDate ? new Date(inv.dueDate) : null;
+  const balance = (inv.balanceCents ?? 0) / 100;
+  // Treat ISSUED invoices past their due date as Overdue even if the server
+  // hasn't yet flipped them to PAST_DUE (status update is a nightly job).
+  // Compare by calendar day in the user's local timezone so an invoice due
+  // "today" never flips to overdue mid-afternoon, and so timezone offsets
+  // don't push borderline invoices in or out by one day.
+  const today = new Date();
+  const todayKey = today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
+  const dueKey = dueDate
+    ? dueDate.getFullYear() * 10000 + (dueDate.getMonth() + 1) * 100 + dueDate.getDate()
+    : null;
+  const isPastDue =
+    rawStatus === 'PAST_DUE' ||
+    (rawStatus === 'ISSUED' && balance > 0 && dueKey !== null && dueKey < todayKey);
   return {
     id: inv.id,
+    invoiceNumber: inv.invoiceNumber ?? inv.id.slice(0, 8).toUpperCase(),
     description: inv.description ?? inv.invoiceNumber ?? inv.id.slice(0, 8).toUpperCase(),
     amount: inv.totalCents / 100,
-    status: inv.status === 'ISSUED' ? 'Open' : inv.status === 'PAST_DUE' ? 'Overdue' : inv.status === 'PAID' ? 'Paid' : inv.status,
+    balance,
+    status: isPastDue ? 'Overdue' : rawStatus === 'ISSUED' ? 'Open' : rawStatus === 'PAID' ? 'Paid' : rawStatus,
+    isPastDue,
     date: new Date(inv.issuedDate).toISOString().slice(0, 10),
+    dueDate: dueDate ? dueDate.toISOString().slice(0, 10) : null,
   };
 }
 
@@ -414,10 +436,14 @@ interface Boat {
 
 interface Invoice {
   id: string;
+  invoiceNumber: string;
   description: string;
   amount: number;
+  balance: number;
   status: string;
+  isPastDue: boolean;
   date: string;
+  dueDate: string | null;
 }
 
 interface InsuranceRecord {
@@ -1403,7 +1429,10 @@ export default function CustomerDetailPage() {
   const { getToken } = useAuth();
   const { data: apiCustomer, loading, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
   const { data: apiBoatData, execute: refetchBoats } = useApi<{ data: ApiBoat[]; pagination: unknown }>('get', `/api/boats?customerId=${id}&take=50`, { immediate: true });
-  const { data: apiInvoiceData } = useApi<{ data: ApiInvoice[]; pagination: unknown }>('get', `/api/invoices?customerId=${id}&take=50`, { immediate: true });
+  // Sort by issuedDate so the "Recent Invoices" card on Overview is anchored
+  // to invoicing date rather than the default `createdAt` (which can drift
+  // when historic invoices are imported after the fact).
+  const { data: apiInvoiceData } = useApi<{ data: ApiInvoice[]; pagination: unknown }>('get', `/api/invoices?customerId=${id}&take=50&sortBy=issuedDate&sortOrder=desc`, { immediate: true });
   const { data: timelineData } = useApi<{ data: ApiTimelineEvent[]; pagination: unknown }>('get', `/api/customers/${id}/timeline`, { immediate: true });
   const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
   const { data: documentsData, execute: refetchDocuments } = useApi<ApiCustomerDocument[]>('get', `/api/customers/${id}/documents`, { immediate: true });
@@ -1562,6 +1591,11 @@ export default function CustomerDetailPage() {
   const c = apiCustomer;
   const boats = (apiBoatData?.data ?? []).map(mapApiBoat);
   const invoices = (apiInvoiceData?.data ?? []).map(mapApiInvoice);
+  // Outstanding total + past-due count surfaced near the customer name and
+  // on the Overview tab so cashiers don't have to bounce to /billing.
+  const outstandingBalance = invoices.reduce((sum, inv) => sum + inv.balance, 0);
+  const pastDueCount = invoices.filter((inv) => inv.isPastDue && inv.balance > 0).length;
+  const recentInvoices = invoices.slice(0, 10);
   const activity = timelineData?.data ?? [];
   const allInsurance: InsuranceRecord[] = (apiBoatData?.data ?? []).flatMap((b) =>
     b.insuranceRecords.map((ins) => mapApiInsurance(ins, b.id, b.name ?? '—'))
@@ -1719,6 +1753,63 @@ export default function CustomerDetailPage() {
               <div style={{ ...s.mono, fontSize: '20px', fontWeight: 700, color: '#0A2342', marginTop: '4px' }}>{fmt(c.deposits)}</div>
             </div>
           </div>
+        </div>
+
+        {/* Recent Invoices — last ~10, links to billing detail. Mirrors the
+            list pattern on /billing so cashiers don't have to bounce out
+            and filter by customer. */}
+        <div style={{ ...s.card, gridColumn: '1 / -1', padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 16px' }}>
+            <div style={{ ...s.cardTitle, marginBottom: 0 }}><FileText size={16} /> Recent Invoices</div>
+            <button
+              style={{ ...s.secondaryBtn, padding: '6px 14px', fontSize: '13px' }}
+              onClick={() => setTab('billing')}
+            >
+              View all
+            </button>
+          </div>
+          {recentInvoices.length === 0 ? (
+            <div style={{ padding: '32px 24px', textAlign: 'center', color: '#64748B' }}>
+              <FileText size={28} style={{ marginBottom: '12px', color: '#94A3B8' }} />
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>No invoices yet</div>
+              <div style={{ fontSize: '13px' }}>Invoices created for this customer will appear here.</div>
+            </div>
+          ) : (
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>Invoice #</th>
+                  <th style={s.th}>Date</th>
+                  <th style={s.th}>Status</th>
+                  <th style={{ ...s.th, textAlign: 'right' }}>Total</th>
+                  <th style={{ ...s.th, textAlign: 'right' }}>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentInvoices.map((inv, idx) => {
+                  const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+                  const ib = invoiceStatusColors[inv.status] || { bg: '#F2F4F6', color: '#64748B' };
+                  return (
+                    <tr
+                      key={inv.id}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => navigate(`/billing/invoices/${inv.id}`)}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
+                    >
+                      <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontWeight: 600, color: '#00D4FF' }}>{inv.invoiceNumber}</td>
+                      <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
+                      <td style={{ ...s.td, backgroundColor: rowBg }}>
+                        <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
+                      </td>
+                      <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, textAlign: 'right' }}>{fmt(inv.amount)}</td>
+                      <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, textAlign: 'right', color: inv.balance > 0 ? '#B71C1C' : '#64748B', fontWeight: inv.balance > 0 ? 600 : 400 }}>{fmt(inv.balance)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
 
         {/* Communication Preferences */}
@@ -2836,6 +2927,15 @@ export default function CustomerDetailPage() {
   };
 
   const renderBilling = () => {
+    if (invoices.length === 0) {
+      return (
+        <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
+          <FileText size={32} style={{ marginBottom: '12px', color: '#94A3B8' }} />
+          <div style={{ fontSize: '18px', fontWeight: 600, color: '#0A2342', marginBottom: '6px' }}>No invoices yet</div>
+          <div style={{ fontSize: '14px', color: '#64748B' }}>Invoices created for this customer will appear here.</div>
+        </div>
+      );
+    }
     return (
       <div>
         {/* Existing Invoices table */}
@@ -2843,11 +2943,12 @@ export default function CustomerDetailPage() {
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>Invoice</th>
-                <th style={s.th}>Description</th>
-                <th style={s.th}>Amount</th>
-                <th style={s.th}>Status</th>
+                <th style={s.th}>Invoice #</th>
                 <th style={s.th}>Date</th>
+                <th style={s.th}>Due</th>
+                <th style={s.th}>Status</th>
+                <th style={{ ...s.th, textAlign: 'right' }}>Total</th>
+                <th style={{ ...s.th, textAlign: 'right' }}>Balance</th>
               </tr>
             </thead>
             <tbody>
@@ -2862,13 +2963,14 @@ export default function CustomerDetailPage() {
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
                   >
-                    <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.invoiceNumber}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, color: inv.isPastDue ? '#B71C1C' : '#64748B' }}>{inv.dueDate ?? '—'}</td>
                     <td style={{ ...s.td, backgroundColor: rowBg }}>
                       <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
                     </td>
-                    <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, textAlign: 'right' }}>{fmt(inv.amount)}</td>
+                    <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, textAlign: 'right', color: inv.balance > 0 ? '#B71C1C' : '#64748B', fontWeight: inv.balance > 0 ? 600 : 400 }}>{fmt(inv.balance)}</td>
                   </tr>
                 );
               })}
@@ -3230,6 +3332,38 @@ export default function CustomerDetailPage() {
           <span style={{ ...s.badge, backgroundColor: (badgeStyle ?? statusBadgeColors.ACTIVE).bg, color: (badgeStyle ?? statusBadgeColors.ACTIVE).color, fontSize: '13px', padding: '4px 14px' }}>
             {STATUS_LABEL[c.status] ?? c.status}
           </span>
+          {outstandingBalance > 0 && (
+            <span
+              title="Outstanding invoice balance"
+              style={{
+                ...s.badge,
+                backgroundColor: '#FFF3CD',
+                color: '#856404',
+                fontSize: '13px',
+                padding: '4px 14px',
+                fontFamily: '"JetBrains Mono", monospace',
+              }}
+            >
+              {fmt(outstandingBalance)} outstanding
+            </span>
+          )}
+          {pastDueCount > 0 && (
+            <span
+              title={`${pastDueCount} invoice${pastDueCount === 1 ? '' : 's'} past due`}
+              style={{
+                ...s.badge,
+                backgroundColor: '#FDECEA',
+                color: '#B71C1C',
+                fontSize: '13px',
+                padding: '4px 14px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              <AlertCircle size={13} /> {pastDueCount} past due
+            </span>
+          )}
         </div>
         <div style={s.btnGroup}>
           <button style={s.secondaryBtn} onClick={() => setShowEdit(true)}>
