@@ -4,7 +4,7 @@ import {
   ShoppingCart, Search, Plus, Minus, X, CreditCard,
   Banknote, Building2, DollarSign, Clock, Package,
   AlertTriangle, Trash2, RotateCcw, Printer, Wifi, WifiOff,
-  CheckCircle2, Loader,
+  CheckCircle2, Loader, User as UserIcon, Tag,
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
@@ -1535,6 +1535,23 @@ export default function POS() {
   const [tab, setTab] = useState<'sale' | 'transactions' | 'settings'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
+  // ── Attached customer + auto-discount preview ────────────────────────
+  // Discounts are customer-gated: nothing applies until a customer is
+  // attached (matches product spec). Preview is fetched from the same
+  // /api/pos/discounts/preview endpoint that mirrors the server-side
+  // engine used at sale time, so what the cashier sees matches what gets
+  // persisted — no surprise totals at checkout.
+  type AttachedCustomer = { id: string; display: string };
+  type PreviewLine = {
+    productId: string;
+    quantity: number;
+    discountCents: number;
+    discountSourceLabel: string | null;
+  };
+  const [attachedCustomer, setAttachedCustomer] = useState<AttachedCustomer | null>(null);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+  const [discountPreview, setDiscountPreview] = useState<PreviewLine[]>([]);
   const [shiftOpen, setShiftOpen] = useState(false);
   const [shiftId, setShiftId] = useState<string | null>(null);
   const [shiftCashier, setShiftCashier] = useState('');
@@ -1681,6 +1698,10 @@ export default function POS() {
     const result = await createTransaction.execute({
       lineItems,
       paymentMethod: PAYMENT_METHOD_API[method] ?? 'CARD',
+      // Customer attachment drives auto-discounts AND lets the server
+      // stamp customerId on the resulting PosTransaction for downstream
+      // history (customer purchase log, QBO Customer linkage, etc.).
+      ...(attachedCustomer ? { customerId: attachedCustomer.id } : {}),
       // Anchor the row to the cashier's open shift (when there is one) AND to
       // the active location. The server uses both signals to resolve which
       // connected Stripe account to capture on the row at sale time, which is
@@ -1703,6 +1724,11 @@ export default function POS() {
     if (result !== null) {
       await refreshTransactions();
       setCart([]);
+      // Reset the attached customer between sales — the next walk-in is
+      // typically a different person, and leaving stale attachment risks
+      // applying the wrong customer's discounts to the next sale.
+      setAttachedCustomer(null);
+      setDiscountPreview([]);
       setRecalledTxn(null);
       setRecalledTxnData(null);
     }
@@ -1767,17 +1793,104 @@ export default function POS() {
     return qty.toFixed(3).replace(/0+$/, '');
   };
 
+  // ── Customer search (debounced) ─────────────────────────────────────
+  type CustomerHit = {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    company: string | null;
+  };
+  const [customerHits, setCustomerHits] = useState<CustomerHit[]>([]);
+  useEffect(() => {
+    if (!showCustomerPicker) return;
+    const q = customerSearch.trim();
+    if (q.length < 2) {
+      setCustomerHits([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const token = await getToken();
+        const resp = await api.get<{ data: CustomerHit[] }>(
+          `/api/customers?search=${encodeURIComponent(q)}&pageSize=10`,
+          token,
+        );
+        if (!cancelled) setCustomerHits(resp.data ?? []);
+      } catch {
+        if (!cancelled) setCustomerHits([]);
+      }
+    }, 220);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [customerSearch, showCustomerPicker, getToken]);
+
+  // ── Auto-discount preview (server-authoritative) ────────────────────
+  // Refetch whenever the cart, attached customer, or location changes.
+  // We round unit prices to integer cents on the way out so the server
+  // never has to coerce a fractional value — keeps preview math identical
+  // to the persisted sale (server uses Math.round(price*100) too).
+  useEffect(() => {
+    if (!attachedCustomer || !currentLocationId || cart.length === 0) {
+      setDiscountPreview([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const lineItems = cart.map((i) => ({
+          productId: i.product.id,
+          quantity: Math.max(1, Math.round(i.quantity)),
+          unitPriceCents: Math.round(i.product.price * 100),
+        }));
+        const resp = await api.post<{ lineItems: PreviewLine[] }>(
+          '/api/pos/discounts/preview',
+          { locationId: currentLocationId, customerId: attachedCustomer.id, lineItems },
+          token,
+        );
+        if (!cancelled) setDiscountPreview(resp.lineItems ?? []);
+      } catch {
+        if (!cancelled) setDiscountPreview([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachedCustomer, currentLocationId, cart, getToken]);
+
+  // Total discount (cents → dollars) across all lines.
+  const totalDiscount = useMemo(
+    () => discountPreview.reduce((s, p) => s + p.discountCents, 0) / 100,
+    [discountPreview],
+  );
+  const discountByProductId = useMemo(() => {
+    const m = new Map<string, PreviewLine>();
+    for (const p of discountPreview) m.set(p.productId, p);
+    return m;
+  }, [discountPreview]);
+
   const cartItemCount = cart.reduce((s, i) => s + i.quantity, 0);
   const cartItemCountDisplay = Number.isInteger(cartItemCount) ? cartItemCount.toString() : cartItemCount.toFixed(3).replace(/0+$/, '');
 
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
+  // Tax is computed against the discounted (net) line so the preview total
+  // reflects what the server will actually charge — applying tax to the
+  // gross would over-quote the customer at the cart and then surprise them
+  // when the receipt comes out lower.
   const tax = cart.reduce((s, i) => {
     const tc = i.product.taxClass;
     if (!tc || tc === 'Tax Exempt') return s;
     const rate = locationTaxRates[tc] ?? 0;
-    return s + i.product.price * i.quantity * (rate / 100);
+    const gross = i.product.price * i.quantity;
+    const lineDiscount = (discountByProductId.get(i.product.id)?.discountCents ?? 0) / 100;
+    const net = Math.max(0, gross - lineDiscount);
+    return s + net * (rate / 100);
   }, 0);
-  const total = subtotal + tax;
+  const total = Math.max(0, subtotal - totalDiscount) + tax;
   const todayPrefix = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const runningTotal = transactions.filter((t) => t.date.startsWith(todayPrefix)).reduce((s, t) => s + t.total, 0) + total;
 
@@ -2042,6 +2155,79 @@ export default function POS() {
               /* ── Normal cart ── */
               <>
                 <div style={st.cartHeader}><ShoppingCart size={18} /> Cart ({cartItemCountDisplay} items)</div>
+
+                {/* Customer attachment row — drives auto-discounts. Sits at the
+                    top of the cart so cashiers see it before scanning items. */}
+                <div style={{ padding: '10px 20px', borderBottom: '1px solid #F1F5F9', background: '#F8FAFC' }}>
+                  {attachedCustomer ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                      <UserIcon size={14} style={{ color: '#0A2342' }} />
+                      <span style={{ flex: 1, color: '#0A2342', fontWeight: 600 }}>{attachedCustomer.display}</span>
+                      <button
+                        onClick={() => { setAttachedCustomer(null); setDiscountPreview([]); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', display: 'flex', alignItems: 'center', padding: 2 }}
+                        title="Remove customer"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : showCustomerPicker ? (
+                    <div>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' }}>
+                        <Search size={12} style={{ color: '#64748B' }} />
+                        <input
+                          autoFocus
+                          placeholder="Search customer by name, email, phone…"
+                          value={customerSearch}
+                          onChange={(e) => setCustomerSearch(e.target.value)}
+                          style={{ flex: 1, padding: '6px 8px', fontSize: '13px', border: '1px solid #CBD5E1', borderRadius: '4px', outline: 'none' }}
+                        />
+                        <button
+                          onClick={() => { setShowCustomerPicker(false); setCustomerSearch(''); setCustomerHits([]); }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: 2 }}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      {customerHits.length > 0 && (
+                        <div style={{ maxHeight: '180px', overflow: 'auto', border: '1px solid #E2E8F0', borderRadius: '4px', background: '#FFFFFF' }}>
+                          {customerHits.map((c) => {
+                            const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.email || 'Customer';
+                            const sub = [c.company, c.email].filter(Boolean).join(' · ');
+                            return (
+                              <div
+                                key={c.id}
+                                onClick={() => {
+                                  setAttachedCustomer({ id: c.id, display: name });
+                                  setShowCustomerPicker(false);
+                                  setCustomerSearch('');
+                                  setCustomerHits([]);
+                                }}
+                                style={{ padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9', fontSize: '13px' }}
+                                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#F1F5F9'; }}
+                                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#FFFFFF'; }}
+                              >
+                                <div style={{ fontWeight: 600, color: '#0A2342' }}>{name}</div>
+                                {sub && <div style={{ fontSize: '11px', color: '#64748B' }}>{sub}</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {customerSearch.trim().length >= 2 && customerHits.length === 0 && (
+                        <div style={{ fontSize: '12px', color: '#94A3B8', padding: '4px 2px' }}>No matches.</div>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowCustomerPicker(true)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: '1px dashed #CBD5E1', borderRadius: '4px', padding: '6px 10px', color: '#475569', fontSize: '13px', cursor: 'pointer', width: '100%', justifyContent: 'center' }}
+                    >
+                      <UserIcon size={14} /> Attach customer (for discounts)
+                    </button>
+                  )}
+                </div>
+
                 {cart.length === 0 ? (
                   <div style={st.emptyCart}>
                     <ShoppingCart size={32} style={{ color: '#CBD5E1', marginBottom: '8px' }} />
@@ -2094,6 +2280,30 @@ export default function POS() {
                 )}
                 <div style={st.cartFooter}>
                   <div style={st.cartRow}><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>
+                  {totalDiscount > 0 && (
+                    <>
+                      <div style={{ ...st.cartRow, color: '#047857' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                          <Tag size={12} /> Discounts
+                        </span>
+                        <span>−${totalDiscount.toFixed(2)}</span>
+                      </div>
+                      {/* List each winning discount label so the customer
+                          can see which rule fired on which line. */}
+                      <div style={{ fontSize: '11px', color: '#65748B', marginBottom: '6px', paddingLeft: '16px' }}>
+                        {discountPreview
+                          .filter((p) => p.discountCents > 0 && p.discountSourceLabel)
+                          .map((p) => {
+                            const ci = cart.find((c) => c.product.id === p.productId);
+                            return (
+                              <div key={p.productId}>
+                                {ci?.product.name ?? 'Item'}: {p.discountSourceLabel}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </>
+                  )}
                   <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
                   <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
                   <div style={st.payBtns}>

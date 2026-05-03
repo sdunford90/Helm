@@ -523,6 +523,7 @@ model Location {
   accountingPeriods         AccountingPeriod[]
   inventoryLots             InventoryLot[]
   reconciliationAlerts      ReconciliationAlert[]
+  posDiscounts              PosDiscount[]
 
   @@index([tenantId])
   @@index([stripeCustomerId])
@@ -757,6 +758,8 @@ model Customer {
   portalMessages           PortalMessage[]
   documents                CustomerDocument[]
   cardExpiryReminders      CardExpiryReminder[]
+  posTransactions          PosTransaction[]
+  posDiscountCustomers     PosDiscountCustomer[]
 
   @@index([tenantId])
   @@map("customers")
@@ -1879,6 +1882,10 @@ model PosTransaction {
   tenantId          String
   cashierId         String?
   shiftId           String?
+  // Customer attached to the sale (optional). When set, the POST /transactions
+  // route auto-evaluates eligible PosDiscount rows and writes the best
+  // matching discount onto each line. Anonymous walk-ins leave this null.
+  customerId        String?
   subtotalCents     Int
   taxCents          Int       @default(0)
   tipCents          Int       @default(0)
@@ -1911,10 +1918,12 @@ model PosTransaction {
   createdAt         DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])
+  customer  Customer?     @relation(fields: [customerId], references: [id])
   lineItems PosLineItem[]
 
   @@index([tenantId])
   @@index([tenantId, createdAt])
+  @@index([customerId])
   @@map("pos_transactions")
 }
 
@@ -1924,14 +1933,76 @@ model PosLineItem {
   productId      String?
   quantity       Int     @default(1)
   unitPriceCents Int
+  // Total dollars taken off this line. Combines (a) any client-supplied manual
+  // discount with (b) the server-applied location/customer discount that won
+  // the best-discount-per-line evaluation. extendedCents is computed AFTER
+  // this is subtracted, so subtotalCents == sum(extendedCents - taxCents).
   discountCents  Int     @default(0)
   taxCents       Int     @default(0)
   extendedCents  Int
+  // When the server applied a PosDiscount automatically, store its id and a
+  // human-readable label snapshot (so reports survive renames/deletes of the
+  // discount row). Null when no auto-discount applied (manual or anonymous).
+  appliedDiscountId   String?
+  discountSourceLabel String?
 
-  transaction PosTransaction @relation(fields: [transactionId], references: [id])
-  product     Product?       @relation(fields: [productId], references: [id])
+  transaction     PosTransaction @relation(fields: [transactionId], references: [id])
+  product         Product?       @relation(fields: [productId], references: [id])
+  appliedDiscount PosDiscount?   @relation(fields: [appliedDiscountId], references: [id])
 
   @@map("pos_line_items")
+}
+
+// Per-location discounts that auto-apply when an eligible customer is
+// attached to a POS sale. A discount targets EITHER a product category OR a
+// specific product (XOR — enforced in the route, not the DB). When multiple
+// discounts match the same line, the one yielding the largest savings wins
+// (best-per-line, no stacking).
+enum PosDiscountKind {
+  PERCENT // value = basis points (e.g. 1000 = 10.00%)
+  AMOUNT  // value = cents off per unit-line (e.g. 500 = $5.00 off the line)
+}
+
+model PosDiscount {
+  id                    String          @id @default(uuid())
+  tenantId              String
+  locationId            String
+  name                  String
+  kind                  PosDiscountKind
+  value                 Int
+  // Target — exactly one of these two must be non-null.
+  productCategoryId     String?
+  productId             String?
+  // When true, ANY customer attached to the POS sale unlocks this discount.
+  // When false, only customers in the eligibleCustomers join table qualify.
+  appliesToAllCustomers Boolean         @default(false)
+  active                Boolean         @default(true)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  location          Location              @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  productCategory   ProductCategory?      @relation(fields: [productCategoryId], references: [id], onDelete: Cascade)
+  product           Product?              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  eligibleCustomers PosDiscountCustomer[]
+  appliedToLines    PosLineItem[]
+
+  @@index([tenantId])
+  @@index([locationId, active])
+  @@index([productCategoryId])
+  @@index([productId])
+  @@map("pos_discounts")
+}
+
+model PosDiscountCustomer {
+  posDiscountId String
+  customerId    String
+
+  posDiscount PosDiscount @relation(fields: [posDiscountId], references: [id], onDelete: Cascade)
+  customer    Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@id([posDiscountId, customerId])
+  @@index([customerId])
+  @@map("pos_discount_customers")
 }
 
 model Shift {
@@ -1997,6 +2068,7 @@ model Product {
   poLineItems     PoLineItem[]
   countItems      InventoryCountItem[]
   inventoryLots   InventoryLot[]
+  posDiscounts    PosDiscount[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -2028,6 +2100,7 @@ model ProductCategory {
   products             Product[]
   glMappings           ProductCategoryGlMapping[]
   reconciliationAlerts ReconciliationAlert[]
+  posDiscounts         PosDiscount[]
 
   @@unique([tenantId, name])
   @@index([tenantId])

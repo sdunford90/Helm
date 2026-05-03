@@ -33,6 +33,7 @@ import waitlistRouter from "./routes/waitlist.js";
 import boatsRouter from "./routes/boats.js";
 import dockWalksRouter from "./routes/dock-walks.js";
 import posRouter from "./routes/pos.js";
+import posDiscountsRouter from "./routes/pos-discounts.js";
 import rentalsRouter from "./routes/rentals.js";
 import reportsRouter from "./routes/reports.js";
 import announcementsRouter from "./routes/announcements.js";
@@ -192,6 +193,9 @@ app.use("/api/lead-forms", leadFormsRouter);
 app.use("/api/waitlist", waitlistRouter);
 app.use("/api/boats", boatsRouter);
 app.use("/api/dock-walks", dockWalksRouter);
+// Discounts mount BEFORE the generic /api/pos router so the more specific
+// path matches first (Express routes are evaluated top-down).
+app.use("/api/pos/discounts", posDiscountsRouter);
 app.use("/api/pos", posRouter);
 app.use("/api/rentals", rentalsRouter);
 app.use("/api/reports", reportsRouter);

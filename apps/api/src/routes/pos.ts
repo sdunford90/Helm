@@ -14,6 +14,7 @@ import {
 import { calculateTax, getTaxProvider } from "../services/tax-engine.js";
 import { resolveProductTaxCategory } from "../services/product-defaults.js";
 import { syncPosTicketAsReceipt } from "../services/qbo-sync.js";
+import { evaluateDiscountsForCart } from "./pos-discounts.js";
 
 const router: Router = Router();
 
@@ -461,14 +462,43 @@ router.post(
         locationTaxProvider = loc?.taxProvider ?? null;
       }
 
+      // Auto-discount evaluation. When a customer is attached, server-side
+      // discount engine picks the largest matching PosDiscount per line and
+      // returns discountCents per line. The same engine the /api/pos/discounts
+      // /preview endpoint exposes to the UI — single source of truth so the
+      // cart preview and the persisted sale always agree.
+      //
+      // Client-supplied discountCents (manual cashier override) is honored
+      // when it's LARGER than the auto-discount — manual wins ties go to
+      // auto so a forgotten override on a stale cart can't cancel a freshly
+      // configured discount.
+      const autoDiscounts = await evaluateDiscountsForCart({
+        tenantId,
+        locationId,
+        customerId: data.customerId ?? null,
+        lineItems: data.lineItems.map((li) => {
+          const product = productMap.get(li.productId);
+          const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
+          return { productId: li.productId, quantity: li.quantity, unitPriceCents: unitPrice };
+        }),
+      });
+
       // Build tax engine input. Per-line tax category resolves via:
       //   product.taxClass override → category.defaultTaxCategory → "general"
       // A product (or its category) marked tax-exempt yields a null
       // taxCategory and gets skipped by the engine.
-      const lineCalcs = data.lineItems.map((li) => {
+      const lineCalcs = data.lineItems.map((li, idx) => {
         const product = productMap.get(li.productId);
         const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
-        const lineSubtotal = unitPrice * li.quantity - li.discountCents;
+        const gross = unitPrice * li.quantity;
+        const auto = autoDiscounts[idx];
+        const autoDiscountCents = auto?.discountCents ?? 0;
+        const appliedDiscountCents = Math.max(li.discountCents, autoDiscountCents);
+        // Track which side won so the persisted line carries the audit trail.
+        const useAuto = autoDiscountCents > li.discountCents;
+        const appliedDiscountId = useAuto ? auto?.appliedDiscountId ?? null : null;
+        const discountSourceLabel = useAuto ? auto?.discountSourceLabel ?? null : null;
+        const lineSubtotal = Math.max(0, gross - appliedDiscountCents);
 
         // Single-source precedence rule (per-product → category → "general"
         // with exempt short-circuits) lives in product-defaults.ts.
@@ -476,7 +506,16 @@ router.post(
           ? resolveProductTaxCategory(product)
           : { taxCategory: "general" as string | null, taxable: true };
 
-        return { li, unitPrice, lineSubtotal, taxCategory, taxable };
+        return {
+          li,
+          unitPrice,
+          lineSubtotal,
+          appliedDiscountCents,
+          appliedDiscountId,
+          discountSourceLabel,
+          taxCategory,
+          taxable,
+        };
       });
 
       // Server-side tax calc — never trust client-supplied taxCents.
@@ -516,9 +555,11 @@ router.post(
           productId: c.li.productId,
           quantity: c.li.quantity,
           unitPriceCents: c.unitPrice,
-          discountCents: c.li.discountCents,
+          discountCents: c.appliedDiscountCents,
           taxCents: lineTax,
           extendedCents: c.lineSubtotal + lineTax,
+          appliedDiscountId: c.appliedDiscountId,
+          discountSourceLabel: c.discountSourceLabel,
         };
       });
 
@@ -600,6 +641,7 @@ router.post(
           tenantId,
           cashierId: req.userId,
           shiftId: data.shiftId ?? null,
+          customerId: data.customerId ?? null,
           subtotalCents,
           taxCents,
           tipCents: data.tipCents,
@@ -648,6 +690,19 @@ router.post(
             totalCents,
             paymentMethod: data.paymentMethod,
             lineItemCount: data.lineItems.length,
+            ...(data.customerId ? { customerId: data.customerId } : {}),
+            ...(lineItemsData.some((li) => li.appliedDiscountId)
+              ? {
+                  autoDiscountsApplied: lineItemsData
+                    .filter((li) => li.appliedDiscountId)
+                    .map((li) => ({
+                      productId: li.productId,
+                      discountCents: li.discountCents,
+                      label: li.discountSourceLabel,
+                    })),
+                  totalDiscountCents: lineItemsData.reduce((s, li) => s + li.discountCents, 0),
+                }
+              : {}),
             ...(cardRail ? { cardRail } : {}),
             ...(cnpFallbackReason ? { cnpFallbackReason } : {}),
             ...(stripePaymentIntentId ? { stripePaymentIntentId } : {}),

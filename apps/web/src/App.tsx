@@ -26,6 +26,7 @@ import Settings from './pages/Settings';
 import SettingsBilling from './pages/SettingsBilling';
 import SettingsTaxRates from './pages/SettingsTaxRates';
 import SettingsProducts from './pages/SettingsProducts';
+import SettingsPosDiscounts from './pages/SettingsPosDiscounts';
 import QuickBooksSetup from './pages/QuickBooksSetup';
 import AccountingHub from './pages/AccountingHub';
 import AccountingOverview from './pages/AccountingOverview';
@@ -94,6 +95,7 @@ function AppRoutes() {
         <Route path="/settings/billing" element={<SettingsBilling />} />
         <Route path="/settings/tax-rates" element={<SettingsTaxRates />} />
         <Route path="/settings/products" element={<SettingsProducts />} />
+        <Route path="/settings/pos-discounts" element={<SettingsPosDiscounts />} />
         <Route path="/settings/quickbooks" element={<QuickBooksSetup />} />
         <Route path="/settings/accounting" element={<AccountingHub />} />
         <Route path="/accounting" element={<AccountingOverview />} />
