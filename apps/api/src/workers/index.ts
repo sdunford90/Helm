@@ -296,7 +296,7 @@ const qboSyncWorker = new Worker(
           console.log(`[qbo-sync] Synced customer ${entityId} for tenant ${tenantId}`);
         } catch (err) {
           console.error(`[qbo-sync] Customer sync failed for ${entityId}:`, (err as Error).message);
-          throw err; // rethrow so BullMQ can retry
+          throw err;
         }
         break;
 
