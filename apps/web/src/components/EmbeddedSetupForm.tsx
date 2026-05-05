@@ -140,6 +140,17 @@ function InnerForm({
           // Limit the rendered method to the SetupIntent's configured
           // type so staff don't see a card tab inside the "add bank" form.
           paymentMethodOrder: type === 'bank' ? ['us_bank_account'] : ['card'],
+          // This form is for staff manually entering a customer's payment
+          // info on the customer's behalf — it should NEVER offer to save
+          // the customer's data into Stripe Link, prompt for a Link login,
+          // or try to autofill from the staff member's own Link account.
+          // Same goes for Apple Pay / Google Pay: those are buyer-present
+          // wallets that don't make sense in a staff-entry workflow.
+          wallets: {
+            link: 'never',
+            applePay: 'never',
+            googlePay: 'never',
+          },
         }}
         onReady={() => setReady(true)}
       />
