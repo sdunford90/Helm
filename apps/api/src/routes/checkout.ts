@@ -216,9 +216,13 @@ const CardOnFileSchema = z.object({
 router.post(
   "/charge-card-on-file",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const startedAt = Date.now();
     try {
       const tenantId = req.tenantId!;
       const { invoiceId, paymentMethodId, amountCents } = CardOnFileSchema.parse(req.body);
+      console.log(
+        `[charge-card-on-file] start tenant=${tenantId} invoice=${invoiceId} pm=${paymentMethodId ?? "<default>"} amount=${amountCents ?? "<balance>"}`,
+      );
 
       // Fetch tenant (for fee settings and fallback account) and invoice in parallel.
       const [tenant, invoice] = await Promise.all([
@@ -316,12 +320,18 @@ router.post(
       };
       if (paymentMethodId) params.payment_method = paymentMethodId;
 
+      console.log(
+        `[charge-card-on-file] calling Stripe acct=${stripeAccountId} amount=${chargeAmountCents} cust=${invoice.customer.stripeCustomerId} fee=${applicationFee}`,
+      );
       const intent = await requireStripe().paymentIntents.create(params, {
         stripeAccount: stripeAccountId,
         // Include both the current balance and the chosen amount so retries
         // remain idempotent while distinct partial charges get distinct keys.
         idempotencyKey: `charge-on-file-${invoice.id}-${invoice.balanceCents}-${chargeAmountCents}`,
       });
+      console.log(
+        `[charge-card-on-file] OK pi=${intent.id} status=${intent.status} took=${Date.now() - startedAt}ms`,
+      );
 
       // The PaymentIntent webhook (payment_intent.succeeded) will promote the
       // Payment row to COMPLETED and post GL. Here we just surface the
@@ -339,8 +349,13 @@ router.post(
       // the client_secret so the UI can remediate with 3DS.
       const e = err as {
         code?: string;
-        payment_intent?: { id?: string; client_secret?: string | null };
+        message?: string;
+        decline_code?: string;
+        payment_intent?: { id?: string; client_secret?: string | null; status?: string };
       };
+      console.error(
+        `[charge-card-on-file] FAIL code=${e?.code ?? "<none>"} decline=${e?.decline_code ?? "<none>"} pi=${e?.payment_intent?.id ?? "<none>"} pi_status=${e?.payment_intent?.status ?? "<none>"} msg=${e?.message ?? "<none>"} took=${Date.now() - startedAt}ms`,
+      );
       if (e?.code === "authentication_required") {
         res.status(402).json({
           error: "Card requires authentication",
