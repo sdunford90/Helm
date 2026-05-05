@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   X,
   CreditCard,
@@ -173,8 +173,12 @@ const s: Record<string, React.CSSProperties> = {
   },
   successBox: {
     backgroundColor: '#E8F5E9', borderRadius: '8px', padding: '20px',
-    display: 'flex', alignItems: 'center', gap: '12px', color: '#1B5E20',
+    display: 'flex', alignItems: 'flex-start', gap: '12px', color: '#1B5E20',
     fontSize: '15px', fontWeight: 600,
+  },
+  successHint: {
+    fontSize: '13px', fontWeight: 400, color: '#1B5E20',
+    marginTop: '6px', lineHeight: 1.4,
   },
   errorBox: {
     backgroundColor: '#FDECEA', borderRadius: '8px', padding: '20px',
@@ -225,8 +229,21 @@ export default function PaymentModal({
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [chargingMethodId, setChargingMethodId] = useState<string | null>(null);
   const [chargedMethodKind, setChargedMethodKind] = useState<'card' | 'bank' | null>(null);
+  const [chargedMethodLabel, setChargedMethodLabel] = useState<string | null>(null);
+  const [chargedMethodLast4, setChargedMethodLast4] = useState<string | null>(null);
   const [chargedAmountCents, setChargedAmountCents] = useState<number>(balanceDue);
   const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+  // Set true when a charge / payment succeeded so the parent invoice page is
+  // refetched exactly once when the user dismisses the modal — not while the
+  // success screen is still mounted. Prevents the dialog from appearing to
+  // vanish before staff can read the confirmation.
+  const [pendingPaidNotification, setPendingPaidNotification] = useState(false);
+  // Latch that guarantees onPaid fires at most once per successful charge,
+  // even if a user manages to click Done + the overlay (or hammer Escape +
+  // close) in the same tick before React has re-rendered with the cleared
+  // pending flag. The ref reads/writes are synchronous and unaffected by
+  // batched state updates.
+  const dismissedRef = useRef(false);
   // Amount input for charging a saved method. Defaults to the full balance
   // and is editable so staff can take a partial payment (deposit, instalment).
   // Stored as a string to allow free-form typing; parsed on submit.
@@ -262,9 +279,28 @@ export default function PaymentModal({
     setErrorMessage('');
     setChargingMethodId(null);
     setChargedMethodKind(null);
+    setChargedMethodLabel(null);
+    setChargedMethodLast4(null);
     setChargedAmountCents(balanceDue);
+    setPendingPaidNotification(false);
     setAmountInput((balanceDue / 100).toFixed(2));
   }, [customerId, invoiceId, balanceDue]);
+
+  // Unified close handler. When a charge / payment was sent successfully we
+  // need to refetch the parent invoice so the new balance shows; otherwise
+  // we just close. The dismissedRef latch guarantees onPaid/onClose fires
+  // exactly once even if the user manages to trigger close twice in the
+  // same tick (e.g. clicks Done and the overlay almost simultaneously).
+  const handleDismiss = () => {
+    if (dismissedRef.current) return;
+    dismissedRef.current = true;
+    if (pendingPaidNotification) {
+      setPendingPaidNotification(false);
+      onPaid?.();
+    } else {
+      onClose();
+    }
+  };
 
   // Parse the amount input into cents. Accepts decimals like "12.5" and
   // whole-dollar values. Returns null when the input is empty or invalid.
@@ -301,6 +337,8 @@ export default function PaymentModal({
     }
     setChargingMethodId(method.id);
     setChargedMethodKind(method.kind);
+    setChargedMethodLabel(method.label);
+    setChargedMethodLast4(method.last4);
     setChargedAmountCents(parsedAmountCents);
     setStatus('processing');
     const result = await chargeCardOnFile.execute({
@@ -309,9 +347,12 @@ export default function PaymentModal({
       amountCents: parsedAmountCents,
     });
     if (result && result.status === 'succeeded') {
+      // Keep the modal mounted on the result screen so staff actually see the
+      // confirmation. The parent invoice refetch is deferred to dismiss so
+      // the modal doesn't appear to vanish on its own.
       setStatus('success');
       setStep('card_on_file_result');
-      onPaid?.();
+      setPendingPaidNotification(true);
     } else if (result && result.requiresAction) {
       setErrorMessage(
         method.kind === 'bank'
@@ -352,9 +393,12 @@ export default function PaymentModal({
       method,
     });
     if (result) {
+      // Keep the modal on the result screen and defer the parent refetch to
+      // dismiss, mirroring the saved-card flow so the dialog never appears
+      // to vanish on the user.
       setStatus('success');
       setStep('simple_method_result');
-      onPaid?.();
+      setPendingPaidNotification(true);
     } else {
       setErrorMessage(recordSimplePayment.error ?? 'Payment failed.');
       setStatus('error');
@@ -378,11 +422,11 @@ export default function PaymentModal({
     : null;
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay} onClick={handleDismiss}>
       <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={s.header}>
           <h2 style={s.headerTitle}>Record Payment</h2>
-          <button style={s.closeBtn} onClick={onClose}>
+          <button style={s.closeBtn} onClick={handleDismiss}>
             <X size={20} />
           </button>
         </div>
@@ -608,8 +652,17 @@ export default function PaymentModal({
           {step === 'card_on_file_result' && status === 'success' && (
             <div style={s.successBox}>
               <CheckCircle size={24} />
-              Payment of {formatCents(chargedAmountCents)} charged to{' '}
-              {chargedMethodKind === 'bank' ? 'bank account on file' : 'card on file'}.
+              <div>
+                <div>
+                  Charge of {formatCents(chargedAmountCents)} sent to{' '}
+                  {chargedMethodLabel ?? (chargedMethodKind === 'bank' ? 'bank account' : 'card')}
+                  {chargedMethodLast4 ? ` •••• ${chargedMethodLast4}` : ''}.
+                </div>
+                <div style={s.successHint}>
+                  Payment is being recorded — the invoice balance will update
+                  shortly once Stripe confirms.
+                </div>
+              </div>
             </div>
           )}
           {step === 'card_on_file_result' && status === 'error' && (
@@ -645,8 +698,11 @@ export default function PaymentModal({
         </div>
 
         <div style={s.footer}>
-          <button style={s.cancelBtn} onClick={onClose}>
-            {status === 'success' ? 'Close' : 'Cancel'}
+          <button
+            style={status === 'success' ? s.primaryBtn : s.cancelBtn}
+            onClick={handleDismiss}
+          >
+            {status === 'success' ? 'Done' : 'Cancel'}
           </button>
         </div>
       </div>
