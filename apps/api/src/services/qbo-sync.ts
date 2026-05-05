@@ -496,6 +496,7 @@ export async function disconnectLocation(locationId: string, tenantId: string): 
 // otherwise throws a clear error so callers can decide how to proceed.
 async function resolveQboContext(tenantId: string, locationId?: string | null): Promise<QboCredentialContext> {
   if (!locationId) {
+    console.log(`[qbo-sync] Using tenant-level QBO credentials for tenant ${tenantId}`);
     return { tenantId };
   }
   const location = await prisma.location.findUnique({
@@ -503,9 +504,9 @@ async function resolveQboContext(tenantId: string, locationId?: string | null): 
     select: { qboRealmId: true, qboAccessToken: true },
   });
   if (location?.qboRealmId && location?.qboAccessToken) {
+    console.log(`[qbo-sync] Using per-location QBO credentials for tenant ${tenantId}, locationId=${locationId}`);
     return { tenantId, locationId };
   }
-  // Location has no QBO credentials — throw a descriptive error
   throw new Error(`QuickBooks Online is not connected for location ${locationId}. Please connect QBO in Settings > Locations before syncing.`);
 }
 
@@ -518,7 +519,7 @@ export async function syncCustomer(customerId: string, tenantId: string, locatio
     throw new Error(`Customer ${customerId} not found`);
   }
 
-  const ctx = locationId ? await resolveQboContext(tenantId, locationId) : { tenantId };
+  const ctx = await resolveQboContext(tenantId, locationId ?? null);
 
   const qboCustomerData: Record<string, unknown> = {
     GivenName: customer.firstName || "",
