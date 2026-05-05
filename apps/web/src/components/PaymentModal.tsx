@@ -371,6 +371,7 @@ export default function PaymentModal({
 
   const handleNewCard = async () => {
     setStatus('processing');
+    setErrorMessage('');
     const result = await createSession.execute({
       invoiceId,
       returnPath: `/billing/invoices/${invoiceId}`,
@@ -379,10 +380,27 @@ export default function PaymentModal({
       setCheckoutClientSecret(result.clientSecret);
       setStep('new_card');
       setStatus('idle');
-    } else {
-      setErrorMessage(createSession.error ?? 'Could not start checkout.');
-      setStatus('error');
+      return;
     }
+    // The call failed. Stay on the 'choose' step (don't switch to a result
+    // step that has nowhere to render this error) and reset status back to
+    // 'idle' so the buttons re-enable and staff can retry. Translate the
+    // well-known "Stripe not configured" cases into the same plain-language
+    // wording the empty-state banner uses, so staff don't see a raw "Please
+    // contact the marina" line that's meant for end customers.
+    const rawError = createSession.error ?? 'Could not start checkout.';
+    const looksLikeStripeUnconfigured =
+      /stripe.*(not.*(configured|connected|set up)|configured.*location)/i.test(
+        rawError,
+      );
+    setErrorMessage(
+      looksLikeStripeUnconfigured
+        ? `Stripe is not yet connected for ${
+            savedMethods.data?.locationName ?? 'this location'
+          }. Set it up in Settings → Payments before taking a new card or ACH payment.`
+        : rawError,
+    );
+    setStatus('idle');
   };
 
   const handleSimpleMethod = async (method: 'CASH' | 'CHARGE_TO_SLIP') => {
@@ -449,6 +467,33 @@ export default function PaymentModal({
 
           {step === 'choose' && (
             <>
+              {/* Error from a failed handleNewCard call. Rendered at the
+                  top of the choose step so the click on "New card / ACH"
+                  never looks silently dead — staff see exactly why the
+                  embedded form didn't open and can retry or pick another
+                  method. Result-step errors (handleSimpleMethod, charge-
+                  on-file) keep using their own banners further down. */}
+              {errorMessage && status !== 'processing' && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '8px',
+                    padding: '12px 14px',
+                    marginBottom: '16px',
+                    backgroundColor: '#FFEBEE',
+                    border: '1px solid #FFCDD2',
+                    borderRadius: '6px',
+                    color: '#B71C1C',
+                    fontSize: '13px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+
               {/* Saved methods section */}
               <div style={s.sectionLabel}>Saved methods on file</div>
 

@@ -1635,6 +1635,110 @@ router.post(
   },
 );
 
+// ---------------------------------------------------------------------------
+// POST /api/customers/:id/payment-methods/setup-intent
+//
+// Inline (Elements-based) counterpart to the hosted /setup-session route
+// above. The staff-side admin app uses this so adding a card or bank
+// happens inside an in-app modal instead of redirecting the whole window
+// to checkout.stripe.com (which made staff feel like they had been bounced
+// to an external portal).
+//
+// Reuses the same per-location resolver, ensureStripeCustomer helper,
+// "Stripe not set up" error shape, and audit-log entry as the hosted
+// route — only the Stripe API call differs (SetupIntent vs hosted
+// Checkout Session in `mode: setup`). Returns the SetupIntent's
+// client_secret plus the connected `stripeAccountId` so the browser can
+// initialize Stripe.js bound to the right Connect account before mounting
+// the PaymentElement.
+//
+// The hosted /setup-session route is left in place — the customer-facing
+// portal still uses it.
+// ---------------------------------------------------------------------------
+const SetupIntentSchema = z.object({
+  type: z.enum(["card", "bank"]).default("card"),
+  // Optional: when staff explicitly picked a location via the picker, pin
+  // the SetupIntent to that location's Stripe account. Same resolver
+  // semantics as the hosted /setup-session route.
+  locationId: z.string().optional(),
+});
+
+router.post(
+  "/:id/payment-methods/setup-intent",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const { type, locationId } = SetupIntentSchema.parse(req.body);
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+
+      const account = await getStripeAccountForCustomer(
+        customerId,
+        tenantId,
+        locationId,
+      );
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripeCustomerId = await ensureStripeCustomer(
+        customerId,
+        tenantId,
+        account.stripeAccountId,
+      );
+
+      const stripe = requireStripe();
+      const setupIntent = await stripe.setupIntents.create(
+        {
+          customer: stripeCustomerId,
+          payment_method_types:
+            type === "bank" ? ["us_bank_account"] : ["card"],
+          // off_session so the saved method can be charged later by the
+          // "charge card on file" / autopay flows without re-prompting.
+          usage: "off_session",
+          metadata: {
+            tenantId,
+            helmCustomerId: customerId,
+          },
+        },
+        { stripeAccount: account.stripeAccountId },
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_SETUP_STARTED",
+          changedFieldsJson: { type, mode: "inline" },
+        },
+      });
+
+      res.json({
+        clientSecret: setupIntent.client_secret,
+        stripeAccountId: account.stripeAccountId,
+        locationId: account.locationId,
+        locationName: account.locationName,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.put(
   "/:id/payment-methods/:pmId/default",
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {

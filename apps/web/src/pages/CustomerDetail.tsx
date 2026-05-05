@@ -11,6 +11,7 @@ import CustomerForm, { type CustomerFormPayload } from '../components/CustomerFo
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
 import { isCardExpired } from '../components/PaymentModal';
+import EmbeddedSetupForm from '../components/EmbeddedSetupForm';
 import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
 import { api, ApiClientError } from '../lib/api';
@@ -1472,6 +1473,16 @@ export default function CustomerDetailPage() {
   const [pmError, setPmError] = useState<string | null>(null);
   const [pmRefreshingStripe, setPmRefreshingStripe] = useState(false);
   const [setupBusy, setSetupBusy] = useState<'card' | 'bank' | null>(null);
+  // Inline (Elements-based) "add card / add bank" modal state. Replaces the
+  // old behavior of redirecting the whole window to a Stripe-hosted checkout
+  // page. We hold the SetupIntent client_secret and the connected
+  // stripeAccountId returned by /payment-methods/setup-intent so the
+  // modal can mount Stripe.js bound to the right Connect account.
+  const [setupModal, setSetupModal] = useState<{
+    type: 'card' | 'bank';
+    clientSecret: string;
+    stripeAccountId: string;
+  } | null>(null);
   const [autopayBusy, setAutopayBusy] = useState(false);
   // Optimistic flag: when set, overrides the displayed autopay value while
   // the network request is in flight so the badge flips instantly. Cleared
@@ -2013,34 +2024,46 @@ export default function CustomerDetailPage() {
   };
 
   /* ── Cards on File actions ─── */
+  // Open the inline "add card / add bank" modal. We mint a SetupIntent on
+  // the connected account currently shown in the picker, then hand its
+  // client_secret + stripeAccountId off to the EmbeddedSetupForm which
+  // mounts Stripe Elements bound to that connected account. No
+  // window.location redirect — staff stay on /customers/:id the entire
+  // time. Hosted-checkout fallback is no longer used here; the customer
+  // portal still uses /setup-session.
   async function startSetupSession(type: 'card' | 'bank') {
     setPmError(null);
     setSetupBusy(type);
     try {
       const token = await getToken();
-      // Strip any existing ?tab so the return URL lands back on the Payments tab,
-      // where Cards on File lives.
-      const returnUrl = `${window.location.origin}/customers/${id}?tab=payments`;
       // Pin the new card/bank to the location the operator is currently
       // viewing in the picker (or whatever the resolver chose for them).
       // Without this the SetupIntent could land on a *different* connected
       // account than the one whose cards the UI just listed, and the new
       // card would silently disappear from view.
       const targetLocationId = pmLocationId ?? paymentMethods?.locationId ?? null;
-      const resp = await api.post<{ url: string }>(
-        `/api/customers/${id}/payment-methods/setup-session`,
+      const resp = await api.post<{
+        clientSecret: string;
+        stripeAccountId: string;
+      }>(
+        `/api/customers/${id}/payment-methods/setup-intent`,
         {
           type,
-          returnUrl,
           ...(targetLocationId ? { locationId: targetLocationId } : {}),
         },
         token,
       );
-      if (resp.url) {
-        window.location.href = resp.url;
+      if (!resp.clientSecret || !resp.stripeAccountId) {
+        throw new Error('Could not start payment setup');
       }
+      setSetupModal({
+        type,
+        clientSecret: resp.clientSecret,
+        stripeAccountId: resp.stripeAccountId,
+      });
     } catch (err) {
       setPmError(err instanceof Error ? err.message : 'Could not start payment setup');
+    } finally {
       setSetupBusy(null);
     }
   }
@@ -3481,6 +3504,63 @@ export default function CustomerDetailPage() {
           boat={newContractBoat}
           onClose={() => setNewContractBoat(null)}
         />
+      )}
+
+      {/* Inline "Add card / Add bank" modal. Replaces the previous redirect
+          to checkout.stripe.com so staff capture the new payment method
+          without ever leaving the customer page. The EmbeddedSetupForm
+          mounts Stripe Elements bound to the connected account returned
+          by /payment-methods/setup-intent, so the SetupIntent confirms
+          on the same Stripe account whose cards the UI is listing. */}
+      {setupModal && (
+        <div
+          onClick={() => setSetupModal(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 46, 77, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '8px',
+              padding: '24px',
+              width: '480px',
+              maxWidth: '92vw',
+              boxShadow: '0 12px 32px rgba(15, 46, 77, 0.25)',
+            }}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#0F2E4D', marginBottom: '4px' }}>
+              {setupModal.type === 'bank' ? 'Add bank account' : 'Add card'}
+            </div>
+            <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
+              {setupModal.type === 'bank'
+                ? 'Enter the customer\u2019s US bank account details. Saved to this customer\u2019s file for future charges.'
+                : 'Enter the customer\u2019s card details. Saved to this customer\u2019s file for future charges.'}
+            </div>
+            <EmbeddedSetupForm
+              clientSecret={setupModal.clientSecret}
+              stripeAccountId={setupModal.stripeAccountId}
+              type={setupModal.type}
+              onSuccess={() => {
+                setSetupModal(null);
+                // Refetch against the same picker location so the new
+                // method appears in the list immediately. The picker
+                // value (`pmLocationId`) is already part of the pmPath
+                // useApi dependency via the path string, so a manual
+                // refetch is sufficient.
+                void refetchPaymentMethods();
+              }}
+              onCancel={() => setSetupModal(null)}
+            />
+          </div>
+        </div>
       )}
 
       {refundTarget && (
