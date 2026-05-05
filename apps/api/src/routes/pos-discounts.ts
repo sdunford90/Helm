@@ -97,8 +97,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction): Promise
     if (locationId) where.locationId = locationId;
     if (!includeInactive) where.active = true;
 
-    const allowedFilter = filterByAllowedLocations(req);
-    if (allowedFilter) where.locationId = allowedFilter as string | { in: string[] };
+    // Apply role-based location scoping: includeNull=true so tenant-wide
+    // discounts (locationId=null) remain visible alongside the caller's
+    // allowed location-scoped discounts.
+    filterByAllowedLocations(req, where as Record<string, unknown>, {
+      includeNull: true,
+    });
 
     const discounts = await prisma.posDiscount.findMany({
       where,

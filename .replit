@@ -90,10 +90,9 @@ args = "pnpm --filter @helm/admin dev"
 waitForPort = 3003
 
 [deployment]
-deploymentTarget = "autoscale"
-build = ["bash", "-c", "pnpm install --frozen-lockfile && pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build && pnpm --filter @helm/admin build && pnpm --filter @helm/api build && (cd apps/api && npx prisma generate)"]
-publicDir = "."
-run = ["bash", "scripts/deploy-run.sh"]
+deploymentTarget = "static"
+build = ["sh", "-c", "bash -c pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build"]
+publicDir = "apps/web/dist"
 
 [userenv]
 

@@ -126,10 +126,14 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
       overallComplete = true;
       gracePeriodEndsAt = null;
       // Best-effort audit trail mirroring the explicit /setup-complete path.
+      // userId/userName are undefined because this is a system-driven
+      // self-heal triggered by the status-check endpoint, not a user action.
       try {
         await logAccountingChange({
           tenantId,
           locationId,
+          userId: undefined,
+          userName: "system:auto-on-status-check",
           entity: "QboConnection",
           entityId: locationId,
           action: "CONNECT",
@@ -137,7 +141,6 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
             accountingSetupComplete: { from: false, to: true },
             accountingSetupCompletedAt: { from: null, to: now },
             accountingGracePeriodEndsAt: { from: gracePeriodEndsAt ?? null, to: null },
-            trigger: "auto-on-status-check",
           },
         });
       } catch (_auditErr) { /* intentionally swallowed */ }
