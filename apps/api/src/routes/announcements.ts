@@ -47,7 +47,10 @@ const ListAnnouncementsQuerySchema = z.object({
 const DeliveriesQuerySchema = z.object({
   status: z.enum(["PENDING", "SENT", "DELIVERED", "FAILED", "OPENED"]).optional(),
   skip: z.coerce.number().int().min(0).default(0),
-  take: z.coerce.number().int().positive().max(100).default(25),
+  // Cap raised from 100 → 500: the Announcements page renders a global
+  // delivery log and asks for take=200; 500 leaves headroom for filters
+  // while still bounding the page size.
+  take: z.coerce.number().int().positive().max(500).default(25),
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
