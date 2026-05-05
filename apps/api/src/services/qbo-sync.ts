@@ -3219,7 +3219,8 @@ export async function syncPosTicketAsReceipt(
   posTicketId: string,
   tenantId: string,
 ): Promise<void> {
-  // Load the transaction with line items and the shift's location
+  // Load the transaction with line items, the shift's location, and the
+  // attached customer (if any) so we can sync it to QBO before the receipt.
   const tx = await prisma.posTransaction.findFirst({
     where: { id: posTicketId, tenantId },
     include: {
@@ -3238,6 +3239,7 @@ export async function syncPosTicketAsReceipt(
       shift: {
         select: { locationId: true },
       },
+      customer: true,
     },
   });
 
@@ -3250,6 +3252,45 @@ export async function syncPosTicketAsReceipt(
 
   // Resolve QBO context — prefer location-level connection if the shift has one
   const ctx = await resolveQboContext(tenantId, locationId);
+
+  // If a customer is attached to this POS sale, ensure they're synced to QBO
+  // before we push the receipt — this mirrors the invoice path so the Sales
+  // Receipt can carry a CustomerRef and the customer shows up in QBO.
+  //
+  // Customer sync failures must NOT break the receipt push. The POS sale has
+  // already been committed locally; if QBO customer sync trips up (e.g. a
+  // transient network error or an unusual QBO validation issue), we log it
+  // and fall back to pushing the receipt without a CustomerRef so the sale
+  // still lands in QBO. An audit-log entry makes the failure recoverable.
+  let qboCustomerIdForReceipt: string | null = null;
+  const attachedCustomer = (tx as any).customer as { id: string; qboCustomerId?: string | null } | null;
+  if (attachedCustomer) {
+    try {
+      if (!attachedCustomer.qboCustomerId) {
+        await syncCustomer(attachedCustomer.id, tenantId, ctx.locationId ?? null);
+        const refreshed = await prisma.customer.findUnique({
+          where: { id: attachedCustomer.id },
+          select: { qboCustomerId: true } as any,
+        });
+        qboCustomerIdForReceipt = ((refreshed as any)?.qboCustomerId as string | null) ?? null;
+      } else {
+        qboCustomerIdForReceipt = attachedCustomer.qboCustomerId;
+      }
+    } catch (err) {
+      console.error(
+        `[qbo-sync] POS customer sync failed for posTicket=${posTicketId} customer=${attachedCustomer.id}:`,
+        err,
+      );
+      await auditLog(tenantId, "QBO_POS_CUSTOMER_SYNC_FAILED", {
+        posTicketId,
+        customerId: attachedCustomer.id,
+        locationId: ctx.locationId ?? null,
+        error: (err as Error)?.message ?? String(err),
+      });
+      // Leave qboCustomerIdForReceipt null — receipt push continues without
+      // a CustomerRef so the sale itself still reaches QBO.
+    }
+  }
 
   // Resolve location-pinned GL accounts (cash drawer vs undeposited funds)
   const locationPinned = locationId
@@ -3324,6 +3365,10 @@ export async function syncPosTicketAsReceipt(
     receiptData.DepositToAccountRef = { value: depositAccountQboId };
   }
 
+  if (qboCustomerIdForReceipt) {
+    receiptData.CustomerRef = { value: qboCustomerIdForReceipt };
+  }
+
   const result = await qboRequest(ctx, "POST", "salesreceipt?minorversion=73", receiptData);
   const qboSalesReceiptId = result.SalesReceipt.Id as string;
 
@@ -3332,5 +3377,10 @@ export async function syncPosTicketAsReceipt(
     qboSalesReceiptId,
     locationId: ctx.locationId ?? null,
     paymentMethod,
+    ...(qboCustomerIdForReceipt
+      ? { qboCustomerId: qboCustomerIdForReceipt, customerId: attachedCustomer?.id ?? null }
+      : attachedCustomer
+        ? { customerId: attachedCustomer.id, qboCustomerId: null }
+        : {}),
   });
 }
