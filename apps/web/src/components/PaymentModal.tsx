@@ -1,27 +1,44 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   X,
   CreditCard,
-  Plus,
   Banknote,
-  Anchor,
   CheckCircle,
   AlertCircle,
+  AlertTriangle,
   Loader2,
   Building2,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '@clerk/clerk-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
-import { getStripe, getStripeForAccount } from '../lib/stripe.js';
+import { getStripeForAccount } from '../lib/stripe.js';
 import {
-  CheckoutProvider,
-  PaymentElement,
-  useCheckout,
+  loadStripeTerminal,
+  type Terminal,
+  type Reader,
+  type ISdkManagedPaymentIntent,
+  type DiscoverResult,
+  type ErrorResponse,
+} from '@stripe/terminal-js';
+import {
+  Elements,
+  CardElement,
+  useStripe,
+  useElements,
 } from '@stripe/react-stripe-js';
+import type { Stripe as StripeJs } from '@stripe/stripe-js';
 
 /* ─── Types ─── */
-type Step = 'choose' | 'card_on_file_result' | 'new_card' | 'simple_method_result';
+type Step =
+  | 'choose'
+  | 'card_on_file_result'
+  | 'card_flow'
+  | 'card_flow_done'
+  | 'simple_method_result';
 type Status = 'idle' | 'processing' | 'success' | 'error';
 
 interface SavedMethod {
@@ -199,6 +216,32 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '13px', fontWeight: 700, color: '#7A4F01', marginBottom: '4px',
     display: 'flex', alignItems: 'center', gap: '6px',
   },
+  cardFlowBox: {
+    backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px',
+    padding: '16px',
+  },
+  readerCard: {
+    display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
+    border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer',
+    marginBottom: '8px',
+  },
+  cnpDivider: {
+    display: 'flex', alignItems: 'center', gap: '12px', margin: '20px 0',
+  },
+  cnpDividerLine: { flex: 1, borderTop: '1px solid #E2E8F0' } as React.CSSProperties,
+  cnpDividerText: {
+    fontSize: '12px', color: '#94A3B8', fontWeight: 500, whiteSpace: 'nowrap' as const,
+  },
+  outlineBtn: {
+    width: '100%', padding: '10px', background: 'none',
+    border: '1px solid #E2E8F0', borderRadius: '8px', cursor: 'pointer',
+    fontSize: '13px', color: '#64748B',
+  },
+  warnBanner: {
+    display: 'flex', alignItems: 'flex-start', gap: '10px',
+    padding: '12px 14px', background: '#FEF3C7', border: '1px solid #FCD34D',
+    borderRadius: '8px', marginBottom: '16px', color: '#92400E',
+  },
 };
 
 /* ─── Helpers ─── */
@@ -232,12 +275,6 @@ export default function PaymentModal({
   const [chargedMethodLabel, setChargedMethodLabel] = useState<string | null>(null);
   const [chargedMethodLast4, setChargedMethodLast4] = useState<string | null>(null);
   const [chargedAmountCents, setChargedAmountCents] = useState<number>(balanceDue);
-  const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
-  // Connected account that minted the Checkout session. Stripe.js MUST be
-  // initialized with this account (via getStripeForAccount) when mounting
-  // the embedded form, otherwise the client-side payment_pages/init lookup
-  // hits the platform account and 404s with "No such payment_page".
-  const [checkoutStripeAccountId, setCheckoutStripeAccountId] = useState<string | null>(null);
   // Set true when a charge / payment succeeded so the parent invoice page is
   // refetched exactly once when the user dismisses the modal — not while the
   // success screen is still mounted. Prevents the dialog from appearing to
@@ -246,12 +283,11 @@ export default function PaymentModal({
   // Latch that guarantees onPaid fires at most once per successful charge,
   // even if a user manages to click Done + the overlay (or hammer Escape +
   // close) in the same tick before React has re-rendered with the cleared
-  // pending flag. The ref reads/writes are synchronous and unaffected by
-  // batched state updates.
+  // pending flag.
   const dismissedRef = useRef(false);
-  // Amount input for charging a saved method. Defaults to the full balance
-  // and is editable so staff can take a partial payment (deposit, instalment).
-  // Stored as a string to allow free-form typing; parsed on submit.
+  // Amount input for charging a saved method or running the new card flow.
+  // Defaults to the full balance and is editable so staff can take a partial
+  // payment. Stored as a string to allow free-form typing; parsed on submit.
   const [amountInput, setAmountInput] = useState<string>(
     (balanceDue / 100).toFixed(2),
   );
@@ -265,7 +301,6 @@ export default function PaymentModal({
     'post',
     '/api/checkout/charge-card-on-file',
   );
-  const createSession = useApi<{ clientSecret: string; stripeAccountId: string | null }>('post', '/api/checkout/invoice-session');
   const recordSimplePayment = useApi('post', '/api/payments');
 
   // Sort saved methods so the default one is shown first.
@@ -291,11 +326,6 @@ export default function PaymentModal({
     setAmountInput((balanceDue / 100).toFixed(2));
   }, [customerId, invoiceId, balanceDue]);
 
-  // Unified close handler. When a charge / payment was sent successfully we
-  // need to refetch the parent invoice so the new balance shows; otherwise
-  // we just close. The dismissedRef latch guarantees onPaid/onClose fires
-  // exactly once even if the user manages to trigger close twice in the
-  // same tick (e.g. clicks Done and the overlay almost simultaneously).
   const handleDismiss = () => {
     if (dismissedRef.current) return;
     dismissedRef.current = true;
@@ -352,17 +382,14 @@ export default function PaymentModal({
       amountCents: parsedAmountCents,
     });
     if (result && result.status === 'succeeded') {
-      // Keep the modal mounted on the result screen so staff actually see the
-      // confirmation. The parent invoice refetch is deferred to dismiss so
-      // the modal doesn't appear to vanish on its own.
       setStatus('success');
       setStep('card_on_file_result');
       setPendingPaidNotification(true);
     } else if (result && result.requiresAction) {
       setErrorMessage(
         method.kind === 'bank'
-          ? 'Bank account requires verification. Use "New card / ACH" to complete.'
-          : 'Card requires 3DS authentication. Use "New card / ACH" to complete.',
+          ? 'Bank account requires verification. Ask the customer to complete it from their portal.'
+          : 'Card requires 3DS authentication. Ask the customer to complete it from their portal.',
       );
       setStatus('error');
       setStep('card_on_file_result');
@@ -374,53 +401,29 @@ export default function PaymentModal({
     setChargingMethodId(null);
   };
 
-  const handleNewCard = async () => {
-    setStatus('processing');
+  const handleStartCardFlow = () => {
+    if (!amountValid) return;
     setErrorMessage('');
-    const result = await createSession.execute({
-      invoiceId,
-      returnPath: `/billing/invoices/${invoiceId}`,
-    });
-    if (result?.clientSecret) {
-      setCheckoutClientSecret(result.clientSecret);
-      setCheckoutStripeAccountId(result.stripeAccountId ?? null);
-      setStep('new_card');
-      setStatus('idle');
-      return;
-    }
-    // The call failed. Stay on the 'choose' step (don't switch to a result
-    // step that has nowhere to render this error) and reset status back to
-    // 'idle' so the buttons re-enable and staff can retry. Translate the
-    // well-known "Stripe not configured" cases into the same plain-language
-    // wording the empty-state banner uses, so staff don't see a raw "Please
-    // contact the marina" line that's meant for end customers.
-    const rawError = createSession.error ?? 'Could not start checkout.';
-    const looksLikeStripeUnconfigured =
-      /stripe.*(not.*(configured|connected|set up)|configured.*location)/i.test(
-        rawError,
-      );
-    setErrorMessage(
-      looksLikeStripeUnconfigured
-        ? `Stripe is not yet connected for ${
-            savedMethods.data?.locationName ?? 'this location'
-          }. Set it up in Settings → Payments before taking a new card or ACH payment.`
-        : rawError,
-    );
-    setStatus('idle');
+    setStep('card_flow');
   };
 
-  const handleSimpleMethod = async (method: 'CASH' | 'CHARGE_TO_SLIP') => {
+  const handleCardFlowComplete = (amountCents: number) => {
+    setChargedAmountCents(amountCents);
+    setStatus('success');
+    setStep('card_flow_done');
+    setPendingPaidNotification(true);
+  };
+
+  const handleSimpleMethod = async (method: 'CASH') => {
+    if (!amountValid || parsedAmountCents === null) return;
     setStatus('processing');
     const result = await recordSimplePayment.execute({
       invoiceId,
       customerId,
-      amountCents: balanceDue,
+      amountCents: parsedAmountCents,
       method,
     });
     if (result) {
-      // Keep the modal on the result screen and defer the parent refetch to
-      // dismiss, mirroring the saved-card flow so the dialog never appears
-      // to vanish on the user.
       setStatus('success');
       setStep('simple_method_result');
       setPendingPaidNotification(true);
@@ -434,9 +437,6 @@ export default function PaymentModal({
   // Stripe is "ready" when the API confirmed a connected account exists.
   const stripeReady =
     !!savedMethods.data?.stripeConfigured && !!savedMethods.data?.locationConnected;
-  // Only block the new-card flow when Stripe is *explicitly* reported as
-  // unconfigured. A transient fetch error or an in-flight load shouldn't
-  // prevent staff from opening the new-card form.
   const stripeExplicitlyUnconfigured =
     !!savedMethods.data &&
     (!savedMethods.data.stripeConfigured || !savedMethods.data.locationConnected);
@@ -474,12 +474,6 @@ export default function PaymentModal({
 
           {step === 'choose' && (
             <>
-              {/* Error from a failed handleNewCard call. Rendered at the
-                  top of the choose step so the click on "New card / ACH"
-                  never looks silently dead — staff see exactly why the
-                  embedded form didn't open and can retry or pick another
-                  method. Result-step errors (handleSimpleMethod, charge-
-                  on-file) keep using their own banners further down. */}
               {errorMessage && status !== 'processing' && (
                 <div
                   style={{
@@ -499,6 +493,36 @@ export default function PaymentModal({
                   <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
                   <span>{errorMessage}</span>
                 </div>
+              )}
+
+              {/* Amount input — drives saved-card, new-card, and Cash flows. */}
+              <div style={s.amountRow}>
+                <div>
+                  <div style={s.amountLabel}>Amount to charge</div>
+                  <div style={s.amountHint}>
+                    Defaults to the full balance — edit for a partial payment.
+                  </div>
+                </div>
+                <div
+                  style={{
+                    ...s.amountInputWrap,
+                    borderColor: amountErrorMsg ? '#B71C1C' : '#CCCCCC',
+                  }}
+                >
+                  <span style={{ color: '#2E4A6B', fontWeight: 600 }}>$</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
+                    disabled={status === 'processing'}
+                    style={s.amountInput}
+                    aria-label="Amount to charge"
+                  />
+                </div>
+              </div>
+              {amountErrorMsg && (
+                <div style={s.amountError}>{amountErrorMsg}</div>
               )}
 
               {/* Saved methods section */}
@@ -538,7 +562,7 @@ export default function PaymentModal({
                     >
                       Add one from their Billing tab
                     </Link>
-                    , or use a new card below.
+                    , or use the card option below to take a card payment now.
                   </div>
                 )}
 
@@ -562,34 +586,6 @@ export default function PaymentModal({
                       </Link>{' '}
                       to add one for them.
                     </div>
-                  )}
-                  <div style={s.amountRow}>
-                    <div>
-                      <div style={s.amountLabel}>Amount to charge</div>
-                      <div style={s.amountHint}>
-                        Defaults to the full balance — edit for a partial payment.
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        ...s.amountInputWrap,
-                        borderColor: amountErrorMsg ? '#B71C1C' : '#CCCCCC',
-                      }}
-                    >
-                      <span style={{ color: '#2E4A6B', fontWeight: 600 }}>$</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={amountInput}
-                        onChange={(e) => setAmountInput(e.target.value)}
-                        disabled={status === 'processing'}
-                        style={s.amountInput}
-                        aria-label="Amount to charge"
-                      />
-                    </div>
-                  </div>
-                  {amountErrorMsg && (
-                    <div style={s.amountError}>{amountErrorMsg}</div>
                   )}
                   <div style={s.methodList}>
                     {sortedMethods.map((m) => {
@@ -672,30 +668,29 @@ export default function PaymentModal({
               <div style={s.methodList}>
                 <button
                   style={s.methodBtn}
-                  onClick={handleNewCard}
-                  disabled={status === 'processing' || stripeExplicitlyUnconfigured}
+                  onClick={handleStartCardFlow}
+                  disabled={
+                    status === 'processing' ||
+                    stripeExplicitlyUnconfigured ||
+                    !amountValid
+                  }
                 >
-                  <Plus size={20} />
+                  <CreditCard size={20} />
                   <div style={s.methodLabel}>
-                    New card / ACH
-                    <div style={s.methodHint}>Enter new card or bank details.</div>
+                    Card (Terminal or keyed)
+                    <div style={s.methodHint}>
+                      Tap, insert, or swipe on a Stripe Terminal reader, or key a card
+                      in by hand.
+                    </div>
                   </div>
                 </button>
                 <button
                   style={s.methodBtn}
                   onClick={() => handleSimpleMethod('CASH')}
-                  disabled={status === 'processing'}
+                  disabled={status === 'processing' || !amountValid}
                 >
                   <Banknote size={20} />
                   <div style={s.methodLabel}>Cash</div>
-                </button>
-                <button
-                  style={s.methodBtn}
-                  onClick={() => handleSimpleMethod('CHARGE_TO_SLIP')}
-                  disabled={status === 'processing'}
-                >
-                  <Anchor size={20} />
-                  <div style={s.methodLabel}>Charge to slip</div>
                 </button>
               </div>
             </>
@@ -737,19 +732,28 @@ export default function PaymentModal({
             </div>
           )}
 
-          {step === 'new_card' && checkoutClientSecret && (
-            <CheckoutProvider
-              stripe={
-                checkoutStripeAccountId
-                  ? getStripeForAccount(checkoutStripeAccountId)
-                  : getStripe()
-              }
-              options={{
-                fetchClientSecret: async () => checkoutClientSecret,
-              }}
-            >
-              <CheckoutPaymentForm onClose={onClose} onPaid={onPaid} />
-            </CheckoutProvider>
+          {step === 'card_flow' && parsedAmountCents !== null && (
+            <InvoiceCardFlow
+              invoiceId={invoiceId}
+              amountCents={parsedAmountCents}
+              onCancel={() => setStep('choose')}
+              onComplete={handleCardFlowComplete}
+            />
+          )}
+
+          {step === 'card_flow_done' && (
+            <div style={s.successBox}>
+              <CheckCircle size={24} />
+              <div>
+                <div>
+                  Card payment of {formatCents(chargedAmountCents)} recorded.
+                </div>
+                <div style={s.successHint}>
+                  The invoice balance and payment history will refresh when you
+                  close this dialog.
+                </div>
+              </div>
+            </div>
           )}
         </div>
 
@@ -766,50 +770,618 @@ export default function PaymentModal({
   );
 }
 
-/* ─── Embedded Checkout form (new card flow) ─── */
+/* Invoice card flow — Stripe Terminal + keyed CNP, invoice-scoped. */
 
-function CheckoutPaymentForm({
-  onClose,
-  onPaid,
+interface StripeReader {
+  id: string;
+  label: string;
+  status: string;
+  device_type: string;
+}
+type CardFlowStatus =
+  | 'loading'
+  | 'readers'
+  | 'connecting'
+  | 'collecting'
+  | 'processing'
+  | 'finalizing'
+  | 'cnp'
+  | 'cnp_processing'
+  | 'error';
+
+function InvoiceCardFlow({
+  invoiceId,
+  amountCents,
+  onCancel,
+  onComplete,
 }: {
-  onClose: () => void;
-  onPaid?: () => void;
+  invoiceId: string;
+  amountCents: number;
+  onCancel: () => void;
+  onComplete: (amountCents: number) => void;
 }) {
-  const checkout = useCheckout();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { getToken } = useAuth();
+  const [status, setStatus] = useState<CardFlowStatus>('loading');
+  const [readers, setReaders] = useState<StripeReader[]>([]);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [selectedReader, setSelectedReader] = useState<StripeReader | null>(null);
+  const [noReaderWarning, setNoReaderWarning] = useState<
+    'none' | 'no_reader' | 'discovery_failed'
+  >('none');
+  const [cnpStripePromise, setCnpStripePromise] =
+    useState<Promise<StripeJs | null> | null>(null);
+  const [cnpAccountError, setCnpAccountError] = useState('');
 
-  const handleConfirm = async () => {
-    setSubmitting(true);
-    setError(null);
-    const result = await checkout.confirm();
-    if (result.type === 'error') {
-      setError(result.error.message);
-      setSubmitting(false);
-      return;
+  const terminalRef = useRef<Terminal | null>(null);
+  const rawReadersRef = useRef<Map<string, Reader>>(new Map());
+
+  const apiCall = useCallback(
+    async <T,>(httpMethod: string, path: string, body?: unknown): Promise<T> => {
+      const token = await getToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(path, {
+        method: httpMethod,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error ?? 'Request failed');
+      }
+      return res.json() as Promise<T>;
+    },
+    [getToken],
+  );
+
+  const discoverReaders = useCallback(async () => {
+    setStatus('loading');
+    setErrorMsg('');
+    setNoReaderWarning('none');
+    rawReadersRef.current.clear();
+    try {
+      const { secret } = await apiCall<{ secret: string }>(
+        'POST',
+        '/api/checkout/invoice-card/connection-token',
+        { invoiceId },
+      );
+      const StripeTerminal = await loadStripeTerminal();
+      if (!StripeTerminal) throw new Error('Stripe Terminal SDK failed to load');
+      const terminal = StripeTerminal.create({
+        onFetchConnectionToken: async () => secret,
+        onUnexpectedReaderDisconnect: () => {
+          setStatus('error');
+          setErrorMsg('Reader disconnected unexpectedly.');
+        },
+      });
+      terminalRef.current = terminal;
+
+      const result = (await terminal.discoverReaders({ simulated: false })) as
+        | DiscoverResult
+        | ErrorResponse;
+      if ('error' in result) {
+        throw new Error(result.error.message ?? 'Reader discovery failed');
+      }
+      const sdkReaders = result.discoveredReaders;
+      sdkReaders.forEach((r) => rawReadersRef.current.set(r.id, r));
+
+      const merged: StripeReader[] = sdkReaders.map((r) => ({
+        id: r.id,
+        label: r.label || r.serial_number || 'Reader',
+        status: r.status ?? 'online',
+        device_type: r.device_type ?? '',
+      }));
+
+      setReaders(merged);
+      if (merged.length === 0) {
+        setNoReaderWarning('no_reader');
+        setStatus('cnp');
+      } else {
+        setStatus('readers');
+      }
+    } catch {
+      setReaders([]);
+      setNoReaderWarning('discovery_failed');
+      setStatus('cnp');
     }
-    // Stripe redirects to return_url on success for redirect-required flows.
-    // Non-redirect flows fall through here.
-    onPaid?.();
-    onClose();
+  }, [apiCall, invoiceId]);
+
+  const connectAndCollect = useCallback(
+    async (reader: StripeReader) => {
+      if (!terminalRef.current) return;
+      setSelectedReader(reader);
+      setStatus('connecting');
+      try {
+        const rawReader = rawReadersRef.current.get(reader.id);
+        if (!rawReader) {
+          setErrorMsg('Reader not found — try refreshing.');
+          setStatus('error');
+          return;
+        }
+        const connectResult = await terminalRef.current.connectReader(rawReader);
+        if ('error' in connectResult) {
+          setErrorMsg(connectResult.error.message ?? 'Connect failed');
+          setStatus('error');
+          return;
+        }
+        setStatus('collecting');
+        const { paymentIntentId, clientSecret } = await apiCall<{
+          paymentIntentId: string;
+          clientSecret: string;
+        }>('POST', '/api/checkout/invoice-card/intent', {
+          invoiceId,
+          amountCents,
+          mode: 'terminal',
+        });
+        const collectResult = await terminalRef.current.collectPaymentMethod(clientSecret);
+        if ('error' in collectResult) {
+          setErrorMsg(collectResult.error.message ?? 'Card collection cancelled');
+          setStatus('error');
+          return;
+        }
+        setStatus('processing');
+        const processResult = await terminalRef.current.processPayment(
+          collectResult.paymentIntent as ISdkManagedPaymentIntent,
+        );
+        if ('error' in processResult) {
+          setErrorMsg(processResult.error.message ?? 'Payment processing failed');
+          setStatus('error');
+          return;
+        }
+        const piId: string = processResult.paymentIntent.id ?? paymentIntentId;
+        setStatus('finalizing');
+        await apiCall('POST', '/api/checkout/invoice-card/finalize', {
+          invoiceId,
+          paymentIntentId: piId,
+          amountCents,
+        });
+        onComplete(amountCents);
+      } catch (err) {
+        setErrorMsg((err as Error).message ?? 'Terminal payment failed');
+        setStatus('error');
+      }
+    },
+    [apiCall, amountCents, invoiceId, onComplete],
+  );
+
+  // Resolve the connected account, then load Stripe.js scoped to it so
+  // confirmCardPayment hits the right account.
+  useEffect(() => {
+    if (status !== 'cnp' && status !== 'cnp_processing') return;
+    if (cnpStripePromise || cnpAccountError) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { stripeAccountId } = await apiCall<{ stripeAccountId: string }>(
+          'GET',
+          `/api/checkout/invoice-card/account?invoiceId=${encodeURIComponent(invoiceId)}`,
+        );
+        if (cancelled) return;
+        if (!stripeAccountId) {
+          setCnpAccountError('Stripe is not configured for this invoice.');
+          return;
+        }
+        setCnpStripePromise(getStripeForAccount(stripeAccountId));
+      } catch (err) {
+        if (cancelled) return;
+        setCnpAccountError((err as Error).message ?? 'Could not load payment form');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, invoiceId, apiCall, cnpStripePromise, cnpAccountError]);
+
+  useEffect(() => {
+    void discoverReaders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const formattedAmount = formatCents(amountCents);
+
+  return (
+    <div style={s.cardFlowBox}>
+      {status === 'loading' && (
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <Loader2 size={32} style={{ color: '#0A2342', marginBottom: '12px' }} />
+          <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>
+            Looking for card readers…
+          </div>
+          <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '6px' }}>
+            Connecting to Stripe Terminal
+          </div>
+        </div>
+      )}
+
+      {status === 'readers' && (
+        <>
+          <div
+            style={{
+              fontSize: '13px',
+              fontWeight: 600,
+              color: '#0A2342',
+              marginBottom: '10px',
+            }}
+          >
+            Available readers — charging {formattedAmount}
+          </div>
+          {readers.map((r) => (
+            <div
+              key={r.id}
+              style={s.readerCard}
+              onClick={() => void connectAndCollect(r)}
+            >
+              <Wifi size={20} style={{ color: '#22C55E', flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: '14px', color: '#0A2342' }}>
+                  {r.label}
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748B' }}>{r.device_type}</div>
+              </div>
+              <div style={{ fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>
+                Use →
+              </div>
+            </div>
+          ))}
+          <button style={s.outlineBtn} onClick={() => void discoverReaders()}>
+            Refresh readers
+          </button>
+          <div style={s.cnpDivider}>
+            <div style={s.cnpDividerLine} />
+            <span style={s.cnpDividerText}>or card not present</span>
+            <div style={s.cnpDividerLine} />
+          </div>
+          <button
+            style={{
+              ...s.outlineBtn,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+            }}
+            onClick={() => setStatus('cnp')}
+          >
+            <CreditCard size={15} /> Manually enter card
+          </button>
+        </>
+      )}
+
+      {status === 'connecting' && (
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <Loader2 size={32} style={{ color: '#0A2342', marginBottom: '12px' }} />
+          <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>
+            Connecting to {selectedReader?.label}…
+          </div>
+        </div>
+      )}
+
+      {status === 'collecting' && (
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <CreditCard size={48} style={{ color: '#0A2342', marginBottom: '16px' }} />
+          <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>
+            Tap, insert, or swipe
+          </div>
+          <div
+            style={{
+              fontSize: '32px',
+              fontWeight: 700,
+              color: '#00D4FF',
+              margin: '10px 0',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {formattedAmount}
+          </div>
+          <div style={{ fontSize: '13px', color: '#64748B' }}>
+            Waiting on {selectedReader?.label}
+          </div>
+        </div>
+      )}
+
+      {(status === 'processing' || status === 'finalizing') && (
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <Loader2 size={32} style={{ color: '#0A2342', marginBottom: '12px' }} />
+          <div style={{ fontSize: '15px', fontWeight: 600, color: '#0A2342' }}>
+            {status === 'finalizing' ? 'Recording payment…' : 'Processing…'}
+          </div>
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div style={{ textAlign: 'center', padding: '12px 0' }}>
+          <AlertTriangle
+            size={32}
+            style={{ color: '#DC2626', marginBottom: '12px' }}
+          />
+          <div
+            style={{
+              fontSize: '15px',
+              fontWeight: 600,
+              color: '#DC2626',
+              marginBottom: '6px',
+            }}
+          >
+            Card payment failed
+          </div>
+          <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>
+            {errorMsg || 'Something went wrong. You can retry or cancel.'}
+          </div>
+          <button
+            style={{
+              padding: '10px 24px',
+              background: '#0A2342',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: 600,
+              marginBottom: '12px',
+            }}
+            onClick={() => void discoverReaders()}
+          >
+            Try Again
+          </button>
+          <button style={s.outlineBtn} onClick={onCancel}>
+            Back
+          </button>
+        </div>
+      )}
+
+      {(status === 'cnp' || status === 'cnp_processing') && (
+        <>
+          {cnpAccountError && (
+            <div
+              style={{
+                padding: '10px 14px',
+                background: '#FEF2F2',
+                border: '1px solid #FECACA',
+                borderRadius: '6px',
+                color: '#DC2626',
+                fontSize: '13px',
+                marginBottom: '14px',
+              }}
+            >
+              {cnpAccountError}
+            </div>
+          )}
+          {noReaderWarning !== 'none' && (
+            <div role="status" style={s.warnBanner}>
+              <AlertTriangle
+                size={18}
+                style={{ color: '#B45309', flexShrink: 0, marginTop: '1px' }}
+              />
+              <div style={{ fontSize: '13px', lineHeight: 1.4 }}>
+                {noReaderWarning === 'discovery_failed' ? (
+                  <>
+                    <div style={{ fontWeight: 700, marginBottom: '2px' }}>
+                      Couldn't check for card readers
+                    </div>
+                    <div>You can key the card in below, or retry reader discovery.</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontWeight: 700, marginBottom: '2px' }}>
+                      No card reader detected
+                    </div>
+                    <div>You can key the card in below to take this payment.</div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          {cnpStripePromise ? (
+            <Elements stripe={cnpStripePromise}>
+              <InvoiceCnpForm
+                invoiceId={invoiceId}
+                amountCents={amountCents}
+                apiCall={apiCall}
+                onBack={
+                  noReaderWarning === 'none'
+                    ? () => setStatus('readers')
+                    : () => void discoverReaders()
+                }
+                backLabel={
+                  noReaderWarning === 'none'
+                    ? '← Back to readers'
+                    : '↻ Check for readers again'
+                }
+                onProcessingChange={(isProcessing) =>
+                  setStatus(isProcessing ? 'cnp_processing' : 'cnp')
+                }
+                onComplete={() => onComplete(amountCents)}
+              />
+            </Elements>
+          ) : !cnpAccountError ? (
+            <div
+              style={{
+                padding: '24px',
+                textAlign: 'center',
+                color: '#64748B',
+                fontSize: '14px',
+              }}
+            >
+              Loading payment form…
+            </div>
+          ) : (
+            <button style={s.outlineBtn} onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function InvoiceCnpForm({
+  invoiceId,
+  amountCents,
+  apiCall,
+  onBack,
+  backLabel,
+  onProcessingChange,
+  onComplete,
+}: {
+  invoiceId: string;
+  amountCents: number;
+  apiCall: <T,>(method: string, path: string, body?: unknown) => Promise<T>;
+  onBack: () => void;
+  backLabel: string;
+  onProcessingChange: (isProcessing: boolean) => void;
+  onComplete: () => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const handleCharge = async () => {
+    if (!stripe || !elements) return;
+    setLoading(true);
+    setErrorMsg('');
+    onProcessingChange(true);
+    try {
+      const cardEl = elements.getElement(CardElement);
+      if (!cardEl) throw new Error('Card form not ready');
+
+      const created = await apiCall<{ paymentIntentId: string; clientSecret: string }>(
+        'POST',
+        '/api/checkout/invoice-card/intent',
+        { invoiceId, amountCents, mode: 'cnp' },
+      );
+      if (!created?.clientSecret) throw new Error('Could not start payment');
+
+      const { paymentIntent, error: confirmErr } = await stripe.confirmCardPayment(
+        created.clientSecret,
+        { payment_method: { card: cardEl } },
+      );
+      if (confirmErr) {
+        throw new Error(confirmErr.message ?? 'Card declined');
+      }
+      if (!paymentIntent || paymentIntent.status !== 'succeeded') {
+        throw new Error(
+          `Payment did not complete (${paymentIntent?.status ?? 'unknown'})`,
+        );
+      }
+
+      await apiCall('POST', '/api/checkout/invoice-card/finalize', {
+        invoiceId,
+        paymentIntentId: paymentIntent.id,
+        amountCents,
+      });
+
+      onComplete();
+    } catch (err) {
+      setErrorMsg((err as Error).message ?? 'Payment failed');
+      setLoading(false);
+      onProcessingChange(false);
+    }
   };
 
   return (
-    <div>
-      <PaymentElement />
-      {error && (
-        <div style={{ ...s.errorBox, marginTop: '16px' }}>
-          <AlertCircle size={20} />
-          {error}
+    <>
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <div
+          style={{
+            fontSize: '12px',
+            color: '#64748B',
+            marginBottom: '2px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+          }}
+        >
+          Charging
+        </div>
+        <div
+          style={{
+            fontSize: '32px',
+            fontWeight: 700,
+            color: '#0A2342',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {formatCents(amountCents)}
+        </div>
+        <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>
+          Card not present — keyed entry
+        </div>
+      </div>
+
+      <div
+        style={{
+          padding: '14px 16px',
+          border: '1px solid #CBD5E1',
+          borderRadius: '8px',
+          background: '#FFFFFF',
+          marginBottom: '16px',
+        }}
+      >
+        <CardElement
+          options={{
+            hidePostalCode: false,
+            disableLink: true,
+            style: {
+              base: {
+                fontSize: '15px',
+                color: '#0A2342',
+                '::placeholder': { color: '#94A3B8' },
+              },
+              invalid: { color: '#DC2626' },
+            },
+          }}
+        />
+      </div>
+
+      {errorMsg && (
+        <div
+          style={{
+            padding: '10px 14px',
+            background: '#FEF2F2',
+            border: '1px solid #FECACA',
+            borderRadius: '6px',
+            color: '#DC2626',
+            fontSize: '13px',
+            marginBottom: '14px',
+          }}
+        >
+          {errorMsg}
         </div>
       )}
+
       <button
-        style={{ ...s.primaryBtn, marginTop: '16px', width: '100%' }}
-        onClick={handleConfirm}
-        disabled={submitting}
+        style={{
+          width: '100%',
+          padding: '13px',
+          background: loading ? '#94A3B8' : '#0A2342',
+          color: '#FFFFFF',
+          border: 'none',
+          borderRadius: '8px',
+          cursor: loading ? 'not-allowed' : 'pointer',
+          fontSize: '15px',
+          fontWeight: 700,
+        }}
+        onClick={() => void handleCharge()}
+        disabled={loading || !stripe}
       >
-        {submitting ? 'Processing...' : 'Pay'}
+        {loading ? 'Processing…' : `Charge ${formatCents(amountCents)}`}
       </button>
-    </div>
+      <button
+        style={{
+          width: '100%',
+          marginTop: '10px',
+          padding: '10px',
+          background: 'none',
+          border: '1px solid #E2E8F0',
+          borderRadius: '8px',
+          cursor: loading ? 'not-allowed' : 'pointer',
+          fontSize: '13px',
+          color: '#64748B',
+        }}
+        onClick={onBack}
+        disabled={loading}
+      >
+        {backLabel}
+      </button>
+    </>
   );
 }
