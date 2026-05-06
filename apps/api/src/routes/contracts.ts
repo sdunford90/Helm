@@ -84,7 +84,9 @@ const CreateContractSchema = z.object({
   endDate: dateOnlySchema.optional().nullable(),
   billingCycle: BillingCycleEnum.optional(),
   billingAnchor: z.number().int().min(1).max(28).optional().nullable(),
-  rateCents: z.number().int().positive(),
+  // Optional when a dockageRateId is supplied (defaulted from plan).
+  // The refine() below enforces that one of the two is present.
+  rateCents: z.number().int().positive().optional(),
   electricityMode: z.enum(["FLAT_FEE", "METERED"]).optional().nullable(),
   autoRenew: z.boolean().optional(),
   status: ContractStatusEnum.optional(),
@@ -92,6 +94,12 @@ const CreateContractSchema = z.object({
   earlyTerminationType: TerminationTypeEnum.optional().nullable(),
   earlyTerminationValue: z.number().optional().nullable(),
   qboItemId: z.string().optional().nullable(),
+  // Optional rate-plan FK. Server validates tenant + location +
+  // slipType and defaults rate / electricityMode from the plan.
+  dockageRateId: z.string().uuid().optional().nullable(),
+}).refine((d) => d.rateCents != null || d.dockageRateId != null, {
+  message: "Either rateCents or dockageRateId must be provided",
+  path: ["rateCents"],
 });
 
 const UpdateContractSchema = z.object({
@@ -107,6 +115,8 @@ const UpdateContractSchema = z.object({
   earlyTerminationType: TerminationTypeEnum.optional().nullable(),
   earlyTerminationValue: z.number().optional().nullable(),
   qboItemId: z.string().optional().nullable(),
+  // allow re-linking (or clearing) the rate plan via PUT.
+  dockageRateId: z.string().uuid().optional().nullable(),
 });
 
 const ListContractsQuerySchema = z.object({
@@ -500,11 +510,16 @@ router.get(
           skip: query.skip,
           take: query.take,
           include: {
-            slip: { select: { id: true, slipNumber: true, dockId: true } },
+            // locationId/slipType feed the detail-modal plan picker.
+            slip: { select: { id: true, slipNumber: true, dockId: true, locationId: true, slipType: true } },
             customer: {
               select: { id: true, firstName: true, lastName: true },
             },
             boat: { select: { id: true, name: true } },
+            // Plan label + active flag for the list "Unlinked" badge.
+            dockageRate: {
+              select: { id: true, slipType: true, monthlyRateCents: true, active: true },
+            },
           },
         }),
         prisma.slipContract.count({ where }),
@@ -547,6 +562,17 @@ router.get(
           },
           boat: true,
           securityDeposits: true,
+          // include the linked rate plan so the detail
+          // modal can show plan name / unlinked badge.
+          dockageRate: {
+            select: {
+              id: true,
+              slipType: true,
+              monthlyRateCents: true,
+              active: true,
+              taxClass: true,
+            },
+          },
         },
       });
 
@@ -605,6 +631,71 @@ router.post(
       if (!slip) {
         throw appError("Slip not found", 404, "SLIP_NOT_FOUND");
       }
+
+      // Validate the optional rate-plan link and capture the plan for
+      // defaulting rateCents / electricityMode below. Tenant + slip
+      // location must agree; slipType only when both sides have one
+      // (older slips have no slipType).
+      let linkedPlanForDefaults: {
+        monthlyRateCents: number;
+        electricityMode: "FLAT_FEE" | "METERED";
+      } | null = null;
+      if (data.dockageRateId) {
+        const plan = await prisma.dockageRate.findFirst({
+          where: { id: data.dockageRateId, tenantId },
+          select: {
+            id: true,
+            locationId: true,
+            slipType: true,
+            active: true,
+            monthlyRateCents: true,
+            electricityMode: true,
+          },
+        });
+        if (!plan) {
+          throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        if (slip.locationId && plan.locationId !== slip.locationId) {
+          throw appError(
+            "Rate plan belongs to a different location than the slip",
+            400,
+            "DOCKAGE_RATE_LOCATION_MISMATCH",
+          );
+        }
+        if (slip.slipType && plan.slipType && plan.slipType !== slip.slipType) {
+          throw appError(
+            `Rate plan is for slip type "${plan.slipType}" but slip is "${slip.slipType}"`,
+            400,
+            "DOCKAGE_RATE_SLIP_TYPE_MISMATCH",
+          );
+        }
+        if (!plan.active) {
+          throw appError(
+            "Rate plan is inactive",
+            400,
+            "DOCKAGE_RATE_INACTIVE",
+          );
+        }
+        linkedPlanForDefaults = {
+          monthlyRateCents: plan.monthlyRateCents,
+          electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+        };
+      }
+
+      // Default from plan when caller omitted; explicit values win so
+      // off-plan negotiated rates stay locked on the contract.
+      const resolvedRateCents =
+        data.rateCents ?? linkedPlanForDefaults?.monthlyRateCents;
+      if (resolvedRateCents == null) {
+        // Belt-and-braces: refine() should have rejected this already.
+        throw appError(
+          "rateCents is required when no dockageRateId is provided",
+          400,
+          "RATE_REQUIRED",
+        );
+      }
+      const resolvedElectricityMode =
+        data.electricityMode ?? linkedPlanForDefaults?.electricityMode ?? null;
       if (slip.status === "OCCUPIED") {
         // Check for active contracts on this slip
         const activeContract = await prisma.slipContract.findFirst({
@@ -653,7 +744,7 @@ router.post(
 
       // Calculate proration if mid-month start
       const proration = calculateProration(
-        data.rateCents,
+        resolvedRateCents,
         startDate,
         data.billingCycle ?? "MONTHLY",
       );
@@ -667,6 +758,10 @@ router.post(
           data: {
             tenantId,
             ...data,
+            // Plan-defaulted overrides (post-spread so they replace
+            // undefined from input; explicit caller values won earlier).
+            rateCents: resolvedRateCents,
+            electricityMode: resolvedElectricityMode,
             startDate,
             endDate,
             billingAnchor,
@@ -730,7 +825,8 @@ router.post(
           changedFieldsJson: {
             slipId: data.slipId,
             customerId: data.customerId,
-            rateCents: data.rateCents,
+            dockageRateId: data.dockageRateId ?? null,
+            rateCents: resolvedRateCents,
             proration:
               proration.proratedDays > 0
                 ? {
@@ -771,12 +867,70 @@ router.put(
 
       const existing = await prisma.slipContract.findFirst({
         where: { id: req.params.id, tenantId },
+        include: { slip: { select: { locationId: true, slipType: true } } },
       });
       if (!existing) {
         throw appError("Contract not found", 404, "NOT_FOUND");
       }
 
+      // Re-validate the link on update and capture the plan for
+      // defaulting rate / electricity when the caller is just re-linking.
+      let linkedPlanForDefaults: {
+        monthlyRateCents: number;
+        electricityMode: "FLAT_FEE" | "METERED";
+      } | null = null;
+      if (data.dockageRateId) {
+        const plan = await prisma.dockageRate.findFirst({
+          where: { id: data.dockageRateId, tenantId },
+          select: {
+            id: true,
+            locationId: true,
+            slipType: true,
+            active: true,
+            monthlyRateCents: true,
+            electricityMode: true,
+          },
+        });
+        if (!plan) {
+          throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        const slipLoc = existing.slip?.locationId;
+        const slipType = existing.slip?.slipType;
+        if (slipLoc && plan.locationId !== slipLoc) {
+          throw appError(
+            "Rate plan belongs to a different location than the slip",
+            400,
+            "DOCKAGE_RATE_LOCATION_MISMATCH",
+          );
+        }
+        if (slipType && plan.slipType && plan.slipType !== slipType) {
+          throw appError(
+            `Rate plan is for slip type "${plan.slipType}" but slip is "${slipType}"`,
+            400,
+            "DOCKAGE_RATE_SLIP_TYPE_MISMATCH",
+          );
+        }
+        if (!plan.active) {
+          throw appError("Rate plan is inactive", 400, "DOCKAGE_RATE_INACTIVE");
+        }
+        linkedPlanForDefaults = {
+          monthlyRateCents: plan.monthlyRateCents,
+          electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+        };
+      }
+
       const persistData: Record<string, unknown> = { ...data };
+
+      // Re-link flow: inherit rate / electricity from the new plan
+      // when the caller didn't pass them. Explicit values still win.
+      if (linkedPlanForDefaults) {
+        if (data.rateCents == null) {
+          persistData.rateCents = linkedPlanForDefaults.monthlyRateCents;
+        }
+        if (data.electricityMode == null) {
+          persistData.electricityMode = linkedPlanForDefaults.electricityMode;
+        }
+      }
 
       const updated = await prisma.slipContract.update({
         where: { id: req.params.id },

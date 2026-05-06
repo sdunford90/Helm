@@ -1950,7 +1950,28 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const {
       slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
+      confirm,
     } = req.body;
+    // Deactivating keeps live contracts pointed at this plan (locked
+    // rate + plan's GL mapping). It only stops appearing in pickers
+    // and billing warns each cycle. Confirm step so operators see it.
+    if (active === false && existing.active === true) {
+      const linkedActive = await prisma.slipContract.count({
+        where: {
+          tenantId: req.tenantId!,
+          dockageRateId: req.params.id,
+          status: { in: ["ACTIVE", "EXPIRING"] },
+        },
+      });
+      if (linkedActive > 0 && !confirm) {
+        res.status(409).json({
+          error: `Rate plan is linked to ${linkedActive} active contract(s). Resend with { "confirm": true } to deactivate; existing contracts will keep billing their locked rate against this plan's GL mapping (with a warning each cycle) until you re-link them.`,
+          code: "DOCKAGE_RATE_HAS_LINKED_CONTRACTS",
+          linkedContractCount: linkedActive,
+        });
+        return;
+      }
+    }
     if (glAccountId && existing.locationId) {
       try {
         await assertGlAccountForCatalogItem(req.tenantId!, existing.locationId, glAccountId);
@@ -2029,6 +2050,27 @@ router.delete("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_
   try {
     const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
+    // a delete here is non-destructive for live contracts —
+    // the FK is ON DELETE SET NULL — but the contracts will appear as
+    // "unlinked" in the UI and the billing engine will fall back to
+    // the legacy (location, slipType) lookup. Require an explicit
+    // confirm so operators understand that before clicking delete.
+    const linkedActive = await prisma.slipContract.count({
+      where: {
+        tenantId: req.tenantId!,
+        dockageRateId: req.params.id,
+        status: { in: ["ACTIVE", "EXPIRING"] },
+      },
+    });
+    const confirm = req.body?.confirm === true || req.query?.confirm === "true";
+    if (linkedActive > 0 && !confirm) {
+      res.status(409).json({
+        error: `Rate plan is linked to ${linkedActive} active contract(s). Resend with { "confirm": true } to delete; those contracts will appear as unlinked and bill via the legacy fallback.`,
+        code: "DOCKAGE_RATE_HAS_LINKED_CONTRACTS",
+        linkedContractCount: linkedActive,
+      });
+      return;
+    }
     await prisma.dockageRate.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) { next(err); }

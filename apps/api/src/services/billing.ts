@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import { todayDateOnly } from "@helm/shared-types";
 import { getTaxProvider, checkTaxExempt } from "./tax-engine.js";
+import { isTaxExempt } from "./product-defaults.js";
 import { postInvoice, postPayment } from "./gl-posting.js";
 import { createDeferredSchedule } from "./deferred-revenue.js";
 import {
@@ -74,6 +75,14 @@ export async function generateRecurringInvoices(
           kwhRateCents: true,
         },
       },
+      // pull the linked rate plan so GL/tax resolution is
+      // deterministic per contract instead of re-deriving by
+      // (location, slipType) on every run. `active: false` plans are
+      // still returned so we can warn-and-fall-back rather than
+      // silently mis-billing.
+      dockageRate: {
+        select: { id: true, glAccountId: true, active: true, slipType: true, taxClass: true },
+      },
     },
   });
 
@@ -135,10 +144,30 @@ export async function generateRecurringInvoices(
           )
         : contract.rateCents;
 
-      // Resolve GL account from DockageRate configuration. Per-location
-      // mapping (DockageRateGlMapping) wins over the legacy tenant-level FK.
+      // GL + tax class resolution. The contract's linked rate plan is
+      // the source of truth when present (even if deactivated — we
+      // warn but don't re-route to a different plan). Only unlinked
+      // contracts fall back to the (location, slipType) lookup.
       let slipGlAccountId: string | undefined;
-      if (contract.slip.locationId && contract.slip.slipType) {
+      let slipTaxClass: string | null = null;
+      const linkedPlan = contract.dockageRate;
+      if (linkedPlan) {
+        if (!linkedPlan.active) {
+          console.warn(
+            `[billing] contract ${contract.id} uses deactivated dockage rate ${linkedPlan.id}; re-link to an active plan to silence`,
+          );
+        }
+        const resolved = await resolveDockageRateGlAccount(
+          tenantId,
+          linkedPlan.id,
+          contract.slip.locationId ?? null,
+        );
+        slipGlAccountId = resolved ?? linkedPlan.glAccountId ?? undefined;
+        slipTaxClass = linkedPlan.taxClass ?? null;
+      } else if (contract.slip.locationId && contract.slip.slipType) {
+        console.warn(
+          `[billing] contract ${contract.id} has no linked dockage rate; falling back to (location, slipType) lookup`,
+        );
         const dockageRate = await prisma.dockageRate.findFirst({
           where: {
             tenantId,
@@ -146,7 +175,7 @@ export async function generateRecurringInvoices(
             slipType: contract.slip.slipType,
             active: true,
           },
-          select: { id: true, glAccountId: true },
+          select: { id: true, glAccountId: true, taxClass: true },
           orderBy: { createdAt: "desc" },
         });
         if (dockageRate) {
@@ -156,14 +185,23 @@ export async function generateRecurringInvoices(
             contract.slip.locationId,
           );
           slipGlAccountId = resolved ?? dockageRate.glAccountId ?? undefined;
+          slipTaxClass = dockageRate.taxClass ?? null;
         }
       }
+      // A "Tax Exempt" plan flips the slip line to an exempt tax
+      // category so the calculator skips it. Other taxClass values are
+      // passed through verbatim as the category hint.
+      const slipTaxCategory = isTaxExempt(slipTaxClass)
+        ? "exempt"
+        : (slipTaxClass && slipTaxClass !== "Standard"
+            ? slipTaxClass
+            : "slip_rental");
 
       lineItems.push({
         description: `Slip ${contract.slip.slipNumber} — ${billingStart.toLocaleDateString("en-US", { month: "long", year: "numeric" })}${needsProration ? " (prorated)" : ""}`,
         quantity: 1,
         unitPriceCents: rentalAmount,
-        taxCategory: "slip_rental",
+        taxCategory: slipTaxCategory,
         glAccountId: slipGlAccountId,
         isDeferred: contract.billingCycle !== "MONTHLY",
         sourceType: "CONTRACT",

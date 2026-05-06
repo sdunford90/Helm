@@ -973,6 +973,13 @@ model SlipContract {
   esignEnvelopeId       String?
   signedAt              DateTime?        @db.Date
   signedDocumentUrl     String?
+  // Link back to the DockageRate "rate plan" the contract was created
+  // from (Task #274). Locked-in `rateCents` above remains authoritative
+  // for amount; this FK makes GL/tax resolution deterministic and gives
+  // operators a clear audit trail of which plan a customer is on.
+  // SET NULL on plan delete so historical contracts keep billing their
+  // locked rate and surface as "unlinked" in the UI for re-linking.
+  dockageRateId         String?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
@@ -980,9 +987,11 @@ model SlipContract {
   customer         Customer          @relation(fields: [customerId], references: [id])
   boat             Boat?             @relation(fields: [boatId], references: [id])
   renewalBatch     RenewalBatch?     @relation(fields: [renewalBatchId], references: [id])
+  dockageRate      DockageRate?      @relation(fields: [dockageRateId], references: [id], onDelete: SetNull)
   securityDeposits SecurityDeposit[]
 
   @@index([tenantId])
+  @@index([dockageRateId])
   @@map("slip_contracts")
 }
 
@@ -2624,8 +2633,9 @@ model DockageRate {
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
 
-  location   Location               @relation(fields: [locationId], references: [id])
-  glMappings DockageRateGlMapping[]
+  location       Location               @relation(fields: [locationId], references: [id])
+  glMappings     DockageRateGlMapping[]
+  slipContracts  SlipContract[]
 
   @@index([tenantId])
   @@index([locationId])

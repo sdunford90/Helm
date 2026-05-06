@@ -38,7 +38,7 @@ export const mockPrisma = {
   productCategory: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   productCategoryGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   rentalProductGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
-  dockageRate: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
+  dockageRate: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   dockageRateGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   serviceFee: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   serviceFeeGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
@@ -422,6 +422,9 @@ vi.mock('../src/services/customer-merge.js', () => ({
 vi.mock('@clerk/express', () => ({
   requireAuth: () => (_req: any, _res: any, next: any) => next(),
   getAuth: () => ({ userId: 'test-clerk-user' }),
+  // src/index.ts mounts clerkMiddleware() globally; without this the
+  // import fails before any contracts route can be exercised.
+  clerkMiddleware: () => (_req: any, _res: any, next: any) => next(),
 }));
 
 // Mock Sentry

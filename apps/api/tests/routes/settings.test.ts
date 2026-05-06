@@ -102,6 +102,47 @@ describe('PUT /api/settings/marina', () => {
   });
 });
 
+describe('DELETE /api/settings/catalog/dockage-rates/:id — safeguards linked contracts', () => {
+  const RATE_ID = 'rate-to-delete';
+
+  it('returns 409 when active contracts are linked and confirm is missing', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({ id: RATE_ID, tenantId: 'test-tenant-id' });
+    mockPrisma.slipContract.count.mockResolvedValue(3);
+
+    const res = await request(app).delete(`/api/settings/catalog/dockage-rates/${RATE_ID}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('DOCKAGE_RATE_HAS_LINKED_CONTRACTS');
+    expect(res.body.linkedContractCount).toBe(3);
+    expect(mockPrisma.dockageRate.delete).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with delete when confirm: true is sent', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({ id: RATE_ID, tenantId: 'test-tenant-id' });
+    mockPrisma.slipContract.count.mockResolvedValue(2);
+    mockPrisma.dockageRate.delete.mockResolvedValue({ id: RATE_ID });
+
+    const res = await request(app)
+      .delete(`/api/settings/catalog/dockage-rates/${RATE_ID}`)
+      .send({ confirm: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(mockPrisma.dockageRate.delete).toHaveBeenCalledWith({ where: { id: RATE_ID } });
+  });
+
+  it('proceeds without confirm when no active contracts are linked', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({ id: RATE_ID, tenantId: 'test-tenant-id' });
+    mockPrisma.slipContract.count.mockResolvedValue(0);
+    mockPrisma.dockageRate.delete.mockResolvedValue({ id: RATE_ID });
+
+    const res = await request(app).delete(`/api/settings/catalog/dockage-rates/${RATE_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.dockageRate.delete).toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/settings/qbo/inventory-resync (job-based)', () => {
   it('returns 202 with a jobId so the UI can poll progress', async () => {
     // No failed sync refs → the background job completes near-instantly with
