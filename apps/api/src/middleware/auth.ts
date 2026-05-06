@@ -238,7 +238,13 @@ export function clerkAuth(): RequestHandler[] {
   }
 
   return [
-    requireAuth(),
+    // NOTE: we intentionally do NOT use Clerk's `requireAuth()` here. That
+    // middleware issues a 302 redirect on unauthenticated requests, which
+    // breaks XHR/fetch callers — the browser silently follows the redirect
+    // to `/`, the SPA's index.html comes back, and the frontend's
+    // `await res.json()` blows up with "Unexpected token '<'". Instead we
+    // call `getAuth()` ourselves and respond with a clean JSON 401 the
+    // SPA can detect and route to the sign-in page on its own.
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const auth = getAuth(req);
@@ -344,7 +350,13 @@ export function requirePlatformAdmin(): RequestHandler[] {
 
 
   return [
-    requireAuth(),
+    // NOTE: we intentionally do NOT use Clerk's `requireAuth()` here. That
+    // middleware issues a 302 redirect on unauthenticated requests, which
+    // breaks XHR/fetch callers — the browser silently follows the redirect
+    // to `/`, the SPA's index.html comes back, and the frontend's
+    // `await res.json()` blows up with "Unexpected token '<'". Instead we
+    // call `getAuth()` ourselves and respond with a clean JSON 401 the
+    // SPA can detect and route to the sign-in page on its own.
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const auth = getAuth(req);
