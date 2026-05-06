@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
+import { calculateTax } from "../services/tax-engine.js";
 
 const router: Router = Router();
 
@@ -27,6 +28,67 @@ router.get(
         },
       });
       res.json({ data: rows });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Tax preview — invoked by the invoice form on every keystroke. Any
+// authenticated user that can already see the invoice form (cashiers
+// included) is allowed to preview, so this lives BEFORE the role gate
+// below. The endpoint is read-only and returns zero tax for invalid /
+// foreign locationIds rather than leaking existence.
+const PreviewLineSchema = z.object({
+  description: z.string().default(""),
+  amountCents: z.number().int().min(0),
+  taxCategory: z.string().optional(),
+});
+
+const PreviewBodySchema = z.object({
+  locationId: z.string().uuid().nullable().optional(),
+  customerId: z.string().uuid().nullable().optional(),
+  lineItems: z.array(PreviewLineSchema),
+});
+
+router.post(
+  "/preview",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = (req as any).tenantId;
+      const body = PreviewBodySchema.parse(req.body);
+
+      // Validate location ownership so a foreign locationId can't pull
+      // tax rates from another tenant.
+      if (body.locationId) {
+        const owned = await prisma.location.findFirst({
+          where: { id: body.locationId, tenantId },
+          select: { id: true },
+        });
+        if (!owned) {
+          // Return zero-tax shape rather than 404 — preview is a hint
+          // only and we don't want to reveal whether the id exists.
+          return res.json({
+            data: {
+              totalTaxCents: 0,
+              items: body.lineItems.map((li) => ({
+                description: li.description,
+                taxRate: 0,
+                taxCents: 0,
+                breakdowns: [],
+              })),
+            },
+          });
+        }
+      }
+
+      const result = await calculateTax({
+        tenantId,
+        locationId: body.locationId ?? null,
+        customerId: body.customerId ?? null,
+        lineItems: body.lineItems,
+      });
+      res.json({ data: result });
     } catch (err) {
       next(err);
     }

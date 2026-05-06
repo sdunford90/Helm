@@ -135,10 +135,16 @@ class InternalTaxProvider implements TaxEngineProvider {
         const { jurisdiction } = link;
         const rates = jurisdiction.rates;
 
-        // Prefer exact category match, fall back to "general"
+        // Prefer exact category match, then "general", then any rate the
+        // jurisdiction has configured. The any-rate fallback is critical
+        // for tenants whose Settings → Taxes UI saved rates with the
+        // default category label "Standard": a line that arrives without
+        // a taxCategory would otherwise compute zero tax even though the
+        // jurisdiction clearly has a rate set.
         const rate =
           rates.find((r) => r.category === category) ??
-          rates.find((r) => r.category === "general");
+          rates.find((r) => r.category === "general") ??
+          rates[0];
 
         if (!rate || rate.ratePctBps === 0) continue;
 

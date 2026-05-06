@@ -23,6 +23,9 @@ interface Product {
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string; qoh: number;
   reorderPoint: number;
+  // Marina the product belongs to. NULL = legacy tenant-wide product
+  // that needs to be backfilled via the inline "Assign here" action.
+  locationId: string | null;
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -68,6 +71,7 @@ interface ApiProduct {
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string | null; qoh: number;
   reorderPoint: number;
+  locationId?: string | null;
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -110,6 +114,7 @@ function toProduct(p: ApiProduct): Product {
     productCategoryId: p.productCategoryId ?? null,
     costCents: p.costCents, priceCents: p.priceCents,
     taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
+    locationId: p.locationId ?? null,
     effectiveRevenueGlAccountId: p.effectiveRevenueGlAccountId ?? null,
     effectiveCogsGlAccountId: p.effectiveCogsGlAccountId ?? null,
     effectiveInventoryAssetGlAccountId: p.effectiveInventoryAssetGlAccountId ?? null,
@@ -399,6 +404,10 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
                 qoh: parseInt(form.qoh || '0'),
                 reorderPoint: parseInt(form.reorderPoint || '0'),
                 trackInventory: true, active: true,
+                // Preserve existing locationId on edit; new products get
+                // null here and have currentLocationId attached server-side
+                // by handleSaveProduct's create payload.
+                locationId: product?.locationId ?? null,
                 qboItemId: product?.qboItemId ?? null,
                 qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
                 qboItemSyncError: product?.qboItemSyncError ?? null,
@@ -876,6 +885,16 @@ export default function Inventory() {
         // GL inputs were dropped with the category-only GL migration.
         taxClass: p.taxClass || null,
         reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
+        // New products auto-bind to the marina the operator is currently
+        // viewing in the top-right location switcher. Without this every
+        // new SKU lands as a tenant-wide row (locationId NULL) and breaks
+        // QBO inventory sync, which needs a location to pick the correct
+        // chart of accounts. Edits (PUT path below) intentionally do NOT
+        // overwrite an existing locationId — use the inline "Assign to
+        // here" action on the row to relocate.
+        ...(p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)
+          ? {}
+          : { locationId: currentLocationId }),
       };
       if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
         const res = await fetch(`/api/inventory/products/${p.id}`, {
@@ -912,6 +931,35 @@ export default function Inventory() {
       toast.success('Removed', 'Product removed from inventory.');
     } catch {
       toast.error('Error', 'Failed to remove product.');
+    }
+  };
+
+  // One-click backfill for legacy products with locationId = NULL. Without
+  // a location these rows leak into every marina's product table AND fail
+  // QBO sync (the chart-of-accounts resolver needs a location). Visible
+  // only when the operator is in single-location mode so it's unambiguous
+  // which marina the product is being assigned to.
+  const handleAssignProductLocation = async (p: Product) => {
+    if (!currentLocationId) return;
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/inventory/products/${p.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId: currentLocationId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `Assign failed (HTTP ${res.status})`);
+      }
+      const updated = await res.json();
+      setProducts((prev) => prev.map((x) => x.id === p.id ? toProduct(updated as ApiProduct) : x));
+      toast.success('Assigned', `${p.name} is now linked to this marina.`);
+    } catch (err) {
+      toast.error('Assign failed', err instanceof Error ? err.message : 'Network error');
     }
   };
 
@@ -1046,6 +1094,15 @@ export default function Inventory() {
                       )}
                     </td>
                     <td style={st.td}>
+                      {currentLocationId && p.locationId == null && (
+                        <button
+                          style={{ background: '#FFF7E6', border: '1px solid #F59E0B', color: '#856404', cursor: 'pointer', marginRight: '6px', fontSize: '11px', padding: '2px 6px', borderRadius: '4px' }}
+                          onClick={() => handleAssignProductLocation(p)}
+                          title="This product isn't tied to any marina yet — click to bind it to the current location"
+                        >
+                          Assign here
+                        </button>
+                      )}
                       {p.trackInventory && (
                         <button style={{ background: 'none', border: 'none', color: '#2CA01C', cursor: 'pointer', marginRight: '6px' }} onClick={() => handleQboSyncProduct(p)} title="Sync to QuickBooks"><Cloud size={14} /></button>
                       )}

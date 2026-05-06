@@ -643,7 +643,10 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
 // GET /products/:id
 router.get("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const product = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     const [productAdjustments, productPOs] = await Promise.all([
@@ -673,9 +676,26 @@ router.get("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // PUT /products/:id
 router.put("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
     const body = UpdateProductSchema.parse(req.body);
-    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    // Scope by tenantId — without this any authenticated user could
+    // mutate another tenant's product simply by guessing its UUID.
+    const existing = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!existing) return res.status(404).json({ error: "Product not found" });
+    // If a locationId is being assigned, validate it belongs to this
+    // tenant too. Otherwise we'd let an operator point a product at a
+    // foreign marina by sliding the id into the body.
+    if (body.locationId) {
+      const owned = await prisma.location.findFirst({
+        where: { id: body.locationId, tenantId },
+        select: { id: true },
+      });
+      if (!owned) {
+        return res.status(400).json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+      }
+    }
 
     // When the caller is moving the product to a new category, validate it
     // belongs to this tenant. The taxClass back-fills from the new category
@@ -736,7 +756,10 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // POST /products/:id/qbo-sync — manually trigger a push to QBO
 router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const product = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!product) return res.status(404).json({ error: "Product not found" });
     try {
       if (!product.locationId) {
@@ -800,7 +823,10 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
 // DELETE /products/:id (soft delete)
 router.delete("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const existing = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!existing) return res.status(404).json({ error: "Product not found" });
 
     await prisma.product.update({

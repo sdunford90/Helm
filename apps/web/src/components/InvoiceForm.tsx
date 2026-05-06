@@ -1,7 +1,9 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import { X, Plus, Trash2, Save, Send, Package, Tag, Anchor, Wrench, Sailboat } from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ─── Types ─── */
 
@@ -501,9 +503,100 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
     return Math.min(gross, Math.round(l.discountValue * 100));
   };
   const lineNet = (l: LineItem) => Math.max(0, lineGross(l) - lineDiscount(l));
-  const lineTax = (l: LineItem) => Math.round(lineNet(l) * (l.taxRate / 100));
   const subtotal = lines.reduce((sum, l) => sum + lineNet(l), 0);
-  const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
+
+  // ── Server-driven tax preview ──────────────────────────────────────────
+  // The cashier sees the same tax engine the API uses at finalize time:
+  // we POST the current line state to /api/tax/preview (debounced) and
+  // render whatever it returns. Falls back to zero while loading or on
+  // error rather than showing a fabricated rate — the cashier's footer
+  // copy already says "Final tax is computed by the server". The legacy
+  // per-line `taxRate` field on LineItem is no longer used for math.
+  const { getToken } = useAuth();
+  const [previewByIndex, setPreviewByIndex] = useState<Map<number, number>>(new Map());
+  const [previewTotal, setPreviewTotal] = useState<number>(0);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const previewSeqRef = useRef(0);
+
+  // Stable signature so we don't re-fire the preview when only `pickerOpen`
+  // or `pickerQuery` change. Description is included because the engine
+  // echoes it back (and lets us correlate items by index).
+  const previewSignature = useMemo(() => JSON.stringify(
+    lines.map((l) => ({
+      n: lineNet(l),
+      d: l.description.trim(),
+      pid: l.productId,
+    }))
+  ) + '|' + (currentLocationId ?? '') + '|' + (customerId ?? ''),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lines, currentLocationId, customerId]);
+
+  useEffect(() => {
+    // No location → API will short-circuit to zero anyway. Skip the
+    // round-trip and clear local state.
+    if (!currentLocationId) {
+      setPreviewByIndex(new Map());
+      setPreviewTotal(0);
+      return;
+    }
+    const taxableLines = lines
+      .map((l, idx) => ({
+        idx,
+        amountCents: lineNet(l),
+        description: l.description.trim() || `line-${idx}`,
+        // Mirror what the finalize path does in apps/api/src/routes/invoices.ts:
+        // when a productId is set, the engine reads the product's taxClass to
+        // pick a category-specific rate. Sending the same hint at preview time
+        // keeps preview and final tax in sync (instead of preview always
+        // hitting the rates[0] fallback added in tax-engine.ts).
+        taxCategory: (l.productId && productById.get(l.productId)?.taxClass) || undefined,
+      }))
+      .filter((x) => x.amountCents > 0);
+    if (taxableLines.length === 0) {
+      setPreviewByIndex(new Map());
+      setPreviewTotal(0);
+      return;
+    }
+    const seq = ++previewSeqRef.current;
+    setPreviewLoading(true);
+    const handle = window.setTimeout(async () => {
+      try {
+        const token = await getToken();
+        const resp = await api.post<{ data: { totalTaxCents: number; items: { description: string; taxCents: number }[] } }>(
+          '/api/tax/preview',
+          {
+            locationId: currentLocationId,
+            customerId: customerId || null,
+            lineItems: taxableLines.map((x) => ({
+              description: x.description,
+              amountCents: x.amountCents,
+              ...(x.taxCategory ? { taxCategory: x.taxCategory } : {}),
+            })),
+          },
+          token,
+        );
+        if (seq !== previewSeqRef.current) return;
+        const map = new Map<number, number>();
+        resp.data.items.forEach((it, i) => {
+          const lineIdx = taxableLines[i]?.idx;
+          if (lineIdx != null) map.set(lineIdx, it.taxCents);
+        });
+        setPreviewByIndex(map);
+        setPreviewTotal(resp.data.totalTaxCents);
+      } catch {
+        if (seq !== previewSeqRef.current) return;
+        setPreviewByIndex(new Map());
+        setPreviewTotal(0);
+      } finally {
+        if (seq === previewSeqRef.current) setPreviewLoading(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewSignature]);
+
+  const lineTax = (lineIdx: number) => previewByIndex.get(lineIdx) ?? 0;
+  const totalTax = previewTotal;
   const total = subtotal + totalTax;
 
   const lineHasResolvedAccount = (l: LineItem): boolean =>
@@ -669,7 +762,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
             <span style={{ ...s.colLabel as React.CSSProperties, textAlign: 'right' }}>Total</span>
             <span />
           </div>
-          {lines.map((line) => {
+          {lines.map((line, lineIdx) => {
             const linkedProduct = line.productId ? productById.get(line.productId) : null;
             const hasLinkedItem = line.kind === 'PRODUCT' ? !!linkedProduct : false;
             const matches = catalogMatches(line.pickerQuery);
@@ -796,7 +889,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                     onChange={(e) => updateLine(line.id, { taxRate: parseFloat(e.target.value) || 0 })}
                   />
                   <div style={{ ...mono, textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#0A2342', padding: '8px 4px' }}>
-                    {formatCents(lineNet(line) + lineTax(line))}
+                    {formatCents(lineNet(line) + lineTax(lineIdx))}
                     {lineDiscount(line) > 0 && (
                       <div style={{ fontSize: '11px', fontWeight: 500, color: '#64748B' }}>
                         −{formatCents(lineDiscount(line))} off
@@ -895,7 +988,7 @@ export default function InvoiceForm({ onClose, currentLocationId, onSaveDraft, o
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(subtotal)}</span>
               </div>
               <div style={s.totalsRow}>
-                <span>Tax (preview)</span>
+                <span>Tax {previewLoading ? '(calculating…)' : '(preview)'}</span>
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(totalTax)}</span>
               </div>
               <div style={s.totalsFinal}>
