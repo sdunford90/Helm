@@ -71,8 +71,18 @@ const emailWorker = new Worker(
     }
 
     const tenantId = job.data.tenantId as string | undefined;
+    const locationId = job.data.locationId as string | undefined;
+    // Throws on send failure so BullMQ records the job as failed and retries
+    // per its retry policy. recordEmailFailure() inside sendEmail() already
+    // surfaced the error on tenant.lastEmailFailure*.
     const messageId = await sendEmail(
-      { to, subject, html, ...(tenantId ? { tenantId } : {}) },
+      {
+        to,
+        subject,
+        html,
+        ...(tenantId ? { tenantId } : {}),
+        ...(locationId ? { locationId } : {}),
+      },
       marinaDomain,
     );
     if (messageId) {
@@ -153,6 +163,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Still interested? Your reservation is waiting",
+            tenantId,
             html: `<p>Hi ${name},</p><p>Looks like you didn't finish your reservation. Your spot is still available — complete your booking before it's gone!</p>`,
           });
         }
@@ -163,6 +174,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Your reservation is about to expire",
+            tenantId,
             html: `<p>Hi ${name},</p><p>Just a heads-up — the spot you were looking at is in high demand. Complete your reservation soon to lock in your rate.</p>`,
           });
         }
@@ -182,6 +194,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Booking confirmed! Here's what to expect",
+            tenantId,
             html: `<p>Hi ${name},</p><p>Your reservation has been confirmed. We'll send you arrival details closer to your date. Welcome aboard!</p>`,
           });
         }
@@ -192,6 +205,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Arriving tomorrow — here's everything you need",
+            tenantId,
             html: `<p>Hi ${name},</p><p>We're looking forward to seeing you tomorrow! Please have your registration and insurance documents ready upon arrival.</p>`,
           });
         }
@@ -202,6 +216,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Thanks for visiting! How was your experience?",
+            tenantId,
             html: `<p>Hi ${name},</p><p>We hope you had a great time. We'd love to hear about your experience — your feedback helps us improve.</p>`,
           });
         }
@@ -212,6 +227,7 @@ const automationWorker = new Worker(
           await sendEmail({
             to: customer.email,
             subject: "Quick question — would you recommend us?",
+            tenantId,
             html: `<p>Hi ${name},</p><p>On a scale of 0-10, how likely are you to recommend us to a friend? Reply to this email with your score and any comments.</p>`,
           });
         }

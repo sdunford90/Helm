@@ -352,6 +352,24 @@ model Tenant {
   // approves the renewal batch but also executes it immediately. Default
   // false because rate-change batches usually want a human glance.
   autoExecuteRenewals      Boolean      @default(false)
+
+  // Per-tenant outbound email sender. When set, customer-facing emails go
+  // FROM the marina's own verified Resend domain instead of noreply@gethelm.com.
+  // emailFromAddress wins outright; otherwise we build "billing@<emailFromDomain>".
+  // emailFromName is wrapped as the RFC 5322 display name; emailReplyTo lets
+  // recipient replies bounce back to the marina office mailbox.
+  emailFromDomain          String?
+  emailFromAddress         String?
+  emailFromName            String?
+  emailReplyTo             String?
+
+  // Last failure observed when posting to Resend. Surfaced on the Settings
+  // "Email sending" health row so operators can spot a broken DNS/domain
+  // verification or a bad address before a customer escalates.
+  lastEmailFailureAt        DateTime?
+  lastEmailFailureRecipient String?
+  lastEmailFailureReason    String?
+
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
 
@@ -459,6 +477,14 @@ model Location {
 
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
+
+  // Per-location outbound email sender. Overrides the tenant-level sender
+  // for any email tied to this location (invoices, e-sign, expiry reminders,
+  // etc). Same shape as Tenant.email* — see comments there.
+  emailFromDomain  String?
+  emailFromAddress String?
+  emailFromName    String?
+  emailReplyTo     String?
 
   // Accounting setup gate (Task 1 / Task 17)
   accountingSetupComplete     Boolean   @default(false)

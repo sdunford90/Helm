@@ -697,15 +697,34 @@ export async function sendAutomationEmail(jobData: {
   html: string;
   customerId?: string;
 }): Promise<void> {
-  const messageId = await sendEmail({
-    to: jobData.to,
-    subject: jobData.subject,
-    html: jobData.html,
-    tags: [
-      { name: "trigger", value: jobData.trigger },
-      { name: "ruleId", value: jobData.ruleId },
-    ],
-  });
+  // Pass tenantId so the per-tenant FROM domain (and suppression list) is
+  // applied. sendEmail() throws on failure; catch so we can log a FAILED
+  // automation log entry, then rethrow so BullMQ records the job failure
+  // and applies its retry policy.
+  let messageId: string | null = null;
+  try {
+    messageId = await sendEmail({
+      to: jobData.to,
+      subject: jobData.subject,
+      html: jobData.html,
+      tenantId: jobData.tenantId,
+      tags: [
+        { name: "trigger", value: jobData.trigger },
+        { name: "ruleId", value: jobData.ruleId },
+      ],
+    });
+  } catch (err) {
+    await prisma.emailAutomationLog.updateMany({
+      where: {
+        ruleId: jobData.ruleId,
+        recipientEmail: jobData.to,
+        status: "QUEUED",
+        tenantId: jobData.tenantId,
+      },
+      data: { status: "FAILED" },
+    });
+    throw err;
+  }
 
   // Update log entry
   await prisma.emailAutomationLog.updateMany({

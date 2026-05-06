@@ -290,6 +290,9 @@ export async function runCardExpiryReminders(
       await queues.email.add("send", {
         type: "card_expiry_reminder",
         to: customer.email,
+        // marinaDomain remains as legacy fallback when no per-tenant
+        // emailFromDomain override is configured (resolveEmailSender()
+        // handles that lookup at send time).
         marinaDomain: tenant.subdomain ?? undefined,
         tenantId,
         data: {

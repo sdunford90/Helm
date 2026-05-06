@@ -258,7 +258,12 @@ async function sendReconciliationAlertEmail(params: {
   const deltaDollars = (deltaCents / 100).toFixed(2);
 
   for (const user of accountingUsers) {
-    await sendEmail({
+    // Wrap individual sends — sendEmail() now throws on failure (Task #273)
+    // and we don't want one bad recipient to abort the reconciliation job
+    // or stop notifying the rest of the accounting team. Failures are
+    // recorded on tenant.lastEmailFailure* by recordEmailFailure().
+    try {
+      await sendEmail({
       to: user.email,
       subject: `Inventory Variance Alert — ${locationName}: ${categoryName} ($${deltaDollars})`,
       tenantId,
@@ -274,6 +279,12 @@ async function sendReconciliationAlertEmail(params: {
         `<p>Please log in to Helm and visit <strong>Accounting → Reconciliation</strong> to review and resolve this alert.</p>`,
         `<p style="font-size:13px;color:#666;">This is an automated notification from the Helm accounting system.</p>`,
       ].join('\n'),
-    });
+      });
+    } catch (err) {
+      console.error(
+        `[inventory-reconciliation] alert email to ${user.email} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }

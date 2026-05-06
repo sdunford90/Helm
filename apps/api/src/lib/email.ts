@@ -1,5 +1,10 @@
 import { Resend } from "resend";
 import { isSuppressed, issueUnsubscribeToken } from "./email-suppression.js";
+import {
+  resolveEmailSender,
+  recordEmailFailure,
+  DEFAULT_FROM_ADDRESS,
+} from "./email-sender.js";
 
 // --------------------------------------------------------------------------
 // Resend client — lazily initialised so the API boots without the key set
@@ -34,12 +39,38 @@ interface EmailOptions {
   // Optional ONLY for system mail with no tenant context (e.g. Helm platform
   // ops) — those should be rare and must be clearly opt-in for the recipient.
   tenantId?: string;
+  // When set, the per-location email sender override (if any) takes
+  // precedence over the tenant-level sender. See resolveEmailSender().
+  locationId?: string;
+}
+
+export class EmailSendError extends Error {
+  override readonly name = "EmailSendError";
+  constructor(
+    message: string,
+    public readonly recipient: string,
+    public readonly tenantId?: string,
+  ) {
+    super(message);
+  }
 }
 
 /**
- * Send an email via Resend. Returns the Resend message id on success, or
- * null when the send fails (error is logged but not thrown so callers in
- * background workers don't crash the process).
+ * Send an email via Resend. Returns the Resend message id on success and
+ * throws `EmailSendError` on any failure (Resend API error, network blow
+ * up, missing API key). Callers that don't want the throw to propagate
+ * (e.g. background workers triggering BullMQ retries should let it
+ * propagate; fire-and-forget operator notifications can wrap in a
+ * try/catch and log) must explicitly handle it.
+ *
+ * Returns `null` ONLY when the send was deliberately skipped because
+ * every recipient was suppressed.
+ *
+ * The FROM address is resolved in this order:
+ *   1. options.from if explicitly provided
+ *   2. The legacy `marinaDomain` second argument (kept for back-compat)
+ *   3. resolveEmailSender(tenantId, locationId) — pulls the tenant /
+ *      location override columns and falls back to noreply@gethelm.com.
  *
  * Enforces two compliance rules:
  *   1. Suppression: any recipient in the EmailSuppression list for this
@@ -53,14 +84,36 @@ export async function sendEmail(
   options: EmailOptions,
   marinaDomain?: string,
 ): Promise<string | null> {
-  const from =
-    options.from ||
-    (marinaDomain ? `billing@${marinaDomain}` : "noreply@gethelm.com");
+  const recipientLabel = Array.isArray(options.to)
+    ? options.to.join(",")
+    : options.to;
+
+  // Resolve sender. options.from > marinaDomain (legacy) > tenant/location.
+  let resolvedFrom: string;
+  let resolvedReplyTo: string | undefined = options.replyTo;
+  if (options.from) {
+    resolvedFrom = options.from;
+  } else if (marinaDomain) {
+    resolvedFrom = `billing@${marinaDomain}`;
+  } else {
+    const sender = await resolveEmailSender(
+      options.tenantId,
+      options.locationId,
+    );
+    resolvedFrom = sender.from;
+    if (!resolvedReplyTo && sender.replyTo) {
+      resolvedReplyTo = sender.replyTo;
+    }
+  }
+  // Belt-and-braces: never let an undefined sender slip into Resend.
+  if (!resolvedFrom) resolvedFrom = DEFAULT_FROM_ADDRESS;
 
   const client = getResend();
   if (!client) {
+    const reason = "RESEND_API_KEY not set";
     console.warn("[email] RESEND_API_KEY not set — email not sent:", options.subject);
-    return null;
+    await recordEmailFailure(options.tenantId, recipientLabel, reason);
+    throw new EmailSendError(reason, recipientLabel, options.tenantId);
   }
 
   const recipients = Array.isArray(options.to) ? options.to : [options.to];
@@ -92,12 +145,12 @@ export async function sendEmail(
 
   try {
     const { data, error } = await client.emails.send({
-      from,
+      from: resolvedFrom,
       to: deliverable,
       subject: options.subject,
       html: options.html,
       headers,
-      ...(options.replyTo ? { replyTo: options.replyTo } : {}),
+      ...(resolvedReplyTo ? { replyTo: resolvedReplyTo } : {}),
       ...(options.tags ? { tags: options.tags } : {}),
       ...(options.attachments && options.attachments.length > 0
         ? {
@@ -112,14 +165,20 @@ export async function sendEmail(
     });
 
     if (error) {
+      const reason =
+        (error as { message?: string }).message ?? JSON.stringify(error);
       console.error("[email] Resend API error:", error);
-      return null;
+      await recordEmailFailure(options.tenantId, recipientLabel, reason);
+      throw new EmailSendError(reason, recipientLabel, options.tenantId);
     }
 
     return data?.id ?? null;
   } catch (err) {
+    if (err instanceof EmailSendError) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
     console.error("[email] Failed to send:", err);
-    return null;
+    await recordEmailFailure(options.tenantId, recipientLabel, reason);
+    throw new EmailSendError(reason, recipientLabel, options.tenantId);
   }
 }
 

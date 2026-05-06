@@ -10,7 +10,7 @@ import {
   Trash2, CheckCircle2, AlertTriangle, RefreshCw, Key,
   Download, Globe, Webhook, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
-  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi, Package,
+  Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi, Package, Mail,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
@@ -280,8 +280,8 @@ export default function Settings() {
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal'];
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email'];
   const tabFromUrl = searchParams.get('tab');
   // Integrations is now managed per-Location, and the Catalog editor lives at
   // /settings/products. Old deep-links are normalized by the effect below.
@@ -635,11 +635,32 @@ export default function Settings() {
     autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
     qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
     stripeConnected: boolean; stripeAccountId: string | null; stripeOnboardingComplete: boolean;
+    // Per-location email sender override (Task #273). When any of these
+    // are set, sendEmail({ locationId }) uses them in preference to the
+    // tenant-level emailFrom* values configured under the Email tab.
+    emailFromDomain: string | null; emailFromAddress: string | null;
+    emailFromName: string | null; emailReplyTo: string | null;
   }
   const [selectedLocationId, setSelectedLocationId] = useState<string>('');
   const [locationDetail, setLocationDetail] = useState<LocationDetail | null>(null);
   const [locationForm, setLocationForm] = useState<Partial<LocationDetail>>({});
   const [locationSaving, setLocationSaving] = useState(false);
+
+  // Tenant-level email sender (Task #273) plus surfaced last-failure
+  // health row. Fetched lazily when the Email tab is opened.
+  type EmailSender = {
+    emailFromDomain: string | null;
+    emailFromAddress: string | null;
+    emailFromName: string | null;
+    emailReplyTo: string | null;
+    lastEmailFailureAt: string | null;
+    lastEmailFailureRecipient: string | null;
+    lastEmailFailureReason: string | null;
+  };
+  const [emailSender, setEmailSender] = useState<EmailSender | null>(null);
+  const [emailSenderForm, setEmailSenderForm] = useState<Partial<EmailSender>>({});
+  const [emailSenderSaving, setEmailSenderSaving] = useState(false);
+  const [emailSenderError, setEmailSenderError] = useState<string | null>(null);
   const [locationQboLoading, setLocationQboLoading] = useState(false);
   const [locationQboActing, setLocationQboActing] = useState(false);
   const [locationStripeActing, setLocationStripeActing] = useState(false);
@@ -977,6 +998,65 @@ export default function Settings() {
     if (selectedLocationId) fetchLocationDetail(selectedLocationId);
   }, [selectedLocationId, fetchLocationDetail]);
 
+  // Lazy-load tenant email sender config when the Email tab is opened
+  // (Task #273). Re-fetches every time the tab is shown so the health
+  // row reflects the latest failure recorded by recordEmailFailure().
+  React.useEffect(() => {
+    if (tab !== 'email') return;
+    let aborted = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/settings/email-sender', { credentials: 'include' });
+        if (!r.ok) {
+          if (!aborted) setEmailSenderError(`Couldn't load email settings (${r.status})`);
+          return;
+        }
+        const body = await r.json();
+        if (aborted) return;
+        setEmailSender(body);
+        setEmailSenderForm({
+          emailFromDomain: body.emailFromDomain ?? '',
+          emailFromAddress: body.emailFromAddress ?? '',
+          emailFromName: body.emailFromName ?? '',
+          emailReplyTo: body.emailReplyTo ?? '',
+        });
+        setEmailSenderError(null);
+      } catch (e) {
+        if (!aborted) setEmailSenderError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { aborted = true; };
+  }, [tab]);
+
+  const handleEmailSenderSave = async () => {
+    setEmailSenderSaving(true);
+    setEmailSenderError(null);
+    try {
+      const res = await fetch('/api/settings/email-sender', {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailFromDomain: emailSenderForm.emailFromDomain || null,
+          emailFromAddress: emailSenderForm.emailFromAddress || null,
+          emailFromName: emailSenderForm.emailFromName || null,
+          emailReplyTo: emailSenderForm.emailReplyTo || null,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as { error?: string }));
+        throw new Error(body.error || `Save failed (${res.status})`);
+      }
+      const body = await res.json();
+      setEmailSender((prev) => prev ? { ...prev, ...body } : prev);
+      setSavedMsg('Email sender saved');
+      setTimeout(() => setSavedMsg(null), 2500);
+    } catch (e) {
+      setEmailSenderError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEmailSenderSaving(false);
+    }
+  };
+
   const handleLocationFormChange = (field: keyof LocationDetail, value: any) => {
     setLocationForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -1238,6 +1318,7 @@ export default function Settings() {
     { key: 'catalog', label: 'Catalog', icon: Package, to: '/settings/products' },
     { key: 'terminal', label: 'Terminal', icon: Wifi },
     { key: 'modules', label: 'Modules', icon: ToggleRight },
+    { key: 'email', label: 'Email', icon: Mail },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
   ];
 
@@ -1497,6 +1578,34 @@ export default function Settings() {
                       <input type="checkbox" checked={!!locationForm.posAchEnabled} onChange={(e) => handleLocationFormChange('posAchEnabled', e.target.checked)} />
                       Show ACH on POS
                     </label>
+                  </div>
+
+                  {/* ── Per-location email sender override (Task #273) ── */}
+                  <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px dashed #E2E8F0' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#0A2342', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Mail size={16} /> Email sender override
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '12px', lineHeight: 1.5 }}>
+                      Optional. Customer emails for guests of this location will be sent from these values; leave any field blank to fall back to the marina-wide setting under <button style={{ background: 'none', border: 'none', color: '#1D4ED8', cursor: 'pointer', padding: 0, fontSize: '12px', fontWeight: 600 }} onClick={() => setTab('email')}>Settings → Email</button>.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                      <div style={st.field}>
+                        <label style={st.label}>From mailbox</label>
+                        <input style={st.input} placeholder="billing" value={locationForm.emailFromAddress ?? ''} onChange={(e) => handleLocationFormChange('emailFromAddress', e.target.value)} />
+                      </div>
+                      <div style={st.field}>
+                        <label style={st.label}>Sending domain</label>
+                        <input style={st.input} placeholder="app.tracktheturn.com" value={locationForm.emailFromDomain ?? ''} onChange={(e) => handleLocationFormChange('emailFromDomain', e.target.value)} />
+                      </div>
+                      <div style={st.field}>
+                        <label style={st.label}>Display name</label>
+                        <input style={st.input} placeholder={locationForm.name ?? 'Marina'} value={locationForm.emailFromName ?? ''} onChange={(e) => handleLocationFormChange('emailFromName', e.target.value)} />
+                      </div>
+                      <div style={st.field}>
+                        <label style={st.label}>Reply-To</label>
+                        <input style={st.input} placeholder="dockmaster@yourmarina.com" value={locationForm.emailReplyTo ?? ''} onChange={(e) => handleLocationFormChange('emailReplyTo', e.target.value)} />
+                      </div>
+                    </div>
                   </div>
 
                   <button style={{ ...st.saveBtn, marginTop: '20px' }} onClick={handleLocationSave} disabled={locationSaving}>
@@ -2267,6 +2376,114 @@ export default function Settings() {
       )}
 
       {/* Advanced */}
+      {/* ── Email sender (Task #273) ─────────────────────────────────────── */}
+      {tab === 'email' && (
+        <>
+          <div style={st.card}>
+            <h3 style={st.sectionTitle}><Mail size={20} /> Customer email sender</h3>
+            <p style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.6, marginBottom: '20px' }}>
+              Customer-facing emails (invoices, contract signature requests, dock walk reports, automation sequences) will be sent from this address. Add the sending domain to your Resend account and verify SPF / DKIM before enabling — otherwise messages will bounce.
+            </p>
+            {emailSenderError && (
+              <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#991B1B', padding: '10px 14px', borderRadius: '6px', fontSize: '13px', marginBottom: '16px' }}>
+                {emailSenderError}
+              </div>
+            )}
+            <div style={st.formGrid} className="helm-form-grid">
+              <div style={st.field}>
+                <label style={st.label}>From mailbox</label>
+                <input
+                  style={st.input}
+                  placeholder="billing"
+                  value={emailSenderForm.emailFromAddress ?? ''}
+                  onChange={(e) => setEmailSenderForm((p) => ({ ...p, emailFromAddress: e.target.value }))}
+                />
+                <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>The local part before <code style={st.mono}>@</code>. Defaults to <code style={st.mono}>noreply</code>.</div>
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>Sending domain</label>
+                <input
+                  style={st.input}
+                  placeholder="app.tracktheturn.com"
+                  value={emailSenderForm.emailFromDomain ?? ''}
+                  onChange={(e) => setEmailSenderForm((p) => ({ ...p, emailFromDomain: e.target.value }))}
+                />
+                <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>Must already be verified in your Resend account.</div>
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>Display name</label>
+                <input
+                  style={st.input}
+                  placeholder="Bayshore Marina Billing"
+                  value={emailSenderForm.emailFromName ?? ''}
+                  onChange={(e) => setEmailSenderForm((p) => ({ ...p, emailFromName: e.target.value }))}
+                />
+              </div>
+              <div style={st.field}>
+                <label style={st.label}>Reply-To (optional)</label>
+                <input
+                  style={st.input}
+                  placeholder="dockmaster@yourmarina.com"
+                  value={emailSenderForm.emailReplyTo ?? ''}
+                  onChange={(e) => setEmailSenderForm((p) => ({ ...p, emailReplyTo: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: '16px', padding: '12px 16px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', fontSize: '13px', color: '#334155' }}>
+              <strong>Preview:</strong>{' '}
+              <code style={st.mono}>
+                {emailSenderForm.emailFromName ? `${emailSenderForm.emailFromName} <` : ''}
+                {(emailSenderForm.emailFromAddress || 'noreply')}@{emailSenderForm.emailFromDomain || 'gethelm.com'}
+                {emailSenderForm.emailFromName ? '>' : ''}
+              </code>
+              {!emailSenderForm.emailFromDomain && (
+                <div style={{ marginTop: '6px', color: '#94A3B8', fontSize: '12px' }}>
+                  Leave the domain blank to keep using the system default (<code style={st.mono}>noreply@gethelm.com</code>).
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button style={st.addBtn} onClick={handleEmailSenderSave} disabled={emailSenderSaving}>
+                <Save size={14} /> {emailSenderSaving ? 'Saving…' : 'Save email sender'}
+              </button>
+            </div>
+          </div>
+
+          {/* Email sending health row — surfaces the most recent failure
+              recorded by recordEmailFailure() so operators can spot
+              bouncing domains / unverified senders without grepping logs. */}
+          <div style={st.card}>
+            <h3 style={st.sectionTitle}>
+              {emailSender?.lastEmailFailureAt
+                ? <><AlertTriangle size={20} style={{ color: '#B45309' }} /> Email sending — issue detected</>
+                : <><CheckCircle2 size={20} style={{ color: '#059669' }} /> Email sending — healthy</>}
+            </h3>
+            {emailSender?.lastEmailFailureAt ? (
+              <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: '6px', padding: '12px 16px', fontSize: '13px', color: '#7C2D12' }}>
+                <div><strong>When:</strong> {new Date(emailSender.lastEmailFailureAt).toLocaleString()}</div>
+                <div><strong>Recipient:</strong> {emailSender.lastEmailFailureRecipient ?? '(unknown)'}</div>
+                <div style={{ marginTop: '6px' }}><strong>Reason:</strong> {emailSender.lastEmailFailureReason ?? '(no detail)'}</div>
+                <div style={{ marginTop: '8px', color: '#92400E', fontSize: '12px' }}>
+                  Most common causes: the sending domain isn&apos;t verified in Resend, the recipient is on the suppression list, or the API key is missing. Verify your domain above and re-trigger the email.
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: '13px', color: '#64748B' }}>
+                No recent customer-email failures recorded for this marina.
+              </div>
+            )}
+          </div>
+
+          {/* Per-location overrides quick reference */}
+          <div style={st.card}>
+            <h3 style={st.sectionTitle}><MapPin size={20} /> Per-location overrides</h3>
+            <p style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.6 }}>
+              Each location can override the marina-wide sender (useful when properties have their own brand). Open <button style={{ background: 'none', border: 'none', color: '#1D4ED8', cursor: 'pointer', padding: 0, fontSize: '13px', fontWeight: 600 }} onClick={() => setTab('locations')}>Locations</button> and edit the location to set its own From address.
+            </p>
+          </div>
+        </>
+      )}
+
       {tab === 'advanced' && (
         <>
           <div style={st.card}>

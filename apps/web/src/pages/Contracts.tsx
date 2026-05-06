@@ -1329,6 +1329,30 @@ export default function Contracts() {
         );
         setLocalContracts(updated);
         setSelectedIds(new Set());
+
+        // Per Task #273 the bulk endpoint now returns per-contract email
+        // delivery status. Surface failures rather than silently swallowing
+        // them — operators need to know which signers didn't actually get
+        // the request so they can resend / fix the recipient address.
+        try {
+          const body: {
+            sent?: number;
+            emailFailures?: number;
+            results?: { signerEmail: string; emailDelivered: boolean; emailError?: string }[];
+          } = await res.json();
+          if (body.emailFailures && body.emailFailures > 0) {
+            const sample = (body.results ?? [])
+              .filter((r) => r.signerEmail && !r.emailDelivered)
+              .slice(0, 3)
+              .map((r) => `• ${r.signerEmail}${r.emailError ? ` — ${r.emailError}` : ''}`)
+              .join('\n');
+            window.alert(
+              `Sent ${body.sent ?? 0} contract(s), but ${body.emailFailures} signer email(s) failed to deliver:\n\n${sample}\n\nCheck Settings → Email for the most recent failure detail and verify your sending domain in Resend.`,
+            );
+          }
+        } catch {
+          // body parse failed — non-fatal, just skip the warning
+        }
       }
     } catch {
       // silently fail

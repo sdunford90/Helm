@@ -199,6 +199,143 @@ router.put("/marina", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGE
 });
 
 // --------------------------------------------------------------------------
+// Email sender configuration (Task #273)
+//
+// Customer-facing emails go from the marina's own verified Resend domain
+// rather than the system default (noreply@gethelm.com). This is set at the
+// tenant level, with optional per-location overrides handled by the
+// /locations/:id route below.
+//
+// IMPORTANT: this endpoint stores the raw values; it does NOT verify the
+// sending domain in Resend. Operators are responsible for adding the SPF /
+// DKIM records and verifying the domain in their Resend account before
+// enabling it here. See `apps/api/src/lib/email-sender.ts` for the runtime
+// resolution logic and the documented FROM resolution order.
+// --------------------------------------------------------------------------
+
+const emailSenderSchema = z.object({
+  // Domain only (e.g. "app.tracktheturn.com") — no protocol, no @-prefix.
+  emailFromDomain: z
+    .string()
+    .max(253)
+    .regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "Must be a valid domain (e.g. app.tracktheturn.com)")
+    .nullable()
+    .optional(),
+  // Local part (e.g. "billing"). Defaults to "noreply" when blank.
+  emailFromAddress: z
+    .string()
+    .max(64)
+    .regex(/^[A-Za-z0-9._+-]+$/, "Must be a valid mailbox local part (letters, digits, . _ + -)")
+    .nullable()
+    .optional(),
+  emailFromName: z.string().max(100).nullable().optional(),
+  emailReplyTo: z.string().email().nullable().optional().or(z.literal("")),
+});
+
+router.get(
+  "/email-sender",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res, next) => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: {
+          emailFromDomain: true,
+          emailFromAddress: true,
+          emailFromName: true,
+          emailReplyTo: true,
+          lastEmailFailureAt: true,
+          lastEmailFailureRecipient: true,
+          lastEmailFailureReason: true,
+        },
+      });
+      if (!tenant) {
+        res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
+        return;
+      }
+      res.json(tenant);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.put(
+  "/email-sender",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res, next) => {
+    try {
+      const data = emailSenderSchema.parse(req.body);
+      const updated = await prisma.tenant.update({
+        where: { id: req.tenantId! },
+        data: {
+          ...(data.emailFromDomain !== undefined && {
+            emailFromDomain: data.emailFromDomain || null,
+          }),
+          ...(data.emailFromAddress !== undefined && {
+            emailFromAddress: data.emailFromAddress || null,
+          }),
+          ...(data.emailFromName !== undefined && {
+            emailFromName: data.emailFromName || null,
+          }),
+          ...(data.emailReplyTo !== undefined && {
+            emailReplyTo: data.emailReplyTo || null,
+          }),
+        },
+        select: {
+          emailFromDomain: true,
+          emailFromAddress: true,
+          emailFromName: true,
+          emailReplyTo: true,
+        },
+      });
+      res.json(updated);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res
+          .status(400)
+          .json({ error: "Validation failed", details: err.errors });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// GET /api/settings/email-health — last failure surfaced to the Settings UI.
+router.get(
+  "/email-health",
+  ...clerkAuth(),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req, res, next) => {
+    try {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: {
+          lastEmailFailureAt: true,
+          lastEmailFailureRecipient: true,
+          lastEmailFailureReason: true,
+        },
+      });
+      if (!tenant) {
+        res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
+        return;
+      }
+      res.json({
+        lastFailureAt: tenant.lastEmailFailureAt,
+        lastFailureRecipient: tenant.lastEmailFailureRecipient,
+        lastFailureReason: tenant.lastEmailFailureReason,
+        healthy: tenant.lastEmailFailureAt === null,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// --------------------------------------------------------------------------
 // GET /api/settings/branding
 // --------------------------------------------------------------------------
 router.get("/branding", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
@@ -909,6 +1046,10 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         qboConnectedAt: true,
         stripeAccountId: true,
         stripeOnboardingComplete: true,
+        emailFromDomain: true,
+        emailFromAddress: true,
+        emailFromName: true,
+        emailReplyTo: true,
       },
     });
 
@@ -947,12 +1088,36 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       return;
     }
 
-    const { name, address, city, state, zip, phone, timezone, active, transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, logoUrl } =
+    const {
+      name, address, city, state, zip, phone, timezone, active,
+      transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, logoUrl,
+      // Per-location email sender overrides (Task #273). When set, these
+      // take precedence over the tenant-level emailFrom* values for any
+      // sendEmail() call that passes locationId. See email-sender.ts.
+      emailFromDomain, emailFromAddress, emailFromName, emailReplyTo,
+    } =
       req.body as Partial<{
         name: string; address: string; city: string; state: string; zip: string; phone: string;
         timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
         autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
+        emailFromDomain: string | null; emailFromAddress: string | null;
+        emailFromName: string | null; emailReplyTo: string | null;
       }>;
+
+    // Light validation for the email override fields. Anything obviously
+    // wrong is rejected here so the bad value never reaches Resend.
+    if (emailFromDomain && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(emailFromDomain)) {
+      res.status(400).json({ error: "Invalid emailFromDomain", code: "VALIDATION" });
+      return;
+    }
+    if (emailFromAddress && !/^[A-Za-z0-9._+-]+$/.test(emailFromAddress)) {
+      res.status(400).json({ error: "Invalid emailFromAddress", code: "VALIDATION" });
+      return;
+    }
+    if (emailReplyTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailReplyTo)) {
+      res.status(400).json({ error: "Invalid emailReplyTo", code: "VALIDATION" });
+      return;
+    }
 
     const updated = await prisma.location.update({
       where: { id: req.params.id },
@@ -970,11 +1135,17 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         ...(autoExecuteRenewals !== undefined && { autoExecuteRenewals }),
         ...(posAchEnabled !== undefined && { posAchEnabled }),
         ...(logoUrl !== undefined && { logoUrl }),
+        // Empty-string treated as "clear override".
+        ...(emailFromDomain !== undefined && { emailFromDomain: emailFromDomain || null }),
+        ...(emailFromAddress !== undefined && { emailFromAddress: emailFromAddress || null }),
+        ...(emailFromName !== undefined && { emailFromName: emailFromName || null }),
+        ...(emailReplyTo !== undefined && { emailReplyTo: emailReplyTo || null }),
       },
       select: {
         id: true, name: true, address: true, city: true, state: true, zip: true, phone: true,
         timezone: true, active: true, transientEnabled: true, rentalsEnabled: true,
         autoExecuteRenewals: true, posAchEnabled: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
+        emailFromDomain: true, emailFromAddress: true, emailFromName: true, emailReplyTo: true,
       },
     });
 

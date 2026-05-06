@@ -281,17 +281,29 @@ async function dispatchPlatformEvent(event: Stripe.Event): Promise<void> {
             .filter((e): e is string => !!e);
           if (toAddresses.length > 0) {
             const appUrl = process.env.APP_URL ?? "https://gethelm.com";
-            await sendEmail({
-              to: toAddresses,
-              subject: "Action required: payment failed on your Helm subscription",
-              html: saasInvoicePaymentFailedHtml({
-                marinaName: `${location.tenant.name} — ${location.name}`,
-                amountDue: `$${(invoice.amount_due / 100).toFixed(2)}`,
-                attemptCount: invoice.attempt_count ?? 1,
-                portalUrl: `${appUrl}/settings/billing`,
-              }),
-              tags: [{ name: "event", value: "saas_payment_failed" }],
-            });
+            // Wrap so a Resend failure doesn't NACK the Stripe webhook
+            // (Stripe would retry the whole webhook). sendEmail() now
+            // throws on failure (Task #273); the failure is recorded on
+            // tenant.lastEmailFailure* by recordEmailFailure().
+            try {
+              await sendEmail({
+                to: toAddresses,
+                subject: "Action required: payment failed on your Helm subscription",
+                tenantId: location.tenantId,
+                html: saasInvoicePaymentFailedHtml({
+                  marinaName: `${location.tenant.name} — ${location.name}`,
+                  amountDue: `$${(invoice.amount_due / 100).toFixed(2)}`,
+                  attemptCount: invoice.attempt_count ?? 1,
+                  portalUrl: `${appUrl}/settings/billing`,
+                }),
+                tags: [{ name: "event", value: "saas_payment_failed" }],
+              });
+            } catch (err) {
+              console.error(
+                "[stripe-webhook] saas_payment_failed email send failed:",
+                err instanceof Error ? err.message : err,
+              );
+            }
           }
         }
       }

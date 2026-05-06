@@ -1305,7 +1305,9 @@ router.post(
           customer: {
             select: { id: true, firstName: true, lastName: true, email: true },
           },
-          slip: { select: { id: true, slipNumber: true } },
+          // locationId is needed so sendEmail() picks the correct
+          // per-location FROM domain override (Task #273).
+          slip: { select: { id: true, slipNumber: true, locationId: true } },
         },
       });
 
@@ -1349,24 +1351,38 @@ router.post(
         },
       });
 
-      // Send e-signature request email
+      // Send e-signature request email. We surface failures explicitly
+      // (Task #273) — the contract has already been updated and the
+      // audit logged, so we still return 200 with `emailDelivered:false`
+      // and `emailError` so the UI can warn the operator instead of
+      // silently swallowing a Resend bounce.
+      let emailDelivered = false;
+      let emailError: string | undefined;
       if (signerEmail) {
         const signingUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/esign/${requestId}`;
-        await sendEmail({
-          to: signerEmail,
-          subject: "Signature Request — Slip Contract",
-          html: `
-            <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
-              <h2 style="color:#0A2342;">You have a document to sign</h2>
-              <p>Hi ${signerName},</p>
-              <p>Your marina has sent a slip contract that requires your signature.</p>
-              ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
-              <p style="text-align:center;margin:24px 0;">
-                <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
-              </p>
-              <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
-            </div>`,
-        }).catch((err) => console.error("[contracts] esign email failed:", (err as Error).message));
+        try {
+          await sendEmail({
+            to: signerEmail,
+            subject: "Signature Request — Slip Contract",
+            tenantId,
+            locationId: contract.slip?.locationId ?? undefined,
+            html: `
+              <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+                <h2 style="color:#0A2342;">You have a document to sign</h2>
+                <p>Hi ${signerName},</p>
+                <p>Your marina has sent a slip contract that requires your signature.</p>
+                ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
+                <p style="text-align:center;margin:24px 0;">
+                  <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
+                </p>
+                <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
+              </div>`,
+          });
+          emailDelivered = true;
+        } catch (err) {
+          emailError = err instanceof Error ? err.message : String(err);
+          console.error("[contracts] esign email failed:", emailError);
+        }
       }
 
       res.json({
@@ -1374,7 +1390,11 @@ router.post(
         status: "sent",
         signerName,
         signerEmail,
-        message: "Signature request sent successfully",
+        emailDelivered,
+        ...(emailError ? { emailError } : {}),
+        message: emailError
+          ? `Signature request created, but email delivery failed: ${emailError}`
+          : "Signature request sent successfully",
       });
     } catch (err) {
       next(err);
@@ -1402,6 +1422,8 @@ router.post(
           customer: {
             select: { id: true, firstName: true, lastName: true, email: true },
           },
+          // locationId drives per-location FROM domain selection (Task #273).
+          slip: { select: { locationId: true } },
         },
       });
 
@@ -1418,6 +1440,8 @@ router.post(
         requestId: string;
         status: string;
         signerEmail: string;
+        emailDelivered: boolean;
+        emailError?: string;
       }[] = [];
 
       for (const contract of contracts) {
@@ -1449,24 +1473,36 @@ router.post(
           },
         });
 
-        // Send e-signature request email
+        // Send e-signature request email. Per Task #273, surface delivery
+        // failures per-contract so the operator can see which signer mails
+        // bounced (instead of silently swallowing every failure).
+        let emailDelivered = false;
+        let emailError: string | undefined;
         if (signerEmail) {
           const signingUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/esign/${requestId}`;
-          await sendEmail({
-            to: signerEmail,
-            subject: "Signature Request — Slip Contract",
-            html: `
-              <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
-                <h2 style="color:#0A2342;">You have a document to sign</h2>
-                <p>Hi ${signerName},</p>
-                <p>Your marina has sent a slip contract that requires your signature.</p>
-                ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
-                <p style="text-align:center;margin:24px 0;">
-                  <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
-                </p>
-                <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
-              </div>`,
-          }).catch((err) => console.error("[contracts] bulk esign email failed:", (err as Error).message));
+          try {
+            await sendEmail({
+              to: signerEmail,
+              subject: "Signature Request — Slip Contract",
+              tenantId,
+              locationId: contract.slip?.locationId ?? undefined,
+              html: `
+                <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+                  <h2 style="color:#0A2342;">You have a document to sign</h2>
+                  <p>Hi ${signerName},</p>
+                  <p>Your marina has sent a slip contract that requires your signature.</p>
+                  ${message ? `<p style="background:#f5f8ff;padding:12px;border-left:4px solid #0A2342;border-radius:4px;"><em>${message}</em></p>` : ""}
+                  <p style="text-align:center;margin:24px 0;">
+                    <a href="${signingUrl}" style="display:inline-block;padding:12px 28px;background:#0A2342;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Review &amp; Sign</a>
+                  </p>
+                  <p style="font-size:13px;color:#666;">If you did not expect this, please contact your marina directly.</p>
+                </div>`,
+            });
+            emailDelivered = true;
+          } catch (err) {
+            emailError = err instanceof Error ? err.message : String(err);
+            console.error("[contracts] bulk esign email failed:", emailError);
+          }
         }
 
         results.push({
@@ -1474,12 +1510,16 @@ router.post(
           requestId,
           status: "sent",
           signerEmail,
+          emailDelivered,
+          ...(emailError ? { emailError } : {}),
         });
       }
 
+      const emailFailures = results.filter((r) => r.signerEmail && !r.emailDelivered).length;
       res.json({
         sent: results.length,
         skipped: contractIds.length - results.length,
+        emailFailures,
         results,
       });
     } catch (err) {
