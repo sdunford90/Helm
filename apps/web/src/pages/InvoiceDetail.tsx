@@ -12,7 +12,7 @@ import {
   Download,
 } from 'lucide-react';
 import PaymentModal from '../components/PaymentModal';
-import { formatCents, formatDate } from '../lib/format';
+import { formatCents, formatDate, formatDateOnly } from '../lib/format';
 
 /* ─── Raw API types ─── */
 interface ApiLineItem {
@@ -473,11 +473,11 @@ export default function InvoiceDetail() {
       <div style={st.metaRow}>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Issued</div>
-          <div style={st.metaValue}>{invoice.issued ? formatDate(invoice.issued) : '—'}</div>
+          <div style={st.metaValue}>{formatDateOnly(invoice.issued)}</div>
         </div>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Due</div>
-          <div style={st.metaValue}>{formatDate(invoice.due)}</div>
+          <div style={st.metaValue}>{formatDateOnly(invoice.due)}</div>
         </div>
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Terms</div>

@@ -13,7 +13,7 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
-import { formatCents, formatDate } from '../lib/format';
+import { formatCents, formatDateOnly } from '../lib/format';
 import { useModules } from '../context/ModulesContext';
 
 /* ─── Types ─── */
@@ -239,8 +239,8 @@ export default function Billing() {
               >
                 <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}><Link to={'/billing/invoices/' + inv.id} style={{ color: '#00D4FF', fontWeight: 600, textDecoration: 'none' }}>{inv.number}</Link></td>
                 <td style={styles.td}>{inv.customer}</td>
-                <td style={styles.td}>{formatDate(inv.issued)}</td>
-                <td style={styles.td}>{formatDate(inv.due)}</td>
+                <td style={styles.td}>{formatDateOnly(inv.issued)}</td>
+                <td style={styles.td}>{formatDateOnly(inv.due)}</td>
                 <td style={styles.td}><span style={statusBadge(inv.status)}>{inv.status}</span></td>
                 <td style={styles.tdRight}>{formatCents(inv.subtotal)}</td>
                 <td style={styles.tdRight}>{formatCents(inv.tax)}</td>

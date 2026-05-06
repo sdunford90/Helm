@@ -189,10 +189,26 @@ async function resolveLineItemTaxInfo(
   });
 }
 
+// Parse a calendar date from the client into a stable timestamp that renders
+// as the same day in any reasonable timezone. Date-only strings ("YYYY-MM-DD")
+// are anchored to noon UTC so a viewer in UTC-12..UTC+11 still sees the picked
+// day. Already-Date inputs and ISO datetimes pass through unchanged.
+const CalendarDateSchema = z.preprocess((v) => {
+  if (typeof v === "string") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+    if (m) {
+      return new Date(
+        Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0),
+      );
+    }
+  }
+  return v;
+}, z.coerce.date());
+
 const CreateInvoiceSchema = z.object({
   customerId: z.string().uuid(),
-  issuedDate: z.coerce.date(),
-  dueDate: z.coerce.date(),
+  issuedDate: CalendarDateSchema,
+  dueDate: CalendarDateSchema,
   // Optional explicit location for the invoice. When supplied, it
   // overrides the implicit derivation from CONTRACT line items, which
   // means non-contract invoices (ad-hoc service charges, retail, etc.)
@@ -203,8 +219,8 @@ const CreateInvoiceSchema = z.object({
 });
 
 const UpdateInvoiceSchema = z.object({
-  issuedDate: z.coerce.date().optional(),
-  dueDate: z.coerce.date().optional(),
+  issuedDate: CalendarDateSchema.optional(),
+  dueDate: CalendarDateSchema.optional(),
   lineItems: z.array(LineItemSchema).min(1).optional(),
 });
 
@@ -310,7 +326,15 @@ router.get(
       const tenantName = tenant?.name ?? "Marina";
 
       const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-      const formatDate = (d: Date | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+      const formatDate = (d: Date | null) =>
+        d
+          ? new Date(d).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              timeZone: "UTC",
+            })
+          : "—";
 
       const lineItemRows = invoice.lineItems.map((li) => `
         <tr>
@@ -962,7 +986,7 @@ router.post(
       const customerName = `${invoice.customer.firstName} ${invoice.customer.lastName}`.trim();
       const amountFormatted = `$${(invoice.totalCents / 100).toFixed(2)}`;
       const dueDateFormatted = new Date(invoice.dueDate).toLocaleDateString("en-US", {
-        month: "long", day: "numeric", year: "numeric",
+        month: "long", day: "numeric", year: "numeric", timeZone: "UTC",
       });
       const portalUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/portal/invoices/${invoice.id}`;
       await queues.email.add("send-invoice", {

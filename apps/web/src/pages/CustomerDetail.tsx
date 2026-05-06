@@ -382,7 +382,9 @@ function mapApiInvoice(inv: ApiInvoice): Invoice {
     balance,
     status: isPastDue ? 'Overdue' : rawStatus === 'ISSUED' ? 'Open' : rawStatus === 'PAID' ? 'Paid' : rawStatus,
     isPastDue,
-    date: new Date(inv.issuedDate).toISOString().slice(0, 10),
+    date: typeof inv.issuedDate === 'string'
+      ? inv.issuedDate.slice(0, 10)
+      : new Date(inv.issuedDate).toISOString().slice(0, 10),
     dueDate: dueDate ? dueDate.toISOString().slice(0, 10) : null,
   };
 }
