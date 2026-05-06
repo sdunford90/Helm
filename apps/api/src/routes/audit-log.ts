@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { attachRecordRefs, buildRecordRefs } from "../lib/audit-log-labels.js";
 
 const router: Router = Router();
 
@@ -97,7 +98,10 @@ router.get(
           : [];
       const userMap = new Map(users.map((u) => [u.id, u]));
 
-      const data = entries.map((entry) => ({
+      const refs = await buildRecordRefs(tenantId, entries);
+      const enriched = attachRecordRefs(entries, refs);
+
+      const data = enriched.map((entry) => ({
         ...entry,
         user: entry.userId ? userMap.get(entry.userId) ?? null : null,
       }));
@@ -182,8 +186,11 @@ router.get(
         prisma.auditLog.count({ where }),
       ]);
 
+      const refs = await buildRecordRefs(tenantId, entries);
+      const data = attachRecordRefs(entries, refs);
+
       res.json({
-        data: entries,
+        data,
         pagination: { offset, limit, total },
       });
     } catch (err) {
