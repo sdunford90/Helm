@@ -171,6 +171,15 @@ function isDevBypassEnabled(): boolean {
 // Optional: fail-closed at boot when prod config looks incomplete.
 // Called once from index.ts.
 export function assertAuthConfigOrExit(): void {
+  // Boot-time visibility into which auth mode this process actually loaded.
+  // Without this we can't tell from the outside whether the dev bypass is
+  // active in a given deployment — the bypass takes effect inside clerkAuth()
+  // per request and is otherwise invisible.
+  console.log(
+    `[auth] mode=${
+      isDevBypassEnabled() ? "DEV_BYPASS" : "CLERK"
+    } NODE_ENV=${process.env.NODE_ENV ?? "(unset)"} ENABLE_AUTH_DEV_BYPASS=${process.env.ENABLE_AUTH_DEV_BYPASS ?? "(unset)"}`,
+  );
   if (process.env.NODE_ENV !== "production") return;
   const missing: string[] = [];
   if (!process.env.CLERK_SECRET_KEY) missing.push("CLERK_SECRET_KEY");
