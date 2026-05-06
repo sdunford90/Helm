@@ -238,10 +238,12 @@ app.use("/api/accounting", accountingRouter);
 // same process so a single autoscale deployment hosts both the API and the
 // web client. Mounted AFTER all /api/* routes (so API handlers always win)
 // and BEFORE error handlers (so a missing static file flows through them).
-// In dev this is skipped; vite serves the SPA on its own port.
+// In dev the API runs on a different port than vite, so this is harmless
+// even when apps/web/dist exists locally; in production this is what makes
+// app.tracktheturn.com serve the React app.
 // --------------------------------------------------------------------------
 
-if (process.env.NODE_ENV === "production") {
+{
   // Compiled file lives at apps/api/dist/index.js, so the web build sits at
   // ../../web/dist relative to it.
   const webDist = path.resolve(import.meta.dirname, "../../web/dist");
@@ -254,7 +256,7 @@ if (process.env.NODE_ENV === "production") {
     console.log(`[helm-api] serving SPA from ${webDist}`);
   } else {
     console.warn(
-      `[helm-api] WARNING: web build not found at ${webDist} — SPA will not be served`,
+      `[helm-api] web build not found at ${webDist} — SPA will not be served (API-only mode)`,
     );
   }
 }
