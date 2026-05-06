@@ -1,0 +1,136 @@
+2026-05-06 16:40:53.45
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:automation:marker', '10' ] }
+2026-05-06 16:40:53.45
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:report-scheduler:marker', '10' ] }
+2026-05-06 16:40:53.45
+34f57c1c
+User
+}
+2026-05-06 16:40:53.45
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:53.45
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:40:53.45
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:53.45
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:40:53.45
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:53.65
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:53.65
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:40:53.65
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:57.65
+34f57c1c
+User
+}
+2026-05-06 16:40:57.65
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:deferred-revenue:marker', '10' ] }
+2026-05-06 16:40:58.35
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:automation:marker', '10' ] }
+2026-05-06 16:40:58.35
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:58.35
+34f57c1c
+User
+}
+2026-05-06 16:40:58.35
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:58.35
+34f57c1c
+User
+}
+2026-05-06 16:40:58.35
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:58.35
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:sms:marker', '10' ] }
+2026-05-06 16:40:58.35
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:40:58.35
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:qbo-sync:marker', '10' ] }
+2026-05-06 16:40:58.35
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:58.35
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:58.35
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:58.35
+34f57c1c
+User
+}
+2026-05-06 16:40:58.55
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:40:58.55
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:email:marker', '10' ] }
+2026-05-06 16:40:58.55
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:40:58.55
+34f57c1c
+User
+}
+2026-05-06 16:40:58.55
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:58.55
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:40:58.55
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:41:02.95
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
