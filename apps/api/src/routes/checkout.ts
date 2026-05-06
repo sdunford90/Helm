@@ -189,6 +189,12 @@ router.post(
         clientSecret: session.client_secret,
         sessionId: session.id,
         url: session.url, // populated only in hosted mode
+        // The connected account the session lives on. The frontend MUST
+        // initialize Stripe.js with `{ stripeAccount: stripeAccountId }`
+        // (via getStripeForAccount) or the client-side init fails with
+        // "No such payment_page" — Stripe scopes session lookups to the
+        // account that minted them.
+        stripeAccountId,
       });
     } catch (err) {
       next(err);

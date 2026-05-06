@@ -13,7 +13,7 @@ import {
 import { Link } from 'react-router-dom';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
-import { getStripe } from '../lib/stripe.js';
+import { getStripe, getStripeForAccount } from '../lib/stripe.js';
 import {
   CheckoutProvider,
   PaymentElement,
@@ -233,6 +233,11 @@ export default function PaymentModal({
   const [chargedMethodLast4, setChargedMethodLast4] = useState<string | null>(null);
   const [chargedAmountCents, setChargedAmountCents] = useState<number>(balanceDue);
   const [checkoutClientSecret, setCheckoutClientSecret] = useState<string | null>(null);
+  // Connected account that minted the Checkout session. Stripe.js MUST be
+  // initialized with this account (via getStripeForAccount) when mounting
+  // the embedded form, otherwise the client-side payment_pages/init lookup
+  // hits the platform account and 404s with "No such payment_page".
+  const [checkoutStripeAccountId, setCheckoutStripeAccountId] = useState<string | null>(null);
   // Set true when a charge / payment succeeded so the parent invoice page is
   // refetched exactly once when the user dismisses the modal — not while the
   // success screen is still mounted. Prevents the dialog from appearing to
@@ -260,7 +265,7 @@ export default function PaymentModal({
     'post',
     '/api/checkout/charge-card-on-file',
   );
-  const createSession = useApi<{ clientSecret: string }>('post', '/api/checkout/invoice-session');
+  const createSession = useApi<{ clientSecret: string; stripeAccountId: string | null }>('post', '/api/checkout/invoice-session');
   const recordSimplePayment = useApi('post', '/api/payments');
 
   // Sort saved methods so the default one is shown first.
@@ -378,6 +383,7 @@ export default function PaymentModal({
     });
     if (result?.clientSecret) {
       setCheckoutClientSecret(result.clientSecret);
+      setCheckoutStripeAccountId(result.stripeAccountId ?? null);
       setStep('new_card');
       setStatus('idle');
       return;
@@ -733,7 +739,11 @@ export default function PaymentModal({
 
           {step === 'new_card' && checkoutClientSecret && (
             <CheckoutProvider
-              stripe={getStripe()}
+              stripe={
+                checkoutStripeAccountId
+                  ? getStripeForAccount(checkoutStripeAccountId)
+                  : getStripe()
+              }
               options={{
                 fetchClientSecret: async () => checkoutClientSecret,
               }}
