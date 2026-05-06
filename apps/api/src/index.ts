@@ -11,6 +11,7 @@ import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { clerkMiddleware } from "@clerk/express";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
@@ -161,6 +162,18 @@ app.use("/api/email", emailComplianceRouter);
 app.use("/api/qbo/webhook", qboWebhookRouter);
 
 app.use(express.json());
+
+// Register Clerk's per-request middleware ONCE, globally. Without this,
+// `getAuth(req)` inside our auth helpers throws
+// "clerkMiddleware should be registered before using getAuth". Previously
+// `requireAuth()` registered it implicitly per-route, but we removed
+// requireAuth() because it 302-redirects unauthenticated requests to `/`,
+// which broke XHR callers (they parsed the SPA index.html as JSON and
+// died on "Unexpected token '<'"). Mounting clerkMiddleware here gives
+// every downstream handler a populated auth context without forcing a
+// redirect on missing sessions — our own clerkAuth() handler then
+// returns a JSON 401 instead.
+app.use(clerkMiddleware());
 
 // Public impersonation handoff (verify/end). Mounted after express.json()
 // so the JSON body is parsed, but before tenantMiddleware so it can be

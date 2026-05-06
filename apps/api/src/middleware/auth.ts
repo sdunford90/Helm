@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { requireAuth, getAuth } from "@clerk/express";
+import { getAuth } from "@clerk/express";
 import type { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
