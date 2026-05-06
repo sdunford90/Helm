@@ -666,7 +666,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
           where: { id: productId, tenantId },
           select: {
             id: true, name: true, sku: true, priceCents: true,
-            costCents: true, qoh: true,
+            costCents: true, qoh: true, trackInventory: true,
             productCategory: {
               select: {
                 glMappings: {
@@ -697,6 +697,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
             priceCents: product.priceCents,
             costCents: (product as any).costCents ?? 0,
             qoh: (product as any).qoh,
+            trackInventory: (product as any).trackInventory ?? false,
             incomeGlAccountId,
             inventoryAssetGlAccountId,
             cogsGlAccountId,
@@ -1542,7 +1543,15 @@ export interface InventoryItemSyncInput {
   priceCents: number;
   costCents: number;
   qoh?: number;
+  // When true → sync as QBO `Type: "Inventory"` (requires Income, Inventory
+  // Asset, and COGS accounts, plus QtyOnHand/InvStartDate). When false → sync
+  // as `Type: "Service"` (only requires Income; the asset/COGS plumbing is
+  // skipped entirely so dockage add-ons / fee-style products don't get
+  // rejected with QBO error 6430).
+  trackInventory: boolean;
   // Local GlAccount IDs — translated to QBO account IDs at push time.
+  // For service items only `incomeGlAccountId` is required; the inventory
+  // asset / COGS slots are ignored.
   incomeGlAccountId: string | null;
   inventoryAssetGlAccountId: string | null;
   cogsGlAccountId: string | null;
@@ -1680,30 +1689,17 @@ async function writeSyncRefFailure(
   const errSlice = errorMessage.slice(0, 1000);
   const where = { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId } };
 
-  // Atomic-increment path: try to update an existing row using Prisma's
-  // `increment` operator so concurrent failure writes don't undercount via a
-  // read-modify-write race. If the row doesn't exist yet, fall back to create.
-  try {
-    const incremented = await (prisma as any).qboInventorySyncRef.update({
-      where,
-      data: {
-        qboType,
-        locationId: locationId ?? null,
-        lastError: errSlice,
-        lastErrorAt: now,
-        retryCount: { increment: 1 },
-      },
-      select: { retryCount: true },
-    });
-    const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(incremented.retryCount));
-    await (prisma as any).qboInventorySyncRef.update({
-      where,
-      data: { nextRetryAt },
-    });
-  } catch (err: any) {
-    // P2025 = "Record to update not found" — first failure for this ref.
-    if (err?.code === 'P2025') {
-      const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(1));
+  // Probe-first to avoid Prisma's noisy `prisma:error` log on the expected
+  // first-failure case (P2025 from update-of-missing-row). The tiny TOCTOU
+  // race with a concurrent create is handled by catching P2002 below.
+  const existing = await (prisma as any).qboInventorySyncRef.findUnique({
+    where,
+    select: { id: true },
+  });
+
+  if (!existing) {
+    const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(1));
+    try {
       await (prisma as any).qboInventorySyncRef.create({
         data: {
           tenantId,
@@ -1718,10 +1714,34 @@ async function writeSyncRefFailure(
           nextRetryAt,
         },
       });
-    } else {
-      throw err;
+      return;
+    } catch (err: any) {
+      // P2002 = unique constraint — a concurrent failure already created the
+      // row. Fall through to the increment path.
+      if (err?.code !== 'P2002') throw err;
     }
   }
+
+  // Atomic-increment path. Use Prisma's `increment` operator so concurrent
+  // failure writes don't undercount via a read-modify-write race. The second
+  // update (setting nextRetryAt) is intentionally outside any P2025 catch so
+  // a missing row here can never silently trigger a duplicate `create`.
+  const incremented = await (prisma as any).qboInventorySyncRef.update({
+    where,
+    data: {
+      qboType,
+      locationId: locationId ?? null,
+      lastError: errSlice,
+      lastErrorAt: now,
+      retryCount: { increment: 1 },
+    },
+    select: { retryCount: true },
+  });
+  const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(incremented.retryCount));
+  await (prisma as any).qboInventorySyncRef.update({
+    where,
+    data: { nextRetryAt },
+  });
 }
 
 // Translate a local GlAccount.id to its QBO account id (qboAccountId column).
@@ -1763,33 +1783,103 @@ export async function syncInventoryItem(
   const sourceType = "product";
 
   try {
-    const incomeAcctRef = await resolveQboAccountId(tenantId, input.incomeGlAccountId, "Income");
-    const assetAcctRef = await resolveQboAccountId(tenantId, input.inventoryAssetGlAccountId, "Inventory Asset");
-    const cogsAcctRef = await resolveQboAccountId(tenantId, input.cogsGlAccountId, "Cost of Goods Sold");
+    const desiredType = input.trackInventory ? "Inventory" : "Service";
+    const incomePurpose = input.trackInventory ? "Income" : `Income (Service item "${input.name}")`;
 
-    const existingRef = await readSyncRef(tenantId, sourceType, input.productId);
+    const incomeAcctRef = await resolveQboAccountId(tenantId, input.incomeGlAccountId, incomePurpose);
+    let assetAcctRef: string | null = null;
+    let cogsAcctRef: string | null = null;
+    if (input.trackInventory) {
+      assetAcctRef = await resolveQboAccountId(tenantId, input.inventoryAssetGlAccountId, "Inventory Asset");
+      cogsAcctRef = await resolveQboAccountId(tenantId, input.cogsGlAccountId, "Cost of Goods Sold");
+    }
+
+    let existingRef = await readSyncRef(tenantId, sourceType, input.productId);
+
+    // Detect tracked↔non-tracked flips by reading the existing QBO Item's
+    // Type. QBO does not allow `Type` changes on Item updates, so when the
+    // local product flips between tracked/untracked we must abandon the old
+    // QBO Item and create a fresh one of the correct type.
+    let cachedSyncToken: string | undefined;
+    if (existingRef?.qboId) {
+      const existingQboId = existingRef.qboId;
+      try {
+        const existingItem = await qboRequest(ctx, "GET", `item/${existingQboId}?minorversion=73`);
+        const existingType = existingItem?.Item?.Type as string | undefined;
+        cachedSyncToken = existingItem?.Item?.SyncToken as string | undefined;
+        if (existingType && existingType !== desiredType) {
+          await auditLog(tenantId, "QBO_INVENTORY_ITEM_TYPE_FLIP", {
+            productId: input.productId,
+            previousQboItemId: existingRef.qboId,
+            previousType: existingType,
+            newType: desiredType,
+            reason: "trackInventory flipped — QBO does not allow Item Type changes; creating a new Item",
+            locationId: ctx.locationId ?? null,
+          });
+          await (prisma as any).qboInventorySyncRef.update({
+            where: { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId: input.productId } },
+            data: { qboId: null },
+          });
+          existingRef = null;
+          cachedSyncToken = undefined;
+        }
+      } catch (lookupErr) {
+        // Only treat "definitely gone from QBO" responses as stale — i.e. an
+        // HTTP 404, or QBO's specific "Object Not Found" error code 610.
+        // Transient failures (5xx, network errors, 401 between refreshes,
+        // etc.) must NOT invalidate the ref or we'd create duplicate Items
+        // in QBO every time the upstream hiccups.
+        const msg = lookupErr instanceof Error ? lookupErr.message : String(lookupErr);
+        const isMissing =
+          /QBO API error 404\b/.test(msg) ||
+          /"code":\s*"?610"?/.test(msg) ||
+          /Object Not Found/i.test(msg);
+        if (!isMissing) {
+          // Re-throw so writeSyncRefFailure / the outer catch records the
+          // failure and the next retry will try again with the same ref.
+          throw lookupErr;
+        }
+        console.warn(
+          `[qbo-sync] Existing QBO Item ${existingQboId} for product ${input.productId} no longer exists in QBO; creating a new one: ${msg}`,
+        );
+        await (prisma as any).qboInventorySyncRef.update({
+          where: { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId: input.productId } },
+          data: { qboId: null },
+        });
+        existingRef = null;
+        cachedSyncToken = undefined;
+      }
+    }
 
     const qboPayload: Record<string, unknown> = {
       Name: input.name.slice(0, 100),
       Sku: input.sku ?? undefined,
       Description: input.description ?? undefined,
-      Type: "Inventory",
-      TrackQtyOnHand: true,
-      QtyOnHand: input.qoh ?? 0,
-      InvStartDate: new Date().toISOString().split("T")[0],
+      Type: desiredType,
       UnitPrice: input.priceCents / 100,
-      PurchaseCost: input.costCents / 100,
       IncomeAccountRef: { value: incomeAcctRef },
-      AssetAccountRef: { value: assetAcctRef },
-      ExpenseAccountRef: { value: cogsAcctRef },
     };
+
+    if (input.trackInventory) {
+      qboPayload.TrackQtyOnHand = true;
+      qboPayload.QtyOnHand = input.qoh ?? 0;
+      qboPayload.InvStartDate = new Date().toISOString().split("T")[0];
+      qboPayload.PurchaseCost = input.costCents / 100;
+      qboPayload.AssetAccountRef = { value: assetAcctRef };
+      qboPayload.ExpenseAccountRef = { value: cogsAcctRef };
+    }
 
     let result: any;
     if (existingRef?.qboId) {
-      // Update — fetch SyncToken first (QBO requires it on every update).
-      const existing = await qboRequest(ctx, "GET", `item/${existingRef.qboId}?minorversion=73`);
+      // Update — QBO requires SyncToken on every update. Reuse the token
+      // fetched during the type-flip probe above when available.
+      let syncToken = cachedSyncToken;
+      if (!syncToken) {
+        const existing = await qboRequest(ctx, "GET", `item/${existingRef.qboId}?minorversion=73`);
+        syncToken = existing.Item.SyncToken;
+      }
       qboPayload.Id = existingRef.qboId;
-      qboPayload.SyncToken = existing.Item.SyncToken;
+      qboPayload.SyncToken = syncToken;
       qboPayload.sparse = true;
       // Don't reset QtyOnHand on updates — let receiving Bills / adjustments drive it.
       delete qboPayload.QtyOnHand;

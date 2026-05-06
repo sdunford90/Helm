@@ -35,22 +35,27 @@ type PurchaseOrderRow = Awaited<ReturnType<typeof prisma.purchaseOrder.findFirst
 type AdjustmentRow = Awaited<ReturnType<typeof prisma.inventoryAdjustment.findFirstOrThrow>>;
 
 async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
-  if (!product.trackInventory) return product;
   try {
     if (!product.locationId) {
-      // QBO inventory items live in a per-location chart; without a
-      // location we cannot pick the correct (category, location) mapping.
-      // Surface this in the canonical wording so the UI deep-link works.
+      // QBO items live in a per-location chart; without a location we cannot
+      // pick the correct (category, location) mapping. Surface this in the
+      // canonical wording so the UI deep-link works.
       throw new Error(
         `MISSING_GL_MAPPING: Product "${product.name}" has no locationId set. ` +
         `Assign the product to a location before syncing to QuickBooks.`,
       );
     }
+    // Service-style (non-tracked) products only need a revenue (Income)
+    // mapping in QBO — they sync as Type:"Service" and skip the asset/COGS
+    // plumbing entirely.
+    const requiredSlots = product.trackInventory
+      ? (["revenue", "cogs", "inventoryAsset"] as const)
+      : (["revenue"] as const);
     const resolved = await resolveProductGlAccountsStrict(
       product.tenantId,
       product.id,
       product.locationId,
-      ["revenue", "cogs", "inventoryAsset"],
+      requiredSlots,
     );
     const result = await syncInventoryItem(
       {
@@ -61,6 +66,7 @@ async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
         priceCents: product.priceCents,
         costCents: product.costCents ?? 0,
         qoh: product.qoh,
+        trackInventory: product.trackInventory,
         incomeGlAccountId: resolved.revenueGlAccountId,
         inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
         cogsGlAccountId: resolved.cogsGlAccountId,
@@ -623,10 +629,11 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         active: true,
       } satisfies Prisma.ProductUncheckedCreateInput,
     });
-    // Best-effort QBO sync — local create always succeeds even if QBO is offline
-    if (product.trackInventory) {
-      product = await tryPushProductToQbo(product);
-    }
+    // Best-effort QBO sync — local create always succeeds even if QBO is
+    // offline. Both inventory-tracked (Type:"Inventory") and non-tracked
+    // (Type:"Service") products are pushed so invoice lines can attach an
+    // ItemRef instead of falling back to a bare AccountRef.
+    product = await tryPushProductToQbo(product);
     res.status(201).json(shapeProduct(product));
   } catch (err) {
     next(err);
@@ -717,10 +724,9 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
       where: { id: existing.id },
       data,
     });
-    // Re-sync to QBO so price/cost/account changes propagate
-    if (product.trackInventory) {
-      product = await tryPushProductToQbo(product);
-    }
+    // Re-sync to QBO so price/cost/account changes propagate. Service items
+    // (trackInventory=false) are pushed too — see create handler comment.
+    product = await tryPushProductToQbo(product);
     res.json(shapeProduct(product));
   } catch (err) {
     next(err);
@@ -732,11 +738,6 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
   try {
     const product = await prisma.product.findFirst({ where: { id: req.params.id } });
     if (!product) return res.status(404).json({ error: "Product not found" });
-    if (!product.trackInventory) {
-      return res
-        .status(400)
-        .json({ error: "Product does not track inventory — only inventory items sync to QBO" });
-    }
     try {
       if (!product.locationId) {
         throw new Error(
@@ -744,11 +745,14 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           `Assign the product to a location before syncing to QuickBooks.`,
         );
       }
+      const requiredSlots = product.trackInventory
+        ? (["revenue", "cogs", "inventoryAsset"] as const)
+        : (["revenue"] as const);
       const resolved = await resolveProductGlAccountsStrict(
         product.tenantId,
         product.id,
         product.locationId,
-        ["revenue", "cogs", "inventoryAsset"],
+        requiredSlots,
       );
       const result = await syncInventoryItem(
         {
@@ -759,6 +763,7 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           priceCents: product.priceCents,
           costCents: product.costCents ?? 0,
           qoh: product.qoh,
+          trackInventory: product.trackInventory,
           incomeGlAccountId: resolved.revenueGlAccountId,
           inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
           cogsGlAccountId: resolved.cogsGlAccountId,
@@ -1897,11 +1902,6 @@ export async function retryFailedQboInventorySyncs(
       if (!product) {
         result.skipped++;
         recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
-        continue;
-      }
-      if (!product.trackInventory) {
-        result.skipped++;
-        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer tracks inventory" });
         continue;
       }
       result.attempted++;

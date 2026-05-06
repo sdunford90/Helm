@@ -198,6 +198,7 @@ describe('syncInventoryItem — GL account validation', () => {
           sku: 'ICE-10',
           priceCents: 500,
           costCents: 200,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-1',
           cogsGlAccountId: 'gl-2',
@@ -206,8 +207,10 @@ describe('syncInventoryItem — GL account validation', () => {
       ),
     ).rejects.toThrow(/Missing GL account for Income/);
 
-    // Failure should still be persisted to the sync ref so the UI can surface it
-    expect((mockPrisma as any).qboInventorySyncRef.update).toHaveBeenCalled();
+    // Failure should still be persisted to the sync ref so the UI can surface
+    // it. With the probe-first refactor, the very first failure for a ref
+    // creates the row instead of updating it.
+    expect((mockPrisma as any).qboInventorySyncRef.create).toHaveBeenCalled();
   });
 
   it('throws when the GL account exists but has not been mapped to QBO', async () => {
@@ -226,6 +229,7 @@ describe('syncInventoryItem — GL account validation', () => {
           sku: 'WAX-1',
           priceCents: 1500,
           costCents: 600,
+          trackInventory: true,
           incomeGlAccountId: 'gl-income',
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -233,6 +237,174 @@ describe('syncInventoryItem — GL account validation', () => {
         'tenant-1',
       ),
     ).rejects.toThrow(/not linked to a QuickBooks account/);
+  });
+
+  it('does not invalidate the existing sync ref on a transient lookup failure', async () => {
+    // Existing ref points at a QBO Item; the GET fails with a 5xx (transient).
+    // We must NOT null out qboId — otherwise the next attempt would create a
+    // duplicate Item in QBO every time QBO has a hiccup.
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ qboId: 'qbo-item-existing', qboType: 'Item' });
+    const refUpdate = vi.fn().mockResolvedValue({ retryCount: 1 });
+    (mockPrisma as any).qboInventorySyncRef.update = refUpdate;
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Fault":{"Error":[{"Message":"ServiceUnavailable","code":"500"}]}}', {
+        status: 503,
+      }) as any,
+    );
+
+    try {
+      await expect(
+        syncInventoryItem(
+          {
+            productId: 'svc-prod-transient',
+            name: 'Dockage Add-on',
+            sku: 'ADD-2',
+            priceCents: 1000,
+            costCents: 0,
+            trackInventory: false,
+            incomeGlAccountId: 'gl-income',
+            inventoryAssetGlAccountId: null,
+            cogsGlAccountId: null,
+          },
+          'tenant-1',
+        ),
+      ).rejects.toThrow();
+
+      // The stale-ref invalidation update (data: { qboId: null }) must NOT
+      // have been issued. Only the failure-bookkeeping updates may run.
+      const invalidationCalls = refUpdate.mock.calls.filter(
+        ([args]: any) => args?.data?.qboId === null,
+      );
+      expect(invalidationCalls).toHaveLength(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('invalidates the sync ref and creates a new Item when QBO returns 404 (item deleted upstream)', async () => {
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ qboId: 'qbo-item-gone', qboType: 'Item' });
+    const refUpdate = vi.fn().mockResolvedValue({ retryCount: 1 });
+    (mockPrisma as any).qboInventorySyncRef.update = refUpdate;
+    (mockPrisma as any).qboInventorySyncRef.upsert = vi.fn().mockResolvedValue({});
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    // First call (GET item/qbo-item-gone) → 404; second call (POST item) → 200 create.
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('{"Fault":{"Error":[{"Message":"Object Not Found","code":"610"}]}}', {
+          status: 404,
+        }) as any,
+      )
+      .mockResolvedValueOnce(
+        new Response('{"Item":{"Id":"qbo-item-new"}}', { status: 200 }) as any,
+      );
+
+    try {
+      await syncInventoryItem(
+        {
+          productId: 'svc-prod-recreated',
+          name: 'Dockage Add-on',
+          sku: 'ADD-3',
+          priceCents: 1000,
+          costCents: 0,
+          trackInventory: false,
+          incomeGlAccountId: 'gl-income',
+          inventoryAssetGlAccountId: null,
+          cogsGlAccountId: null,
+        },
+        'tenant-1',
+      );
+
+      // Stale ref WAS invalidated.
+      const invalidationCalls = refUpdate.mock.calls.filter(
+        ([args]: any) => args?.data?.qboId === null,
+      );
+      expect(invalidationCalls).toHaveLength(1);
+      // A POST to item endpoint occurred (the new-item create).
+      const postCalls = fetchSpy.mock.calls.filter(([, init]: any) => init?.method === 'POST');
+      expect(postCalls.length).toBeGreaterThan(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('non-tracked products only require an Income mapping (no Inventory Asset / COGS)', async () => {
+    // No Inventory Asset / COGS provided — would reject for an inventory item
+    // but should pass GL validation for a service item.
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    // Mock a connected tenant so qboRequest can resolve credentials.
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    // Stub the QBO HTTP call so we can inspect the payload without a real
+    // round-trip. We only care that GL validation succeeds and that the
+    // payload sent to QBO uses Type:"Service".
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Item":{"Id":"qbo-item-1"}}', { status: 200 }) as any,
+    );
+
+    try {
+      await syncInventoryItem(
+        {
+          productId: 'svc-prod-1',
+          name: 'Dockage Add-on',
+          sku: 'ADD-1',
+          priceCents: 1000,
+          costCents: 0,
+          trackInventory: false,
+          incomeGlAccountId: 'gl-income',
+          inventoryAssetGlAccountId: null,
+          cogsGlAccountId: null,
+        },
+        'tenant-1',
+      );
+
+      // The QBO POST body should reflect a Service item.
+      const calls = fetchSpy.mock.calls.filter(([, init]: any) => init?.method === 'POST');
+      expect(calls.length).toBeGreaterThan(0);
+      const lastBody = JSON.parse((calls[calls.length - 1][1] as any).body as string);
+      expect(lastBody.Type).toBe('Service');
+      expect(lastBody.AssetAccountRef).toBeUndefined();
+      expect(lastBody.ExpenseAccountRef).toBeUndefined();
+      expect(lastBody.TrackQtyOnHand).toBeUndefined();
+      expect(lastBody.IncomeAccountRef).toEqual({ value: 'qbo-acct-1' });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 
@@ -394,7 +566,8 @@ describe('createQboRefundReceipt — partial refund → QBO RefundReceipt', () =
     // surface it.
     const upsertCalls = ((mockPrisma as any).qboInventorySyncRef.upsert as any).mock.calls;
     const updateCalls = ((mockPrisma as any).qboInventorySyncRef.update as any).mock.calls;
-    expect(upsertCalls.length + updateCalls.length).toBeGreaterThan(0);
+    const createCalls = ((mockPrisma as any).qboInventorySyncRef.create as any).mock.calls;
+    expect(upsertCalls.length + updateCalls.length + createCalls.length).toBeGreaterThan(0);
   });
 
   it('rejects non-positive refund amounts before touching prisma or QBO', async () => {
@@ -851,7 +1024,11 @@ describe('findTenantsWithDueFailedInventorySyncs — drives the background sweep
 
 describe('writeSyncRefFailure backoff bookkeeping', () => {
   it('atomically increments retryCount and stamps nextRetryAt with exponential backoff on each failure', async () => {
-    // Existing row: first update() call returns the post-increment retryCount (3).
+    // Probe-first: findUnique returns an existing row, then update() is
+    // called twice (increment then nextRetryAt stamp).
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ id: 'ref-1' });
     const update = vi.fn()
       .mockResolvedValueOnce({ retryCount: 3 })
       .mockResolvedValueOnce({});
@@ -869,6 +1046,7 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
           sku: 'T-99',
           priceCents: 100,
           costCents: 50,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -896,9 +1074,13 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     expect((mockPrisma as any).qboInventorySyncRef.create).not.toHaveBeenCalled();
   });
 
-  it('falls back to create with retryCount=1 when the ref does not yet exist (P2025)', async () => {
-    const notFound = Object.assign(new Error('Record to update not found'), { code: 'P2025' });
-    (mockPrisma as any).qboInventorySyncRef.update = vi.fn().mockRejectedValue(notFound);
+  it('creates the ref with retryCount=1 on the very first failure (no scary P2025 log)', async () => {
+    // Probe-first: findUnique returns null → we go straight to create without
+    // ever issuing an update-of-missing-row that Prisma would log at error
+    // level.
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi.fn().mockResolvedValue(null);
+    const update = vi.fn();
+    (mockPrisma as any).qboInventorySyncRef.update = update;
     const create = vi.fn().mockResolvedValue({});
     (mockPrisma as any).qboInventorySyncRef.create = create;
     mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue(null);
@@ -913,6 +1095,7 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
           sku: 'N-1',
           priceCents: 100,
           costCents: 50,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -922,6 +1105,8 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     ).rejects.toThrow();
     const after = Date.now();
 
+    // No update call should ever occur on the first-failure path.
+    expect(update).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
     const args = create.mock.calls[0][0];
     expect(args.data.retryCount).toBe(1);

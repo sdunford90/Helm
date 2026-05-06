@@ -775,7 +775,7 @@ router.post(
             where: { id: entityId, tenantId },
             select: {
               id: true, name: true, sku: true, priceCents: true,
-              costCents: true, qoh: true,
+              costCents: true, qoh: true, trackInventory: true,
               locationId: true,
               productCategory: {
                 select: {
@@ -809,6 +809,7 @@ router.post(
               priceCents: product.priceCents,
               costCents: (product as any).costCents ?? 0,
               qoh: (product as any).qoh,
+              trackInventory: (product as any).trackInventory ?? false,
               incomeGlAccountId,
               inventoryAssetGlAccountId,
               cogsGlAccountId,
