@@ -93,7 +93,7 @@ waitForPort = 3003
 deploymentTarget = "autoscale"
 build = ["sh", "-c", "pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/api build && pnpm --filter @helm/web build"]
 publicDir = "apps/web/dist"
-run = ["sh", "-c", "pnpm --filter @helm/api exec prisma migrate deploy && pnpm --filter @helm/api start"]
+run = ["sh", "-c", "pnpm --filter @helm/api exec prisma migrate resolve --applied 20260503160000_pos_customer_and_discounts || true && pnpm --filter @helm/api exec prisma migrate deploy && pnpm --filter @helm/api start"]
 
 [userenv]
 
