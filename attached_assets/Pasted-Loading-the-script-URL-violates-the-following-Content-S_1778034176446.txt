@@ -1,0 +1,53 @@
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+Loading the script '<URL>' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.
+index-BaQpJi-k.js:861 Error: Failed to load Stripe.js
+    at HTMLScriptElement.<anonymous> (index-BaQpJi-k.js:861:68491)
+(anonymous) @ index-BaQpJi-k.js:861
+Promise.catch
+(anonymous) @ index-BaQpJi-k.js:861
+index-BaQpJi-k.js:886 Error: Failed to load StripeTerminal
+    at HTMLScriptElement.<anonymous> (index-BaQpJi-k.js:886:170272)
+(anonymous) @ index-BaQpJi-k.js:886
+Promise.catch
+(anonymous) @ index-BaQpJi-k.js:886
+index-BaQpJi-k.js:929 [helm] SW registered: https://app.tracktheturn.com/
+(index):1 Error while trying to use the following icon from the Manifest: https://app.tracktheturn.com/icon-192.png (Download error or resource isn't a valid image)
+index-BaQpJi-k.js:89 Uncaught (in promise) Wi: Clerk: Failed to load Clerk, failed to load script: https://close-oarfish-52.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js
+
+(code="failed_to_load_clerk_js")
+
+
+    at index-BaQpJi-k.js:89:21397Caused by: Error: failed to load script: https://close-oarfish-52.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js
+    at HTMLScriptElement.<anonymous> (index-BaQpJi-k.js:89:19155)
+(anonymous) @ index-BaQpJi-k.js:89
+Promise.catch
+hA @ index-BaQpJi-k.js:89
+loadClerkJS @ index-BaQpJi-k.js:89
+o2 @ index-BaQpJi-k.js:89
+getOrCreateInstance @ index-BaQpJi-k.js:89
+wA @ index-BaQpJi-k.js:89
+AA @ index-BaQpJi-k.js:89
+lf @ index-BaQpJi-k.js:38
+av @ index-BaQpJi-k.js:40
+sv @ index-BaQpJi-k.js:40
+F4 @ index-BaQpJi-k.js:40
+Rp @ index-BaQpJi-k.js:40
+nv @ index-BaQpJi-k.js:40
+S @ index-BaQpJi-k.js:25
+D @ index-BaQpJi-k.js:25
+postMessage
+L @ index-BaQpJi-k.js:25
+A @ index-BaQpJi-k.js:25
+t.unstable_scheduleCallback @ index-BaQpJi-k.js:25
+dv @ index-BaQpJi-k.js:40
+cr @ index-BaQpJi-k.js:40
+Kr @ index-BaQpJi-k.js:40
+pu @ index-BaQpJi-k.js:40
+uu.render.vf.render @ index-BaQpJi-k.js:40
+(anonymous) @ index-BaQpJi-k.js:929

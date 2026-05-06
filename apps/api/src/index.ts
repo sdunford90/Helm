@@ -149,7 +149,72 @@ app.use(
     credentials: true,
   }),
 );
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "script-src": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://js.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "https://challenges.cloudflare.com",
+        ],
+        "script-src-elem": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://js.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "https://challenges.cloudflare.com",
+        ],
+        "style-src": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+        ],
+        "style-src-elem": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+        ],
+        "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
+        "img-src": ["'self'", "data:", "blob:", "https:"],
+        "connect-src": [
+          "'self'",
+          "https://fonts.googleapis.com",
+          "https://fonts.gstatic.com",
+          "https://api.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "wss://*.clerk.accounts.dev",
+          "wss://*.clerk.com",
+        ],
+        "frame-src": [
+          "'self'",
+          "https://js.stripe.com",
+          "https://hooks.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://challenges.cloudflare.com",
+        ],
+        "worker-src": ["'self'", "blob:"],
+        "object-src": ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
 
 // Webhook routes MUST be mounted before express.json() so their raw body
 // is preserved for signature verification. The routers themselves apply

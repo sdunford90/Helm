@@ -95,6 +95,7 @@ _Populate as you build_
 *   **Platform Admin bypass**: `requirePlatformAdmin()` middleware skips Clerk auth in non-production environments for development bypass.
 *   **QBO Integration**: QBO-connected locations require specific GL account mappings; legacy fallbacks are suppressed.
 *   **Production Seeding**: When `NODE_ENV=production`, `pnpm db:seed:prod` requires `HELM_PROD_SEED_CONFIRM=yes` for non-empty databases.
+*   **Helmet CSP allow-list**: `apps/api/src/index.ts` configures helmet with an explicit CSP that whitelists Clerk (`*.clerk.accounts.dev`, `*.clerk.com`), Stripe (`js.stripe.com`, `*.stripe.com`), Cloudflare Turnstile, and Google Fonts. Default helmet CSP is too strict and blocks Clerk script load → blank SPA in prod.
 
 ## Pointers
 
