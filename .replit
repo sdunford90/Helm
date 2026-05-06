@@ -104,10 +104,10 @@ APP_ADMIN_URL = "https://admin.tracktheturn.com"
 QBO_ENVIRONMENT = "sandbox"
 VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5KahdUIHyxhrKi20olrMNAMJIz1BIkcWm0vsuqwHn4nnJ9KJPgUA00qCZaC8Mn"
 PUPPETEER_EXECUTABLE_PATH = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
+ENABLE_AUTH_DEV_BYPASS = "true"
+NODE_ENV = ""
 
 [userenv.development]
-ENABLE_AUTH_DEV_BYPASS = "true"
-NODE_ENV = "development"
 VITE_ENABLE_AUTH_DEV_BYPASS = "true"
 QBO_REDIRECT_URI = "https://92c279c8-1036-4e43-940c-5e8c174d6713-00-gp3i4v467s4h.spock.replit.dev/api/qbo/callback"
 
