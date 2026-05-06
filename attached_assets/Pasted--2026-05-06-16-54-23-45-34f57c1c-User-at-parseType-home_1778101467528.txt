@@ -1,0 +1,65 @@
+
+2026-05-06 16:54:23.45
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:54:23.45
+34f57c1c
+User
+}
+2026-05-06 16:54:23.45
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:54:23.45
+34f57c1c
+User
+command: { name: 'bzpopmin', args: [ 'bull:automation:marker', '10' ] }
+2026-05-06 16:54:23.45
+34f57c1c
+User
+ReplyError: ERR max requests limit exceeded. Limit: 500000, Usage: 500002. See https://upstash.com/docs/redis/troubleshooting/max_requests_limit for details
+2026-05-06 16:54:23.45
+34f57c1c
+User
+at parseType (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:302:14) {
+2026-05-06 16:54:23.45
+34f57c1c
+User
+at parseError (/home/runner/workspace/node_modules/.pnpm/redis-parser@3.0.0/node_modules/redis-parser/lib/parser.js:179:12)
+2026-05-06 16:54:23.45
+34f57c1c
+User
+}
+2026-05-06 16:56:04.28
+34f57c1c
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 16:56:04.32
+34f57c1c
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 16:56:05.05
+34f57c1c
+User
+}
+2026-05-06 16:56:05.05
+34f57c1c
+User
+status: 400,
+2026-05-06 16:56:05.05
+34f57c1c
+User
+errorBody: '{"Fault":{"Error":[{"Message":"Duplicate Name Exists Error","Detail":"The name supplied already exists. : null","code":"6240"}],"type":"ValidationFault"},"time":"2026-05-06T13:56:04.869-07:00"}'
+2026-05-06 16:56:05.05
+34f57c1c
+User
+url: 'https://sandbox-quickbooks.api.intuit.com/v3/company/9341455756620860/customer?minorversion=73',
+2026-05-06 16:56:05.05
+34f57c1c
+User
+[qbo-sync] API error {
+2026-05-06 16:56:05.93
+34f57c1c
+User
+[qbo-sync] Bound local customer d57d59e1-95c9-4817-a6b1-3d962a2a6fdd to existing QBO customer 80 (James Harborview) via duplicate-name recovery
