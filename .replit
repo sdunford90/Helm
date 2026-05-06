@@ -90,9 +90,10 @@ args = "pnpm --filter @helm/admin dev"
 waitForPort = 3003
 
 [deployment]
-deploymentTarget = "static"
-build = ["sh", "-c", "bash -c pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/web build"]
+deploymentTarget = "autoscale"
+build = ["sh", "-c", "pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/api build && pnpm --filter @helm/web build"]
 publicDir = "apps/web/dist"
+run = ["sh", "-c", "pnpm --filter @helm/api exec prisma migrate deploy && pnpm --filter @helm/api start"]
 
 [userenv]
 

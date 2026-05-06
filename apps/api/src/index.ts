@@ -4,6 +4,9 @@ import "dotenv/config";
 import { initSentry, setupSentryErrorHandler } from "./lib/sentry.js";
 initSentry();
 
+import path from "node:path";
+import fs from "node:fs";
+
 import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -85,7 +88,7 @@ import { closeWorkers } from "./workers/index.js";
 // --------------------------------------------------------------------------
 
 const app: Application = express();
-const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
+const PORT = parseInt(process.env.PORT ?? process.env.API_PORT ?? "3001", 10);
 
 // Trust the first proxy hop (Replit's reverse proxy / nginx).
 // Required for express-rate-limit to read X-Forwarded-For correctly and
@@ -229,6 +232,32 @@ app.use("/api/locations", locationsRouter);
 app.use("/api/roles", rolesRouter);
 app.use("/api/support", supportRouter);
 app.use("/api/accounting", accountingRouter);
+
+// --------------------------------------------------------------------------
+// Production SPA hosting — serve the React build (apps/web/dist) from this
+// same process so a single autoscale deployment hosts both the API and the
+// web client. Mounted AFTER all /api/* routes (so API handlers always win)
+// and BEFORE error handlers (so a missing static file flows through them).
+// In dev this is skipped; vite serves the SPA on its own port.
+// --------------------------------------------------------------------------
+
+if (process.env.NODE_ENV === "production") {
+  // Compiled file lives at apps/api/dist/index.js, so the web build sits at
+  // ../../web/dist relative to it.
+  const webDist = path.resolve(import.meta.dirname, "../../web/dist");
+  if (fs.existsSync(webDist)) {
+    app.use(express.static(webDist, { index: false, maxAge: "1h" }));
+    app.use((req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api/")) return next();
+      res.sendFile(path.join(webDist, "index.html"));
+    });
+    console.log(`[helm-api] serving SPA from ${webDist}`);
+  } else {
+    console.warn(
+      `[helm-api] WARNING: web build not found at ${webDist} — SPA will not be served`,
+    );
+  }
+}
 
 // --------------------------------------------------------------------------
 // Error handlers — Sentry goes BEFORE the app error handler so unhandled
