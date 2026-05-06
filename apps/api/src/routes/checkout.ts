@@ -2,9 +2,11 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import type Stripe from "stripe";
 
+import { v4 as uuid } from "uuid";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
+import { postPayment } from "../services/gl-posting.js";
 
 const router: Router = Router();
 
@@ -333,10 +335,81 @@ router.post(
         `[charge-card-on-file] OK pi=${intent.id} status=${intent.status} took=${Date.now() - startedAt}ms`,
       );
 
-      // The PaymentIntent webhook (payment_intent.succeeded) will promote the
-      // Payment row to COMPLETED and post GL. Here we just surface the
-      // immediate status so the UI can show "Charged" or "Authentication
-      // required".
+      // Persist a Payment row keyed on intent.id BEFORE the webhook can race
+      // us. Without this, payment_intent.succeeded arrives ~1-2s later, fails
+      // its `findFirst({ stripePaymentId })` lookup, and the invoice is never
+      // marked PAID nor GL-posted (silent revenue leak).
+      //
+      // For an immediately-succeeded card charge we record COMPLETED + post GL
+      // synchronously — same pattern as POST /api/payments. The webhook then
+      // sees status=COMPLETED and no-ops (handler short-circuits on line ~398).
+      // For requires_action / processing we leave the row PENDING; the webhook
+      // promotes it once the customer completes 3DS or the bank settles.
+      // Idempotency guard: a duplicate submit (double-click, retried network
+      // request) hits Stripe's idempotency key and gets the SAME PaymentIntent
+      // back — but the DB write below is not naturally idempotent without a
+      // unique index on stripePaymentId. Check first, then skip the write +
+      // GL post if a row already exists for this intent. The webhook also
+      // honours this row, so we never double-post GL or duplicate Payments.
+      const existing = await prisma.payment.findFirst({
+        where: { tenantId, stripePaymentId: intent.id },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        if (intent.status === "succeeded") {
+          const paymentId = uuid();
+          await prisma.$transaction(async (tx) => {
+            await tx.payment.create({
+              data: {
+                id: paymentId,
+                tenantId,
+                customerId: invoice.customer.id,
+                invoiceId: invoice.id,
+                amountCents: chargeAmountCents,
+                method: "CARD",
+                stripePaymentId: intent.id,
+                postedDate: new Date(),
+                status: "COMPLETED",
+              },
+            });
+            await postPayment(
+              {
+                id: paymentId,
+                tenantId,
+                amountCents: chargeAmountCents,
+                method: "CARD",
+                locationId: invoice.locationId ?? null,
+              },
+              tx,
+            );
+            const newBalance = Math.max(0, invoice.balanceCents - chargeAmountCents);
+            await tx.invoice.update({
+              where: { id: invoice.id },
+              data: {
+                balanceCents: newBalance,
+                status: newBalance === 0 ? "PAID" : invoice.status,
+              },
+            });
+          });
+        } else {
+          // Pending (3DS / processing). Insert a stub the webhook can promote.
+          await prisma.payment.create({
+            data: {
+              id: uuid(),
+              tenantId,
+              customerId: invoice.customer.id,
+              invoiceId: invoice.id,
+              amountCents: chargeAmountCents,
+              method: "CARD",
+              stripePaymentId: intent.id,
+              postedDate: new Date(),
+              status: "PENDING",
+            },
+          });
+        }
+      }
+
       res.json({
         paymentIntentId: intent.id,
         status: intent.status,
@@ -357,6 +430,53 @@ router.post(
         `[charge-card-on-file] FAIL code=${e?.code ?? "<none>"} decline=${e?.decline_code ?? "<none>"} pi=${e?.payment_intent?.id ?? "<none>"} pi_status=${e?.payment_intent?.status ?? "<none>"} msg=${e?.message ?? "<none>"} took=${Date.now() - startedAt}ms`,
       );
       if (e?.code === "authentication_required") {
+        // The customer will complete 3DS in the UI and Stripe will fire
+        // payment_intent.succeeded. Without a PENDING row keyed on this
+        // intent.id the webhook silently drops — same revenue-leak class
+        // as the original missing-row bug. Insert a stub now (idempotent
+        // via findFirst guard) so the webhook can promote it later.
+        const piId = e.payment_intent?.id;
+        if (piId) {
+          try {
+            const ctxInvoiceId = (req.body as { invoiceId?: string })?.invoiceId;
+            const ctx = ctxInvoiceId
+              ? await prisma.invoice.findFirst({
+                  where: { id: ctxInvoiceId, tenantId: req.tenantId! },
+                  select: { id: true, customerId: true },
+                })
+              : null;
+            const already = await prisma.payment.findFirst({
+              where: { tenantId: req.tenantId!, stripePaymentId: piId },
+              select: { id: true },
+            });
+            if (!already && ctx) {
+              const parsed = CardOnFileSchema.safeParse(req.body);
+              const amt = parsed.success && parsed.data.amountCents
+                ? parsed.data.amountCents
+                : 0;
+              if (amt > 0) {
+                await prisma.payment.create({
+                  data: {
+                    id: uuid(),
+                    tenantId: req.tenantId!,
+                    customerId: ctx.customerId,
+                    invoiceId: ctx.id,
+                    amountCents: amt,
+                    method: "CARD",
+                    stripePaymentId: piId,
+                    postedDate: new Date(),
+                    status: "PENDING",
+                  },
+                });
+              }
+            }
+          } catch (stubErr) {
+            console.error(
+              `[charge-card-on-file] failed to write 3DS PENDING stub for ${piId}:`,
+              stubErr,
+            );
+          }
+        }
         res.status(402).json({
           error: "Card requires authentication",
           code: "AUTHENTICATION_REQUIRED",

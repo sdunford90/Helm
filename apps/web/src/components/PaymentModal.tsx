@@ -407,6 +407,7 @@ export default function PaymentModal({
     setStatus('processing');
     const result = await recordSimplePayment.execute({
       invoiceId,
+      customerId,
       amountCents: balanceDue,
       method,
     });
