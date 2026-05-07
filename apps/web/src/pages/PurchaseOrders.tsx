@@ -141,7 +141,7 @@ function CreateDrawer({ locationId, onClose, onCreated }: CreateDrawerProps) {
   const [error, setError] = useState<string | null>(null);
 
   const productsQs = locationId ? `?locationId=${encodeURIComponent(locationId)}` : '';
-  const { data: productsData } = useApi<{ data: ApiProduct[] }>('get', `/api/products${productsQs}`, { immediate: true });
+  const { data: productsData } = useApi<{ data: ApiProduct[] }>('get', `/api/inventory/products${productsQs}`, { immediate: true });
   const products = productsData?.data ?? [];
 
   const createApi = useApi<{ id: string }>('post', '/api/inventory/purchase-orders');
