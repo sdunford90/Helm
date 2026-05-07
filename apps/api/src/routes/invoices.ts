@@ -447,6 +447,17 @@ router.get(
               status: true,
               postedDate: true,
               stripePaymentId: true,
+              refunds: {
+                select: {
+                  id: true,
+                  amountCents: true,
+                  reason: true,
+                  userName: true,
+                  createdAt: true,
+                  isFullRefund: true,
+                },
+                orderBy: { createdAt: "asc" },
+              },
             },
           },
         },

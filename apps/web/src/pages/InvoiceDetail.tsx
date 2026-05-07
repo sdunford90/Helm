@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
@@ -10,6 +10,8 @@ import {
   DollarSign,
   BookOpen,
   Download,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import PaymentModal from '../components/PaymentModal';
 import { formatCents, formatDate, formatDateOnly } from '../lib/format';
@@ -26,6 +28,15 @@ interface ApiLineItem {
   extendedCents: number;
 }
 
+interface ApiPaymentRefund {
+  id: string;
+  amountCents: number;
+  reason: string | null;
+  userName: string | null;
+  createdAt: string;
+  isFullRefund: boolean;
+}
+
 interface ApiPayment {
   id: string;
   amountCents: number;
@@ -33,6 +44,7 @@ interface ApiPayment {
   method: string;
   status: string;
   postedDate: string | null;
+  refunds?: ApiPaymentRefund[];
 }
 
 interface ApiGlEntry {
@@ -80,6 +92,14 @@ interface LineItem {
 
 type PaymentStatus = 'Completed' | 'Pending' | 'Failed' | 'Refunded' | 'Partially refunded';
 
+interface PaymentRefundEvent {
+  id: string;
+  amountCents: number;
+  reason: string | null;
+  userName: string | null;
+  createdAt: string;
+}
+
 interface Payment {
   id: string;
   date: string;
@@ -87,6 +107,7 @@ interface Payment {
   amount: number;
   refundedCents: number;
   status: PaymentStatus;
+  refunds: PaymentRefundEvent[];
 }
 
 interface GLEntry {
@@ -161,6 +182,13 @@ function mapApiInvoice(raw: ApiInvoice): InvoiceData {
       amount: p.amountCents,
       refundedCents: p.refundedCents ?? 0,
       status: normalisePaymentStatus(p.status),
+      refunds: (p.refunds ?? []).map((r) => ({
+        id: r.id,
+        amountCents: r.amountCents,
+        reason: r.reason,
+        userName: r.userName,
+        createdAt: r.createdAt,
+      })),
     })),
     glEntries: (raw.glEntries ?? []).map((g) => ({
       date: g.postedAt,
@@ -289,6 +317,7 @@ export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [showPayment, setShowPayment] = useState(false);
+  const [expandedRefunds, setExpandedRefunds] = useState<Record<string, boolean>>({});
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -583,39 +612,100 @@ export default function InvoiceDetail() {
                 </tr>
               </thead>
               <tbody>
-                {invoice.payments.map((p, idx) => (
-                  <tr key={p.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
-                    <td style={st.td}>{p.date ? formatDate(p.date) : '—'}</td>
-                    <td style={st.td}>{p.method}</td>
-                    <td style={{ ...st.tdRight, fontWeight: 600 }}>
-                      {formatCents(p.amount)}
-                      {p.status === 'Partially refunded' && p.refundedCents > 0 ? (
-                        <div style={{ fontSize: '12px', fontWeight: 400, color: '#64748B', marginTop: '2px' }}>
-                          {formatCents(p.refundedCents)} refunded
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={st.td}>
-                      <span style={{
-                        ...st.paymentBadge,
-                        backgroundColor:
-                          p.status === 'Completed' ? '#E8F5E9'
-                          : p.status === 'Pending' ? '#FFF3CD'
-                          : p.status === 'Refunded' ? '#E2E8F0'
-                          : p.status === 'Partially refunded' ? '#E0F2FE'
-                          : '#FDECEA',
-                        color:
-                          p.status === 'Completed' ? '#1B5E20'
-                          : p.status === 'Pending' ? '#856404'
-                          : p.status === 'Refunded' ? '#475569'
-                          : p.status === 'Partially refunded' ? '#075985'
-                          : '#B71C1C',
-                      }}>
-                        {p.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {invoice.payments.map((p, idx) => {
+                  const rowBg = idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF';
+                  const hasRefunds = p.refunds.length > 0;
+                  const isExpanded = expandedRefunds[p.id] ?? false;
+                  return (
+                    <React.Fragment key={p.id}>
+                      <tr style={{ backgroundColor: rowBg }}>
+                        <td style={st.td}>
+                          {hasRefunds ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedRefunds((prev) => ({ ...prev, [p.id]: !isExpanded }))
+                              }
+                              aria-label={isExpanded ? 'Hide refund history' : 'Show refund history'}
+                              aria-expanded={isExpanded}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                                color: '#0A2342', font: 'inherit',
+                              }}
+                            >
+                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              {p.date ? formatDate(p.date) : '—'}
+                            </button>
+                          ) : (
+                            p.date ? formatDate(p.date) : '—'
+                          )}
+                        </td>
+                        <td style={st.td}>{p.method}</td>
+                        <td style={{ ...st.tdRight, fontWeight: 600 }}>
+                          {formatCents(p.amount)}
+                          {p.status === 'Partially refunded' && p.refundedCents > 0 ? (
+                            <div style={{ fontSize: '12px', fontWeight: 400, color: '#64748B', marginTop: '2px' }}>
+                              {formatCents(p.refundedCents)} refunded
+                            </div>
+                          ) : null}
+                        </td>
+                        <td style={st.td}>
+                          <span style={{
+                            ...st.paymentBadge,
+                            backgroundColor:
+                              p.status === 'Completed' ? '#E8F5E9'
+                              : p.status === 'Pending' ? '#FFF3CD'
+                              : p.status === 'Refunded' ? '#E2E8F0'
+                              : p.status === 'Partially refunded' ? '#E0F2FE'
+                              : '#FDECEA',
+                            color:
+                              p.status === 'Completed' ? '#1B5E20'
+                              : p.status === 'Pending' ? '#856404'
+                              : p.status === 'Refunded' ? '#475569'
+                              : p.status === 'Partially refunded' ? '#075985'
+                              : '#B71C1C',
+                          }}>
+                            {p.status}
+                          </span>
+                        </td>
+                      </tr>
+                      {hasRefunds && isExpanded && (
+                        <tr style={{ backgroundColor: rowBg }}>
+                          <td colSpan={4} style={{ padding: '0 16px 12px 36px' }}>
+                            <div style={{
+                              fontSize: '12px', fontWeight: 600, color: '#475569',
+                              textTransform: 'uppercase', letterSpacing: '0.04em',
+                              padding: '8px 0 4px',
+                            }}>
+                              Refund history
+                            </div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ textAlign: 'left', padding: '4px 8px 4px 0', color: '#64748B', fontWeight: 500 }}>Date</th>
+                                  <th style={{ textAlign: 'right', padding: '4px 8px', color: '#64748B', fontWeight: 500 }}>Amount</th>
+                                  <th style={{ textAlign: 'left', padding: '4px 8px', color: '#64748B', fontWeight: 500 }}>Reason</th>
+                                  <th style={{ textAlign: 'left', padding: '4px 0 4px 8px', color: '#64748B', fontWeight: 500 }}>Refunded by</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {p.refunds.map((r) => (
+                                  <tr key={r.id}>
+                                    <td style={{ padding: '4px 8px 4px 0', color: '#0A2342' }}>{formatDate(r.createdAt)}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right', ...mono, color: '#0A2342' }}>{formatCents(r.amountCents)}</td>
+                                    <td style={{ padding: '4px 8px', color: '#475569' }}>{r.reason || '—'}</td>
+                                    <td style={{ padding: '4px 0 4px 8px', color: '#475569' }}>{r.userName || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
