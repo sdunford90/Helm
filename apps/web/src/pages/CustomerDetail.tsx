@@ -305,6 +305,10 @@ interface ApiSavedPaymentMethod {
   expYear: number | null;
   expiry: string | null;
   isDefault: boolean;
+  // Per-card opt-in for the POS counter (Stripe metadata.usableInPos).
+  // Always false for bank accounts — ACH can't be charged off-session at
+  // the front desk.
+  usableInPos?: boolean;
 }
 
 interface ApiPaymentMethodsResponse {
@@ -2084,6 +2088,20 @@ export default function CustomerDetailPage() {
     }
   }
 
+  async function toggleUsableInPos(pmId: string, next: boolean) {
+    setPmError(null);
+    setPmActionId(pmId);
+    try {
+      const token = await getToken();
+      await api.patch(`/api/customers/${id}/payment-methods/${pmId}`, { usableInPos: next }, token);
+      await refetchPaymentMethods();
+    } catch (err) {
+      setPmError(err instanceof Error ? err.message : 'Could not update POS-usable flag');
+    } finally {
+      setPmActionId(null);
+    }
+  }
+
   async function toggleAutopay() {
     if (!paymentMethods) return;
     const next = !paymentMethods.autopay;
@@ -2901,6 +2919,26 @@ export default function CustomerDetailPage() {
                         </div>
                       )}
                     </div>
+                    {m.kind === 'card' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => toggleUsableInPos(m.id, !m.usableInPos)}
+                        title={m.usableInPos ? 'Remove POS pre-authorization for this card' : 'Allow this card to be charged at the POS counter'}
+                        style={{
+                          padding: '6px 12px',
+                          border: `1px solid ${m.usableInPos ? '#15803D' : '#CBD5E1'}`,
+                          borderRadius: '6px',
+                          backgroundColor: m.usableInPos ? '#F0FDF4' : '#FFFFFF',
+                          color: m.usableInPos ? '#15803D' : '#64748B',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: busy ? 'wait' : 'pointer',
+                        }}
+                      >
+                        {m.usableInPos ? 'POS-usable ✓' : 'Allow at POS'}
+                      </button>
+                    )}
                     {!m.isDefault && (
                       <button
                         type="button"

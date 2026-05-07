@@ -25,6 +25,9 @@ interface PaymentMethod {
   expYear: number | null;
   isDefault: boolean;
   kind: 'card' | 'bank';
+  // Customer-controlled opt-in (Stripe metadata.usableInPos). When true,
+  // the marina staff can charge this card at the POS counter.
+  usableInPos?: boolean;
 }
 
 interface PaymentMethodsResponse {
@@ -144,6 +147,28 @@ export default function PaymentMethods() {
       }
     } catch {
       setErrorMsg('Failed to set default payment method.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleToggleUsableInPos = async (pmId: string, next: boolean) => {
+    setErrorMsg(null);
+    setActionLoading(`pos-${pmId}`);
+    // Optimistic update so the toggle doesn't feel laggy on slow connections.
+    setMethods((prev) => prev.map((m) => (m.id === pmId ? { ...m, usableInPos: next } : m)));
+    try {
+      const token = await getToken();
+      const res = await authedFetch(
+        `/api/portal/payment-methods/${pmId}/usable-in-pos`,
+        { method: 'PATCH', body: JSON.stringify({ usableInPos: next }) },
+        token,
+      );
+      if (!res.ok) throw new Error('Failed to update');
+    } catch {
+      // Roll back the optimistic flip.
+      setMethods((prev) => prev.map((m) => (m.id === pmId ? { ...m, usableInPos: !next } : m)));
+      setErrorMsg('Could not update POS-usable setting.');
     } finally {
       setActionLoading(null);
     }
@@ -417,6 +442,25 @@ export default function PaymentMethods() {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {pm.kind === 'card' && (
+                  <button
+                    onClick={() => handleToggleUsableInPos(pm.id, !pm.usableInPos)}
+                    disabled={!!actionLoading}
+                    title={pm.usableInPos
+                      ? 'Click to remove POS pre-authorization for this card'
+                      : 'Click to allow the marina to charge this card at the POS counter'}
+                    style={{
+                      padding: '6px 14px', borderRadius: 6,
+                      border: `1px solid ${pm.usableInPos ? '#15803D' : '#E2E8F0'}`,
+                      background: pm.usableInPos ? '#F0FDF4' : '#fff',
+                      color: pm.usableInPos ? '#15803D' : '#64748B',
+                      fontSize: 13, fontWeight: 600,
+                      cursor: actionLoading ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {actionLoading === `pos-${pm.id}` ? <Loader size={13} /> : (pm.usableInPos ? 'POS-usable ✓' : 'Allow at POS')}
+                  </button>
+                )}
                 {!pm.isDefault && (
                   <button
                     onClick={() => handleSetDefault(pm.id)}

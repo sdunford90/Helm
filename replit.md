@@ -65,6 +65,8 @@ To set up and run the application:
 *   **Tenant-aware middleware**: Centralized logic (`apps/api/src/middleware/tenant.ts`) scopes API requests to the correct marina tenant, excluding platform-wide admin routes.
 *   **Lease-based idempotency for scheduled tasks**: Critical for ensuring "at-most-once" execution of jobs like card expiry reminders, even with concurrent workers or restarts.
 *   **Per-tenant/per-location email sender**: Customer-facing mail resolves its FROM via `apps/api/src/lib/email-sender.ts` (location override → tenant override → `noreply@gethelm.com`); `sendEmail()` throws `EmailSendError` on failure and records the last failure on `Tenant.lastEmailFailure*`, surfaced in Settings → Email.
+*   **POS Charge to A/R**: Per-location opt-in (`Location.posChargeToARAllowed`); when on, POS button "Charge to A/R" creates a real `Invoice` (status ISSUED, 30-day terms) for the attached customer and links it via `PosTransaction.invoiceId`. Legacy `CHARGE_TO_ACCOUNT` payload still accepted but normalized.
+*   **POS saved-card off-session charge**: Per-saved-PM opt-in via Stripe `metadata.usableInPos="true"` (toggleable on CustomerDetail and the Portal). When a customer is attached at the POS, opted-in cards appear in a picker; selecting one sends `savedPaymentMethodId` and the server creates/confirms a PaymentIntent off-session immediately (writes a `PosPayment` audit row before the `PosTransaction.create` so the existing PI proof gate accepts it).
 
 ## Product
 

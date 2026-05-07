@@ -632,7 +632,7 @@ export default function Settings() {
   interface LocationDetail {
     id: string; name: string; address: string; city: string; state: string; zip: string; phone: string;
     timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-    autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
+    autoExecuteRenewals: boolean; posAchEnabled: boolean; posChargeToARAllowed: boolean; logoUrl: string;
     qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
     stripeConnected: boolean; stripeAccountId: string | null; stripeOnboardingComplete: boolean;
     // Per-location email sender override (Task #273). When any of these
@@ -1577,6 +1577,10 @@ export default function Settings() {
                     <label style={st.checkbox} title="Show the ACH (bank transfer) button in the POS counter for this location. Off by default — most marinas don't want ACH at the front desk.">
                       <input type="checkbox" checked={!!locationForm.posAchEnabled} onChange={(e) => handleLocationFormChange('posAchEnabled', e.target.checked)} />
                       Show ACH on POS
+                    </label>
+                    <label style={st.checkbox} title="Allow cashiers to settle a POS sale by creating a real A/R invoice for the attached customer (replaces the legacy 'Charge to Slip' button). Off by default.">
+                      <input type="checkbox" checked={!!locationForm.posChargeToARAllowed} onChange={(e) => handleLocationFormChange('posChargeToARAllowed', e.target.checked)} />
+                      Allow Charge to A/R on POS
                     </label>
                   </div>
 

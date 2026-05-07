@@ -13,6 +13,11 @@ export interface ApiLocation {
   // server-side; tolerated as optional here so older API responses (or any
   // hand-rolled test fixtures) don't crash on missing field.
   posAchEnabled?: boolean;
+  // Per-location toggle for the POS counter's "Charge to A/R" button.
+  // When true, cashiers can complete a sale by creating a real A/R invoice
+  // for the attached customer. Optional for the same compatibility reason
+  // as posAchEnabled above.
+  posChargeToARAllowed?: boolean;
 }
 
 export interface ModulesConfig {

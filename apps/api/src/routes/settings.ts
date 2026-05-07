@@ -1040,6 +1040,7 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         rentalsEnabled: true,
         autoExecuteRenewals: true,
         posAchEnabled: true,
+        posChargeToARAllowed: true,
         logoUrl: true,
         brandingJson: true,
         qboRealmId: true,
@@ -1090,7 +1091,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
 
     const {
       name, address, city, state, zip, phone, timezone, active,
-      transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, logoUrl,
+      transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, posChargeToARAllowed, logoUrl,
       // Per-location email sender overrides (Task #273). When set, these
       // take precedence over the tenant-level emailFrom* values for any
       // sendEmail() call that passes locationId. See email-sender.ts.
@@ -1099,7 +1100,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       req.body as Partial<{
         name: string; address: string; city: string; state: string; zip: string; phone: string;
         timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-        autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
+        autoExecuteRenewals: boolean; posAchEnabled: boolean; posChargeToARAllowed: boolean; logoUrl: string;
         emailFromDomain: string | null; emailFromAddress: string | null;
         emailFromName: string | null; emailReplyTo: string | null;
       }>;
@@ -1134,6 +1135,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         ...(rentalsEnabled !== undefined && { rentalsEnabled }),
         ...(autoExecuteRenewals !== undefined && { autoExecuteRenewals }),
         ...(posAchEnabled !== undefined && { posAchEnabled }),
+        ...(posChargeToARAllowed !== undefined && { posChargeToARAllowed }),
         ...(logoUrl !== undefined && { logoUrl }),
         // Empty-string treated as "clear override".
         ...(emailFromDomain !== undefined && { emailFromDomain: emailFromDomain || null }),
@@ -1144,7 +1146,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       select: {
         id: true, name: true, address: true, city: true, state: true, zip: true, phone: true,
         timezone: true, active: true, transientEnabled: true, rentalsEnabled: true,
-        autoExecuteRenewals: true, posAchEnabled: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
+        autoExecuteRenewals: true, posAchEnabled: true, posChargeToARAllowed: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
         emailFromDomain: true, emailFromAddress: true, emailFromName: true, emailReplyTo: true,
       },
     });

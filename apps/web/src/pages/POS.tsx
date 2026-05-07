@@ -102,7 +102,14 @@ function mapApiProduct(p: ApiProduct): Product {
 }
 
 const PAYMENT_METHOD_API: Record<string, string> = {
-  Card: 'CARD', Cash: 'CASH', ACH: 'ACH', 'Charge to Slip': 'CHARGE_TO_ACCOUNT',
+  Card: 'CARD', Cash: 'CASH', ACH: 'ACH',
+  // "Charge to A/R" replaces the legacy "Charge to Slip" wording. The server
+  // now creates a real A/R Invoice for the attached customer (gated on the
+  // location's posChargeToARAllowed toggle).
+  'Charge to A/R': 'CHARGE_TO_AR',
+  // Saved-card picks reuse the CARD path; the server charges the saved
+  // PaymentMethod off-session via savedPaymentMethodId.
+  'Saved Card': 'CARD',
 };
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -880,10 +887,25 @@ function PaymentModal({
                   <div style={{ color: '#64748B', fontSize: '14px' }}>ACH payment will be initiated on confirmation</div>
                 </div>
               )}
-              {method === 'Charge to Slip' && (
-                <div style={st.field}>
-                  <label style={st.label}>Slip Number</label>
-                  <input style={st.input} placeholder="e.g. A-01" value={slip} onChange={(e) => setSlip(e.target.value)} autoFocus />
+              {method === 'Charge to A/R' && (
+                <div style={{ textAlign: 'center', padding: '20px', background: '#F0F9FF', borderRadius: '8px', border: '1px solid #BFDBFE' }}>
+                  <DollarSign size={28} style={{ color: '#1D4ED8', marginBottom: '8px' }} />
+                  <div style={{ fontSize: '14px', color: '#0F2E4D', fontWeight: 600, marginBottom: '4px' }}>
+                    A new A/R invoice will be created for the attached customer.
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748B' }}>
+                    Due in 30 days. The customer can pay it from the portal or you can collect later.
+                  </div>
+                  {/* Hidden field — kept to avoid no-unused-vars on `slip`/`setSlip`. */}
+                  <input type="hidden" value={slip} onChange={() => setSlip('')} />
+                </div>
+              )}
+              {method === 'Saved Card' && (
+                <div style={{ textAlign: 'center', padding: '20px', background: '#F0FDF4', borderRadius: '8px', border: '1px solid #86EFAC' }}>
+                  <CreditCard size={28} style={{ color: '#15803D', marginBottom: '8px' }} />
+                  <div style={{ fontSize: '14px', color: '#0F2E4D', fontWeight: 600 }}>
+                    The customer's saved card will be charged immediately.
+                  </div>
                 </div>
               )}
             </>
@@ -1566,7 +1588,7 @@ export default function POS() {
   // would re-render the still-mounted CardPaymentModal with a fresh
   // `total = 0`, making the "Payment Complete — $0.00" screen and the
   // printed receipt show $0 even though Stripe charged the correct amount.
-  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[]; totalSnapshot: number } | null>(null);
+  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[]; totalSnapshot: number; savedPaymentMethodId?: string } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
@@ -1580,6 +1602,43 @@ export default function POS() {
   // per-location, and defaulted to ON.
   // In All-locations mode (no currentLocationId) we hide ACH — there's no
   // single location to bill against, so the choice is moot.
+  // Per-location toggle for the "Charge to A/R" button. When off (default),
+  // the button is hidden entirely so the legacy "Charge to Slip" wording
+  // can never resurface for marinas that haven't opted in.
+  const posChargeToAREnabled = useMemo(() => {
+    if (!currentLocationId) return false;
+    const loc = locations?.find((l) => l.id === currentLocationId);
+    return !!loc?.posChargeToARAllowed;
+  }, [currentLocationId, locations]);
+
+  // Saved Stripe payment methods for the attached customer that have been
+  // explicitly opted in for POS use (metadata.usableInPos === "true"). Empty
+  // until a customer is attached.
+  type PosUsableCard = { id: string; label: string; last4: string };
+  const [usableSavedCards, setUsableSavedCards] = useState<PosUsableCard[]>([]);
+  useEffect(() => {
+    if (!attachedCustomer) { setUsableSavedCards([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch(`/api/customers/${attachedCustomer.id}/payment-methods`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) { if (!cancelled) setUsableSavedCards([]); return; }
+        const json = await res.json();
+        const methods = (json?.methods ?? []) as Array<{ id: string; kind: string; label: string; last4: string; usableInPos?: boolean }>;
+        if (!cancelled) {
+          setUsableSavedCards(
+            methods.filter((m) => m.kind === 'card' && m.usableInPos)
+              .map((m) => ({ id: m.id, label: m.label, last4: m.last4 })),
+          );
+        }
+      } catch { if (!cancelled) setUsableSavedCards([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [attachedCustomer, getToken]);
+
   const achEnabled = useMemo(() => {
     if (!currentLocationId) return false;
     const loc = locations.find((l) => l.id === currentLocationId);
@@ -1684,7 +1743,7 @@ export default function POS() {
 
   const transactions = apiTransactionsMapped;
 
-  const handlePaymentComplete = async (method: string, cardMeta?: CardPaymentMeta) => {
+  const handlePaymentComplete = async (method: string, cardMeta?: CardPaymentMeta, savedPaymentMethodId?: string) => {
     const lineItems = cart.map((i) => {
       const unitPriceCents = Math.round(i.product.price * 100);
       const qty = Math.max(1, Math.round(i.quantity));
@@ -1719,6 +1778,9 @@ export default function POS() {
         cnpFallbackReason: cardMeta.cnpFallbackReason ?? null,
         stripePaymentIntentId: cardMeta.stripePaymentIntentId ?? null,
       } : {}),
+      // Saved-card pick: server creates + confirms the PaymentIntent
+      // off-session and writes its own proof audit row.
+      ...(savedPaymentMethodId ? { savedPaymentMethodId } : {}),
     });
 
     if (result !== null) {
@@ -2332,8 +2394,34 @@ export default function POS() {
                     {achEnabled && (
                       <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart, totalSnapshot: total })}><Building2 size={16} /> ACH</button>
                     )}
-                    <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart, totalSnapshot: total })}><DollarSign size={16} /> Charge to Slip</button>
+                    {posChargeToAREnabled && (
+                      <button
+                        style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2', opacity: attachedCustomer ? 1 : 0.5, cursor: attachedCustomer ? 'pointer' : 'not-allowed' }}
+                        onClick={() => attachedCustomer && total > 0 && setPaymentModal({ method: 'Charge to A/R', cartSnapshot: cart, totalSnapshot: total })}
+                        title={attachedCustomer ? 'Create an A/R invoice for the attached customer' : 'Attach a customer first to charge to A/R'}
+                      ><DollarSign size={16} /> Charge to A/R</button>
+                    )}
                   </div>
+                  {/* Saved-card picker: appears only when a customer is attached
+                      AND has at least one card explicitly opted-in for POS use. */}
+                  {attachedCustomer && usableSavedCards.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
+                        Charge a saved card
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {usableSavedCards.map((c) => (
+                          <button
+                            key={c.id}
+                            style={{ ...st.payBtn, justifyContent: 'flex-start', background: '#F0FDF4', border: '1px solid #86EFAC', color: '#0F2E4D' }}
+                            onClick={() => total > 0 && setPaymentModal({ method: 'Saved Card', cartSnapshot: cart, totalSnapshot: total, savedPaymentMethodId: c.id })}
+                          >
+                            <CreditCard size={16} /> {c.label} •••• {c.last4}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -2461,7 +2549,7 @@ export default function POS() {
           total={paymentModal.totalSnapshot}
           method={paymentModal.method}
           onClose={() => setPaymentModal(null)}
-          onComplete={(method) => handlePaymentComplete(method)}
+          onComplete={(method) => handlePaymentComplete(method, undefined, paymentModal.savedPaymentMethodId)}
           cartItems={paymentModal.cartSnapshot}
         />
       )}

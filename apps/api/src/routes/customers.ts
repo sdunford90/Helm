@@ -1523,6 +1523,10 @@ router.get(
               ? `${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)}`
               : null,
           isDefault: pm.id === defaultMethodId,
+          // Per-PM "usable in POS" opt-in stored in Stripe metadata. Cards
+          // only — bank accounts can't be charged off-session at the POS
+          // counter, so the toggle is hidden for ACH PMs.
+          usableInPos: pm.metadata?.usableInPos === "true",
         })),
         ...bankList.data.map((pm) => ({
           id: pm.id,
@@ -1534,6 +1538,7 @@ router.get(
           expYear: null,
           expiry: null,
           isDefault: pm.id === defaultMethodId,
+          usableInPos: false,
         })),
       ];
 
@@ -1733,6 +1738,91 @@ router.post(
         locationId: account.locationId,
         locationName: account.locationName,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /api/customers/:id/payment-methods/:pmId
+// Toggles the per-saved-card "usable in POS" flag (Stripe metadata).
+// Cards only — bank accounts can't be charged off-session at the POS counter.
+router.patch(
+  "/:id/payment-methods/:pmId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const pmId = req.params.pmId;
+      const { usableInPos } = req.body as { usableInPos?: boolean };
+      if (typeof usableInPos !== "boolean") {
+        throw appError("usableInPos (boolean) is required", 400, "VALIDATION");
+      }
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true, stripeCustomerId: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+      if (!customer.stripeCustomerId) {
+        throw appError(
+          "Customer has no saved payment methods",
+          400,
+          "NO_STRIPE_CUSTOMER",
+        );
+      }
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: account.stripeAccountId };
+
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
+      if (pm.customer !== customer.stripeCustomerId) {
+        res.status(403).json({
+          error: "Payment method does not belong to this customer",
+          code: "FORBIDDEN",
+        });
+        return;
+      }
+      if (pm.type !== "card") {
+        throw appError(
+          "Only saved cards can be marked usable in POS",
+          400,
+          "PM_NOT_CARD",
+        );
+      }
+
+      // Stripe metadata merge semantics: passing keys overrides them and
+      // leaves other keys untouched. Empty string clears a key.
+      await stripe.paymentMethods.update(
+        pmId,
+        { metadata: { usableInPos: usableInPos ? "true" : "" } },
+        stripeOpts,
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_USABLE_IN_POS_SET",
+          changedFieldsJson: { paymentMethodId: pmId, usableInPos },
+        },
+      });
+
+      res.json({ success: true, usableInPos });
     } catch (err) {
       next(err);
     }

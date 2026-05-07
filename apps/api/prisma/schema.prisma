@@ -475,6 +475,13 @@ model Location {
   // admin explicitly opts in. Portal ACH is unaffected.
   posAchEnabled Boolean @default(false)
 
+  // Per-location toggle for "Charge to A/R" at the in-house POS counter.
+  // When enabled, cashiers can complete a sale by creating a real A/R
+  // invoice for an attached customer (the legacy "Charge to Slip" behavior
+  // is replaced by this — see apps/api/src/routes/pos.ts CHARGE_TO_AR).
+  // Defaults off; opt-in per location.
+  posChargeToARAllowed Boolean @default(false)
+
   // Per-location renewal behavior
   autoExecuteRenewals Boolean @default(false)
 
@@ -1051,10 +1058,11 @@ model Invoice {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  customer  Customer          @relation(fields: [customerId], references: [id])
-  location  Location?         @relation(fields: [locationId], references: [id])
-  lineItems InvoiceLineItem[]
-  payments  Payment[]
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  location        Location?         @relation(fields: [locationId], references: [id])
+  lineItems       InvoiceLineItem[]
+  payments        Payment[]
+  posTransactions PosTransaction[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -1956,15 +1964,22 @@ model PosTransaction {
   // was made without an open shift, or when location/Stripe-account assignments
   // change after the sale. Null for non-card sales and legacy rows.
   stripeAccountId   String?
+  // For "Charge to A/R" sales: the real A/R Invoice that was created for
+  // the attached customer at sale time. Null for cash/card/ACH/legacy rows.
+  // The Invoice is the source of truth for the receivable; this row just
+  // records that the POS produced it.
+  invoiceId         String?
   createdAt         DateTime  @default(now())
 
   shift     Shift?        @relation(fields: [shiftId], references: [id])
   customer  Customer?     @relation(fields: [customerId], references: [id])
+  invoice   Invoice?      @relation(fields: [invoiceId], references: [id])
   lineItems PosLineItem[]
 
   @@index([tenantId])
   @@index([tenantId, createdAt])
   @@index([customerId])
+  @@index([invoiceId])
   @@map("pos_transactions")
 }
 

@@ -1,8 +1,10 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import type Stripe from "stripe";
 import { clerkAuth, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
 import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
+import { requireStripe } from "../lib/stripe.js";
 import {
   createConnectionToken,
   listReaders,
@@ -78,8 +80,18 @@ const CreateTransactionSchema = z.object({
   // the row carries no shiftId). Server uses this as the location signal for
   // both tax calculation and Stripe-account resolution.
   locationId: z.string().optional().nullable(),
-  paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT"]).default("CASH"),
+  // CHARGE_TO_AR is the new name for the legacy CHARGE_TO_ACCOUNT path —
+  // both are accepted for backwards compatibility with older clients, and
+  // both create a real A/R Invoice for the attached customer (gated on the
+  // location's `posChargeToARAllowed` toggle).
+  paymentMethod: z.enum(["CASH", "CARD", "ACH", "CHARGE_TO_ACCOUNT", "CHARGE_TO_AR"]).default("CASH"),
   tipCents: z.number().int().min(0).default(0),
+  // When set, the server charges this saved Stripe PaymentMethod off-session
+  // immediately (must belong to the attached customer AND have
+  // metadata.usableInPos === "true"). The resulting PaymentIntent id is
+  // persisted as the sale's stripePaymentIntentId. paymentMethod must be
+  // "CARD" when this is provided.
+  savedPaymentMethodId: z.string().min(1).optional().nullable(),
   // Card-only metadata so reports can show the Terminal-vs-CNP split per
   // location and surface how often the keyed form was a silent fallback.
   // Server validates that fallback reasons only apply to CNP card sales.
@@ -565,18 +577,228 @@ router.post(
 
       const totalCents = subtotalCents + taxCents + data.tipCents;
 
+      // ─── Charge to A/R: create a real A/R Invoice for the customer ───────
+      // CHARGE_TO_AR (and its legacy alias CHARGE_TO_ACCOUNT) requires an
+      // attached customer + a location toggle, and produces an OPEN Invoice
+      // that flows through normal A/R aging / reports. The PosTransaction
+      // links to the Invoice via posTransaction.invoiceId.
+      const isChargeToAr =
+        data.paymentMethod === "CHARGE_TO_AR" ||
+        data.paymentMethod === "CHARGE_TO_ACCOUNT";
+      let chargeToArInvoiceId: string | null = null;
+      if (isChargeToAr) {
+        if (!data.customerId) {
+          throw appError(
+            "A customer is required for Charge to A/R sales.",
+            400,
+            "CUSTOMER_REQUIRED",
+          );
+        }
+        if (!locationId) {
+          throw appError(
+            "A location is required for Charge to A/R sales.",
+            400,
+            "LOCATION_REQUIRED",
+          );
+        }
+        const loc = await prisma.location.findFirst({
+          where: { id: locationId, tenantId },
+          select: { posChargeToARAllowed: true } as any,
+        });
+        if (!(loc as any)?.posChargeToARAllowed) {
+          throw appError(
+            "Charge to A/R is not enabled for this location.",
+            400,
+            "CHARGE_TO_AR_NOT_ALLOWED",
+          );
+        }
+        const invoiceLineItems = lineCalcs.map((c, idx) => {
+          const product = productMap.get(c.li.productId);
+          const lineTax = taxByIndex[idx];
+          const taxRate = c.lineSubtotal > 0 ? lineTax / c.lineSubtotal : 0;
+          return {
+            description: product?.name ?? "POS sale item",
+            quantity: c.li.quantity,
+            unitPriceCents: c.unitPrice,
+            discountCents: c.appliedDiscountCents,
+            taxRate,
+            taxCents: lineTax,
+            extendedCents: c.lineSubtotal + lineTax,
+            sourceType: "POS",
+            sourceId: c.li.productId ?? null,
+          };
+        });
+        const issuedDate = new Date();
+        const dueDate = new Date(issuedDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const invoice = await prisma.invoice.create({
+          data: {
+            tenantId,
+            customerId: data.customerId,
+            locationId,
+            invoiceNumber: `INV-${Date.now().toString(36).toUpperCase()}`,
+            issuedDate,
+            dueDate,
+            status: "ISSUED",
+            subtotalCents,
+            taxCents,
+            totalCents,
+            balanceCents: totalCents,
+            lineItems: { createMany: { data: invoiceLineItems } },
+          },
+        });
+        chargeToArInvoiceId = invoice.id;
+      }
+
+      // ─── Saved-card off-session charge ───────────────────────────────────
+      // When the cashier picked a saved Stripe PM that the customer marked
+      // "usable in POS", the server creates + confirms the PaymentIntent
+      // off-session right here so the cashier sees an immediate result. The
+      // resulting PI id flows through the existing CARD persistence path.
+      let savedCardPaymentIntentId: string | null = null;
+      let savedCardStripeAccountId: string | null = null;
+      if (data.savedPaymentMethodId && !isChargeToAr) {
+        if (data.paymentMethod !== "CARD") {
+          throw appError(
+            "savedPaymentMethodId requires paymentMethod=CARD.",
+            400,
+            "VALIDATION",
+          );
+        }
+        if (!data.customerId) {
+          throw appError(
+            "A customer is required to charge a saved card.",
+            400,
+            "CUSTOMER_REQUIRED",
+          );
+        }
+        if (!locationId) {
+          throw appError(
+            "A location is required to charge a saved card.",
+            400,
+            "LOCATION_REQUIRED",
+          );
+        }
+        const cust = await prisma.customer.findFirst({
+          where: { id: data.customerId, tenantId },
+          select: { stripeCustomerId: true },
+        });
+        if (!cust?.stripeCustomerId) {
+          throw appError(
+            "Customer has no saved Stripe account.",
+            400,
+            "NO_STRIPE_CUSTOMER",
+          );
+        }
+        const acctId = await resolveStripeAccount(tenantId, {
+          shiftId: data.shiftId ?? null,
+          locationId,
+        });
+        if (!acctId) {
+          throw appError(
+            "Stripe is not configured for this location.",
+            400,
+            "STRIPE_NOT_CONFIGURED",
+          );
+        }
+        const stripe = requireStripe();
+        const stripeOpts = { stripeAccount: acctId };
+        const pm = await stripe.paymentMethods.retrieve(
+          data.savedPaymentMethodId,
+          {},
+          stripeOpts,
+        );
+        if (pm.customer !== cust.stripeCustomerId) {
+          throw appError(
+            "Saved payment method does not belong to this customer.",
+            403,
+            "FORBIDDEN",
+          );
+        }
+        if (pm.metadata?.usableInPos !== "true") {
+          throw appError(
+            "This saved card is not enabled for POS use.",
+            400,
+            "PM_NOT_USABLE_IN_POS",
+          );
+        }
+        let pi: Stripe.PaymentIntent;
+        try {
+          pi = await stripe.paymentIntents.create(
+            {
+              amount: totalCents,
+              currency: "usd",
+              customer: cust.stripeCustomerId,
+              payment_method: data.savedPaymentMethodId,
+              confirm: true,
+              off_session: true,
+              metadata: {
+                tenantId,
+                customerId: data.customerId,
+                source: "pos_saved_card",
+              },
+            },
+            stripeOpts,
+          );
+        } catch (e) {
+          const err = e as { code?: string; message?: string };
+          if (err?.code === "authentication_required") {
+            throw appError(
+              "This card needs the customer to authenticate. Use the standard Card flow instead.",
+              400,
+              "AUTHENTICATION_REQUIRED",
+            );
+          }
+          throw appError(
+            err?.message ?? "Saved card charge failed.",
+            400,
+            err?.code ?? "SAVED_CARD_CHARGE_FAILED",
+          );
+        }
+        if (pi.status !== "succeeded") {
+          throw appError(
+            `Saved card charge ${pi.status}.`,
+            400,
+            "SAVED_CARD_CHARGE_FAILED",
+          );
+        }
+        savedCardPaymentIntentId = pi.id;
+        savedCardStripeAccountId = acctId;
+        // Write the proof-of-payment audit row so the existing PI verification
+        // gate below accepts this server-created PaymentIntent.
+        await prisma.auditLog.create({
+          data: {
+            tenantId,
+            userId: req.userId,
+            userName: req.userRecord?.email,
+            recordType: "PosPayment",
+            recordId: pi.id,
+            action: "SAVED_CARD_CHARGED",
+            changedFieldsJson: {
+              paymentMethodId: data.savedPaymentMethodId,
+              amountCents: totalCents,
+            },
+          },
+        });
+      }
+
       // Card-rail metadata is only meaningful for CARD sales. Silently drop
       // any rail/fallback fields for cash/ACH/charge so a buggy client can't
       // pollute the report dataset, and clear fallback reason for Terminal.
-      const cardRail = data.paymentMethod === "CARD" ? data.cardRail ?? null : null;
+      // Saved-card sales are server-confirmed CNP charges by definition.
+      const cardRail = data.paymentMethod === "CARD"
+        ? (savedCardPaymentIntentId ? "CNP" : data.cardRail ?? null)
+        : null;
       const cnpFallbackReason =
-        cardRail === "CNP" ? data.cnpFallbackReason ?? null : null;
+        cardRail === "CNP" && !savedCardPaymentIntentId
+          ? data.cnpFallbackReason ?? null
+          : null;
       // Same rule as `cardRail`: only CARD sales can carry a Stripe PI id.
       // A buggy (or malicious) client sending one on a cash/ACH row should
       // be silently dropped so the reconciliation join key only exists where
       // it's actually meaningful.
-      const stripePaymentIntentId =
-        data.paymentMethod === "CARD" ? data.stripePaymentIntentId ?? null : null;
+      const stripePaymentIntentId = data.paymentMethod === "CARD"
+        ? (savedCardPaymentIntentId ?? data.stripePaymentIntentId ?? null)
+        : null;
 
       // Proof-of-payment binding: before we trust a client-supplied PI id as
       // the reconciliation / refund key, the server MUST have already verified
@@ -616,10 +838,11 @@ router.post(
       // skip Stripe, same as a legacy pre-task-#255 row.
       let stripeAccountId: string | null = null;
       if (stripePaymentIntentId) {
-        stripeAccountId = await resolveStripeAccount(tenantId, {
-          shiftId: data.shiftId ?? null,
-          locationId: locationId,
-        });
+        stripeAccountId = savedCardStripeAccountId
+          ?? (await resolveStripeAccount(tenantId, {
+            shiftId: data.shiftId ?? null,
+            locationId: locationId,
+          }));
       }
 
       // GL contract note (Task #235 — inventory category-only GL collapse):
@@ -646,16 +869,19 @@ router.post(
           taxCents,
           tipCents: data.tipCents,
           totalCents,
-          status: data.paymentMethod,
+          // Normalize the legacy CHARGE_TO_ACCOUNT alias to CHARGE_TO_AR so
+          // new sales recorded in the reports use the canonical name.
+          status: isChargeToAr ? "CHARGE_TO_AR" : data.paymentMethod,
           cardRail,
           cnpFallbackReason,
           stripePaymentIntentId,
           stripeAccountId,
+          invoiceId: chargeToArInvoiceId,
           offlineQueued: false,
           lineItems: {
             create: lineItemsData,
           },
-        },
+        } as any,
         include: {
           lineItems: {
             include: { product: true },
