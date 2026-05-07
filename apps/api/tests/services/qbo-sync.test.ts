@@ -1329,3 +1329,190 @@ describe('syncPosTicketAsReceipt — Amount === UnitPrice * Qty invariant', () =
     }
   });
 });
+
+// ===========================================================================
+// syncInvoice — QBO line `Amount === UnitPrice * Qty` invariant (Task #312)
+// ===========================================================================
+//
+// The customer-invoice → QBO Invoice line builder previously used the same
+// pattern that broke POS receipts in Task #309: it sent post-discount/post-tax
+// `extendedCents` as `Line.Amount` while sending the pre-discount
+// `unitPriceCents` as `UnitPrice`. The moment a customer invoice line carries
+// a discount (or per-line tax that doesn't divide cleanly), QBO rejects the
+// whole invoice with "Amount is not equal to UnitPrice * Qty". These tests
+// pin the invoice builder to the same invariant.
+describe('syncInvoice — Amount === UnitPrice * Qty invariant (discounts/tax)', () => {
+  const tenantId = 'tenant-inv-1';
+  const locationId = 'loc-inv-1';
+
+  beforeEach(() => {
+    (mockPrisma as any).location = {
+      findUnique: vi.fn().mockResolvedValue({
+        id: locationId,
+        qboRealmId: 'realm-inv',
+        qboAccessToken: 'access-token',
+        qboRefreshToken: 'refresh-token',
+        qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        arGlAccount: null,
+        undepositedFundsGlAccount: null,
+        deferredRevenueGlAccount: null,
+        defaultRevenueGlAccount: null,
+        salesTaxGlAccount: null,
+        earlyTerminationGlAccount: null,
+        achReturnFeeGlAccount: null,
+      }),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn(),
+    };
+    mockPrisma.invoice.update = vi.fn().mockResolvedValue({}) as any;
+    (mockPrisma as any).qboInventorySyncRef = {
+      ...((mockPrisma as any).qboInventorySyncRef ?? {}),
+      findMany: vi.fn().mockResolvedValue([]),
+    };
+  });
+
+  async function runInvoiceSync(invoice: any): Promise<any> {
+    mockPrisma.invoice.findFirst = vi.fn().mockResolvedValue(invoice) as any;
+
+    const captured: any[] = [];
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(
+      async (_url: any, init: any) => {
+        if (init?.method === 'POST' && init?.body) {
+          captured.push(JSON.parse(init.body as string));
+        }
+        return new Response('{"Invoice":{"Id":"inv-qbo-1"}}', { status: 200 }) as any;
+      },
+    );
+
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await mod.syncInvoice(invoice.id, tenantId);
+      return captured[captured.length - 1];
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('reproduces the discounted-invoice failure: every SalesItemLineDetail line satisfies Amount === UnitPrice * Qty', async () => {
+    // Same shape as the POS production failure: qty 3 @ $1.43 with $0.50
+    // discount and $0.30 line tax. Pre-fix: Amount=extendedCents/100=4.09 but
+    // UnitPrice*Qty=4.29 → QBO rejects.
+    const invoice = {
+      id: 'inv-disc-1',
+      tenantId,
+      locationId,
+      qboInvoiceId: null,
+      invoiceNumber: 'INV-1001',
+      memo: null,
+      dueDate: new Date('2026-05-15T00:00:00Z'),
+      issuedDate: new Date('2026-04-15T00:00:00Z'),
+      subtotalCents: 429,
+      taxCents: 30,
+      totalCents: 429 - 50 + 30, // 409
+      customer: {
+        id: 'cust-1',
+        firstName: 'Jane',
+        lastName: 'Smith',
+        email: 'jane@test.com',
+        qboCustomerId: 'qbo-cust-1',
+      },
+      lineItems: [
+        {
+          id: 'li-1',
+          description: 'Slip rental',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 50,
+          taxCents: 30,
+          extendedCents: 429 - 50 + 30,
+          sourceType: null,
+          sourceId: null,
+          qboItemId: 'qbo-item-1',
+        },
+      ],
+    };
+
+    const payload = await runInvoiceSync(invoice);
+    expect(payload).toBeDefined();
+    expect(payload.Line).toBeDefined();
+
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+
+    const itemLine = payload.Line.find(
+      (l: any) => l.SalesItemLineDetail?.ItemRef?.value === 'qbo-item-1',
+    );
+    expect(itemLine).toBeDefined();
+    expect(itemLine.Amount).toBe(4.29);
+    expect(itemLine.SalesItemLineDetail.Qty).toBe(3);
+    expect(itemLine.SalesItemLineDetail.UnitPrice).toBe(1.43);
+
+    const discountLine = payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLine).toBeDefined();
+    expect(discountLine.Amount).toBe(0.5);
+
+    const taxLines = payload.Line.filter((l: any) => l.Description === 'Sales Tax');
+    expect(taxLines).toHaveLength(1);
+    expect(taxLines[0].Amount).toBe(0.3);
+
+    // Sum of QBO line amounts (item subtotals + tax - discount) ties to
+    // Invoice.totalCents — i.e. QBO will compute the same TotalAmt.
+    const sumCents = payload.Line.reduce((acc: number, l: any) => {
+      if (l.DetailType === 'DiscountLineDetail') return acc - Math.round(l.Amount * 100);
+      return acc + Math.round(l.Amount * 100);
+    }, 0);
+    expect(sumCents).toBe(invoice.totalCents);
+  });
+
+  it('throws when computed invoice total drifts from Invoice.totalCents (defense in depth)', async () => {
+    const invoice = {
+      id: 'inv-drift',
+      tenantId,
+      locationId,
+      qboInvoiceId: null,
+      invoiceNumber: 'INV-9999',
+      memo: null,
+      dueDate: null,
+      issuedDate: null,
+      subtotalCents: 429,
+      taxCents: 0,
+      totalCents: 9999, // intentionally wrong
+      customer: {
+        id: 'cust-2',
+        firstName: 'A',
+        lastName: 'B',
+        email: 'a@b.com',
+        qboCustomerId: 'qbo-cust-2',
+      },
+      lineItems: [
+        {
+          id: 'li-1',
+          description: 'Item',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 0,
+          taxCents: 0,
+          extendedCents: 429,
+          sourceType: null,
+          sourceId: null,
+          qboItemId: null,
+        },
+      ],
+    };
+
+    mockPrisma.invoice.findFirst = vi.fn().mockResolvedValue(invoice) as any;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Invoice":{"Id":"x"}}', { status: 200 }) as any,
+    );
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await expect(mod.syncInvoice(invoice.id, tenantId)).rejects.toThrow(/total mismatch/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});

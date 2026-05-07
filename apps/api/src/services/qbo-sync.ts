@@ -726,35 +726,102 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     }
   }
 
-  const lineItems = rawLineItems.map((item: any, idx: number) => {
-    // The Prisma column is `extendedCents` (qty * unitPrice - discount + tax),
-    // NOT `totalCents` — reading the wrong field produced NaN -> null on the
-    // QBO payload and triggered "Required parameter Line.Amount is missing".
-    // Fall back to a computed value if extendedCents is somehow null/0.
-    const lineAmountCents =
-      typeof item.extendedCents === "number" && item.extendedCents > 0
-        ? item.extendedCents
-        : Math.round(
-            (Number(item.unitPriceCents) || 0) * (Number(item.quantity) || 1) -
-              (Number(item.discountCents) || 0) +
-              (Number(item.taxCents) || 0),
-          );
-    return {
-    LineNum: idx + 1,
-    Amount: lineAmountCents / 100,
-    DetailType: "SalesItemLineDetail",
-    Description: item.description || "",
-    SalesItemLineDetail: {
-      Qty: item.quantity || 1,
-      UnitPrice: item.unitPriceCents / 100,
-      // Prefer the resolved QBO Item ID from preflight (Task 18), fall back
-      // to any legacy qboItemId already on the line item object.
-      ...(item._resolvedQboItemId || item.qboItemId
-        ? { ItemRef: { value: item._resolvedQboItemId ?? item.qboItemId } }
-        : {}),
-    },
-    };
+  // QBO validates `Line.Amount === SalesItemLineDetail.UnitPrice * Qty` to the
+  // cent on every SalesItemLineDetail line and rejects the entire invoice when
+  // it doesn't tie. Sending the post-discount/post-tax `extendedCents` as
+  // Amount while sending the pre-discount `unitPriceCents` as UnitPrice
+  // violates that invariant the moment any line carries a discount or
+  // line-level tax — the same failure mode that broke POS receipts (Task #309).
+  //
+  // Fix: send the *pre-discount, pre-tax* line subtotal as `Amount`, and a
+  // `UnitPrice` that satisfies the equality exactly. Discounts are surfaced as
+  // a single receipt-level `DiscountLineDetail`, and per-line tax is
+  // aggregated into one `Sales Tax` line so the QBO invoice's `TotalAmt` still
+  // ties to `Invoice.totalCents`.
+  let totalLineDiscountCents = 0;
+  let totalLineTaxCents = 0;
+  let totalLineSubtotalCents = 0;
+  const lineItems: Record<string, unknown>[] = [];
+  rawLineItems.forEach((item: any, idx: number) => {
+    const quantity = Math.max(1, Number(item.quantity) || 1);
+    const unitPriceCents = Number(item.unitPriceCents) || 0;
+    const lineSubtotalCents = unitPriceCents * quantity;
+    const amount = lineSubtotalCents / 100;
+    const unitPrice = unitPriceCents / 100;
+
+    // Detect float-precision drift between (UnitPrice * Qty) and Amount —
+    // e.g. 1.43 * 7 = 10.010000000000002 in IEEE-754. When QBO would round
+    // the product differently than our integer subtotal, collapse to a
+    // single-unit line so the equality holds exactly.
+    const productMatchesCents =
+      Math.round(unitPrice * quantity * 100) === lineSubtotalCents;
+
+    const detail: Record<string, unknown> = productMatchesCents
+      ? { Qty: quantity, UnitPrice: unitPrice }
+      : { Qty: 1, UnitPrice: amount };
+    if (item._resolvedQboItemId || item.qboItemId) {
+      detail.ItemRef = { value: item._resolvedQboItemId ?? item.qboItemId };
+    }
+
+    lineItems.push({
+      LineNum: lineItems.length + 1,
+      Amount: amount,
+      DetailType: "SalesItemLineDetail",
+      Description: item.description || `Line ${idx + 1}`,
+      SalesItemLineDetail: detail,
+    });
+
+    totalLineSubtotalCents += lineSubtotalCents;
+    totalLineDiscountCents += Number(item.discountCents) || 0;
+    totalLineTaxCents += Number(item.taxCents) || 0;
   });
+
+  // Aggregate per-line discounts into a single receipt-level discount line so
+  // the per-line UnitPrice * Qty equality holds while the invoice total still
+  // ties to Invoice.totalCents.
+  if (totalLineDiscountCents > 0) {
+    lineItems.push({
+      LineNum: lineItems.length + 1,
+      Amount: totalLineDiscountCents / 100,
+      DetailType: "DiscountLineDetail",
+      Description: "Invoice discount",
+      DiscountLineDetail: {
+        PercentBased: false,
+      },
+    });
+  }
+
+  // Surface tax as a separate sales-tax line. Per-line `taxCents` was
+  // previously folded into `extendedCents` and is now intentionally excluded
+  // from item lines so we don't double-count. Legacy invoices may carry tax
+  // only on the header (`Invoice.taxCents`) without per-line `taxCents`; fall
+  // back to the header value so those still tie out to `Invoice.totalCents`.
+  const headerTaxCents = Number((invoice as any).taxCents) || 0;
+  const taxCentsForQbo = totalLineTaxCents > 0 ? totalLineTaxCents : headerTaxCents;
+  if (taxCentsForQbo > 0) {
+    lineItems.push({
+      Amount: taxCentsForQbo / 100,
+      DetailType: "SalesItemLineDetail",
+      Description: "Sales Tax",
+      SalesItemLineDetail: {
+        Qty: 1,
+        UnitPrice: taxCentsForQbo / 100,
+      },
+    });
+  }
+
+  // Defense in depth: assert the computed invoice total ties out to
+  // Invoice.totalCents to the cent before we send. If it doesn't, throw a
+  // clear internal error rather than letting QBO reject the payload.
+  const computedTotalCents =
+    totalLineSubtotalCents - totalLineDiscountCents + taxCentsForQbo;
+  const expectedTotalCents = Number((invoice as any).totalCents) || 0;
+  if (expectedTotalCents > 0 && computedTotalCents !== expectedTotalCents) {
+    throw new Error(
+      `[qbo-sync] Invoice total mismatch for ${invoiceId}: ` +
+        `computed=${computedTotalCents} expected=${expectedTotalCents}`,
+    );
+  }
 
   const qboInvoiceData: Record<string, unknown> = {
     CustomerRef: { value: (invoice.customer as any).qboCustomerId },
