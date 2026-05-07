@@ -1,0 +1,104 @@
+2026-05-06 22:23:00.78
+0eac4c1d
+User
+│ This is a major update - please follow the guide at │
+2026-05-06 22:23:00.78
+0eac4c1d
+User
+│ Run the following to update │
+2026-05-06 22:23:00.78
+0eac4c1d
+User
+┌─────────────────────────────────────────────────────────┐
+2026-05-06 22:23:00.78
+0eac4c1d
+User
+│ Update available 6.19.2 -> 7.8.0 │
+2026-05-06 22:23:06.28
+0eac4c1d
+User
+[helm-workers] All workers started
+2026-05-06 22:23:06.28
+0eac4c1d
+User
+[auth] mode=CLERK NODE_ENV=production ENABLE_AUTH_DEV_BYPASS=(unset)
+2026-05-06 22:23:06.29
+0eac4c1d
+User
+[helm-api] serving SPA from /home/runner/workspace/apps/web/dist
+2026-05-06 22:23:06.29
+0eac4c1d
+User
+[qbo-inventory-retry] scheduled — next sweep at 2026-05-07T02:30:00.000Z, then every 15min
+2026-05-06 22:23:06.31
+0eac4c1d
+User
+[helm-api] listening on port 5000
+2026-05-06 22:23:06.40
+0eac4c1d
+User
+[redis] connected to Upstash
+2026-05-06 22:23:06.75
+0eac4c1d
+User
+[helm-workers] Repeatable cron jobs scheduled
+2026-05-06 22:25:06.02
+0eac4c1d
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 22:25:06.21
+0eac4c1d
+User
+[stripe-webhook] payment_intent.succeeded: no Payment row for pi_3TUHcaBX93w3UPrF0l80Gzac
+2026-05-06 22:25:06.90
+0eac4c1d
+User
+errorBody: '{"Fault":{"Error":[{"Message":"Amount calculation incorrect in the request.","Detail":"Amount is not equal to UnitPrice * Qty. Supplied value:4.29","code":"6070","element":"Line.Amount"}],"type":"ValidationFault"},"time":"2026-05-06T19:25:06.856-07:00"}'
+2026-05-06 22:25:06.90
+0eac4c1d
+User
+[qbo-sync] API error {
+2026-05-06 22:25:06.90
+0eac4c1d
+User
+status: 400,
+2026-05-06 22:25:06.90
+0eac4c1d
+User
+url: 'https://sandbox-quickbooks.api.intuit.com/v3/company/9341455756620860/salesreceipt?minorversion=73',
+2026-05-06 22:25:06.90
+0eac4c1d
+User
+}
+2026-05-06 22:25:06.91
+0eac4c1d
+User
+at async syncPosTicketAsReceipt (file:///home/runner/workspace/apps/api/dist/services/qbo-sync.js:2663:20)
+2026-05-06 22:25:06.91
+0eac4c1d
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+2026-05-06 22:25:06.91
+0eac4c1d
+User
+at qboRequest (file:///home/runner/workspace/apps/api/dist/services/qbo-sync.js:171:15)
+2026-05-06 22:25:06.91
+0eac4c1d
+User
+[pos] QB SalesReceipt push failed: Error: QBO API error 400: {"Fault":{"Error":[{"Message":"Amount calculation incorrect in the request.","Detail":"Amount is not equal to UnitPrice * Qty. Supplied value:4.29","code":"6070","element":"Line.Amount"}],"type":"ValidationFault"},"time":"2026-05-06T19:25:06.856-07:00"}
+2026-05-06 22:25:06.91
+0eac4c1d
+User
+at async file:///home/runner/workspace/apps/api/dist/routes/pos.js:787:21
+2026-05-06 22:27:04.77
+0eac4c1d
+System
+system: received signal terminated
+2026-05-06 22:30:00.44
+0eac4c1d
+User
+[inventory] QBO item sync failed for 17b53574-58c1-44d3-9719-d5e63b3154d4: MISSING_GL_MAPPING: Product "Bottled Water" has no locationId set. Assign the product to a location before syncing to QuickBooks.
+2026-05-06 22:30:01.04
+0eac4c1d
+User
+[qbo-inventory-retry] tenant=43a97d55-0b27-46b4-bb15-b34ee5ed798c attempted=1 succeeded=0 failed=1 skipped=0
