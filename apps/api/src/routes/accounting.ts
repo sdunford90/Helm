@@ -1098,10 +1098,33 @@ router.get(
         },
       });
 
+      // System accounts every location's chart should carry; missing rows
+      // here are the cause of mid-transaction "GL account NNNN not found"
+      // 500s in flows like deposit release, invoice posting, A/R apply.
+      // Surfaced on the Accounting Overview as a per-location warning so
+      // operators can fix it before the next failed posting.
+      // `subType` mirrors the QBO-imported chart fallback in
+      // `gl-posting.getAccountByNumber` (account number "QBO-NN" + matching
+      // subType counts as present) so we don't false-positive on those tenants.
+      const REQUIRED_SYSTEM_ACCOUNTS: Array<{
+        number: string;
+        label: string;
+        subType?: string;
+      }> = [
+        { number: "1200", label: "Accounts Receivable", subType: "AccountsReceivable" },
+        { number: "2300", label: "Security Deposits Held" },
+      ];
+
       // Gather open reconciliation alert counts and failed sync counts per location
       const locationResults = await Promise.all(
         locations.map(async (loc) => {
-          const [openAlertCount, failedProductCount, failedPOCount] = await Promise.all([
+          // Match the strictness rule used by `isLocationQboConnected` in
+          // gl-account-resolver: needs BOTH realmId AND access token.
+          // A stale `qboRealmId` without a token is treated as non-QBO at
+          // posting time, so report the same way here to avoid mismatched
+          // warnings.
+          const qboConnected = await isLocationQboConnected(loc.id);
+          const [openAlertCount, failedProductCount, failedPOCount, presentSystemAccts] = await Promise.all([
             prisma.reconciliationAlert.count({
               where: { locationId: loc.id, resolvedAt: null },
             }).catch(() => 0),
@@ -1111,7 +1134,43 @@ router.get(
             prisma.purchaseOrder.count({
               where: { tenantId, locationId: loc.id, qboBillSyncError: { not: null } },
             }).catch(() => 0),
+            prisma.glAccount.findMany({
+              where: {
+                tenantId,
+                // QBO-connected locations need the account on THEIR chart
+                // (the gl-posting helpers refuse a tenant-wide fallback to
+                // avoid routing journals to the wrong QBO realm). Non-QBO
+                // locations accept either location-scoped or tenant-wide.
+                ...(qboConnected
+                  ? { locationId: loc.id }
+                  : { OR: [{ locationId: loc.id }, { locationId: null }] }),
+                OR: [
+                  { accountNumber: { in: REQUIRED_SYSTEM_ACCOUNTS.map((a) => a.number) } },
+                  // subType fallback only applies when the chart was imported
+                  // from QBO; getAccountByNumber's number→subType fallback runs
+                  // for both QBO and non-QBO contexts, so include it always.
+                  {
+                    subType: {
+                      in: REQUIRED_SYSTEM_ACCOUNTS.flatMap((a) =>
+                        a.subType ? [a.subType] : [],
+                      ),
+                    },
+                  },
+                ],
+              },
+              select: { accountNumber: true, subType: true },
+            }).catch(() => [] as Array<{ accountNumber: string; subType: string | null }>),
           ]);
+
+          const presentNumbers = new Set(presentSystemAccts.map((a) => a.accountNumber));
+          const presentSubTypes = new Set(
+            presentSystemAccts.map((a) => a.subType).filter((s): s is string => !!s),
+          );
+          const missingSystemAccounts = REQUIRED_SYSTEM_ACCOUNTS.filter(
+            (a) =>
+              !presentNumbers.has(a.number) &&
+              !(a.subType && presentSubTypes.has(a.subType)),
+          ).map(({ number, label }) => ({ number, label }));
 
           return {
             locationId: loc.id,
@@ -1119,12 +1178,13 @@ router.get(
             setupComplete: loc.accountingSetupComplete ?? false,
             setupStep: loc.accountingSetupStep ?? 0,
             gracePeriodEndsAt: loc.accountingGracePeriodEndsAt?.toISOString() ?? null,
-            qboConnected: !!loc.qboRealmId,
+            qboConnected,
             qboCompanyName: loc.qboCompanyName ?? null,
             failedSyncCount: failedProductCount + failedPOCount,
             openAlertCount,
             openPeriod: null as { periodStart: string; periodEnd: string } | null,
             mtdRevenueCents: 0,
+            missingSystemAccounts,
           };
         }),
       );

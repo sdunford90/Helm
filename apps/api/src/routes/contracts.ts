@@ -13,6 +13,7 @@ import {
   postSecurityDeposit,
   releaseSecurityDeposit,
 } from "../services/gl-posting.js";
+import { isLocationQboConnected } from "../services/gl-account-resolver.js";
 
 const router: Router = Router();
 
@@ -1152,30 +1153,57 @@ router.post(
       // either, the GL helpers throw a plain Error mid-transaction which
       // surfaces as a generic 500. Validate up-front per location so we
       // can return a clear, actionable 400 instead.
-      const releaseLocationIds = new Set<string>();
+      // Bucket deposits by their frozen release location so we can compute
+      // each location's account requirements independently — a refund-only
+      // location must NOT be blocked because some other location's deposit
+      // is being applied to an invoice.
+      const depositsByLocation = new Map<string, typeof contract.securityDeposits>();
       for (const d of contract.securityDeposits) {
-        if (d.locationId) releaseLocationIds.add(d.locationId);
+        if (!d.locationId) continue;
+        const list = depositsByLocation.get(d.locationId) ?? [];
+        list.push(d);
+        depositsByLocation.set(d.locationId, list);
       }
-      const needsAr = contract.securityDeposits.some((d) => {
-        const inst = instructionByDeposit.get(d.id);
-        const target = inst
-          ? inst.action === "APPLY_TO_INVOICE"
-            ? inst.invoiceId
-            : null
-          : (d.appliedToInvoiceId ?? null);
-        return Boolean(target);
-      });
-      for (const locId of releaseLocationIds) {
-        const required: Array<{ number: string; label: string }> = [
+      for (const [locId, deposits] of depositsByLocation) {
+        const locNeedsAr = deposits.some((d) => {
+          const inst = instructionByDeposit.get(d.id);
+          const target = inst
+            ? inst.action === "APPLY_TO_INVOICE"
+              ? inst.invoiceId
+              : null
+            : (d.appliedToInvoiceId ?? null);
+          return Boolean(target);
+        });
+        const required: Array<{ number: string; label: string; subType?: string }> = [
           { number: "2300", label: "Security Deposits Held" },
         ];
-        if (needsAr) required.push({ number: "1200", label: "Accounts Receivable" });
+        if (locNeedsAr) {
+          required.push({
+            number: "1200",
+            label: "Accounts Receivable",
+            // `getAccountByNumber` falls back to subType match for QBO-imported
+            // charts where account numbers are "QBO-NN" rather than "1200".
+            // Mirror that here so we don't false-positive on those tenants.
+            subType: "AccountsReceivable",
+          });
+        }
+        // Match resolution rules used by gl-posting helpers: when QBO is
+        // connected, only this location's chart counts (no tenant-wide /
+        // cross-realm fallback); otherwise location-scoped OR tenant-wide.
+        const qboConnected = await isLocationQboConnected(locId);
         for (const acct of required) {
           const exists = await prisma.glAccount.findFirst({
             where: {
               tenantId,
-              accountNumber: acct.number,
-              OR: [{ locationId: locId }, { locationId: null }],
+              ...(qboConnected
+                ? { locationId: locId }
+                : { OR: [{ locationId: locId }, { locationId: null }] }),
+              OR: [
+                { accountNumber: acct.number },
+                ...(acct.subType && !qboConnected
+                  ? [{ subType: acct.subType }]
+                  : []),
+              ],
             },
             select: { id: true },
           });

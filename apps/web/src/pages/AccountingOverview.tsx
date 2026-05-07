@@ -21,6 +21,7 @@ interface LocationAccountingStatus {
   openAlertCount: number;
   openPeriod: { periodStart: string; periodEnd: string } | null;
   mtdRevenueCents: number;
+  missingSystemAccounts?: Array<{ number: string; label: string }>;
 }
 
 interface OverviewData {
@@ -101,6 +102,42 @@ function QboBadge({ loc }: { loc: LocationAccountingStatus }) {
     );
   }
   return <span style={{ ...stl.badge, background: '#F1F5F9', color: '#64748B' }}>Not connected</span>;
+}
+
+function MissingAccountsBadge({
+  loc,
+  onFix,
+}: {
+  loc: LocationAccountingStatus;
+  onFix: () => void;
+}) {
+  const missing = loc.missingSystemAccounts ?? [];
+  if (missing.length === 0) {
+    return (
+      <span style={{ ...stl.badge, background: '#D1FAE5', color: '#065F46' }}>
+        <CheckCircle size={12} /> Complete
+      </span>
+    );
+  }
+  const tip = `Missing system accounts on ${
+    loc.qboConnected ? "this location's QuickBooks chart" : 'this chart of accounts'
+  }: ${missing.map((m) => `${m.number} ${m.label}`).join(', ')}. Postings that need them (e.g. terminating a contract with a held security deposit) will fail until they're added.`;
+  return (
+    <button
+      type="button"
+      onClick={onFix}
+      title={tip}
+      style={{
+        ...stl.badge,
+        background: '#FEE2E2',
+        color: '#991B1B',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+    >
+      <AlertTriangle size={12} /> Missing {missing.length} system account{missing.length === 1 ? '' : 's'}
+    </button>
+  );
 }
 
 function SyncHealthBadge({ count }: { count: number }) {
@@ -247,6 +284,7 @@ export default function AccountingOverview() {
                 <th style={stl.th}>Location</th>
                 <th style={stl.th}>Setup Status</th>
                 <th style={stl.th}>QB Connection</th>
+                <th style={stl.th}>Chart of Accounts</th>
                 <th style={stl.th}>Sync Health</th>
                 <th style={stl.th}>Open Issues</th>
                 <th style={stl.th}>Action</th>
@@ -265,6 +303,7 @@ export default function AccountingOverview() {
                   </td>
                   <td style={stl.td}><SetupStatusBadge loc={loc} /></td>
                   <td style={stl.td}><QboBadge loc={loc} /></td>
+                  <td style={stl.td}><MissingAccountsBadge loc={loc} onFix={() => navigate('/billing/chart-of-accounts')} /></td>
                   <td style={stl.td}><SyncHealthBadge count={loc.failedSyncCount} /></td>
                   <td style={stl.td}>
                     {loc.openAlertCount > 0 ? (
