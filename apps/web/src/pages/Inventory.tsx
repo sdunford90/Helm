@@ -357,18 +357,43 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
           </div>
 
           {/* Tax + accounting summary — GL accounts are now category- and
-              location-driven; per-product GL inputs were retired. */}
+              location-driven; per-product GL inputs were retired.
+              Tax category lives on the ProductCategory by default; the
+              per-product override is hidden under an "Advanced" disclosure
+              to keep staff from accidentally overriding the category and
+              causing tax-calc drift. The disclosure auto-opens when a
+              product already has an override set so it stays visible. */}
           <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '8px' }}>
-            <div style={st.field}>
-              <label style={st.label}>Tax Category</label>
-              <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
-                <option value="">— Use category default —</option>
-                {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
-                <option value="Tax Exempt">Tax Exempt</option>
-              </select>
-            </div>
-            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', display: 'grid', gap: '6px' }}>
               <div><strong>Tax (effective):</strong> {effectiveTaxLabel}</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>
+                Tax category is inherited from the product&apos;s category. To
+                change it for a whole group of products, edit the category
+                in Settings → Categories. Use the override below only for
+                exceptions.
+              </div>
+            </div>
+            <details
+              style={{ marginTop: '12px', fontSize: '13px' }}
+              open={!!form.taxClass}
+            >
+              <summary style={{ cursor: 'pointer', color: '#475569', fontWeight: 500, userSelect: 'none' }}>
+                Advanced: override category default
+              </summary>
+              <div style={{ ...st.field, marginTop: '8px' }}>
+                <label style={st.label}>Tax Category (override)</label>
+                <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
+                  <option value="">— Use category default —</option>
+                  {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                  <option value="Tax Exempt">Tax Exempt</option>
+                </select>
+                <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
+                  Setting an override hides this product from the category&apos;s
+                  tax setting. Leave blank to inherit.
+                </div>
+              </div>
+            </details>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
               <div style={{ fontSize: '12px', color: '#64748B' }}>
                 Revenue, COGS and inventory asset accounts are configured per
                 location on the product&apos;s category.{' '}
@@ -963,6 +988,44 @@ export default function Inventory() {
     }
   };
 
+  // Bulk-clear per-product Tax Category overrides so every product inherits
+  // its category's defaultTaxCategory. Confirms before firing because it
+  // touches every product in the active scope. Scoped to the current
+  // location when one is selected; otherwise all tenant products.
+  const handleClearTaxOverrides = async () => {
+    const scope = currentLocationId ? 'this marina' : 'every location';
+    if (!window.confirm(
+      `Clear the per-product Tax Category override on every product in ${scope}? ` +
+      `Products will then inherit tax from their category. ` +
+      `(You can re-set overrides later on individual products.)`,
+    )) return;
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/inventory/products/clear-tax-overrides', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId: currentLocationId ?? null }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      toast.success('Tax overrides cleared', `${body.cleared} product(s) now inherit from category.`);
+      // Reflect locally so the inventory grid + edit modals show the
+      // category default immediately, no reload needed.
+      setProducts((prev) => prev.map((x) =>
+        (!currentLocationId || x.locationId === currentLocationId)
+          // Empty string mirrors what the form treats as "inherit from
+          // category"; the underlying DB column is now NULL.
+          ? { ...x, taxClass: '' }
+          : x,
+      ));
+    } catch (err) {
+      toast.error('Clear failed', err instanceof Error ? err.message : 'Network error');
+    }
+  };
+
   const handleQboSyncProduct = async (p: Product) => {
     try {
       const res = await fetch(`/api/inventory/products/${p.id}/qbo-sync`, { method: 'POST' });
@@ -1031,6 +1094,11 @@ export default function Inventory() {
           <select style={st.select} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}><input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} /> Low Stock Only</label>
           <button style={st.outlineBtn} onClick={() => toast.success('Print Labels', 'Sending ' + filteredProducts.length + ' labels to printer...')}><Printer size={14} /> Print Labels</button>
+          <button
+            style={st.outlineBtn}
+            onClick={handleClearTaxOverrides}
+            title="Clear per-product Tax Category overrides so products inherit from their category"
+          >Clear Tax Overrides</button>
           <button style={st.addBtn} onClick={() => { setEditingProduct(null); setModal('addProduct'); }}><Plus size={16} /> Add Product</button>
         </div>
         <div style={st.tableWrap} className="helm-table-wrap">

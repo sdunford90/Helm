@@ -491,6 +491,48 @@ function shapeProductWithEffective(
   };
 }
 
+// POST /products/clear-tax-overrides
+// Bulk-clear per-product taxClass overrides so every product inherits its
+// category's defaultTaxCategory. This is the recommended workflow: tax
+// belongs on the ProductCategory, and per-product values exist only as
+// rare exceptions. Optional locationId scopes the reset to one marina;
+// without it we touch every product in the tenant.
+router.post(
+  "/products/clear-tax-overrides",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = getTenantId(req);
+      const body = z
+        .object({ locationId: z.string().uuid().optional().nullable() })
+        .parse(req.body ?? {});
+      // Validate locationId ownership when provided so a caller can't
+      // affect another tenant's data by passing a foreign id.
+      if (body.locationId) {
+        const owned = await prisma.location.findFirst({
+          where: { id: body.locationId, tenantId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return res
+            .status(400)
+            .json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+        }
+      }
+      const result = await prisma.product.updateMany({
+        where: {
+          tenantId,
+          ...(body.locationId ? { locationId: body.locationId } : {}),
+          taxClass: { not: null },
+        },
+        data: { taxClass: null },
+      });
+      res.json({ cleared: result.count });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /products
 router.get("/products", async (req: Request, res: Response, next: NextFunction) => {
   try {
