@@ -387,9 +387,7 @@ async function handlePaymentIntentSucceeded(
   // already visible by the time this webhook fires. Fall back to
   // `stripePaymentId` for callers that don't stamp paymentId metadata
   // (e.g. /api/checkout/charge-card-on-file, which writes the row
-  // post-Stripe and keys it on the PI id directly). Retry the fallback
-  // briefly to absorb the small window between Stripe responding and the
-  // synchronous handler patching `stripePaymentId` onto its row.
+  // synchronously after Stripe responds and keys it on the PI id directly).
   const paymentInclude = {
     invoice: {
       select: { id: true, balanceCents: true, status: true, locationId: true },
@@ -410,26 +408,13 @@ async function handlePaymentIntentSucceeded(
     : null;
 
   if (!payment) {
-    const fallbackWhere = {
-      stripePaymentId: pi.id,
-      ...(tenantId ? { tenantId } : {}),
-    };
     payment = await prisma.payment.findFirst({
-      where: fallbackWhere,
+      where: {
+        stripePaymentId: pi.id,
+        ...(tenantId ? { tenantId } : {}),
+      },
       include: paymentInclude,
     });
-
-    if (!payment) {
-      const RETRY_DELAYS_MS = [150, 300, 500, 1000];
-      for (const delay of RETRY_DELAYS_MS) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        payment = await prisma.payment.findFirst({
-          where: fallbackWhere,
-          include: paymentInclude,
-        });
-        if (payment) break;
-      }
-    }
   }
 
   if (!payment) {
