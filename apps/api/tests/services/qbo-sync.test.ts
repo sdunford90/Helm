@@ -1116,3 +1116,216 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     expect(nextRetryAt.getTime()).toBeLessThanOrEqual(after + expectedDelay + 10);
   });
 });
+
+// ===========================================================================
+// syncPosTicketAsReceipt — QBO line `Amount === UnitPrice * Qty` invariant
+// ===========================================================================
+//
+// Production POS receipts were failing with:
+//   "Amount calculation incorrect in the request. Amount is not equal to
+//    UnitPrice * Qty. Supplied value: 4.29"
+// because the builder sent post-discount/post-tax `extendedCents` as Amount
+// while sending the pre-discount `unitPriceCents` as UnitPrice. These tests
+// pin down that every SalesItemLineDetail line we send to QBO satisfies the
+// equality to the cent for the production failure shapes.
+describe('syncPosTicketAsReceipt — Amount === UnitPrice * Qty invariant', () => {
+  const tenantId = 'tenant-pos-1';
+  const locationId = 'loc-pos-1';
+
+  beforeEach(() => {
+    (mockPrisma as any).location = {
+      findUnique: vi.fn().mockResolvedValue({
+        id: locationId,
+        qboRealmId: 'realm-pos',
+        qboAccessToken: 'access-token',
+        qboRefreshToken: 'refresh-token',
+        qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        // For getLocationPostingAccounts — only undeposited funds is needed
+        // for non-cash sales.
+        arGlAccount: null,
+        undepositedFundsGlAccount: { id: 'gl-uf', accountNumber: '1199', name: 'Undeposited Funds', qboAccountId: 'qbo-uf' },
+        deferredRevenueGlAccount: null,
+        defaultRevenueGlAccount: null,
+        salesTaxGlAccount: null,
+        earlyTerminationGlAccount: null,
+        achReturnFeeGlAccount: null,
+        bankGlAccount: null,
+      }),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn(),
+    };
+  });
+
+  // Helper — builds a synthetic POS transaction matching the failing shape and
+  // captures the JSON payload sent to QBO so we can assert on every line.
+  async function runReceiptSync(tx: any): Promise<any> {
+    (mockPrisma as any).posTransaction = {
+      ...((mockPrisma as any).posTransaction ?? {}),
+      findFirst: vi.fn().mockResolvedValue(tx),
+    };
+
+    const captured: any[] = [];
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(
+      async (_url: any, init: any) => {
+        if (init?.method === 'POST' && init?.body) {
+          captured.push(JSON.parse(init.body as string));
+        }
+        return new Response('{"SalesReceipt":{"Id":"sr-1"}}', { status: 200 }) as any;
+      },
+    );
+
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await mod.syncPosTicketAsReceipt(tx.id, tenantId);
+      // The salesreceipt payload is the last POST body.
+      return captured[captured.length - 1];
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('reproduces the production "$4.29" failure: every line satisfies Amount === UnitPrice * Qty when discounts and line tax are present', async () => {
+    // Production case: qty 3 @ $1.43 with a $0.50 discount and $0.30 line tax.
+    // Old builder: Amount=extendedCents/100=(429-50+30)/100=4.09 but
+    // UnitPrice*Qty = 1.43*3 = 4.29 → QBO rejects "Supplied value: 4.29".
+    const tx = {
+      id: 'tx-prod-failure',
+      tenantId,
+      taxCents: 30,
+      totalCents: 429 - 50 + 30, // 409
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        {
+          id: 'li-1',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 50,
+          taxCents: 30,
+          extendedCents: 429 - 50 + 30, // 409 — the post-discount, post-tax value
+          product: { id: 'p-1', name: 'Bag of Ice', qboItemId: 'qbo-item-1' },
+        },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    expect(payload).toBeDefined();
+    expect(payload.Line).toBeDefined();
+
+    // Every SalesItemLineDetail line must satisfy QBO's invariant exactly.
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+
+    // The item line carries the *pre-discount* subtotal as Amount.
+    const itemLine = payload.Line.find((l: any) => l.SalesItemLineDetail?.ItemRef?.value === 'qbo-item-1');
+    expect(itemLine).toBeDefined();
+    expect(itemLine.Amount).toBe(4.29);
+    expect(itemLine.SalesItemLineDetail.Qty).toBe(3);
+    expect(itemLine.SalesItemLineDetail.UnitPrice).toBe(1.43);
+
+    // Discount surfaced as a separate DiscountLineDetail line.
+    const discountLine = payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLine).toBeDefined();
+    expect(discountLine.Amount).toBe(0.5);
+
+    // Single sales-tax line, value drawn from tx.taxCents (no double-count).
+    const taxLines = payload.Line.filter((l: any) => l.Description === 'Sales Tax');
+    expect(taxLines).toHaveLength(1);
+    expect(taxLines[0].Amount).toBe(0.3);
+
+    // Receipt total ties out to the POS ticket total.
+    expect(payload.TotalAmt).toBe(4.09);
+  });
+
+  it('handles mixed lines (qty 3 @ $1.43, qty 7 @ $0.99) with no discounts or tax', async () => {
+    const tx = {
+      id: 'tx-mixed',
+      tenantId,
+      taxCents: 0,
+      totalCents: 143 * 3 + 99 * 7, // 429 + 693 = 1122
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-a', quantity: 3, unitPriceCents: 143, discountCents: 0, taxCents: 0, extendedCents: 429, product: { id: 'p-a', name: 'A', qboItemId: 'qbo-a' } },
+        { id: 'li-b', quantity: 7, unitPriceCents: 99,  discountCents: 0, taxCents: 0, extendedCents: 693, product: { id: 'p-b', name: 'B', qboItemId: 'qbo-b' } },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+    expect(payload.TotalAmt).toBe(11.22);
+    expect(payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail')).toBeUndefined();
+  });
+
+  it('aggregates multiple per-line discounts into a single receipt-level DiscountLineDetail', async () => {
+    const tx = {
+      id: 'tx-multi-disc',
+      tenantId,
+      taxCents: 0,
+      totalCents: (200 * 2 - 25) + (500 * 1 - 75), // 375 + 425 = 800
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-1', quantity: 2, unitPriceCents: 200, discountCents: 25, taxCents: 0, extendedCents: 375, product: { id: 'p-1', name: 'X', qboItemId: 'qbo-x' } },
+        { id: 'li-2', quantity: 1, unitPriceCents: 500, discountCents: 75, taxCents: 0, extendedCents: 425, product: { id: 'p-2', name: 'Y', qboItemId: 'qbo-y' } },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    const discountLines = payload.Line.filter((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLines).toHaveLength(1);
+    expect(discountLines[0].Amount).toBe(1.0); // (25 + 75) / 100
+    expect(payload.TotalAmt).toBe(8.0);
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+  });
+
+  it('throws when computed total drifts from PosTransaction.totalCents (defense in depth)', async () => {
+    const tx = {
+      id: 'tx-drift',
+      tenantId,
+      taxCents: 0,
+      totalCents: 9999, // intentionally wrong vs lines (429)
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-1', quantity: 3, unitPriceCents: 143, discountCents: 0, taxCents: 0, extendedCents: 429, product: { id: 'p-1', name: 'X', qboItemId: 'qbo-x' } },
+      ],
+    };
+
+    (mockPrisma as any).posTransaction = {
+      ...((mockPrisma as any).posTransaction ?? {}),
+      findFirst: vi.fn().mockResolvedValue(tx),
+    };
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"SalesReceipt":{"Id":"sr-1"}}', { status: 200 }) as any,
+    );
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await expect(mod.syncPosTicketAsReceipt(tx.id, tenantId)).rejects.toThrow(/total mismatch/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});

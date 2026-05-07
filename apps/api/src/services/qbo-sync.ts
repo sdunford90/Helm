@@ -3410,35 +3410,103 @@ export async function syncPosTicketAsReceipt(
     depositAccountQboId = locationPinned.undepositedFunds.qboAccountId;
   }
 
-  // Build SalesReceipt line items
-  const lines: Record<string, unknown>[] = ((tx as any).lineItems as any[]).map(
-    (li: any, idx: number) => {
-      const qboItemId = li.product?.qboItemId as string | null;
-      return {
-        LineNum: idx + 1,
-        Amount: li.extendedCents / 100,
-        DetailType: "SalesItemLineDetail",
-        Description: li.product?.name ?? `Line ${idx + 1}`,
-        SalesItemLineDetail: {
-          Qty: li.quantity,
-          UnitPrice: li.unitPriceCents / 100,
-          ...(qboItemId ? { ItemRef: { value: qboItemId } } : {}),
-        },
-      };
-    },
-  );
+  // Build SalesReceipt line items.
+  //
+  // QBO validates `Line.Amount === SalesItemLineDetail.UnitPrice * Qty` to the
+  // cent on every SalesItemLineDetail line and rejects the entire receipt when
+  // it doesn't tie. Sending the post-discount/post-tax `extendedCents` as
+  // Amount while sending the pre-discount `unitPriceCents` as UnitPrice
+  // violates that invariant the moment any POS line carries a discount or
+  // line-level tax — which is what was happening in production
+  // ("Amount calculation incorrect... Supplied value: 4.29").
+  //
+  // Fix: send the *pre-discount, pre-tax* line subtotal as `Amount`, and a
+  // `UnitPrice` that satisfies the equality exactly. Discounts are surfaced as
+  // separate `DiscountLineDetail` lines so the receipt's `TotalAmt` still
+  // matches the POS ticket total. Per-line tax is already aggregated into the
+  // single `tx.taxCents` total below, so removing it from item lines does not
+  // double-count.
+  let totalDiscountCents = 0;
+  const lines: Record<string, unknown>[] = [];
+  ((tx as any).lineItems as any[]).forEach((li: any, idx: number) => {
+    const qboItemId = li.product?.qboItemId as string | null;
+    const quantity = Math.max(1, Number(li.quantity) || 1);
+    const unitPriceCents = Number(li.unitPriceCents) || 0;
+    const lineSubtotalCents = unitPriceCents * quantity;
+    const amount = lineSubtotalCents / 100;
+    const unitPrice = unitPriceCents / 100;
 
-  // Include tax as a separate line when non-zero (QBO handles tax lines explicitly)
-  if ((tx as any).taxCents > 0) {
+    // Detect float-precision drift between (UnitPrice * Qty) and Amount —
+    // e.g. 1.43 * 7 = 10.010000000000002 in IEEE-754. When QBO would round
+    // the product differently than our integer subtotal, collapse to a
+    // single-unit line so the equality holds exactly.
+    const productMatchesCents =
+      Math.round(unitPrice * quantity * 100) === lineSubtotalCents;
+
+    const detail: Record<string, unknown> = productMatchesCents
+      ? { Qty: quantity, UnitPrice: unitPrice }
+      : { Qty: 1, UnitPrice: amount };
+    if (qboItemId) detail.ItemRef = { value: qboItemId };
+
     lines.push({
-      Amount: (tx as any).taxCents / 100,
+      LineNum: lines.length + 1,
+      Amount: amount,
+      DetailType: "SalesItemLineDetail",
+      Description: li.product?.name ?? `Line ${idx + 1}`,
+      SalesItemLineDetail: detail,
+    });
+
+    const discountCents = Number(li.discountCents) || 0;
+    if (discountCents > 0) totalDiscountCents += discountCents;
+  });
+
+  // Represent line-level discounts as a single receipt-level
+  // DiscountLineDetail so per-line UnitPrice * Qty equality is preserved
+  // while the receipt total still ties to the POS ticket.
+  if (totalDiscountCents > 0) {
+    lines.push({
+      LineNum: lines.length + 1,
+      Amount: totalDiscountCents / 100,
+      DetailType: "DiscountLineDetail",
+      Description: "POS discount",
+      DiscountLineDetail: {
+        PercentBased: false,
+      },
+    });
+  }
+
+  // Include tax as a separate line when non-zero. The transaction-level
+  // `tx.taxCents` is the canonical sum of tax for the ticket; per-line
+  // `taxCents` was previously folded into `extendedCents` and is now
+  // intentionally excluded from item lines so we don't double-count.
+  const taxCents = Number((tx as any).taxCents) || 0;
+  if (taxCents > 0) {
+    lines.push({
+      Amount: taxCents / 100,
       DetailType: "SalesItemLineDetail",
       Description: "Sales Tax",
       SalesItemLineDetail: {
         Qty: 1,
-        UnitPrice: (tx as any).taxCents / 100,
+        UnitPrice: taxCents / 100,
       },
     });
+  }
+
+  // Defense in depth: assert the receipt total ties out to the POS ticket
+  // total to the cent before we send. If it doesn't, throw a clear internal
+  // error rather than letting QBO reject the payload — this surfaces any
+  // future drift early instead of as an opaque QBO validation message.
+  const itemSumCents = ((tx as any).lineItems as any[]).reduce(
+    (acc: number, li: any) => acc + (Number(li.unitPriceCents) || 0) * (Number(li.quantity) || 1),
+    0,
+  );
+  const computedTotalCents = itemSumCents - totalDiscountCents + taxCents;
+  const expectedTotalCents = Number((tx as any).totalCents) || 0;
+  if (computedTotalCents !== expectedTotalCents) {
+    throw new Error(
+      `[qbo-sync] POS receipt total mismatch for ${posTicketId}: ` +
+        `computed=${computedTotalCents} expected=${expectedTotalCents}`,
+    );
   }
 
   const receiptData: Record<string, unknown> = {
