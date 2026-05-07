@@ -104,7 +104,7 @@ const ListCustomersQuerySchema = z.object({
   taxExempt: z.coerce.boolean().optional(),
   achBlocked: z.coerce.boolean().optional(),
   skip: z.coerce.number().int().min(0).default(0),
-  take: z.coerce.number().int().positive().max(100).default(25),
+  take: z.coerce.number().int().positive().max(500).default(25),
   sortBy: z
     .enum(["createdAt", "updatedAt", "firstName", "lastName", "company"])
     .default("lastName"),
