@@ -33,6 +33,10 @@ export const mockPrisma = {
   promoCode: { findMany: vi.fn().mockResolvedValue([]) },
   posTransaction: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), count: vi.fn().mockResolvedValue(0), aggregate: vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 } }) },
   posLineItem: { findMany: vi.fn().mockResolvedValue([]) },
+  // POS transaction create runs evaluateDiscountsForCart whenever a
+  // customerId is attached; without this mock the route 500s on
+  // `prisma.posDiscount.findMany` being undefined.
+  posDiscount: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   shift: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), findFirst: vi.fn() },
   product: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   productCategory: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
