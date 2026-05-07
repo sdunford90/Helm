@@ -1096,6 +1096,11 @@ model Payment {
   postedDate      DateTime
   status          PaymentStatus @default(PENDING)
   qboPaymentId    String?
+  // Optional dedup token used by the manual record-payment route to make
+  // pre-Stripe stub creation idempotent under client retries. Mirrors the
+  // Stripe PaymentIntent idempotency key so a retried request reuses the
+  // same Payment row instead of orphaning duplicate stubs.
+  idempotencyKey  String?
   createdAt       DateTime      @default(now())
 
   customer   Customer        @relation(fields: [customerId], references: [id])
@@ -1103,6 +1108,7 @@ model Payment {
   achReturns AchReturn[]
   refunds    PaymentRefund[]
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
   @@map("payments")
 }
