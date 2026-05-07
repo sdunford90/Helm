@@ -1145,6 +1145,50 @@ router.post(
         }
       }
 
+      // Pre-flight: every held deposit's release will post a reversing
+      // journal that needs the SECURITY_DEPOSITS_HELD account (2300) — and,
+      // for "apply to invoice", A/R (1200) — at the deposit's frozen
+      // location. If the chart of accounts on that location is missing
+      // either, the GL helpers throw a plain Error mid-transaction which
+      // surfaces as a generic 500. Validate up-front per location so we
+      // can return a clear, actionable 400 instead.
+      const releaseLocationIds = new Set<string>();
+      for (const d of contract.securityDeposits) {
+        if (d.locationId) releaseLocationIds.add(d.locationId);
+      }
+      const needsAr = contract.securityDeposits.some((d) => {
+        const inst = instructionByDeposit.get(d.id);
+        const target = inst
+          ? inst.action === "APPLY_TO_INVOICE"
+            ? inst.invoiceId
+            : null
+          : (d.appliedToInvoiceId ?? null);
+        return Boolean(target);
+      });
+      for (const locId of releaseLocationIds) {
+        const required: Array<{ number: string; label: string }> = [
+          { number: "2300", label: "Security Deposits Held" },
+        ];
+        if (needsAr) required.push({ number: "1200", label: "Accounts Receivable" });
+        for (const acct of required) {
+          const exists = await prisma.glAccount.findFirst({
+            where: {
+              tenantId,
+              accountNumber: acct.number,
+              OR: [{ locationId: locId }, { locationId: null }],
+            },
+            select: { id: true },
+          });
+          if (!exists) {
+            throw appError(
+              `Cannot release security deposit: GL account ${acct.number} (${acct.label}) is not configured for this location's chart of accounts. Open Settings → Accounting and add the ${acct.label} account before terminating this contract.`,
+              400,
+              "DEPOSIT_GL_UNCONFIGURED",
+            );
+          }
+        }
+      }
+
       await prisma.$transaction(async (tx) => {
         // Record the early-termination date in its own column; leave the
         // scheduled endDate intact so we can still tell ended-early from
@@ -1343,6 +1387,26 @@ router.post(
         message: "Contract terminated successfully",
       });
     } catch (err) {
+      // Translate the well-known GL-account-missing errors thrown from
+      // gl-posting helpers (plain `Error` instances) into a clear 400 so
+      // the operator sees an actionable message instead of "Internal
+      // server error". The pre-flight check above catches the common
+      // tenant-wide-or-location-scoped case, but the QBO-connected
+      // branch in `resolveLocationScopedAccountByNumber` enforces a
+      // stricter location-only rule that can still throw mid-tx.
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg.startsWith("UNCONFIGURED_GL_MAPPING:") ||
+        /^GL account .* not found for tenant /.test(msg)
+      ) {
+        return next(
+          appError(
+            `Cannot release security deposit: ${msg.replace(/^UNCONFIGURED_GL_MAPPING:\s*/, "")}. Open Settings → Accounting and configure the missing account before terminating this contract.`,
+            400,
+            "DEPOSIT_GL_UNCONFIGURED",
+          ),
+        );
+      }
       next(err);
     }
   },

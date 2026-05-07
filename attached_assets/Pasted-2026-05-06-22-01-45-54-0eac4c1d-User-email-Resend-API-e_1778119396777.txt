@@ -1,0 +1,104 @@
+2026-05-06 22:01:45.54
+0eac4c1d
+User
+[email] Resend API error: {
+2026-05-06 22:01:45.54
+0eac4c1d
+User
+name: 'validation_error'
+2026-05-06 22:01:45.54
+0eac4c1d
+User
+message: 'The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains',
+2026-05-06 22:01:45.54
+0eac4c1d
+User
+statusCode: 403,
+2026-05-06 22:01:45.84
+0eac4c1d
+User
+[inventory-reconciliation] alert email to sarah@demomarina.example failed: The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains
+2026-05-06 22:01:46.04
+0eac4c1d
+User
+[reconciliation] ALERT: Main Marina / Convenience variance $20086.19 (Helm: $0.00, QB: $20086.19)
+2026-05-06 22:01:49.34
+0eac4c1d
+User
+[email] Resend API error: {
+2026-05-06 22:01:49.34
+0eac4c1d
+User
+name: 'validation_error'
+2026-05-06 22:01:49.34
+0eac4c1d
+User
+statusCode: 403,
+2026-05-06 22:01:49.34
+0eac4c1d
+User
+message: 'The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains',
+2026-05-06 22:01:49.34
+0eac4c1d
+User
+}
+2026-05-06 22:01:50.04
+0eac4c1d
+User
+[inventory-reconciliation] alert email to lisa@demomarina.example failed: The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains
+2026-05-06 22:01:51.54
+0eac4c1d
+User
+name: 'validation_error'
+2026-05-06 22:01:51.54
+0eac4c1d
+User
+message: 'The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains',
+2026-05-06 22:01:51.54
+0eac4c1d
+User
+[email] Resend API error: {
+2026-05-06 22:01:51.54
+0eac4c1d
+User
+statusCode: 403,
+2026-05-06 22:01:51.54
+0eac4c1d
+User
+}
+2026-05-06 22:01:51.84
+0eac4c1d
+User
+[reconciliation] ALERT: Main Marina / Fuel variance $20086.19 (Helm: $0.00, QB: $20086.19)
+2026-05-06 22:01:51.84
+0eac4c1d
+User
+[billing-worker] Inventory reconciliation complete for all tenants
+2026-05-06 22:01:51.84
+0eac4c1d
+User
+[inventory-reconciliation] alert email to sarah@demomarina.example failed: The gethelm.com domain is not verified. Please, add and verify your domain on https://resend.com/domains
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+at async releaseSecurityDeposit (file:///home/runner/workspace/apps/api/dist/services/gl-posting.js:591:32)
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+at async file:///home/runner/workspace/apps/api/dist/routes/contracts.js:927:9
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+at async file:///home/runner/workspace/apps/api/dist/routes/contracts.js:980:17
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+at getAccountByNumber (file:///home/runner/workspace/apps/api/dist/services/gl-posting.js:185:11)
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+[unhandled error] Error: GL account 2300 not found for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c
+2026-05-06 22:01:59.93
+0eac4c1d
+User
+at async Proxy._transactionWithCallback (/home/runner/workspace/node_modules/.pnpm/@prisma+client@6.19.2_prisma@6.19.2_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:8120)
