@@ -231,7 +231,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '28px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '12px', color: '#2E4A6B', marginTop: '2px' },
   tabs: { display: 'flex', borderBottom: '2px solid #E2E8F0', marginBottom: '24px' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer', color: '#64748B', borderBottom: '2px solid transparent', marginBottom: '-2px' },
@@ -430,7 +430,7 @@ export default function EmailAutomation() {
             </tr></thead><tbody>
               {sendLog.filter((l) => logStatusFilter === 'All' || l.status === logStatusFilter).map((l, idx) => { const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; const sc = statusColors[l.status] || statusColors.Delivered; return (
                 <tr key={l.id}>
-                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: '"JetBrains Mono", monospace' }}>{l.date}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{l.date}</td>
                   <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{l.recipient}</td>
                   <td style={{ ...st.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.email}</td>
                   <td style={{ ...st.td, backgroundColor: rowBg }}>{l.template}</td>
@@ -461,14 +461,14 @@ export default function EmailAutomation() {
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#0A2342', marginBottom: '4px' }}>HTML Body</label>
-                  <textarea style={{ width: '100%', minHeight: '300px', padding: '12px', fontSize: '13px', fontFamily: '"JetBrains Mono", monospace', border: '1px solid #CCC', borderRadius: '6px', color: '#0A2342', boxSizing: 'border-box', resize: 'vertical' }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
+                  <textarea style={{ width: '100%', minHeight: '300px', padding: '12px', fontSize: '13px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', border: '1px solid #CCC', borderRadius: '6px', color: '#0A2342', boxSizing: 'border-box', resize: 'vertical' }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
                 </div>
               </div>
               <div style={{ background: '#F8FAFC', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
                 <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginBottom: '12px' }}>Available Variables</div>
                 <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '8px' }}>Click to insert at cursor</div>
                 {editingTemplate.variables.map((v) => (
-                  <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: '13px', fontFamily: '"JetBrains Mono", monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }} onClick={() => toast.info('Inserted', `{{${v}}} added`)}>{`{{${v}}}`}</button>
+                  <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: '13px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }} onClick={() => toast.info('Inserted', `{{${v}}} added`)}>{`{{${v}}}`}</button>
                 ))}
               </div>
             </div>

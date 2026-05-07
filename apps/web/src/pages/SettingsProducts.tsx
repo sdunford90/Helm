@@ -183,7 +183,7 @@ const s: Record<string, React.CSSProperties> = {
     padding: '3px 8px', borderRadius: '4px',
     fontSize: '12px', fontWeight: 600,
     backgroundColor: '#EEF2FF', color: '#4338CA',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   noGlTag: {
     display: 'inline-flex', alignItems: 'center', gap: '4px',

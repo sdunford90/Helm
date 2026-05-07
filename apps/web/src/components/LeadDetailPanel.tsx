@@ -355,7 +355,7 @@ const s: Record<string, React.CSSProperties> = {
     outline: 'none',
     width: '100%',
     boxSizing: 'border-box' as const,
-    fontFamily: 'Inter, system-ui, sans-serif',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   fieldSelect: {
     fontSize: '14px',
@@ -402,7 +402,7 @@ const s: Record<string, React.CSSProperties> = {
     border: '1px solid #CCC',
     borderRadius: '6px',
     resize: 'vertical' as const,
-    fontFamily: 'Inter, system-ui, sans-serif',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     outline: 'none',
     boxSizing: 'border-box' as const,
   },

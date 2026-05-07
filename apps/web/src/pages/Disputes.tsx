@@ -360,7 +360,7 @@ function FileEvidenceField({
         {label}
       </label>
       {fileId ? (
-        <div style={{ fontSize: 12, color: '#1B5E20', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-all' }}>
+        <div style={{ fontSize: 12, color: '#1B5E20', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', wordBreak: 'break-all' }}>
           ✓ {fileId}
         </div>
       ) : (

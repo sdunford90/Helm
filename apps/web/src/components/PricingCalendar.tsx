@@ -112,7 +112,7 @@ const s: Record<string, React.CSSProperties> = {
   dayHeader: { padding: '8px', fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', background: '#F8FAFC', textAlign: 'center' as const },
   dayCell: { minHeight: '80px', padding: '6px 8px', cursor: 'pointer', position: 'relative' as const, transition: 'box-shadow 0.15s', display: 'flex', flexDirection: 'column' as const },
   dayNum: { fontSize: '13px', fontWeight: 600, marginBottom: '2px' },
-  dayPrice: { fontFamily: '"JetBrains Mono", monospace', fontSize: '14px', fontWeight: 700, color: '#0A2342' },
+  dayPrice: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '14px', fontWeight: 700, color: '#0A2342' },
   ruleTag: { fontSize: '9px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.04em', marginTop: 'auto', borderRadius: '3px', padding: '1px 4px', alignSelf: 'flex-start' },
   overrideIndicator: { width: '6px', height: '6px', borderRadius: '50%', background: '#0A2342', position: 'absolute' as const, top: '6px', right: '6px' },
   tooltip: { position: 'absolute' as const, zIndex: 50, background: '#0A2342', color: '#FFFFFF', borderRadius: '8px', padding: '12px 16px', fontSize: '12px', width: '240px', boxShadow: '0 4px 12px rgba(0,0,0,0.25)', left: '50%', transform: 'translateX(-50%)', bottom: '100%', marginBottom: '4px', pointerEvents: 'none' as const },
@@ -125,7 +125,7 @@ const s: Record<string, React.CSSProperties> = {
   editOverlay: { position: 'fixed' as const, inset: 0, background: 'rgba(10,35,66,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
   editModal: { background: '#FFFFFF', borderRadius: '8px', padding: '24px', width: '340px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' },
   editTitle: { fontSize: '16px', fontWeight: 700, color: '#0A2342', margin: '0 0 16px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  editInput: { width: '100%', padding: '8px 12px', fontSize: '16px', fontFamily: '"JetBrains Mono", monospace', border: '1px solid #CCC', borderRadius: '4px', boxSizing: 'border-box' as const },
+  editInput: { width: '100%', padding: '8px 12px', fontSize: '16px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', border: '1px solid #CCC', borderRadius: '4px', boxSizing: 'border-box' as const },
   editBtnRow: { display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' },
   editBtn: { padding: '6px 16px', fontSize: '14px', fontWeight: 600, borderRadius: '6px', border: 'none', cursor: 'pointer' },
 };
@@ -395,10 +395,10 @@ export default function PricingCalendar({ products, onOverrideChange }: PricingC
                   {dp.breakdown.map((b, i) => (
                     <div key={i} style={{ ...s.tooltipRow, opacity: b.applied ? 1 : 0.45 }}>
                       <span>{b.applied ? '>' : '-'} {b.name}</span>
-                      <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>{b.adjustment}</span>
+                      <span style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{b.adjustment}</span>
                     </div>
                   ))}
-                  <div style={{ marginTop: '8px', fontWeight: 700, fontSize: '14px', fontFamily: '"JetBrains Mono", monospace', textAlign: 'right' as const }}>
+                  <div style={{ marginTop: '8px', fontWeight: 700, fontSize: '14px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', textAlign: 'right' as const }}>
                     Final: ${(dp.priceCents / 100).toFixed(2)}
                   </div>
                 </div>

@@ -149,7 +149,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '24px',
     fontWeight: 700,
     color: '#0A2342',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   table: {
     width: '100%',
@@ -195,7 +195,7 @@ const s: Record<string, React.CSSProperties> = {
     color: '#FFFFFF',
     fontSize: '13px',
     fontWeight: 700,
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   actionBtn: {
     padding: '5px 10px',
@@ -303,7 +303,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '14px',
     color: '#0A2342',
     fontWeight: 500,
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   notesBox: {
     marginTop: '20px',
@@ -525,7 +525,7 @@ export default function Waitlist() {
                   {entry.firstName} {entry.lastName}
                 </td>
                 <td style={s.td}>{entry.slipType}</td>
-                <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>
+                <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                   {entry.boatLength} ft
                 </td>
                 <td style={s.td}>{entry.desiredDate}</td>

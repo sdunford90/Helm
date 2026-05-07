@@ -81,7 +81,7 @@ export function statusBadge(status: string): React.CSSProperties {
 }
 
 /* ─── Styles ─── */
-export const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+export const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const stl: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },

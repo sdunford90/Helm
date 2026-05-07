@@ -80,7 +80,7 @@ const s: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' },
   statCard: { backgroundColor: '#FFFFFF', border: '1px solid #CCC', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
   statLabel: { fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.03em', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   tabs: { display: 'flex', gap: '0px', marginBottom: '24px', borderBottom: '2px solid #E2E8F0' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#64748B', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid transparent', marginBottom: '-2px' },
   tabActive: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#0A2342', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid #00D4FF', marginBottom: '-2px' },
@@ -128,7 +128,7 @@ const s: Record<string, React.CSSProperties> = {
   timeline: { marginTop: '20px' },
   timelineItem: { display: 'flex', gap: '12px', position: 'relative' as const, paddingBottom: '16px', paddingLeft: '24px', borderLeft: '2px solid #E2E8F0', marginLeft: '6px' },
   timelineDot: { position: 'absolute' as const, left: '-6px', top: '2px', width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#00D4FF', border: '2px solid #FFFFFF' },
-  timelineDate: { fontSize: '12px', color: '#64748B', fontFamily: '"JetBrains Mono", monospace', minWidth: '90px' },
+  timelineDate: { fontSize: '12px', color: '#64748B', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', minWidth: '90px' },
   timelineStatus: { fontSize: '12px', fontWeight: 600, color: '#0A2342' },
   timelineNote: { fontSize: '13px', color: '#64748B' },
 };
@@ -278,7 +278,7 @@ export default function Concierge() {
                     onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.backgroundColor = '#EBF2FA'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLTableRowElement).style.backgroundColor = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; }}
                   >
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{r.requestNumber}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{r.requestNumber}</td>
                     <td style={{ ...s.td, fontWeight: 600 }}>{r.customer}</td>
                     <td style={s.td}>
                       <Wrench size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
@@ -291,7 +291,7 @@ export default function Concierge() {
                       {r.preferredDate}
                     </td>
                     <td style={s.td}>{r.vendor}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(r.quote)}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(r.quote)}</td>
                     <td style={s.td}>
                       <span style={{ ...s.badge, backgroundColor: STATUS_COLORS[r.status].bg, color: STATUS_COLORS[r.status].text }}>
                         {r.status}
@@ -406,7 +406,7 @@ export default function Concierge() {
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Quote</span>
-                  <span style={{ ...s.fieldValue, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(selectedRequest.quote)}</span>
+                  <span style={{ ...s.fieldValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(selectedRequest.quote)}</span>
                 </div>
               </div>
               <div style={{ marginTop: '20px', padding: '16px', backgroundColor: '#F7F9FB', borderRadius: '8px', border: '1px solid #E2E8F0' }}>

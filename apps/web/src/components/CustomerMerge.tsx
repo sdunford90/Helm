@@ -400,15 +400,15 @@ export default function CustomerMerge({ source, onClose, onMerge }: CustomerMerg
       <div style={styles.summaryCard}>
         <div style={styles.summaryRow}>
           <span>Invoices to transfer</span>
-          <strong style={{ fontFamily: '"JetBrains Mono", monospace' }}>{source.invoices}</strong>
+          <strong style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{source.invoices}</strong>
         </div>
         <div style={styles.summaryRow}>
           <span>Boats to transfer</span>
-          <strong style={{ fontFamily: '"JetBrains Mono", monospace' }}>{source.boats}</strong>
+          <strong style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{source.boats}</strong>
         </div>
         <div style={styles.summaryRow}>
           <span>Payments to transfer</span>
-          <strong style={{ fontFamily: '"JetBrains Mono", monospace' }}>{source.payments}</strong>
+          <strong style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{source.payments}</strong>
         </div>
         <div style={{ ...styles.summaryRow, borderTop: '1px solid #E2E8F0', paddingTop: '12px', marginTop: '4px' }}>
           <span>Field selections</span>

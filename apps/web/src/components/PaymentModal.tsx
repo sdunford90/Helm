@@ -73,7 +73,7 @@ interface PaymentModalProps {
 }
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const s: Record<string, React.CSSProperties> = {
   overlay: {
@@ -132,7 +132,7 @@ const s: Record<string, React.CSSProperties> = {
   amountInput: {
     width: '100px', border: 'none', outline: 'none', fontSize: '14px',
     fontWeight: 600, color: '#0A2342', textAlign: 'right',
-    fontFamily: '"JetBrains Mono", monospace', backgroundColor: 'transparent',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', backgroundColor: 'transparent',
   },
   amountError: {
     fontSize: '12px', color: '#B71C1C', marginTop: '6px', marginBottom: '12px',

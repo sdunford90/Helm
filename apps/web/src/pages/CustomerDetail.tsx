@@ -662,7 +662,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '24px',
     fontWeight: 700,
     color: '#0A2342',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   statLabel: {
     fontSize: '12px',
@@ -680,7 +680,7 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: '9999px',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '14px',
   },
   tableWrap: {
@@ -1390,11 +1390,11 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
             </div>
             <div style={mField}>
               <label style={mLabel}>Rate ($/period) *</label>
-              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
+              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={mField}>
               <label style={mLabel}>Security Deposit</label>
-              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none', marginTop: '4px' }} onClick={() => setAutoRenew(!autoRenew)}>
@@ -3366,7 +3366,7 @@ export default function CustomerDetailPage() {
                 color: '#856404',
                 fontSize: '13px',
                 padding: '4px 14px',
-                fontFamily: '"JetBrains Mono", monospace',
+                fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
               }}
             >
               {fmt(outstandingBalance)} outstanding

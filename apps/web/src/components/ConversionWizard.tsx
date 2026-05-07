@@ -228,7 +228,7 @@ const s: Record<string, React.CSSProperties> = {
   summaryValueMono: {
     color: '#0A2342',
     fontWeight: 600,
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   skipText: {
     fontSize: '13px',

@@ -108,7 +108,7 @@ interface CatalogItem {
 }
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const s: Record<string, React.CSSProperties> = {
   overlay: {

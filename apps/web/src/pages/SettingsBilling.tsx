@@ -59,7 +59,7 @@ const styles: Record<string, React.CSSProperties> = {
   tierGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 },
   tierCard: { background: '#fff', border: '1px solid #E2E8F0', borderRadius: 12, padding: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
   tierName: { fontSize: 20, fontWeight: 700, color: NAVY, margin: '0 0 8px' },
-  tierPrice: { fontSize: 28, fontWeight: 700, color: NAVY, fontFamily: '"JetBrains Mono", monospace' },
+  tierPrice: { fontSize: 28, fontWeight: 700, color: NAVY, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   tierPriceUnit: { fontSize: 13, color: '#64748B', fontWeight: 400 },
   tierFeature: { fontSize: 13, color: '#2E4A6B', padding: '6px 0' },
   locPicker: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 24, flexWrap: 'wrap' },

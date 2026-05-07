@@ -107,7 +107,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '32px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '13px', color: '#2E4A6B', marginTop: '2px' },
   tabs: { display: 'flex', gap: '0', borderBottom: '2px solid #E2E8F0', marginBottom: '24px' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer', color: '#64748B', borderBottom: '2px solid transparent', marginBottom: '-2px' },
@@ -118,13 +118,13 @@ const st: Record<string, React.CSSProperties> = {
   table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '14px' },
   th: { textAlign: 'left' as const, padding: '12px 16px', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF' },
   td: { padding: '12px 16px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '14px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '14px' },
   pricingGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', marginBottom: '24px' },
   priceCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   priceLabel: { fontSize: '18px', fontWeight: 700, color: '#0A2342', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' },
   priceRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #F1F5F9' },
   priceRowLabel: { fontSize: '14px', color: '#64748B' },
-  priceRowValue: { fontSize: '16px', fontWeight: 600, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  priceRowValue: { fontSize: '16px', fontWeight: 600, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   tankGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px' },
   tankCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '24px', textAlign: 'center' as const, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   tankLabel: { fontSize: '18px', fontWeight: 700, color: '#0A2342', marginBottom: '16px' },
@@ -227,7 +227,7 @@ function RecordSaleModal({
           {totalCents > 0 && (
             <div style={{ padding: '12px 16px', background: '#E0F7FF', borderRadius: '6px', border: '1px solid #00D4FF', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '14px', color: '#0A2342', fontWeight: 600 }}>Sale Total</span>
-              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(totalCents)}</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmtCents(totalCents)}</span>
             </div>
           )}
         </div>
@@ -306,7 +306,7 @@ function LogDeliveryModal({
           {totalCostCents > 0 && (
             <div style={{ padding: '12px 16px', background: '#E0F7FF', borderRadius: '6px', border: '1px solid #00D4FF', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '14px', color: '#0A2342', fontWeight: 600 }}>Total Cost</span>
-              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtTotal(totalCostCents)}</span>
+              <span style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmtTotal(totalCostCents)}</span>
             </div>
           )}
         </div>
@@ -356,15 +356,15 @@ function UpdatePriceModal({
         <div style={st.modalBody}>
           <div style={st.field}>
             <label style={st.label}>Retail Price ($/gal) *</label>
-            <input style={{ ...st.input, fontSize: '18px', fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={retail} onChange={(e) => setRetail(e.target.value)} autoFocus />
+            <input style={{ ...st.input, fontSize: '18px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={retail} onChange={(e) => setRetail(e.target.value)} autoFocus />
           </div>
           <div style={st.field}>
             <label style={st.label}>Cost Price ($/gal)</label>
-            <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} />
+            <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} />
           </div>
           <div style={{ padding: '12px 16px', background: newMargin > 0 ? '#DEF7EC' : '#FDE8E8', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
             <span style={{ fontSize: '13px', color: '#64748B', fontWeight: 600 }}>Projected Margin</span>
-            <span style={{ fontSize: '16px', fontWeight: 700, color: newMargin > 0 ? '#03543F' : '#9B1C1C', fontFamily: '"JetBrains Mono", monospace' }}>
+            <span style={{ fontSize: '16px', fontWeight: 700, color: newMargin > 0 ? '#03543F' : '#9B1C1C', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
               ${newMargin.toFixed(2)}/gal ({newMarginPct.toFixed(1)}%)
             </span>
           </div>
@@ -640,7 +640,7 @@ export default function Fuel() {
                 <div style={st.tankBar}>
                   <div style={{ ...st.tankFill, height: `${t.levelPercent}%`, backgroundColor: tankColor(t.levelPercent) }} />
                 </div>
-                <div style={{ fontSize: '28px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{t.levelPercent}%</div>
+                <div style={{ fontSize: '28px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{t.levelPercent}%</div>
                 <div style={st.tankText}>{t.currentGallons.toLocaleString()} / {t.capacityGallons.toLocaleString()} gal</div>
                 <div style={{ ...st.tankText, fontWeight: 600, color: t.estimatedDaysRemaining < 14 ? '#EF4444' : '#22C55E' }}>~{t.estimatedDaysRemaining} days remaining</div>
               </div>

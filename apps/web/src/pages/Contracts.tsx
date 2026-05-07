@@ -202,7 +202,7 @@ const st: Record<string, React.CSSProperties> = {
     borderRadius: '9999px',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '14px',
   },
   emptyState: {
@@ -571,11 +571,11 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
             </div>
             <div style={st.field}>
               <label style={st.label}>Rate ($/period) *</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+              <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Security Deposit</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+              <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" placeholder="0.00" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
             </div>
           </div>
           <div style={{ marginTop: '8px' }}>
@@ -999,10 +999,10 @@ function ContractDetailModal({
             <div style={infoRow}><span style={infoLabel}>Customer</span><span style={infoValue}>{contract.customer}</span></div>
             <div style={infoRow}><span style={infoLabel}>Boat</span><span style={infoValue}>{contract.boatName}</span></div>
             <div style={infoRow}><span style={infoLabel}>Billing Cycle</span><span style={infoValue}>{contract.billingCycle}</span></div>
-            <div style={infoRow}><span style={infoLabel}>Rate</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace', fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{fmt(contract.rate)}/{contract.billingCycle === 'Monthly' ? 'mo' : contract.billingCycle === 'Annual' ? 'yr' : 'period'}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Rate</span><span style={{ ...infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{fmt(contract.rate)}/{contract.billingCycle === 'Monthly' ? 'mo' : contract.billingCycle === 'Annual' ? 'yr' : 'period'}</span></div>
             <div style={infoRow}><span style={infoLabel}>Start Date</span><span style={infoValue}>{contract.start}</span></div>
             <div style={infoRow}><span style={infoLabel}>End Date</span><span style={infoValue}>{contract.end}</span></div>
-            <div style={infoRow}><span style={infoLabel}>Security Deposit</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{fmt(contract.securityDeposit)}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Security Deposit</span><span style={{ ...infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt(contract.securityDeposit)}</span></div>
             {/* surface the linked rate plan so operators can
                 see at a glance which plan drives GL/tax for this
                 contract. The list table also shows this, but the
@@ -1063,11 +1063,11 @@ function ContractDetailModal({
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>Rate ($/period)</label>
-                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+                  <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>Security Deposit</label>
-                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+                  <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>End Date</label>
@@ -1372,9 +1372,9 @@ function ContractDetailModal({
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>Deposit</div>
-                          <div style={{ fontSize: '12px', color: '#94A3B8', fontFamily: '"JetBrains Mono", monospace', marginTop: '2px' }}>{d.id.slice(0, 8)}…</div>
+                          <div style={{ fontSize: '12px', color: '#94A3B8', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', marginTop: '2px' }}>{d.id.slice(0, 8)}…</div>
                         </div>
-                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                           ${(d.amountCents / 100).toFixed(2)}
                         </div>
                       </div>

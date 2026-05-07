@@ -153,7 +153,7 @@ export default function Invoices() {
                   onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = '#F8FAFC')}
                   onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = 'transparent')}
                 >
-                  <td style={{ padding: '12px 8px', fontSize: 13, fontWeight: 600, color: CYAN, fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '12px 8px', fontSize: 13, fontWeight: 600, color: CYAN, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                     {inv.invoiceNumber}
                   </td>
                   <td style={{ padding: '12px 8px', fontSize: 13, color: NAVY }}>
@@ -165,10 +165,10 @@ export default function Invoices() {
                   <td style={{ padding: '12px 8px' }}>
                     <span style={statusBadge(inv.status)}>{inv.status.replace(/_/g, ' ')}</span>
                   </td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right', fontSize: 13, color: NAVY, fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '12px 8px', textAlign: 'right', fontSize: 13, color: NAVY, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                     {formatCents(inv.totalCents)}
                   </td>
-                  <td style={{ padding: '12px 8px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: inv.balanceCents > 0 ? '#DC2626' : '#0D9F6E', fontFamily: 'JetBrains Mono, monospace' }}>
+                  <td style={{ padding: '12px 8px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: inv.balanceCents > 0 ? '#DC2626' : '#0D9F6E', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                     {formatCents(inv.balanceCents)}
                   </td>
                 </tr>

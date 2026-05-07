@@ -147,7 +147,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid #E2E8F0',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '13px',
   },
   qrSection: {
@@ -251,19 +251,19 @@ export default function SlipDetailPanel({ slip, onClose, onEdit, onAssign, onMai
           </div>
           <div>
             <div style={styles.infoLabel}>Length</div>
-            <div style={{ ...styles.infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{slip.length} ft</div>
+            <div style={{ ...styles.infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{slip.length} ft</div>
           </div>
           <div>
             <div style={styles.infoLabel}>Beam</div>
-            <div style={{ ...styles.infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{slip.beam} ft</div>
+            <div style={{ ...styles.infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{slip.beam} ft</div>
           </div>
           <div>
             <div style={styles.infoLabel}>Draft</div>
-            <div style={{ ...styles.infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{slip.draft} ft</div>
+            <div style={{ ...styles.infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{slip.draft} ft</div>
           </div>
           <div>
             <div style={styles.infoLabel}>Height</div>
-            <div style={{ ...styles.infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{slip.height} ft</div>
+            <div style={{ ...styles.infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{slip.height} ft</div>
           </div>
           <div>
             <div style={styles.infoLabel}>Power</div>

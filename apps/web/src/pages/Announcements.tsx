@@ -987,7 +987,7 @@ export default function Announcements() {
                       const sc = AUTO_STATUS_COLORS[l.status];
                       return (
                         <tr key={l.id}>
-                          <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: '"JetBrains Mono", monospace' }}>{l.date}</td>
+                          <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{l.date}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg, fontWeight: 600 }}>{l.recipient}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.email}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg }}>{l.template}</td>
@@ -1090,14 +1090,14 @@ export default function Announcements() {
                     </div>
                     <div>
                       <label style={styles.formLabel}>HTML Body</label>
-                      <textarea style={{ ...styles.formInput, minHeight: '280px', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px', resize: 'vertical' as const }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
+                      <textarea style={{ ...styles.formInput, minHeight: '280px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '13px', resize: 'vertical' as const }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
                     </div>
                   </div>
                   <div style={{ background: '#F8FAFC', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
                     <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginBottom: '8px' }}>Available Variables</div>
                     <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '8px' }}>Click to copy</div>
                     {editingAutoTemplate.variables.map(v => (
-                      <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '6px 10px', fontSize: '12px', fontFamily: '"JetBrains Mono", monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }}>
+                      <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '6px 10px', fontSize: '12px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }}>
                         {`{{${v}}}`}
                       </button>
                     ))}

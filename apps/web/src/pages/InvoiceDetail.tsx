@@ -183,7 +183,7 @@ function statusBadge(status: InvoiceStatus): React.CSSProperties {
 }
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const st: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },

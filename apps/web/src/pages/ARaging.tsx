@@ -18,7 +18,7 @@ const colSum = (data: AgingRow[], field: keyof Omit<AgingRow, 'customer'>) =>
   data.reduce((s, r) => s + r[field], 0);
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const s: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },

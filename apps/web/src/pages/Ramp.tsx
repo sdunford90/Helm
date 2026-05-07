@@ -121,7 +121,7 @@ const s: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' },
   statCard: { backgroundColor: '#FFFFFF', border: '1px solid #CCC', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
   statLabel: { fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.03em', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   tabs: { display: 'flex', gap: '0px', marginBottom: '24px', borderBottom: '2px solid #E2E8F0' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#64748B', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid transparent', marginBottom: '-2px' },
   tabActive: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#0A2342', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid #00D4FF', marginBottom: '-2px' },
@@ -279,7 +279,7 @@ export default function Ramp() {
                 )}
                 {todayTickets.map((t, idx) => (
                   <tr key={t.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                       <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
                       {t.time}
                     </td>
@@ -287,8 +287,8 @@ export default function Ramp() {
                       {t.customerName}
                       {t.isGuest && <span style={s.guestBadge}>GUEST</span>}
                     </td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{t.boatReg}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{t.boatReg}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                       <Car size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
                       {t.licensePlate}
                     </td>
@@ -296,7 +296,7 @@ export default function Ramp() {
                       <Ticket size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
                       {t.ticketType}
                     </td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(t.amount)}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(t.amount)}</td>
                     <td style={s.td}>
                       <span style={{ ...s.badge, backgroundColor: TICKET_STATUS_COLORS[t.status].bg, color: TICKET_STATUS_COLORS[t.status].text }}>
                         {t.status}
@@ -354,17 +354,17 @@ export default function Ramp() {
                 )}
                 {filteredAll.map((t, idx) => (
                   <tr key={t.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{t.ticketNumber}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{t.ticketNumber}</td>
                     <td style={s.td}>{t.date}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{t.time}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{t.time}</td>
                     <td style={{ ...s.td, fontWeight: 600 }}>
                       {t.customerName}
                       {t.isGuest && <span style={s.guestBadge}>GUEST</span>}
                     </td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{t.boatReg}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{t.licensePlate}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{t.boatReg}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{t.licensePlate}</td>
                     <td style={s.td}>{t.ticketType}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(t.amount)}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(t.amount)}</td>
                     <td style={s.td}>{t.payment}</td>
                     <td style={s.td}>
                       <span style={{ ...s.badge, backgroundColor: TICKET_STATUS_COLORS[t.status].bg, color: TICKET_STATUS_COLORS[t.status].text }}>
@@ -409,14 +409,14 @@ export default function Ramp() {
                 )}
                 {passes.map((p, idx) => (
                   <tr key={p.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.ticketNumber}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{p.ticketNumber}</td>
                     <td style={{ ...s.td, fontWeight: 600 }}>
                       {p.customerName}
                       {p.isGuest && <span style={s.guestBadge}>GUEST</span>}
                     </td>
                     <td style={s.td}>{p.date}</td>
                     <td style={s.td}>{p.validDate}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(p.amount)}</td>
+                    <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(p.amount)}</td>
                     <td style={s.td}>{p.payment}</td>
                   </tr>
                 ))}

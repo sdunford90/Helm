@@ -385,7 +385,7 @@ export default function SettingsTaxRates() {
                           return (
                             <tr key={r.id}>
                               <td style={styles.td}>{r.category}</td>
-                              <td style={{ ...styles.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>
+                              <td style={{ ...styles.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                                 {fmtBps(r.ratePctBps)}
                               </td>
                               <td style={styles.td}>{fmtDate(r.effectiveFrom)}</td>
@@ -395,7 +395,7 @@ export default function SettingsTaxRates() {
                               <td style={styles.td}>
                                 {label ? (
                                   <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 12 }}>{label}</span>
+                                    <span style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: 12 }}>{label}</span>
                                     {acct?.qboAccountId && (
                                       <span style={styles.qboBadge}><Link2 size={9} /> QBO</span>
                                     )}
