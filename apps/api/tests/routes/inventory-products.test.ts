@@ -162,6 +162,84 @@ describe('POST /api/inventory/products', () => {
     expect(mockPrisma.product.create).not.toHaveBeenCalled();
   });
 
+  // Regression for task #295: the create endpoint used to backfill
+  // `category.defaultTaxCategory` into `Product.taxClass`, which then went
+  // stale the moment the category was edited. The new contract: the
+  // override column stays NULL when no explicit override is sent (or when
+  // the legacy "Standard" / empty-string sentinels are sent), and the
+  // resolver inherits from the category at read time.
+  it.each([
+    [undefined],
+    [null],
+    [''],
+    ['  '],
+    ['Standard'],
+    ['standard'],
+    ['  STANDARD  '],
+  ])('persists Product.taxClass=null when the create payload sends %j (no real override)', async (taxClass) => {
+    mockPrisma.productCategory.findFirst.mockResolvedValue({
+      defaultTaxCategory: 'food',
+      taxable: true,
+    } as any);
+    mockPrisma.product.create.mockImplementation(async ({ data }: any) => ({
+      ...buildProduct(),
+      ...data,
+    }));
+    // tryPushProductToQbo (called from POST /products) writes the QBO-sync
+    // error back via product.update; without a mock it returns undefined and
+    // shapeProduct crashes. The QBO push itself fails (no locationId on the
+    // fixture) but the route still 201s with the persisted row.
+    mockPrisma.product.update.mockImplementation(async ({ where, data }: any) => ({
+      ...buildProduct({ id: where.id }),
+      ...data,
+    }));
+
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X-NULL',
+        name: 'Bait',
+        costCents: 100,
+        priceCents: 200,
+        productCategoryId: '00000000-0000-0000-0000-000000000001',
+        ...(taxClass === undefined ? {} : { taxClass }),
+      });
+
+    expect(res.status).toBe(201);
+    const createArgs = mockPrisma.product.create.mock.calls[0][0] as any;
+    expect(createArgs.data.taxClass).toBeNull();
+  });
+
+  it('persists a real per-product override verbatim on create', async () => {
+    mockPrisma.productCategory.findFirst.mockResolvedValue({
+      defaultTaxCategory: 'food',
+      taxable: true,
+    } as any);
+    mockPrisma.product.create.mockImplementation(async ({ data }: any) => ({
+      ...buildProduct(),
+      ...data,
+    }));
+    mockPrisma.product.update.mockImplementation(async ({ where, data }: any) => ({
+      ...buildProduct({ id: where.id }),
+      ...data,
+    }));
+
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X-OV',
+        name: 'Champagne',
+        costCents: 100,
+        priceCents: 200,
+        productCategoryId: '00000000-0000-0000-0000-000000000001',
+        taxClass: 'luxury',
+      });
+
+    expect(res.status).toBe(201);
+    const createArgs = mockPrisma.product.create.mock.calls[0][0] as any;
+    expect(createArgs.data.taxClass).toBe('luxury');
+  });
+
   it('rejects a create when the supplied productCategoryId is foreign to the tenant', async () => {
     // findFirst returns null → "category not found for this tenant" → 400.
     mockPrisma.productCategory.findFirst.mockResolvedValue(null as any);

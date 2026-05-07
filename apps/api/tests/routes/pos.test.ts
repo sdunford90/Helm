@@ -226,6 +226,76 @@ describe('POST /api/pos/transactions — tax engine integration', () => {
     expect(args.lineItems[0].taxCategory).toBe('food');
   });
 
+  // Regression for task #295: legacy products were stored with the literal
+  // "Standard" sentinel (the inventory modal pre-fills it for legacy null
+  // rows). The POS resolver must treat that as "no override" and fall
+  // through to the category's defaultTaxCategory — otherwise the engine
+  // looks up a non-existent rate and the line rings up with zero tax even
+  // though the category-level setup is correct.
+  it.each(['Standard', 'standard', '', '  '])(
+    'a stored taxClass=%j (legacy "no override" sentinel) still inherits the category default at POS',
+    async (storedTaxClass) => {
+      const product = buildPosProduct({ priceCents: 1000, taxClass: storedTaxClass });
+      mockPrisma.product.findMany.mockResolvedValue([
+        {
+          ...product,
+          productCategory: { defaultTaxCategory: 'food', taxable: true },
+        },
+      ]);
+      mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+      mockCalculateTax.mockResolvedValue({
+        items: [{ taxCents: 70, taxRate: 0.07 }],
+        totalTaxCents: 70,
+      } as any);
+      const getCaptured = captureCreatedTransaction();
+
+      const res = await request(app)
+        .post('/api/pos/transactions')
+        .send({
+          shiftId: 'shift-1',
+          lineItems: [{ productId: product.id, quantity: 1, unitPriceCents: 1000 }],
+          paymentMethod: 'CASH',
+        });
+
+      expect(res.status).toBe(201);
+      // Crucially: the engine WAS called (the line wasn't dropped by POS's
+      // taxableLines filter) and the category default flowed through.
+      expect(mockCalculateTax).toHaveBeenCalledTimes(1);
+      const args = mockCalculateTax.mock.calls[0][0] as any;
+      expect(args.lineItems[0].taxCategory).toBe('food');
+      const captured = getCaptured();
+      expect(captured.taxCents).toBe(70);
+    },
+  );
+
+  it('a non-taxable category zeros the tax even when the product carries a stale taxClass', async () => {
+    // Per the task: "A category marked non-taxable still produces zero tax
+    // for its products at POS." A stale per-product value (e.g. "general"
+    // copied from when the category was taxable) must NOT override the
+    // category-level non-taxable flag.
+    const product = buildPosProduct({ priceCents: 1000, taxClass: 'general' });
+    mockPrisma.product.findMany.mockResolvedValue([
+      {
+        ...product,
+        productCategory: { defaultTaxCategory: 'general', taxable: false },
+      },
+    ]);
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: 'loc-1' });
+    const getCaptured = captureCreatedTransaction();
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        shiftId: 'shift-1',
+        lineItems: [{ productId: product.id, quantity: 1, unitPriceCents: 1000 }],
+        paymentMethod: 'CASH',
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockCalculateTax).not.toHaveBeenCalled();
+    expect(getCaptured().taxCents).toBe(0);
+  });
+
   it('per-product Tax Exempt class skips the engine entirely', async () => {
     // resolveProductTaxCategory short-circuits to taxable=false so POS
     // filters out every line and never calls calculateTax.

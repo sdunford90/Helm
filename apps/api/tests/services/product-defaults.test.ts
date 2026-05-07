@@ -88,6 +88,46 @@ describe('resolveProductTaxCategory', () => {
     });
     expect(out.taxCategory).toBe('food');
   });
+
+  // The bug behind task #295: legacy / fixture rows persist taxClass as the
+  // literal "" or " standard " or "STANDARD" — none of which are real tax
+  // categories. Without normalization the POS taxableLines filter would
+  // drop the line entirely (empty string is falsy) or the engine would
+  // look up a non-existent rate. All variants must defer to the category.
+  it.each([
+    ['', 'food'],
+    ['   ', 'food'],
+    ['standard', 'food'],
+    ['STANDARD', 'food'],
+    ['  Standard  ', 'food'],
+  ])('treats taxClass=%j as no-override and falls through to the category default', (taxClass, expected) => {
+    const out = resolveProductTaxCategory({
+      taxClass,
+      productCategory: { defaultTaxCategory: 'food', taxable: true },
+    });
+    expect(out.taxCategory).toBe(expected);
+    expect(out.taxable).toBe(true);
+  });
+
+  it('falls through to "general" when category.defaultTaxCategory is an empty string', () => {
+    // Defensive: an API client (or a stale row) could have written "" into
+    // the category default. POS would otherwise pass "" as taxCategory and
+    // its taxableLines filter would drop the line, producing zero tax.
+    const out = resolveProductTaxCategory({
+      taxClass: null,
+      productCategory: { defaultTaxCategory: '', taxable: true },
+    });
+    expect(out.taxCategory).toBe('general');
+    expect(out.taxable).toBe(true);
+  });
+
+  it('a real per-product override (e.g. "luxury") is trimmed and still beats the category', () => {
+    const out = resolveProductTaxCategory({
+      taxClass: '  luxury  ',
+      productCategory: { defaultTaxCategory: 'food', taxable: true },
+    });
+    expect(out.taxCategory).toBe('luxury');
+  });
 });
 
 describe('isTaxExempt', () => {

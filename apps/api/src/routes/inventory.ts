@@ -635,8 +635,7 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
-    // Validate the supplied category belongs to this tenant; pull its tax
-    // defaults so a blank taxClass inherits from the category at write time.
+    // Validate the supplied category belongs to this tenant.
     const category = await prisma.productCategory.findFirst({
       where: { id: body.productCategoryId, tenantId },
       select: { defaultTaxCategory: true, taxable: true },
@@ -647,12 +646,20 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         code: "PRODUCT_CATEGORY_NOT_FOUND",
       });
     }
-    let resolvedTaxClass: string | null = body.taxClass ?? null;
-    if (resolvedTaxClass == null) {
-      resolvedTaxClass = !category.taxable
-        ? "Tax Exempt"
-        : category.defaultTaxCategory ?? null;
-    }
+    // taxClass is a per-product OVERRIDE of the category's default. When the
+    // caller doesn't send one we persist NULL — the resolver in
+    // product-defaults.ts inherits from the category at read time. Copying
+    // category.defaultTaxCategory into the column at write time is a footgun:
+    // the value goes stale the moment the category is edited, and stale
+    // overrides can shadow the (now-correct) category default at POS / on
+    // invoices.  Empty strings and the legacy "Standard" sentinel are treated
+    // as "no override" so they don't poison new rows either.
+    const trimmed = body.taxClass?.trim() ?? "";
+    const isExplicitOverride =
+      trimmed.length > 0 && trimmed.toLowerCase() !== "standard";
+    const resolvedTaxClass: string | null = isExplicitOverride
+      ? body.taxClass!
+      : null;
     let product = await prisma.product.create({
       data: {
         tenantId,
@@ -740,13 +747,15 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     }
 
     // When the caller is moving the product to a new category, validate it
-    // belongs to this tenant. The taxClass back-fills from the new category
-    // when the caller didn't explicitly set one.
-    let categoryForTaxBackfill: { defaultTaxCategory: string | null; taxable: boolean } | null = null;
+    // belongs to this tenant. We no longer back-fill the new category's
+    // defaultTaxCategory into Product.taxClass — that copy goes stale the
+    // moment the category is edited and shadows the correct category default
+    // at POS / on invoices. The resolver in product-defaults.ts looks up the
+    // category at read time instead.
     if (body.productCategoryId !== undefined && body.productCategoryId !== existing.productCategoryId) {
       const cat = await prisma.productCategory.findFirst({
         where: { id: body.productCategoryId, tenantId: existing.tenantId },
-        select: { defaultTaxCategory: true, taxable: true },
+        select: { id: true },
       });
       if (!cat) {
         return res.status(400).json({
@@ -754,7 +763,6 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
           code: "PRODUCT_CATEGORY_NOT_FOUND",
         });
       }
-      categoryForTaxBackfill = cat;
     }
 
     const data: Prisma.ProductUncheckedUpdateInput = {};
@@ -769,17 +777,16 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.trackInventory !== undefined) data.trackInventory = body.trackInventory;
     if (body.locationId !== undefined) data.locationId = body.locationId;
 
-    // taxClass: explicit body value wins; otherwise, on a category change,
-    // back-fill from the new category's defaultTaxCategory / taxable flag.
+    // taxClass is a per-product OVERRIDE of the category default. Empty
+    // strings and the legacy "Standard" sentinel are normalized to NULL so
+    // a save-without-touching the override field doesn't poison the row
+    // with a value that shadows the category at POS. The Tax Exempt
+    // sentinel and any other explicit category label still win.
     if (body.taxClass !== undefined) {
-      data.taxClass = body.taxClass;
-    } else if (categoryForTaxBackfill) {
-      const newTaxClass = !categoryForTaxBackfill.taxable
-        ? "Tax Exempt"
-        : categoryForTaxBackfill.defaultTaxCategory ?? null;
-      if (newTaxClass !== existing.taxClass) {
-        data.taxClass = newTaxClass;
-      }
+      const trimmed = body.taxClass?.trim() ?? "";
+      const isExplicitOverride =
+        trimmed.length > 0 && trimmed.toLowerCase() !== "standard";
+      data.taxClass = isExplicitOverride ? body.taxClass : null;
     }
 
     let product = await prisma.product.update({
