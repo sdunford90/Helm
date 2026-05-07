@@ -297,6 +297,6 @@ describe('postSecurityDeposit / releaseSecurityDeposit per-location chart', () =
         amountCents: 1000,
         locationId: 'loc-A',
       }),
-    ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING/);
+    ).rejects.toThrow(/UNCONFIGURED_GL_ACCOUNT/);
   });
 });

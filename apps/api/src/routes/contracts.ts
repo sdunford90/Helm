@@ -1424,12 +1424,13 @@ router.post(
       // stricter location-only rule that can still throw mid-tx.
       const msg = err instanceof Error ? err.message : "";
       if (
+        msg.startsWith("UNCONFIGURED_GL_ACCOUNT:") ||
         msg.startsWith("UNCONFIGURED_GL_MAPPING:") ||
         /^GL account .* not found for tenant /.test(msg)
       ) {
         return next(
           appError(
-            `Cannot release security deposit: ${msg.replace(/^UNCONFIGURED_GL_MAPPING:\s*/, "")}. Open Settings → Accounting and configure the missing account before terminating this contract.`,
+            `Cannot release security deposit: ${msg.replace(/^UNCONFIGURED_GL_(?:ACCOUNT|MAPPING):\s*/, "")}. Open Settings → Accounting and configure the missing account before terminating this contract.`,
             400,
             "DEPOSIT_GL_UNCONFIGURED",
           ),
