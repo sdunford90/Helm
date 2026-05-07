@@ -442,6 +442,7 @@ router.get(
             select: {
               id: true,
               amountCents: true,
+              refundedCents: true,
               method: true,
               status: true,
               postedDate: true,

@@ -29,6 +29,7 @@ interface ApiLineItem {
 interface ApiPayment {
   id: string;
   amountCents: number;
+  refundedCents?: number;
   method: string;
   status: string;
   postedDate: string | null;
@@ -77,12 +78,15 @@ interface LineItem {
   taxCents: number;
 }
 
+type PaymentStatus = 'Completed' | 'Pending' | 'Failed' | 'Refunded' | 'Partially refunded';
+
 interface Payment {
   id: string;
   date: string;
   method: string;
   amount: number;
-  status: 'Completed' | 'Pending' | 'Failed';
+  refundedCents: number;
+  status: PaymentStatus;
 }
 
 interface GLEntry {
@@ -120,9 +124,11 @@ function normaliseStatus(s: string): InvoiceStatus {
   return map[s] ?? 'Draft';
 }
 
-function normalisePaymentStatus(s: string): 'Completed' | 'Pending' | 'Failed' {
+function normalisePaymentStatus(s: string): PaymentStatus {
   if (s === 'COMPLETED') return 'Completed';
   if (s === 'FAILED') return 'Failed';
+  if (s === 'REFUNDED') return 'Refunded';
+  if (s === 'PARTIALLY_REFUNDED') return 'Partially refunded';
   return 'Pending';
 }
 
@@ -153,6 +159,7 @@ function mapApiInvoice(raw: ApiInvoice): InvoiceData {
       date: p.postedDate ?? '',
       method: p.method,
       amount: p.amountCents,
+      refundedCents: p.refundedCents ?? 0,
       status: normalisePaymentStatus(p.status),
     })),
     glEntries: (raw.glEntries ?? []).map((g) => ({
@@ -580,12 +587,29 @@ export default function InvoiceDetail() {
                   <tr key={p.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
                     <td style={st.td}>{p.date ? formatDate(p.date) : '—'}</td>
                     <td style={st.td}>{p.method}</td>
-                    <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(p.amount)}</td>
+                    <td style={{ ...st.tdRight, fontWeight: 600 }}>
+                      {formatCents(p.amount)}
+                      {p.status === 'Partially refunded' && p.refundedCents > 0 ? (
+                        <div style={{ fontSize: '12px', fontWeight: 400, color: '#64748B', marginTop: '2px' }}>
+                          {formatCents(p.refundedCents)} refunded
+                        </div>
+                      ) : null}
+                    </td>
                     <td style={st.td}>
                       <span style={{
                         ...st.paymentBadge,
-                        backgroundColor: p.status === 'Completed' ? '#E8F5E9' : p.status === 'Pending' ? '#FFF3CD' : '#FDECEA',
-                        color: p.status === 'Completed' ? '#1B5E20' : p.status === 'Pending' ? '#856404' : '#B71C1C',
+                        backgroundColor:
+                          p.status === 'Completed' ? '#E8F5E9'
+                          : p.status === 'Pending' ? '#FFF3CD'
+                          : p.status === 'Refunded' ? '#E2E8F0'
+                          : p.status === 'Partially refunded' ? '#E0F2FE'
+                          : '#FDECEA',
+                        color:
+                          p.status === 'Completed' ? '#1B5E20'
+                          : p.status === 'Pending' ? '#856404'
+                          : p.status === 'Refunded' ? '#475569'
+                          : p.status === 'Partially refunded' ? '#075985'
+                          : '#B71C1C',
                       }}>
                         {p.status}
                       </span>
