@@ -207,6 +207,93 @@ router.get(
   },
 );
 
+// ─── POST /pump-outs — Record a pump-out ────────────────────────────────────
+
+router.post(
+  "/pump-outs",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = CreatePumpOutSchema.parse(req.body);
+
+      const pumpOut = await prisma.pumpOut.create({
+        data: {
+          tenantId,
+          slipId: data.slipId,
+          staffId: data.staffId ?? null,
+          eventDate: data.eventDate,
+          gallons: data.gallons,
+          feeCents: data.feeCents ?? null,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "PumpOut",
+          recordId: pumpOut.id,
+          action: "CREATED",
+        },
+      });
+
+      res.status(201).json(pumpOut);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /pump-outs — List pump-outs ────────────────────────────────────────
+
+router.get(
+  "/pump-outs",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const query = ListPumpOutsQuerySchema.parse(req.query);
+
+      const where: Record<string, unknown> = { tenantId };
+
+      if (query.slipId) where.slipId = query.slipId;
+
+      if (query.dateFrom || query.dateTo) {
+        const dateFilter: Record<string, Date> = {};
+        if (query.dateFrom) dateFilter.gte = query.dateFrom;
+        if (query.dateTo) dateFilter.lte = query.dateTo;
+        where.eventDate = dateFilter;
+      }
+
+      const [pumpOuts, total] = await Promise.all([
+        prisma.pumpOut.findMany({
+          where,
+          orderBy: { [query.sortBy]: query.sortOrder },
+          skip: query.skip,
+          take: query.take,
+          include: {
+            slip: {
+              select: { id: true, slipNumber: true, dockId: true },
+            },
+          },
+        }),
+        prisma.pumpOut.count({ where }),
+      ]);
+
+      res.json({
+        data: pumpOuts,
+        pagination: {
+          skip: query.skip,
+          take: query.take,
+          total,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // ─── GET /:id — Get single dock walk with all items ─────────────────────────
 
 router.get(
@@ -588,93 +675,6 @@ router.post(
       });
 
       res.json(updated);
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
-// ─── POST /pump-outs — Record a pump-out ────────────────────────────────────
-
-router.post(
-  "/pump-outs",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const tenantId = req.tenantId!;
-      const data = CreatePumpOutSchema.parse(req.body);
-
-      const pumpOut = await prisma.pumpOut.create({
-        data: {
-          tenantId,
-          slipId: data.slipId,
-          staffId: data.staffId ?? null,
-          eventDate: data.eventDate,
-          gallons: data.gallons,
-          feeCents: data.feeCents ?? null,
-        },
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          tenantId,
-          userId: req.userId,
-          userName: req.userRecord?.email,
-          recordType: "PumpOut",
-          recordId: pumpOut.id,
-          action: "CREATED",
-        },
-      });
-
-      res.status(201).json(pumpOut);
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
-// ─── GET /pump-outs — List pump-outs ────────────────────────────────────────
-
-router.get(
-  "/pump-outs",
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const tenantId = req.tenantId!;
-      const query = ListPumpOutsQuerySchema.parse(req.query);
-
-      const where: Record<string, unknown> = { tenantId };
-
-      if (query.slipId) where.slipId = query.slipId;
-
-      if (query.dateFrom || query.dateTo) {
-        const dateFilter: Record<string, Date> = {};
-        if (query.dateFrom) dateFilter.gte = query.dateFrom;
-        if (query.dateTo) dateFilter.lte = query.dateTo;
-        where.eventDate = dateFilter;
-      }
-
-      const [pumpOuts, total] = await Promise.all([
-        prisma.pumpOut.findMany({
-          where,
-          orderBy: { [query.sortBy]: query.sortOrder },
-          skip: query.skip,
-          take: query.take,
-          include: {
-            slip: {
-              select: { id: true, slipNumber: true, dockId: true },
-            },
-          },
-        }),
-        prisma.pumpOut.count({ where }),
-      ]);
-
-      res.json({
-        data: pumpOuts,
-        pagination: {
-          skip: query.skip,
-          take: query.take,
-          total,
-        },
-      });
     } catch (err) {
       next(err);
     }
