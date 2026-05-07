@@ -137,7 +137,6 @@ router.get(
             },
             insuranceRecords: {
               orderBy: { expiryDate: "desc" },
-              take: 1,
             },
             safetyRecords: {
               orderBy: { inspectionDate: "desc" },

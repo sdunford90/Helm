@@ -60,6 +60,26 @@ const ManualInsuranceSchema = z.object({
   policyNumber: z.string().optional().nullable(),
   startDate: z.coerce.date().optional().nullable(),
   expiryDate: z.coerce.date().optional().nullable(),
+  coverageType: z.string().optional().nullable(),
+  coverageAmount: z.number().nonnegative().optional().nullable(),
+  // Accept either an R2 storage key (preferred — durable; presign on read)
+  // or a fully-qualified URL for legacy callers/AI-extraction flows.
+  documentUrl: z.string().min(1).optional().nullable(),
+});
+
+// Used by PUT /:id to let an authorized operator edit a record's core
+// fields (insurer, policy number, dates, coverage, document) without going
+// through the AI review workflow. Status remains whatever it already was
+// unless explicitly provided.
+const UpdateInsuranceSchema = z.object({
+  insurer: z.string().optional().nullable(),
+  policyNumber: z.string().optional().nullable(),
+  startDate: z.coerce.date().optional().nullable(),
+  expiryDate: z.coerce.date().optional().nullable(),
+  coverageType: z.string().optional().nullable(),
+  coverageAmount: z.number().nonnegative().optional().nullable(),
+  documentUrl: z.string().min(1).optional().nullable(),
+  status: z.enum(["PENDING_REVIEW", "APPROVED", "REJECTED", "EXPIRED"]).optional(),
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -139,6 +159,7 @@ router.post(
 
 router.post(
   "/manual",
+  requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER"),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -155,12 +176,35 @@ router.post(
       if (data.boatId) {
         const boat = await prisma.boat.findFirst({
           where: { id: data.boatId, tenantId },
-          select: { id: true },
+          select: { id: true, customerId: true },
         });
         if (!boat) {
           throw appError("Boat not found", 404, "BOAT_NOT_FOUND");
         }
+        // Reject cross-customer associations: a boat may only get an
+        // insurance record attached to it if the boat is owned by the
+        // customer named in the request body.
+        if (boat.customerId !== data.customerId) {
+          throw appError(
+            "Boat does not belong to the specified customer",
+            400,
+            "BOAT_CUSTOMER_MISMATCH",
+          );
+        }
       }
+
+      // Coverage details that have no dedicated columns on InsuranceRecord
+      // are stashed inside coverageJson alongside whatever the AI flow may
+      // already have written. We use `limits.generalAggregate` as the
+      // single "coverage amount" surfaced in the operator UI, and a
+      // sibling `coverageType` string for the policy type label.
+      const coverageJson =
+        data.coverageType != null || data.coverageAmount != null
+          ? {
+              coverageType: data.coverageType ?? null,
+              limits: { generalAggregate: data.coverageAmount ?? null },
+            }
+          : undefined;
 
       const record = await prisma.insuranceRecord.create({
         data: {
@@ -171,11 +215,141 @@ router.post(
           policyNumber: data.policyNumber ?? null,
           startDate: data.startDate ?? null,
           expiryDate: data.expiryDate ?? null,
+          documentUrl: data.documentUrl ?? null,
+          coverageJson: coverageJson ?? undefined,
           status: "APPROVED",
         },
       });
 
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          recordType: "InsuranceRecord",
+          recordId: record.id,
+          action: "CREATED",
+        },
+      });
+
       res.status(201).json(record);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── PUT /:id — Edit core fields on an insurance record ─────────────────────
+//
+// Distinct from PUT /:id/review (which is part of the AI extraction
+// approval workflow). This lets an authorized operator correct any field
+// on a record they originally added by hand, including the attached
+// document URL and the coverage amount/type stored in coverageJson.
+
+router.put(
+  "/:id",
+  requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER"),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { id } = IdParamsSchema.parse(req.params);
+      const data = UpdateInsuranceSchema.parse(req.body);
+
+      const existing = await prisma.insuranceRecord.findFirst({
+        where: { id, tenantId },
+      });
+      if (!existing) {
+        throw appError("Insurance record not found", 404, "NOT_FOUND");
+      }
+
+      const updateData: Record<string, unknown> = {};
+      if (data.insurer !== undefined) updateData.insurer = data.insurer;
+      if (data.policyNumber !== undefined) updateData.policyNumber = data.policyNumber;
+      if (data.startDate !== undefined) updateData.startDate = data.startDate;
+      if (data.expiryDate !== undefined) updateData.expiryDate = data.expiryDate;
+      if (data.documentUrl !== undefined) updateData.documentUrl = data.documentUrl;
+      if (data.status !== undefined) updateData.status = data.status;
+
+      if (data.coverageType !== undefined || data.coverageAmount !== undefined) {
+        const existingCoverage =
+          (existing.coverageJson as Record<string, unknown>) ?? {};
+        const existingLimits =
+          (existingCoverage.limits as Record<string, unknown>) ?? {};
+        updateData.coverageJson = {
+          ...existingCoverage,
+          ...(data.coverageType !== undefined
+            ? { coverageType: data.coverageType }
+            : {}),
+          limits: {
+            ...existingLimits,
+            ...(data.coverageAmount !== undefined
+              ? { generalAggregate: data.coverageAmount }
+              : {}),
+          },
+        };
+      }
+
+      const updated = await prisma.insuranceRecord.update({
+        where: { id },
+        data: updateData,
+      });
+
+      const changedFields: Record<string, unknown> = {};
+      for (const key of Object.keys(updateData)) {
+        changedFields[key] = {
+          from: (existing as Record<string, unknown>)[key] ?? null,
+          to: (updateData as Record<string, unknown>)[key],
+        };
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          recordType: "InsuranceRecord",
+          recordId: id,
+          action: "UPDATED",
+          changedFieldsJson: changedFields,
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── DELETE /:id — Remove an insurance record ───────────────────────────────
+
+router.delete(
+  "/:id",
+  requireRole("MARINA_OWNER", "TENANT_ADMIN", "MARINA_MANAGER"),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { id } = IdParamsSchema.parse(req.params);
+
+      const existing = await prisma.insuranceRecord.findFirst({
+        where: { id, tenantId },
+        select: { id: true },
+      });
+      if (!existing) {
+        throw appError("Insurance record not found", 404, "NOT_FOUND");
+      }
+
+      await prisma.insuranceRecord.delete({ where: { id } });
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          recordType: "InsuranceRecord",
+          recordId: id,
+          action: "DELETED",
+        },
+      });
+
+      res.json({ success: true });
     } catch (err) {
       next(err);
     }
