@@ -25,9 +25,15 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   // Liabilities (deferred-revenue accounts flagged for rev-rec)
   { accountNumber: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY", isDeferredRevenue: true },
   { accountNumber: "2110", name: "Deferred Revenue - Rentals", type: "LIABILITY", isDeferredRevenue: true },
-  { accountNumber: "2200", name: "Security Deposits Held", type: "LIABILITY" },
   { accountNumber: "2210", name: "Customer Deposits", type: "LIABILITY" },
-  { accountNumber: "2300", name: "Tips Payable", type: "LIABILITY" },
+  // 2300 is the number `gl-posting.ts` (ACCOUNTS.SECURITY_DEPOSITS_HELD) has
+  // always posted security-deposit liability journals against. The historical
+  // seed mislabeled this row "Tips Payable" while creating an empty 2200
+  // "Security Deposits Held" row that nothing posted to — confusing for
+  // operators reconciling against QuickBooks. The 2200 row is dropped from
+  // the default seed; existing tenants are renamed by
+  // `scripts/backfill-system-gl-accounts.ts`.
+  { accountNumber: "2300", name: "Security Deposits Held", type: "LIABILITY" },
   { accountNumber: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
   { accountNumber: "2401", name: "State Sales Tax Payable", type: "LIABILITY" },
   { accountNumber: "2402", name: "County Sales Tax Payable", type: "LIABILITY" },

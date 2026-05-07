@@ -180,10 +180,12 @@ const ACCOUNT_NUMBER_TO_SUBTYPE: Record<string, string> = {
 // time the operator hits the same code path.
 //
 // Numbers / names match `DEFAULT_GL_ACCOUNTS` in tenant-provisioning so the
-// healed row looks exactly like a freshly-seeded one. (`2300` is named
-// "Tips Payable" in the historical seed but is the number gl-posting has
-// always used for Security Deposits Held — keeping the name consistent
-// with the seed avoids creating two divergent rows for the same number.)
+// healed row looks exactly like a freshly-seeded one. (`2300` was historically
+// mislabeled "Tips Payable" in the seed despite being the number gl-posting
+// has always used for security-deposit liability postings; the seed was
+// corrected and existing rows are renamed by
+// `scripts/backfill-system-gl-accounts.ts`. Auto-heal now creates new rows
+// with the correct name out of the gate.)
 type GlAccountType = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
 const SYSTEM_ACCOUNT_DEFINITIONS: Record<
   string,
@@ -192,7 +194,7 @@ const SYSTEM_ACCOUNT_DEFINITIONS: Record<
   "1000": { name: "Cash / Operating Bank", type: "ASSET" },
   "1010": { name: "Stripe Clearing", type: "ASSET" },
   "1200": { name: "Accounts Receivable", type: "ASSET" },
-  "2300": { name: "Tips Payable", type: "LIABILITY" },
+  "2300": { name: "Security Deposits Held", type: "LIABILITY" },
 };
 
 /**
