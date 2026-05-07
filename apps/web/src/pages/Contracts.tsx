@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle, XCircle, Link2 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
 import { formatDateOnlyISO, todayDateOnlyISO } from '@helm/shared-types';
 import ESignatureFlow from '../components/ESignatureFlow';
@@ -1465,8 +1466,8 @@ export default function Contracts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentLocationId]);
   const createContract = useApi<ApiContract>('post', '/api/contracts');
-  const updateContractApi = useApi<ApiContract>('put', '/api/contracts/update');
   const transferContractApi = useApi<ApiContract>('post', '/api/contracts/transfer');
+  const { getToken: getUpdateToken } = useAuth();
 
   const apiContracts: Contract[] = (apiResp?.data ?? []).map(mapApiContract);
   const contracts = localContracts.length > 0 ? localContracts : apiContracts;
@@ -1475,9 +1476,31 @@ export default function Contracts() {
     const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);
     setLocalContracts(updated);
     if (viewingContract?.id === id) setViewingContract({ ...viewingContract, ...changes });
-    // useApi.execute resolves (never rejects) and reports failures via
-    // reportApiError, so no .catch wrapper is needed here.
-    void updateContractApi.execute({ body: { id, ...changes } });
+
+    // Termination is performed by POST /:id/terminate (which the dialog
+    // already called); calling PUT /:id afterwards just to mirror the
+    // status would be a no-op and could re-validate on a row that's
+    // already terminated. Skip it.
+    if (changes.status === 'Terminated' && Object.keys(changes).length === 1) {
+      return;
+    }
+
+    // PUT against the canonical /api/contracts/:id endpoint. The previous
+    // call site used a useApi bound to '/api/contracts/update', which
+    // matched no route and was caught by /:id with id="update", returning
+    // 404 "Contract not found". Build the path per-call instead.
+    void (async () => {
+      try {
+        const token = await getUpdateToken();
+        await api.put(`/api/contracts/${id}`, changes, token);
+      } catch (err) {
+        reportApiError({
+          endpoint: `PUT /api/contracts/${id}`,
+          status: err instanceof ApiClientError ? err.status : undefined,
+          error: err,
+        });
+      }
+    })();
   };
 
   const handleTransfer = (contractId: string, newSlip: string, effectiveDate: string, notes: string) => {
