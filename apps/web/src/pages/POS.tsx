@@ -81,6 +81,8 @@ interface ApiShift {
   openingFloatCents: number;
   closingCashCents: number | null;
   salesTotal: number;
+  cashSalesCents: number;
+  cashRefundsCents: number;
   expectedCashCents: number;
   varianceCents: number | null;
 }
@@ -210,17 +212,41 @@ function OpenShiftModal({ onClose, onOpen, loading }: { onClose: () => void; onO
 
 /* ── Close Shift Modal ─────────────────────────────────── */
 
-function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, submitError }: {
+function CloseShiftModal({ onClose, onConfirm, floatAmt, shiftCashSales, loading, submitError }: {
   onClose: () => void;
-  onConfirm: (closingCash: number, notes: string) => void;
+  onConfirm: (
+    closingCash: number,
+    notes: string,
+    declaredCheck: number,
+    declaredOther: number,
+    paidOuts: number,
+  ) => void;
   floatAmt: number;
-  runningTotal: number;
+  // Cash-tender net for the CURRENT shift only (sales − refunds), in
+  // dollars. Sourced from the API's enriched shift payload — the prior
+  // implementation used a today-wide running total that happened to
+  // match for single-shift days but produced the wrong expected drawer
+  // figure as soon as a shift spanned a day boundary or there were
+  // multiple shifts on the same day.
+  shiftCashSales: number;
   loading?: boolean;
   submitError?: string;
 }) {
-  const [closingCash, setClosingCash] = useState((floatAmt + runningTotal).toFixed(2));
+  // Task #320 added cashier-declared check / other / paid-outs fields so
+  // the manager has a full reconciliation picture at Z-out. All optional;
+  // expected drawer math now subtracts paid-outs and the declared
+  // check/other amounts (those bills/checks physically leave the cash
+  // drawer at close, so they shouldn't be in the expected cash count).
+  const [closingCash, setClosingCash] = useState((floatAmt + shiftCashSales).toFixed(2));
   const [notes, setNotes] = useState('');
-  const expected = floatAmt + runningTotal;
+  const [declaredCheck, setDeclaredCheck] = useState('0.00');
+  const [declaredOther, setDeclaredOther] = useState('0.00');
+  const [paidOuts, setPaidOuts] = useState('0.00');
+  const paidOutsNum = parseFloat(paidOuts) || 0;
+  const declaredCheckNum = parseFloat(declaredCheck) || 0;
+  const declaredOtherNum = parseFloat(declaredOther) || 0;
+  const expected =
+    floatAmt + shiftCashSales - paidOutsNum - declaredCheckNum - declaredOtherNum;
   const variance = (parseFloat(closingCash) || 0) - expected;
   return (
     <div style={st.overlay} onClick={() => { if (!loading) onClose(); }}>
@@ -233,7 +259,7 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
           <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px', marginBottom: '20px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Opening Float</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${floatAmt.toFixed(2)}</div></div>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${runningTotal.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales (this shift)</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${shiftCashSales.toFixed(2)}</div></div>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Expected in Drawer</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${expected.toFixed(2)}</div></div>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Variance</div><div style={{ fontSize: '16px', fontWeight: 700, color: variance >= 0 ? '#059669' : '#DC2626', fontVariantNumeric: 'tabular-nums' }}>{variance >= 0 ? '+' : ''}${variance.toFixed(2)}</div></div>
             </div>
@@ -242,15 +268,38 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
             <label style={st.label}>Actual Closing Cash Count ($) *</label>
             <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} autoFocus />
           </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+            <div style={st.field}>
+              <label style={st.label}>Declared Checks ($)</label>
+              <input style={st.input} type="number" step="0.01" value={declaredCheck} onChange={(e) => setDeclaredCheck(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Declared Other ($)</label>
+              <input style={st.input} type="number" step="0.01" value={declaredOther} onChange={(e) => setDeclaredOther(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Paid-Outs ($)</label>
+              <input style={st.input} type="number" step="0.01" value={paidOuts} onChange={(e) => setPaidOuts(e.target.value)} />
+            </div>
+          </div>
           <div style={st.field}>
             <label style={st.label}>Notes (optional)</label>
             <input style={st.input} placeholder="e.g. $5 short, recount confirmed" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '4px' }}>
+            After Close, a manager runs Z-out to lock the shift and post the GL journal.
           </div>
           {submitError && <div style={{ fontSize: '13px', color: '#DC2626', marginTop: '4px' }}>{submitError}</div>}
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose} disabled={loading}>Cancel</button>
-          <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(parseFloat(closingCash) || 0, notes)}>{loading ? 'Closing...' : 'Close Shift'}</button>
+          <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(
+            parseFloat(closingCash) || 0,
+            notes,
+            parseFloat(declaredCheck) || 0,
+            parseFloat(declaredOther) || 0,
+            parseFloat(paidOuts) || 0,
+          )}>{loading ? 'Closing...' : 'Close Shift'}</button>
         </div>
       </div>
     </div>
@@ -1576,6 +1625,13 @@ export default function POS() {
   const [discountPreview, setDiscountPreview] = useState<PreviewLine[]>([]);
   const [shiftOpen, setShiftOpen] = useState(false);
   const [shiftId, setShiftId] = useState<string | null>(null);
+  // Cash-tender net for the active shift (sales − refunds, in dollars),
+  // sourced from the API's enriched /shifts response. The close-shift
+  // modal uses this rather than a today-wide running total so the
+  // expected drawer figure is correct across day boundaries / multiple
+  // shifts on one day. Refreshed via the same useEffect that picks up
+  // the open shift after a transaction or shift change.
+  const [shiftCashNet, setShiftCashNet] = useState<number>(0);
   const [shiftCashier, setShiftCashier] = useState('');
   const [shiftFloat, setShiftFloat] = useState(0);
   const [shiftOpenedAt, setShiftOpenedAt] = useState<Date | null>(null);
@@ -1667,9 +1723,15 @@ export default function POS() {
         setShiftId(openShift.id);
         setShiftFloat(openShift.openingFloatCents / 100);
         setShiftOpenedAt(new Date(openShift.openedAt));
+        // Net cash for this shift (sales − refunds), in dollars. Drives
+        // the close-shift modal's expected drawer math.
+        setShiftCashNet(
+          (openShift.cashSalesCents - openShift.cashRefundsCents) / 100,
+        );
       } else {
         setShiftOpen(false);
         setShiftId(null);
+        setShiftCashNet(0);
       }
     }
   }, [shiftsData]);
@@ -1686,13 +1748,25 @@ export default function POS() {
     }
   };
 
-  const handleCloseShift = async (closingCash: number, notes: string) => {
+  const handleCloseShift = async (
+    closingCash: number,
+    notes: string,
+    declaredCheck = 0,
+    declaredOther = 0,
+    paidOuts = 0,
+  ) => {
     if (!shiftId) return;
     setClosingShift(true);
     setCloseShiftError('');
     try {
       const token = await getToken();
-      await api.post(`/api/pos/shifts/${shiftId}/close`, { closingCashCents: Math.round(closingCash * 100), notes: notes || undefined }, token);
+      await api.post(`/api/pos/shifts/${shiftId}/close`, {
+        closingCashCents: Math.round(closingCash * 100),
+        declaredCheckCents: Math.round(declaredCheck * 100),
+        declaredOtherCents: Math.round(declaredOther * 100),
+        paidOutsCents: Math.round(paidOuts * 100),
+        notes: notes || undefined,
+      }, token);
       setShiftOpen(false);
       setShiftId(null);
       setShiftCashier('');
@@ -1784,7 +1858,9 @@ export default function POS() {
     });
 
     if (result !== null) {
-      await refreshTransactions();
+      // Refresh shifts alongside transactions so the close-shift modal's
+      // expected drawer figure reflects the cash sale we just rang.
+      await Promise.all([refreshTransactions(), fetchShifts()]);
       setCart([]);
       // Reset the attached customer between sales — the next walk-in is
       // typically a different person, and leaving stale attachment risks
@@ -1818,7 +1894,7 @@ export default function POS() {
       const token = await getToken();
       await api.post(`/api/pos/transactions/${recalledTxnData.id}/refund`, {}, token);
       setRefundDone(true);
-      await refreshTransactions();
+      await Promise.all([refreshTransactions(), fetchShifts()]);
     } catch (err: any) {
       alert((err as Error).message ?? 'Refund failed');
     } finally {
@@ -1978,13 +2054,26 @@ export default function POS() {
             <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${shiftFloat.toFixed(2)}</div></div>
             <div><div style={st.shiftLabel}>Running Total</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
           </div>
-          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => { setCloseShiftError(''); setShowCloseShiftModal(true); }}>Close Shift</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a href={shiftId ? `/pos/x-report/${shiftId}` : '#'}
+               target="_blank" rel="noopener noreferrer"
+               style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: shiftId ? 1 : 0.5, pointerEvents: shiftId ? 'auto' : 'none' }}>
+              X-Report
+            </a>
+            <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              Z-Reports
+            </a>
+            <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => { setCloseShiftError(''); setShowCloseShiftModal(true); }}>Close Shift</button>
+          </div>
         </div>
       ) : (
-        <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center' }}>
+        <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center', gap: 8 }}>
           <button style={st.addBtn} onClick={() => setShowShiftModal(true)}>
             <Clock size={16} /> Open Shift
           </button>
+          <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            Z-Reports
+          </a>
         </div>
       )}
 
@@ -2528,7 +2617,7 @@ export default function POS() {
           onClose={() => { setShowCloseShiftModal(false); setCloseShiftError(''); }}
           onConfirm={handleCloseShift}
           floatAmt={shiftFloat}
-          runningTotal={runningTotal - total}
+          shiftCashSales={shiftCashNet}
           loading={closingShift}
           submitError={closeShiftError}
         />

@@ -493,6 +493,10 @@ model Location {
   emailFromName    String?
   emailReplyTo     String?
 
+  // End-of-day Z-report distribution list. Used by
+  // POST /pos/z-reports/:id/email when `to` is omitted.
+  zReportRecipients String[] @default([])
+
   // Accounting setup gate (Task 1 / Task 17)
   accountingSetupComplete     Boolean   @default(false)
   accountingSetupCompletedAt  DateTime?
@@ -1969,17 +1973,25 @@ model PosTransaction {
   // The Invoice is the source of truth for the receivable; this row just
   // records that the POS produced it.
   invoiceId         String?
+  // Marker on the ORIGINAL sale when fully refunded. Original keeps
+  // its tender so Z-out tender/cash math stays correct.
+  refundedAt        DateTime?
+  // Refund-rows only: FK back to the original sale.
+  refundOfId        String?
   createdAt         DateTime  @default(now())
 
-  shift     Shift?        @relation(fields: [shiftId], references: [id])
-  customer  Customer?     @relation(fields: [customerId], references: [id])
-  invoice   Invoice?      @relation(fields: [invoiceId], references: [id])
-  lineItems PosLineItem[]
+  shift      Shift?           @relation(fields: [shiftId], references: [id])
+  customer   Customer?        @relation(fields: [customerId], references: [id])
+  invoice    Invoice?         @relation(fields: [invoiceId], references: [id])
+  refundOf   PosTransaction?  @relation("PosTransactionRefund", fields: [refundOfId], references: [id])
+  refunds    PosTransaction[] @relation("PosTransactionRefund")
+  lineItems  PosLineItem[]
 
   @@index([tenantId])
   @@index([tenantId, createdAt])
   @@index([customerId])
   @@index([invoiceId])
+  @@index([refundOfId])
   @@map("pos_transactions")
 }
 
@@ -2070,13 +2082,82 @@ model Shift {
   closedAt          DateTime?
   openingFloatCents Int
   closingCashCents  Int?
+  // Cashier-declared non-cash tender totals captured at close time
+  // (Task #320). Card / ACH / A/R totals are system-computed from
+  // PosTransaction rows and never user-entered, so they don't need
+  // declared columns. `paidOutsCents` records cash removed from the
+  // drawer mid-shift (e.g. petty cash / supplier paid in cash) and
+  // affects the expected-cash math at Z-out.
+  declaredCheckCents Int @default(0)
+  declaredOtherCents Int @default(0)
+  paidOutsCents      Int @default(0)
   tipTotalCents     Int         @default(0)
   status            ShiftStatus @default(OPEN)
 
   transactions PosTransaction[]
+  // Back-reference to the Z-report that finalized this shift. The FK
+  // lives on `z_reports.shiftId` (one-to-one, see ZReport.shift below)
+  // so deletion of a shift cascades / restricts via the canonical side
+  // and we don't carry duplicate join columns.
+  zReport      ZReport?
 
   @@index([tenantId])
+  @@index([tenantId, locationId, status])
   @@map("shifts")
+}
+
+// Manager-confirmed end-of-day Z-report — immutable snapshot of one
+// shift's tender, sales, refund, discount and cash-drawer math, plus a
+// sequential per-location Z number assigned at commit time. Created by
+// POST /api/pos/shifts/:id/z-out. Once written, the row is read-only:
+// the matching shift is flipped to RECONCILED and locked from further
+// transactions / refunds.
+model ZReport {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  locationId          String?
+  shiftId             String   @unique
+  // Sequential per-(tenant, locationId) Z number, assigned atomically
+  // via ZSequence at commit time. Starts at 1 for each new location.
+  zNumber             Int
+  // Generated/committed by which user, when. `lockedAt` mirrors
+  // `generatedAt` and exists for forward compatibility with a possible
+  // pending → locked workflow; for now they're always set together.
+  generatedByUserId   String?
+  generatedAt         DateTime @default(now())
+  lockedAt            DateTime @default(now())
+  // GL journal id produced by `postShiftZOut` for this report.
+  glJournalId         String?
+  // Notes captured from the manager at confirmation time.
+  notes               String?
+  // Headline totals duplicated as columns so the list view doesn't have
+  // to parse `snapshot` for every row. All cents.
+  grossSalesCents     Int
+  discountsCents      Int
+  refundsCents        Int
+  netSalesCents       Int
+  taxCents            Int
+  tipsCents           Int
+  totalCents          Int
+  cashExpectedCents   Int
+  cashCountedCents    Int
+  cashVarianceCents   Int
+  // Full structured payload (everything in the X/Z layout). See
+  // services/pos-zout.ts ZOutSnapshot.
+  snapshot            Json
+
+  // Canonical FK side of Shift ↔ ZReport. RESTRICT so deleting a shift
+  // with a posted Z-report fails loud — Z-reports are meant to be
+  // immutable history; if someone really needs to delete a shift, they
+  // must purge the Z-report first via admin tooling.
+  shift   Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([tenantId, locationId, generatedAt])
+  // Null-locationId shifts get a partial unique in the migration
+  // (Postgres treats NULL as distinct in unique indexes).
+  @@unique([tenantId, locationId, zNumber])
+  @@map("z_reports")
 }
 
 model Product {

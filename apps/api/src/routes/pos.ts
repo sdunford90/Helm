@@ -1,10 +1,13 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import type Stripe from "stripe";
-import { clerkAuth, requireLocationAccess, filterByAllowedLocations } from "../middleware/auth.js";
+import { clerkAuth, requireLocationAccess, filterByAllowedLocations, requireRole } from "../middleware/auth.js";
 import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
+import { computeZOut, postShiftZOut, nextZNumber, type ZOutSnapshot, type ZoutTx } from "../services/pos-zout.js";
+import { sendEmail, EmailSendError } from "../lib/email.js";
+import { Prisma } from "@prisma/client";
 import {
   createConnectionToken,
   listReaders,
@@ -145,7 +148,41 @@ const OpenShiftSchema = z.object({
 
 const CloseShiftSchema = z.object({
   closingCashCents: z.number().int().min(0),
+  // Cashier-declared non-cash tender totals + paid-outs (Task #320). All
+  // optional / default-zero so old clients that only send closingCashCents
+  // continue to work; new POS UI surfaces explicit fields for these.
+  declaredCheckCents: z.number().int().min(0).optional().default(0),
+  declaredOtherCents: z.number().int().min(0).optional().default(0),
+  paidOutsCents: z.number().int().min(0).optional().default(0),
   notes: z.string().optional().nullable(),
+});
+
+// Manager Z-out commit. Counted cash is re-confirmed at Z-out time so the
+// manager can override the cashier's count if a recount happens between
+// CLOSED and the Z-out run. Notes are appended to the shift's audit log
+// AND stored on the ZReport row for the printable receipt.
+const ZOutSchema = z.object({
+  countedCashCents: z.number().int().min(0).optional(),
+  notes: z.string().optional().nullable(),
+  // When true, the response includes the snapshot inline (used by the
+  // POS UI which renders the printable view immediately on commit).
+  includeSnapshot: z.boolean().optional().default(true),
+});
+
+// `to` is optional. When omitted, the email handler uses the Z-report's
+// location's configured `zReportRecipients` distribution list. The
+// handler 400s if BOTH the body `to` and the configured list are empty.
+const EmailZReportSchema = z.object({
+  to: z.union([z.string().email(), z.array(z.string().email()).min(1)]).optional(),
+});
+
+const ListZReportsQuerySchema = z.object({
+  locationId: z.string().optional(),
+  cashierId: z.string().optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  skip: z.coerce.number().int().min(0).default(0),
+  take: z.coerce.number().int().positive().max(200).default(50),
 });
 
 const DailyReportQuerySchema = z.object({
@@ -459,8 +496,18 @@ router.post(
       if (data.shiftId) {
         const shift = await prisma.shift.findFirst({
           where: { id: data.shiftId, tenantId },
-          select: { locationId: true },
+          select: { locationId: true, status: true },
         });
+        // Shift lock (Task #320): once a shift has been Z-out reconciled
+        // it's a permanent ledger record — no new sales / refunds may be
+        // attached. Cashier should open a fresh shift for the next sale.
+        if (shift?.status === "RECONCILED") {
+          throw appError(
+            "This shift has been Z-out reconciled and is locked. Open a new shift to record additional sales.",
+            409,
+            "SHIFT_RECONCILED",
+          );
+        }
         locationId = shift?.locationId ?? null;
       }
       if (!locationId && data.locationId) {
@@ -1051,15 +1098,31 @@ router.post(
 
       const original = await prisma.posTransaction.findFirst({
         where: { id: req.params.id, tenantId },
-        include: { lineItems: true },
+        include: { lineItems: true, shift: { select: { status: true } } },
       });
 
       if (!original) {
         throw appError("Transaction not found", 404, "NOT_FOUND");
       }
 
-      if (original.status === "REFUNDED") {
+      // Prefer refundedAt; legacy status='REFUNDED' is a backstop for
+      // rows the migration couldn't safely revert.
+      if (original.refundedAt || original.status === "REFUNDED") {
         throw appError("Transaction already refunded", 400, "ALREADY_REFUNDED");
+      }
+
+      // Shift lock (Task #320): refunds against a Z-out reconciled shift
+      // would land outside the locked snapshot's tender totals and break
+      // GL reconciliation. Reject with a clear pointer so the operator
+      // issues either an A/R credit or a fresh refund transaction in the
+      // current open shift instead.
+      if (original.shift?.status === "RECONCILED") {
+        throw appError(
+          "The original sale's shift has been Z-out reconciled and is locked. " +
+            "Issue an A/R credit, or record a refund transaction in the current open shift instead.",
+          409,
+          "SHIFT_RECONCILED",
+        );
       }
 
       let refundSubtotal = 0;
@@ -1175,9 +1238,9 @@ router.post(
         stripeRefundId = stripeRefund.id;
       }
 
-      // Create refund transaction. Mirror the original's PI id onto the
-      // refund row so the negative-amount audit row also joins back to
-      // the same Stripe charge for end-of-day reconciliation.
+      // Refund row inherits the original's tender (status + cardRail)
+      // so Z-out tender buckets net correctly. PI id, Stripe account,
+      // and refundOfId mirror the original for deterministic joins.
       const refund = await prisma.posTransaction.create({
         data: {
           tenantId,
@@ -1187,12 +1250,12 @@ router.post(
           taxCents: -refundTax,
           tipCents: 0,
           totalCents: -refundTotal,
-          status: "REFUNDED",
+          status: original.status,
+          cardRail: original.cardRail ?? null,
           stripePaymentIntentId: original.stripePaymentIntentId ?? null,
-          // Mirror the original's connected account so the negative-amount
-          // refund row also reconciles cleanly per-account.
           stripeAccountId: original.stripeAccountId ?? null,
           offlineQueued: false,
+          refundOfId: original.id,
           lineItems: {
             create: refundLineItems,
           },
@@ -1204,10 +1267,11 @@ router.post(
         },
       });
 
-      // Mark original as refunded
+      // Stamp refundedAt on the original; do NOT overwrite status —
+      // that would destroy the original tender and break Z-out math.
       await prisma.posTransaction.update({
         where: { id: original.id },
-        data: { status: "REFUNDED" },
+        data: { refundedAt: new Date() },
       });
 
       // Restore inventory for refunded items
@@ -1354,20 +1418,39 @@ router.get(
               id: true,
               totalCents: true,
               status: true,
+              // Needed by the cash-refund approximation in the variance
+              // math below (REFUNDED rows with no Stripe PI / invoice /
+              // cardRail are treated as cash refunds).
+              stripePaymentIntentId: true,
+              invoiceId: true,
+              cardRail: true,
             },
           },
         },
       });
 
-      // Enrich shifts with sales totals
+      // Enrich shifts with sales totals. Expected-cash math matches the
+      // close + Z-out paths (paid-outs and approximated cash refunds
+      // subtracted) so the list view, close confirmation, and Z-out all
+      // show the same variance for a given drawer count.
       const enriched = shifts.map((shift) => {
         const salesTotal = shift.transactions
-          .filter((t) => t.status !== "REFUNDED")
+          .filter((t) => t.totalCents >= 0)
           .reduce((sum, t) => sum + t.totalCents, 0);
         const cashSales = shift.transactions
-          .filter((t) => t.status === "CASH")
+          .filter((t) => t.status === "CASH" && t.totalCents > 0)
           .reduce((sum, t) => sum + t.totalCents, 0);
-        const expectedCash = shift.openingFloatCents + cashSales;
+        const cashRefunds = shift.transactions
+          .filter((t) => t.status === "CASH" && t.totalCents < 0)
+          .reduce((sum, t) => sum + Math.abs(t.totalCents), 0);
+        // Declared check/other are 0 until the shift is closed.
+        const expectedCash =
+          shift.openingFloatCents
+          + cashSales
+          - cashRefunds
+          - shift.paidOutsCents
+          - shift.declaredCheckCents
+          - shift.declaredOtherCents;
         const variance =
           shift.closingCashCents != null
             ? shift.closingCashCents - expectedCash
@@ -1376,6 +1459,12 @@ router.get(
         return {
           ...shift,
           salesTotal,
+          // Surfaced for the POS close-shift modal so it can render the
+          // expected drawer figure off the SHIFT's cash net (rather than
+          // a today-wide running total that misbehaves across day
+          // boundaries / parallel shifts).
+          cashSalesCents: cashSales,
+          cashRefundsCents: cashRefunds,
           expectedCashCents: expectedCash,
           varianceCents: variance,
           transactionCount: shift.transactions.length,
@@ -1418,6 +1507,33 @@ router.post(
           400,
           "SHIFT_ALREADY_OPEN",
         );
+      }
+
+      // Block reopening at this location until any prior CLOSED shift is
+      // Z-out reconciled (Task #320). This is the gate that forces an
+      // operator to complete end-of-day before the next shift can begin —
+      // without it, two un-reconciled shifts can overlap on the same
+      // drawer and the GL postings get tangled. Tenant-scoped + matching
+      // the requested location (or null = portable POS not pinned to a
+      // location).
+      const unreconciledPrior = await prisma.shift.findFirst({
+        where: {
+          tenantId,
+          locationId: data.locationId ?? null,
+          status: "CLOSED",
+        },
+        select: { id: true, cashierId: true, closedAt: true },
+        orderBy: { closedAt: "desc" },
+      });
+      if (unreconciledPrior) {
+        const err: Error & { priorShiftId?: string } = appError(
+          "A prior shift at this location is closed but not yet Z-out reconciled. " +
+            "A manager must run Z-out on the previous shift before a new one can open.",
+          409,
+          "PRIOR_SHIFT_NOT_RECONCILED",
+        );
+        err.priorShiftId = unreconciledPrior.id;
+        throw err;
       }
 
       const shift = await prisma.shift.create({
@@ -1473,11 +1589,20 @@ router.post(
         throw appError("Shift is not open", 400, "SHIFT_NOT_OPEN");
       }
 
-      // Calculate expected cash
+      // Canonical expected cash — see pos-zout.ts for the formula.
       const cashSales = shift.transactions
-        .filter((t) => t.status === "CASH")
+        .filter((t) => t.status === "CASH" && t.totalCents > 0)
         .reduce((sum, t) => sum + t.totalCents, 0);
-      const expectedCash = shift.openingFloatCents + cashSales;
+      const cashRefunds = shift.transactions
+        .filter((t) => t.status === "CASH" && t.totalCents < 0)
+        .reduce((sum, t) => sum + Math.abs(t.totalCents), 0);
+      const expectedCash =
+        shift.openingFloatCents
+        + cashSales
+        - cashRefunds
+        - data.paidOutsCents
+        - data.declaredCheckCents
+        - data.declaredOtherCents;
       const variance = data.closingCashCents - expectedCash;
 
       const updated = await prisma.shift.update({
@@ -1485,6 +1610,9 @@ router.post(
         data: {
           closedAt: new Date(),
           closingCashCents: data.closingCashCents,
+          declaredCheckCents: data.declaredCheckCents,
+          declaredOtherCents: data.declaredOtherCents,
+          paidOutsCents: data.paidOutsCents,
           status: "CLOSED",
         },
       });
@@ -1499,6 +1627,9 @@ router.post(
           action: "CLOSED",
           changedFieldsJson: {
             closingCashCents: data.closingCashCents,
+            declaredCheckCents: data.declaredCheckCents,
+            declaredOtherCents: data.declaredOtherCents,
+            paidOutsCents: data.paidOutsCents,
             expectedCashCents: expectedCash,
             varianceCents: variance,
             notes: data.notes ?? null,
@@ -1516,6 +1647,527 @@ router.post(
     }
   },
 );
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Z-OUT (Task #320)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: load a shift, scope-check by tenant + location-access, and
+// optionally require a status. Returns the shift or sends a 4xx response
+// and returns null (caller short-circuits).
+type LoadedShift = {
+  id: string;
+  tenantId: string;
+  locationId: string | null;
+  status: import("@prisma/client").ShiftStatus;
+  cashierId: string;
+};
+
+async function loadShiftForReport(
+  req: Request,
+  res: Response,
+  shiftId: string,
+  options: { requireStatuses?: import("@prisma/client").ShiftStatus[] } = {},
+): Promise<LoadedShift | null> {
+  const tenantId = req.tenantId!;
+  const shift = await prisma.shift.findFirst({
+    where: { id: shiftId, tenantId },
+    select: { id: true, tenantId: true, locationId: true, status: true, cashierId: true },
+  });
+  if (!shift) {
+    res.status(404).json({ error: "Shift not found", code: "NOT_FOUND" });
+    return null;
+  }
+  if (shift.locationId && !requireLocationAccess(req, shift.locationId)) {
+    res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+    return null;
+  }
+  if (options.requireStatuses && !options.requireStatuses.includes(shift.status)) {
+    res.status(409).json({
+      error: `Shift is ${shift.status}; expected one of ${options.requireStatuses.join(", ")}`,
+      code: "INVALID_SHIFT_STATUS",
+    });
+    return null;
+  }
+  return shift;
+}
+
+// ─── GET /shifts/pending-zout — Closed shifts awaiting manager Z-out ───────
+// Powers the manager landing list on the Z-Reports page. Returns CLOSED
+// shifts (no Z-report yet) within the caller's location scope, ordered
+// by closedAt ascending so the oldest unreconciled shift surfaces first.
+router.get(
+  "/shifts/pending-zout",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const baseScope = filterByAllowedLocations(
+        req,
+        { tenantId } as Record<string, unknown>,
+        { includeNull: true },
+      ) as Prisma.ShiftWhereInput;
+      const shifts = await prisma.shift.findMany({
+        where: { ...baseScope, status: "CLOSED", zReport: { is: null } },
+        orderBy: { closedAt: "asc" },
+        select: {
+          id: true,
+          locationId: true,
+          cashierId: true,
+          openedAt: true,
+          closedAt: true,
+          openingFloatCents: true,
+          closingCashCents: true,
+          declaredCheckCents: true,
+          declaredOtherCents: true,
+          paidOutsCents: true,
+        },
+      });
+      res.json({ data: shifts });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /shifts/:id/x-report — Read-only mid-shift preview ─────────────────
+// Available against OPEN, CLOSED, or already-RECONCILED shifts (operators
+// pull X-reports against historical shifts for spot-checks). Never writes.
+router.get(
+  "/shifts/:id/x-report",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const shift = await loadShiftForReport(req, res, req.params.id);
+      if (!shift) return;
+      const snapshot = await computeZOut(shift.id, null);
+      res.json({
+        shift: { id: shift.id, status: shift.status, locationId: shift.locationId },
+        // Top-level convenience field — matches what the X-report /
+        // RunZoutModal UIs consume so they don't have to dig through the
+        // nested shift object.
+        shiftStatus: shift.status,
+        snapshot,
+        // Helps the UI label the printable view.
+        kind: shift.status === "RECONCILED" ? "Z" : "X",
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /shifts/:id/z-out — Manager Z-out (commit) ────────────────────────
+// Requires manager role. Atomic: compute snapshot, post GL, create ZReport,
+// flip shift to RECONCILED with zReportId, all in one transaction. The
+// (tenantId, locationId, zNumber) unique index surfaces concurrent races
+// as a P2002 — we retry once on collision.
+router.post(
+  "/shifts/:id/z-out",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  requireAccountingSetup,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const data = ZOutSchema.parse(req.body);
+      const shift = await loadShiftForReport(req, res, req.params.id, {
+        requireStatuses: ["CLOSED"],
+      });
+      if (!shift) return;
+
+      // Compute outside the transaction first to surface MISSING_GL_MAPPING /
+      // tax setup errors with the existing 4xx error codes BEFORE we open a
+      // (potentially long-held) write transaction.
+      const previewSnapshot = await computeZOut(
+        shift.id,
+        data.countedCashCents ?? null,
+      );
+
+      const attemptZOut = async (): Promise<{
+        zReport: import("@prisma/client").ZReport;
+        snapshot: ZOutSnapshot;
+        glJournalId: string | null;
+      }> => {
+        return await prisma.$transaction(async (tx: ZoutTx) => {
+          // Re-read the shift inside the tx so a concurrent Z-out can't
+          // double-commit. The unique FK on z_reports.shiftId is the
+          // ultimate guarantee — the second writer will collide on
+          // P2002 — but checking status here gives a cleaner 409.
+          const fresh = await tx.shift.findUnique({
+            where: { id: shift.id },
+            select: { status: true },
+          });
+          if (!fresh || fresh.status !== "CLOSED") {
+            throw Object.assign(
+              new Error("Shift is no longer eligible for Z-out (already reconciled or reopened)."),
+              { statusCode: 409, code: "INVALID_SHIFT_STATUS" },
+            );
+          }
+          // Re-compute inside the tx so the snapshot reflects any state
+          // touched by the same transaction.
+          const snapshot = await computeZOut(
+            shift.id,
+            data.countedCashCents ?? null,
+            tx,
+          );
+
+          const zNumber = await nextZNumber(shift.tenantId, shift.locationId, tx);
+
+          // Post the summarized GL journal. Empty string = nothing to post.
+          const glJournalIdRaw = await postShiftZOut(
+            shift.tenantId,
+            shift.id,
+            snapshot,
+            tx,
+          );
+          const glJournalId = glJournalIdRaw || null;
+
+          const zReport = await tx.zReport.create({
+            data: {
+              tenantId: shift.tenantId,
+              locationId: shift.locationId,
+              shiftId: shift.id,
+              zNumber,
+              generatedByUserId: req.userId ?? null,
+              glJournalId,
+              notes: data.notes ?? null,
+              grossSalesCents: snapshot.grossSalesCents,
+              discountsCents: snapshot.discountsCents,
+              refundsCents: snapshot.refundsCents,
+              netSalesCents: snapshot.netSalesCents,
+              taxCents: snapshot.taxCents,
+              tipsCents: snapshot.tipsCents,
+              totalCents: snapshot.totalCents,
+              cashExpectedCents: snapshot.cashDrawer.expectedCents,
+              cashCountedCents: snapshot.cashDrawer.countedCents,
+              cashVarianceCents: snapshot.cashDrawer.varianceCents,
+              // Prisma's InputJsonValue is structurally compatible with
+              // our snapshot but TS can't narrow nested objects with
+              // optional/null fields to that recursive type. JSON
+              // round-trip is the cheap, type-honest workaround
+              // (snapshot has no Date / Decimal / undefined values that
+              // need preserving) and avoids `as unknown as` casts.
+              snapshot: JSON.parse(JSON.stringify(snapshot)) as Prisma.InputJsonValue,
+            },
+          });
+
+          await tx.shift.update({
+            where: { id: shift.id },
+            data: {
+              status: "RECONCILED",
+              // Allow the manager's recount to overwrite the cashier's
+              // closingCashCents so subsequent reports show the corrected
+              // figure as the canonical drawer count.
+              ...(data.countedCashCents != null
+                ? { closingCashCents: data.countedCashCents }
+                : {}),
+            },
+          });
+
+          return { zReport, snapshot, glJournalId };
+        });
+      };
+
+      let result: Awaited<ReturnType<typeof attemptZOut>>;
+      try {
+        result = await attemptZOut();
+      } catch (err: unknown) {
+        // P2002 on (tenantId, locationId, zNumber) means a sibling Z-out
+        // grabbed the same number first. Retry once with a freshly-computed
+        // next number — by definition the second attempt picks N+1.
+        const code =
+          err && typeof err === "object" && "code" in err
+            ? (err as { code?: unknown }).code
+            : undefined;
+        if (code === "P2002") {
+          result = await attemptZOut();
+        } else {
+          throw err;
+        }
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId: shift.tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "ZReport",
+          recordId: result.zReport.id,
+          action: "CREATED",
+          changedFieldsJson: {
+            shiftId: shift.id,
+            zNumber: result.zReport.zNumber,
+            totalCents: result.snapshot.totalCents,
+            cashVarianceCents: result.snapshot.cashDrawer.varianceCents,
+            glJournalId: result.glJournalId,
+          },
+        },
+      });
+
+      res.status(201).json({
+        ...result.zReport,
+        ...(data.includeSnapshot ? { snapshot: result.snapshot } : {}),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /z-reports — List Z-reports ────────────────────────────────────────
+router.get(
+  "/z-reports",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const query = ListZReportsQuerySchema.parse(req.query);
+
+      // Honor the caller's location scope. If the user requested a
+      // specific location, gate access; otherwise filter to allowed
+      // locations (includeNull=true matches the rest of POS routes).
+      const baseScope = filterByAllowedLocations(
+        req,
+        { tenantId } as Record<string, unknown>,
+        { includeNull: true },
+      ) as Prisma.ZReportWhereInput;
+      const where: Prisma.ZReportWhereInput = { ...baseScope };
+      if (query.locationId) {
+        if (!requireLocationAccess(req, query.locationId)) {
+          res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+          return;
+        }
+        where.locationId = query.locationId;
+      }
+      if (query.dateFrom || query.dateTo) {
+        const generatedAt: Prisma.DateTimeFilter = {};
+        if (query.dateFrom) generatedAt.gte = new Date(query.dateFrom);
+        if (query.dateTo) generatedAt.lte = new Date(query.dateTo + "T23:59:59.999Z");
+        where.generatedAt = generatedAt;
+      }
+
+      // Optional cashier filter — Z reports don't carry the cashier
+      // directly so we filter via the linked shift.
+      if (query.cashierId) {
+        where.shift = { is: { cashierId: query.cashierId } };
+      }
+
+      const [reports, total] = await Promise.all([
+        prisma.zReport.findMany({
+          where,
+          orderBy: { generatedAt: "desc" },
+          skip: query.skip,
+          take: query.take,
+          select: {
+            id: true,
+            tenantId: true,
+            locationId: true,
+            shiftId: true,
+            zNumber: true,
+            generatedByUserId: true,
+            generatedAt: true,
+            lockedAt: true,
+            glJournalId: true,
+            notes: true,
+            grossSalesCents: true,
+            discountsCents: true,
+            refundsCents: true,
+            netSalesCents: true,
+            taxCents: true,
+            tipsCents: true,
+            totalCents: true,
+            cashExpectedCents: true,
+            cashCountedCents: true,
+            cashVarianceCents: true,
+            shift: {
+              select: { cashierId: true, openedAt: true, closedAt: true },
+            },
+          },
+        }),
+        prisma.zReport.count({ where }),
+      ]);
+
+      res.json({
+        data: reports,
+        pagination: { skip: query.skip, take: query.take, total },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /z-reports/:id — Single Z-report (full snapshot) ───────────────────
+router.get(
+  "/z-reports/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const report = await prisma.zReport.findFirst({
+        where: { id: req.params.id, tenantId },
+        include: { shift: true },
+      });
+      if (!report) {
+        res.status(404).json({ error: "Z-report not found", code: "NOT_FOUND" });
+        return;
+      }
+      if (report.locationId && !requireLocationAccess(req, report.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+      res.json(report);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /z-reports/:id/email — Email the printable report ─────────────────
+router.post(
+  "/z-reports/:id/email",
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const data = EmailZReportSchema.parse(req.body);
+
+      const report = await prisma.zReport.findFirst({
+        where: { id: req.params.id, tenantId },
+      });
+      if (!report) {
+        res.status(404).json({ error: "Z-report not found", code: "NOT_FOUND" });
+        return;
+      }
+      if (report.locationId && !requireLocationAccess(req, report.locationId)) {
+        res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
+        return;
+      }
+
+      // Recipients: body.to overrides; otherwise fall back to the
+      // location's configured distribution list. 400 if neither set.
+      let recipients: string | string[] | null = data.to ?? null;
+      let usedConfiguredList = false;
+      if (!recipients && report.locationId) {
+        const loc = await prisma.location.findFirst({
+          where: { id: report.locationId, tenantId },
+          select: { zReportRecipients: true },
+        });
+        if (loc && loc.zReportRecipients.length > 0) {
+          recipients = loc.zReportRecipients;
+          usedConfiguredList = true;
+        }
+      }
+      if (!recipients || (Array.isArray(recipients) && recipients.length === 0)) {
+        res.status(400).json({
+          error:
+            "No recipients. Provide `to` in the request, or configure this location's Z-report distribution list.",
+          code: "NO_RECIPIENTS",
+        });
+        return;
+      }
+
+      const snapshot = JSON.parse(JSON.stringify(report.snapshot)) as ZOutSnapshot;
+      const html = renderZReportHtml(report, snapshot);
+
+      try {
+        await sendEmail({
+          tenantId,
+          locationId: report.locationId ?? undefined,
+          to: recipients,
+          subject: `Z-Report #${report.zNumber} — ${new Date(report.generatedAt).toLocaleDateString()}`,
+          html,
+        });
+      } catch (err) {
+        if (err instanceof EmailSendError) {
+          res.status(502).json({ error: err.message, code: "EMAIL_SEND_FAILED" });
+          return;
+        }
+        throw err;
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "ZReport",
+          recordId: report.id,
+          action: "EMAILED",
+          changedFieldsJson: { to: recipients, usedConfiguredList },
+        },
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── HTML rendering for the printable / emailable Z-report ──────────────────
+// Plain inline-styled HTML so it survives email-client CSS stripping. Same
+// markup is fetched by the POS UI for the print preview (?format=html).
+function fmtCents(cents: number): string {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return `${sign}$${(abs / 100).toFixed(2)}`;
+}
+function renderZReportHtml(
+  report: { zNumber: number; generatedAt: Date; locationId: string | null; notes: string | null },
+  s: ZOutSnapshot,
+): string {
+  const row = (label: string, value: string, bold = false) =>
+    `<tr><td style="padding:4px 8px;${bold ? "font-weight:700" : ""}">${label}</td>` +
+    `<td style="padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums;${bold ? "font-weight:700" : ""}">${value}</td></tr>`;
+  const sectionHeader = (label: string) =>
+    `<tr><td colspan="2" style="padding:12px 8px 4px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#64748B;border-bottom:1px solid #E2E8F0">${label}</td></tr>`;
+
+  return `<!doctype html><html><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#0A2342;background:#FFF;padding:24px;max-width:560px;margin:0 auto">
+  <div style="text-align:center;margin-bottom:16px">
+    <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#64748B">Z-Report</div>
+    <div style="font-size:28px;font-weight:700;margin:4px 0">#${report.zNumber}</div>
+    <div style="font-size:13px;color:#475569">${new Date(report.generatedAt).toLocaleString()}</div>
+    ${s.cashierName ? `<div style="font-size:13px;color:#475569">Cashier: ${s.cashierName}</div>` : ""}
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    ${sectionHeader("Sales")}
+    ${row("Gross sales", fmtCents(s.grossSalesCents))}
+    ${row("Discounts", `-${fmtCents(s.discountsCents)}`)}
+    ${row("Refunds", `-${fmtCents(s.refundsCents)}`)}
+    ${row("Net sales", fmtCents(s.netSalesCents), true)}
+    ${row("Tax", fmtCents(s.taxCents))}
+    ${row("Tips", fmtCents(s.tipsCents))}
+    ${row("Grand total", fmtCents(s.totalCents), true)}
+    ${sectionHeader("Tenders")}
+    ${row("Cash (net)", fmtCents(s.tenders.cash.netCents))}
+    ${row(`Card — Terminal (${s.tenders.cardTerminal.count})`, fmtCents(s.tenders.cardTerminal.netCents))}
+    ${row(`Card — CNP (${s.tenders.cardCnp.count})`, fmtCents(s.tenders.cardCnp.netCents))}
+    ${row("ACH", fmtCents(s.tenders.ach.netCents))}
+    ${row("Check (declared)", fmtCents(s.tenders.check.declaredCents))}
+    ${row(`Charge to A/R (${s.tenders.chargeToAr.count})`, fmtCents(s.tenders.chargeToAr.netCents))}
+    ${row("Other (declared)", fmtCents(s.tenders.other.declaredCents))}
+    ${sectionHeader("Cash drawer")}
+    ${row("Opening float", fmtCents(s.cashDrawer.openingFloatCents))}
+    ${row("Cash sales", `+${fmtCents(s.cashDrawer.cashSalesCents)}`)}
+    ${row("Cash refunds", `-${fmtCents(s.cashDrawer.cashRefundsCents)}`)}
+    ${row("Paid-outs", `-${fmtCents(s.cashDrawer.paidOutsCents)}`)}
+    ${row("Expected", fmtCents(s.cashDrawer.expectedCents), true)}
+    ${row("Counted", fmtCents(s.cashDrawer.countedCents))}
+    ${row(
+      "Variance",
+      `<span style="color:${s.cashDrawer.varianceCents === 0 ? "#059669" : s.cashDrawer.varianceCents > 0 ? "#059669" : "#DC2626"}">${s.cashDrawer.varianceCents >= 0 ? "+" : ""}${fmtCents(s.cashDrawer.varianceCents)}</span>`,
+      true,
+    )}
+    ${s.salesByCategory.length ? sectionHeader("By category") : ""}
+    ${s.salesByCategory.map((c) => row(c.categoryName, fmtCents(c.netCents))).join("")}
+    ${s.discountsApplied.length ? sectionHeader("Discounts applied") : ""}
+    ${s.discountsApplied.map((d) => row(`${d.label} (${d.count})`, `-${fmtCents(d.totalCents)}`)).join("")}
+    ${s.stripeMatching.unmatchedRowIds.length
+      ? `<tr><td colspan="2" style="padding:10px 8px;background:#FEF3C7;color:#92400E;border-radius:6px;margin-top:12px">⚠ ${s.stripeMatching.unmatchedRowIds.length} card sale(s) missing a Stripe PaymentIntent id — review before banking.</td></tr>`
+      : ""}
+  </table>
+  ${report.notes ? `<div style="margin-top:16px;padding:12px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;font-size:13px">${report.notes}</div>` : ""}
+  <div style="margin-top:16px;padding-top:12px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center">
+    Locked snapshot. Read-only. Z #${report.zNumber}.
+  </div>
+  </body></html>`;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORTS
@@ -1551,8 +2203,8 @@ router.get(
         },
       });
 
-      const sales = transactions.filter((t) => t.status !== "REFUNDED");
-      const refunds = transactions.filter((t) => t.status === "REFUNDED");
+      const sales = transactions.filter((t) => t.totalCents >= 0);
+      const refunds = transactions.filter((t) => t.totalCents < 0);
 
       const totalSales = sales.reduce((sum, t) => sum + t.totalCents, 0);
       const totalRefunds = refunds.reduce(

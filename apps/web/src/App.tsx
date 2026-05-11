@@ -18,6 +18,9 @@ import ChartOfAccounts from './pages/ChartOfAccounts';
 import Disputes from './pages/Disputes';
 import Rentals from './pages/Rentals';
 import POS from './pages/POS';
+import ZReports from './pages/ZReports';
+import ZReportDetail from './pages/ZReportDetail';
+import XReport from './pages/XReport';
 import DockWalks from './pages/DockWalks';
 import DockWalkRunner from './pages/DockWalkRunner';
 import Reports from './pages/Reports';
@@ -77,6 +80,9 @@ function AppRoutes() {
           element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}
         />
         <Route path="/pos" element={<POS />} />
+        <Route path="/pos/z-reports" element={<ZReports />} />
+        <Route path="/pos/z-reports/:id" element={<ZReportDetail />} />
+        <Route path="/pos/x-report/:shiftId" element={<XReport />} />
         <Route path="/fuel" element={<Fuel />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/purchase-orders" element={<PurchaseOrders />} />

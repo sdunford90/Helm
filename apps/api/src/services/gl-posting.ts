@@ -108,7 +108,7 @@ interface GlLine {
  * Post a balanced set of GL entries within a transaction.
  * Returns the journalId that ties the entries together.
  */
-async function postEntries(
+export async function postEntries(
   tenantId: string,
   lines: GlLine[],
   sourceType: string,
@@ -193,8 +193,20 @@ const SYSTEM_ACCOUNT_DEFINITIONS: Record<
 > = {
   "1000": { name: "Cash / Operating Bank", type: "ASSET" },
   "1010": { name: "Stripe Clearing", type: "ASSET" },
+  // ACH settlements clear through their own ledger so finance can
+  // reconcile against the bank's ACH batch totals independently of card
+  // payouts. POS Z-out posts ACH net here (Task #320).
+  "1015": { name: "ACH Clearing", type: "ASSET" },
+  // Holds the value of physical checks and "other" non-cash tenders that
+  // a cashier collected but the marina hasn't yet deposited at the bank.
+  // POS Z-out debits this account for declared check + other (Task #320);
+  // the bank-deposit journal credits it and debits Cash.
+  "1020": { name: "Undeposited Funds", type: "ASSET" },
   "1200": { name: "Accounts Receivable", type: "ASSET" },
   "2300": { name: "Security Deposits Held", type: "LIABILITY" },
+  // 5900 Cash Over/Short — POS Z-out variance dump (Task #320). Auto-heal
+  // covers tenants whose chart of accounts predates the migration.
+  "5900": { name: "Cash Over/Short", type: "EXPENSE" },
 };
 
 /**
@@ -394,6 +406,9 @@ const ACCOUNTS = {
   BANK: "1010",
   DEFERRED_REVENUE_FALLBACK: "2100",
   SECURITY_DEPOSITS_HELD: "2300",
+  // POS Z-out variance posting account (Task #320). Debits when the
+  // counted drawer is short, credits when it's over.
+  CASH_OVER_SHORT: "5900",
 } as const;
 
 /**

@@ -21,6 +21,11 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   // Assets
   { accountNumber: "1000", name: "Cash / Operating Bank", type: "ASSET" },
   { accountNumber: "1010", name: "Stripe Clearing", type: "ASSET" },
+  // ACH settlements + undeposited (check / other) funds get their own
+  // asset accounts so POS Z-out tender postings reconcile cleanly
+  // against bank deposits and ACH batches (Task #320).
+  { accountNumber: "1015", name: "ACH Clearing", type: "ASSET" },
+  { accountNumber: "1020", name: "Undeposited Funds", type: "ASSET" },
   { accountNumber: "1200", name: "Accounts Receivable", type: "ASSET" },
   // Liabilities (deferred-revenue accounts flagged for rev-rec)
   { accountNumber: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY", isDeferredRevenue: true },
@@ -52,6 +57,9 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   // Expenses
   { accountNumber: "5000", name: "COGS", type: "EXPENSE" },
   { accountNumber: "5100", name: "Payment Processing Fees", type: "EXPENSE" },
+  // POS Z-out cash drawer variance dump (Task #320). Debited when the
+  // counted drawer comes up short; credited when over.
+  { accountNumber: "5900", name: "Cash Over/Short", type: "EXPENSE" },
 ];
 
 /**
