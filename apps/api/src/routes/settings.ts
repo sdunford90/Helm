@@ -2465,8 +2465,8 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
     // so block the delete until the operator reassigns them. Inventory
     // products no longer carry their own glAccountId — they resolve through
     // the per-(category, location) ProductCategoryGlMapping row, so check
-    // those instead. Rental products use the per-location
-    // RentalProductGlMapping table across the revenue / COGS / asset slots.
+    // those instead. Rental products are non-inventory and only carry a
+    // per-location revenueGlAccountId on RentalProductGlMapping.
     const [
       dockageRateRefs,
       serviceFeeRefs,
@@ -2489,11 +2489,7 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
       prisma.rentalProductGlMapping.findMany({
         where: {
           tenantId,
-          OR: [
-            { revenueGlAccountId: req.params.id },
-            { cogsGlAccountId: req.params.id },
-            { inventoryAssetGlAccountId: req.params.id },
-          ],
+          revenueGlAccountId: req.params.id,
         },
         select: { rentalProductId: true },
       }),
@@ -2580,15 +2576,14 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
           select: { id: true, name: true, category: true, active: true },
         }),
         prisma.glAccount.findMany({
-          // Include REVENUE, EXPENSE, and ASSET so the rental-product per-
-          // location editor can populate Revenue / COGS / Inventory dropdowns.
-          // Other product editors filter the list down by `type` on the
-          // client side.
+          // Rental products are non-inventory, so the per-location editor
+          // only needs Revenue accounts. Other product editors also filter
+          // by `type` on the client side.
           where: {
             tenantId,
             active: true,
             isActive: true,
-            type: { in: ["REVENUE", "EXPENSE", "ASSET"] },
+            type: "REVENUE",
           },
           select: { id: true, accountNumber: true, name: true, type: true, locationId: true },
           orderBy: [{ locationId: "asc" }, { accountNumber: "asc" }],
@@ -2601,8 +2596,6 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
             rentalProductId: true,
             locationId: true,
             revenueGlAccountId: true,
-            cogsGlAccountId: true,
-            inventoryAssetGlAccountId: true,
           },
         }),
         prisma.location.findMany({
@@ -2645,17 +2638,11 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
     // from the per-location override (or null when unmapped).
     const rpMapByPair = new Map<
       string,
-      {
-        revenueGlAccountId: string | null;
-        cogsGlAccountId: string | null;
-        inventoryAssetGlAccountId: string | null;
-      }
+      { revenueGlAccountId: string | null }
     >();
     for (const m of rpMappings) {
       rpMapByPair.set(`${m.rentalProductId}|${m.locationId}`, {
         revenueGlAccountId: m.revenueGlAccountId,
-        cogsGlAccountId: m.cogsGlAccountId,
-        inventoryAssetGlAccountId: m.inventoryAssetGlAccountId,
       });
     }
     // When a single locationId is provided, narrow the per-location
@@ -2675,13 +2662,9 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
           locationName: l.name,
           override: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
         };
       });
@@ -2736,8 +2719,9 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
         glAccounts,
         unconfiguredCount,
         // The "no GL accounts configured" banner is about *revenue*
-        // accounts; the EXPENSE/ASSET rows we now include are only for
-        // populating COGS/inventory dropdowns on rental products.
+        // accounts. All product editors (dockage, service fees, rentals)
+        // are revenue-only; rentals are non-inventory so no EXPENSE/ASSET
+        // rows are needed.
         hasGlAccounts: glAccounts.some((a) => a.type === "REVENUE"),
         missingMappingWarnings: warnings,
       },
@@ -3177,13 +3161,9 @@ router.get(
           qboConnected,
           override: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
         };
       });
@@ -3202,7 +3182,13 @@ router.put(
   async (req, res, next) => {
     try {
       const tenantId = req.tenantId!;
-      const body = productMappingPutSchema.parse(req.body);
+      // Rental products are non-inventory: only a revenue mapping is
+      // configurable. Any cogs/inventory-asset values in the legacy payload
+      // are silently ignored — those columns no longer exist after the
+      // 20260511000000_drop_rental_product_inventory_gl_slots migration.
+      const body = z
+        .object({ revenueGlAccountId: z.string().nullable().optional() })
+        .parse({ revenueGlAccountId: (req.body as { revenueGlAccountId?: string | null } | null)?.revenueGlAccountId ?? null });
       const { id, locationId } = req.params;
       const [product, location] = await Promise.all([
         prisma.rentalProduct.findFirst({
@@ -3222,24 +3208,14 @@ router.put(
         res.status(404).json({ error: "Location not found" });
         return;
       }
-      await Promise.all([
-        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
-        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
-        validateGlAccountForLocation(
-          tenantId,
-          locationId,
-          body.inventoryAssetGlAccountId,
-        ),
-      ]);
+      await validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId);
       const data = {
         revenueGlAccountId: body.revenueGlAccountId ?? null,
-        cogsGlAccountId: body.cogsGlAccountId ?? null,
-        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
       };
       // Fetch existing mapping for before-values
       const existingRpMapping = await prisma.rentalProductGlMapping.findUnique({
         where: { rentalProductId_locationId: { rentalProductId: id, locationId } },
-        select: { revenueGlAccountId: true, cogsGlAccountId: true, inventoryAssetGlAccountId: true },
+        select: { revenueGlAccountId: true },
       });
       const result = await prisma.rentalProductGlMapping.upsert({
         where: {
@@ -3253,12 +3229,6 @@ router.put(
         const rpChanges: Record<string, { from: unknown; to: unknown }> = {};
         if ((existingRpMapping?.revenueGlAccountId ?? null) !== result.revenueGlAccountId) {
           rpChanges.revenueGlAccountId = { from: existingRpMapping?.revenueGlAccountId ?? null, to: result.revenueGlAccountId };
-        }
-        if ((existingRpMapping?.cogsGlAccountId ?? null) !== result.cogsGlAccountId) {
-          rpChanges.cogsGlAccountId = { from: existingRpMapping?.cogsGlAccountId ?? null, to: result.cogsGlAccountId };
-        }
-        if ((existingRpMapping?.inventoryAssetGlAccountId ?? null) !== result.inventoryAssetGlAccountId) {
-          rpChanges.inventoryAssetGlAccountId = { from: existingRpMapping?.inventoryAssetGlAccountId ?? null, to: result.inventoryAssetGlAccountId };
         }
         if (Object.keys(rpChanges).length > 0) {
           await logAccountingChange({

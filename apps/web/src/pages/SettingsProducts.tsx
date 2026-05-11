@@ -47,15 +47,13 @@ interface ServiceFee {
 interface RentalProductPerLocationRow {
   locationId: string;
   locationName: string;
+  // Rental products are non-inventory — only a revenue mapping is
+  // configurable. There's no COGS or inventory-asset slot.
   override: {
     revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
   };
   effective: {
     revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
   };
 }
 
@@ -270,9 +268,9 @@ function GlAccountCell({
   glAccounts: GlAccount[];
   onSave: (glAccountId: string | null) => Promise<void>;
   locationId?: string | null;
-  // Defaults to REVENUE for backwards compatibility (dockage/service-fee
-  // cells are revenue-only). Single-location rental editors pass EXPENSE
-  // for COGS and ASSET for inventory.
+  // Defaults to REVENUE — all current cells (dockage, service-fee, rental
+  // product) are revenue-only. The prop is preserved so future editors can
+  // narrow to other account types without changing this component.
   accountType?: GlAccount['type'];
   // When known, mirrors backend `validateGlAccountForLocation`: QBO-connected
   // locations may *only* select location-scoped accounts; non-QBO locations
@@ -452,8 +450,6 @@ function RentalProductRow({
     type: GlAccount['type'];
   }> = [
     { field: 'revenueGlAccountId', label: 'Revenue', type: 'REVENUE' },
-    { field: 'cogsGlAccountId', label: 'COGS', type: 'EXPENSE' },
-    { field: 'inventoryAssetGlAccountId', label: 'Inventory Asset', type: 'ASSET' },
   ];
 
   return (
@@ -504,7 +500,8 @@ function RentalProductRow({
       {expanded ? (
         <div style={{ borderTop: '1px solid #E2E8F0', padding: '12px 16px', background: '#F8FAFC' }}>
           <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '10px' }}>
-            Pick a revenue, COGS, and inventory account for each location.
+            Pick a revenue account for each location. Rental products are
+            non-inventory, so no COGS or asset mapping is needed.
             QuickBooks-connected locations require an account from their own
             chart of accounts; other locations may use the tenant-wide chart.
           </div>
@@ -594,11 +591,12 @@ function RentalProductRow({
 
 /* ── Single-location flat rental row ───────────────────── */
 
-// Renders a single rental product as one row with three inline GL cells
-// (Revenue / COGS / Inventory Asset) for the currently-selected location.
-// Used only when the operator has picked a single location in the top-right
-// switcher; the cross-location grid editor (RentalProductRow) is preserved
-// for the All-locations view.
+// Renders a single rental product as one row with one inline Revenue GL
+// cell for the currently-selected location. Rental products are non-
+// inventory, so there is no COGS or inventory-asset slot. Used only when
+// the operator has picked a single location in the top-right switcher;
+// the cross-location grid editor (RentalProductRow) is preserved for the
+// All-locations view.
 function FlatRentalProductRow({
   product,
   glAccounts,
@@ -623,24 +621,12 @@ function FlatRentalProductRow({
     ({
       locationId,
       locationName: '',
-      override: {
-        revenueGlAccountId: null,
-        cogsGlAccountId: null,
-        inventoryAssetGlAccountId: null,
-      },
-      effective: {
-        revenueGlAccountId: null,
-        cogsGlAccountId: null,
-        inventoryAssetGlAccountId: null,
-      },
+      override: { revenueGlAccountId: null },
+      effective: { revenueGlAccountId: null },
     } as RentalProductPerLocationRow);
 
-  // Each cell saves the merged override (preserving the other two fields)
-  // because the per-location PUT endpoint is whole-record, not partial.
-  const saveField = (
-    field: keyof RentalProductPerLocationRow['override'],
-  ) => async (id: string | null) => {
-    await onSavePerLocation(locationId, { ...row.override, [field]: id });
+  const saveRevenue = async (id: string | null) => {
+    await onSavePerLocation(locationId, { revenueGlAccountId: id });
   };
 
   return (
@@ -669,27 +655,7 @@ function FlatRentalProductRow({
           locationId={locationId}
           qboConnected={qboConnected}
           accountType="REVENUE"
-          onSave={saveField('revenueGlAccountId')}
-        />
-      </td>
-      <td style={s.td}>
-        <GlAccountCell
-          currentId={row.effective.cogsGlAccountId}
-          glAccounts={glAccounts}
-          locationId={locationId}
-          qboConnected={qboConnected}
-          accountType="EXPENSE"
-          onSave={saveField('cogsGlAccountId')}
-        />
-      </td>
-      <td style={s.td}>
-        <GlAccountCell
-          currentId={row.effective.inventoryAssetGlAccountId}
-          glAccounts={glAccounts}
-          locationId={locationId}
-          qboConnected={qboConnected}
-          accountType="ASSET"
-          onSave={saveField('inventoryAssetGlAccountId')}
+          onSave={saveRevenue}
         />
       </td>
     </tr>
@@ -1154,8 +1120,6 @@ export default function SettingsProducts() {
       `/api/settings/catalog/rental-products/${productId}/gl-mappings/${locationId}`,
       {
         revenueGlAccountId: override.revenueGlAccountId,
-        cogsGlAccountId: override.cogsGlAccountId,
-        inventoryAssetGlAccountId: override.inventoryAssetGlAccountId,
       },
     );
     setData((prev) => {
@@ -1175,8 +1139,6 @@ export default function SettingsProducts() {
             override,
             effective: {
               revenueGlAccountId: override.revenueGlAccountId ?? null,
-              cogsGlAccountId: override.cogsGlAccountId ?? null,
-              inventoryAssetGlAccountId: override.inventoryAssetGlAccountId ?? null,
             },
           };
         });
@@ -1504,9 +1466,9 @@ export default function SettingsProducts() {
             No rental products configured. Add them on the Rentals page.
           </div>
         ) : currentLocationId ? (
-          // Single-location mode: flat one-row-per-product table with three
-          // inline GL cells. Each cell saves a merged override so the other
-          // two fields are preserved on the per-location PUT.
+          // Single-location mode: flat one-row-per-product table with a
+          // single inline Revenue GL cell. Rental products are non-
+          // inventory, so there is no COGS or Inventory Asset slot.
           <table style={s.table}>
             <thead>
               <tr>
@@ -1514,8 +1476,6 @@ export default function SettingsProducts() {
                 <th style={s.th}>Category</th>
                 <th style={s.th}>Status</th>
                 <th style={s.th}>Revenue GL</th>
-                <th style={s.th}>COGS GL</th>
-                <th style={s.th}>Inventory Asset GL</th>
               </tr>
             </thead>
             <tbody>

@@ -82,8 +82,6 @@ async function main() {
           locationsEarlyTermination: { none: {} },
           locationsAchReturnFee: { none: {} },
           rentalProductGlMappingsRevenue: { none: {} },
-          rentalProductGlMappingsCogs: { none: {} },
-          rentalProductGlMappingsInventoryAsset: { none: {} },
           productCategoryGlMappingsRevenue: { none: {} },
           productCategoryGlMappingsCogs: { none: {} },
           productCategoryGlMappingsInventoryAsset: { none: {} },

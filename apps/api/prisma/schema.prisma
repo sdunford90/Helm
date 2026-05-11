@@ -1340,8 +1340,6 @@ model GlAccount {
   entries                                 GlEntry[]
   lineItems                               InvoiceLineItem[]
   rentalProductGlMappingsRevenue          RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingRevenue")
-  rentalProductGlMappingsCogs             RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingCogs")
-  rentalProductGlMappingsInventoryAsset   RentalProductGlMapping[]   @relation(name: "RentalProductGlMappingInventoryAsset")
   productCategoryGlMappingsRevenue        ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingRevenue")
   productCategoryGlMappingsCogs           ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingCogs")
   productCategoryGlMappingsInventoryAsset ProductCategoryGlMapping[] @relation(name: "ProductCategoryGlMappingInventoryAsset")
@@ -1434,21 +1432,17 @@ model ServiceFeeGlMapping {
 }
 
 model RentalProductGlMapping {
-  id                        String   @id @default(uuid())
-  tenantId                  String
-  rentalProductId           String
-  locationId                String
-  revenueGlAccountId        String?
-  cogsGlAccountId           String?
-  inventoryAssetGlAccountId String?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @default(now()) @updatedAt
+  id                 String   @id @default(uuid())
+  tenantId           String
+  rentalProductId    String
+  locationId         String
+  revenueGlAccountId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
 
-  rentalProduct           RentalProduct @relation(fields: [rentalProductId], references: [id], onDelete: Cascade)
-  location                Location      @relation(name: "LocationRentalProductGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
-  revenueGlAccount        GlAccount?    @relation(name: "RentalProductGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
-  cogsGlAccount           GlAccount?    @relation(name: "RentalProductGlMappingCogs", fields: [cogsGlAccountId], references: [id])
-  inventoryAssetGlAccount GlAccount?    @relation(name: "RentalProductGlMappingInventoryAsset", fields: [inventoryAssetGlAccountId], references: [id])
+  rentalProduct    RentalProduct @relation(fields: [rentalProductId], references: [id], onDelete: Cascade)
+  location         Location      @relation(name: "LocationRentalProductGlMappings", fields: [locationId], references: [id], onDelete: Cascade)
+  revenueGlAccount GlAccount?    @relation(name: "RentalProductGlMappingRevenue", fields: [revenueGlAccountId], references: [id])
 
   @@unique([rentalProductId, locationId])
   @@index([tenantId])
