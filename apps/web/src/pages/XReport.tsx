@@ -227,6 +227,43 @@ export default function XReport() {
           </>
         )}
 
+        {s.tenderReconciliation && s.tenderReconciliation.diffCents !== 0 && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: 12,
+              background: '#FEE2E2',
+              color: '#991B1B',
+              borderRadius: 6,
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 8,
+            }}
+          >
+            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                Tenders do not reconcile — Z-out will be rejected
+              </div>
+              <div>
+                Revenue + tax + tips total {fmt(s.tenderReconciliation.expectedCents)} but
+                recorded tenders total {fmt(s.tenderReconciliation.actualCents)} (gap{' '}
+                {fmt(s.tenderReconciliation.diffCents)}).
+              </div>
+              {s.tenderReconciliation.missingTenderRowIds.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  {s.tenderReconciliation.missingTenderRowIds.length} sale(s) have no
+                  recorded payment row:{' '}
+                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {s.tenderReconciliation.missingTenderRowIds.join(', ')}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div style={sec}>Stripe verification</div>
         {row('POS card total', fmt(s.stripeMatching.expectedCardCents))}
         {row(

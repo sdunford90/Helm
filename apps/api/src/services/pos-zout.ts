@@ -139,6 +139,19 @@ export interface ZOutSnapshot {
     unverifiedRowIds: string[]; // card sales whose PI couldn't be retrieved
     verifiedAgainstStripe: boolean;
   };
+  // Tender-vs-revenue reconciliation. When this fails to balance the
+  // shift's GL journal cannot be balanced either: revenue + tax + tips
+  // were rung but no tender row collected the matching cash/card/etc.
+  // The Z-out commit path refuses to post when `diffCents !== 0`; the
+  // X-report / Z-report UIs surface the same numbers + offending rows
+  // so finance / cashier can locate the missing payment row.
+  tenderReconciliation: {
+    expectedCents: number; // = totalCents (revenue + tax + tips, net of refunds)
+    actualCents: number; // sum of named tender netCents (cash + cards + ach + AR)
+    diffCents: number; // expected - actual (positive = revenue without tender)
+    missingTenderRowIds: string[]; // POS txns whose status isn't a known tender
+    extraTenderRowIds: string[]; // reserved for future use; [] today
+  };
   // Cash drawer math (cents).
   cashDrawer: {
     openingFloatCents: number;
@@ -502,6 +515,35 @@ export async function computeZOut(
     reason: null as string | null,
   }));
 
+  // Tender-vs-revenue reconciliation. The shift's GL journal posts
+  //   DR cash + DR cards + DR ACH + DR A/R = CR revenue + CR tax + CR tips
+  // (declared check/other are reclassified within cash; cash over/short
+  // pairs net to zero). The right-hand side is `totalCents`. The left-
+  // hand side is the sum of named tender netCents. Any row whose
+  // `status` doesn't fit a known tender bucket (CASH/CARD/ACH/CHARGE_TO_AR)
+  // contributes to revenue/tax/tips but to no tender — exactly the gap
+  // that produces "GL entries do not balance" inside `postEntries`.
+  // `missingTenderRowIds` lists the offending POS rows so the operator
+  // can find them; `diffCents > 0` means revenue without a tender row,
+  // `diffCents < 0` means a tender without offsetting revenue (rare).
+  const KNOWN_TENDER_STATUSES = new Set(["CASH", "CARD", "ACH", "CHARGE_TO_AR"]);
+  const missingTenderRowIds = txns
+    .filter((t) => !KNOWN_TENDER_STATUSES.has(t.status))
+    .map((t) => t.id);
+  const actualTenderCents =
+    tenders.cash.netCents +
+    tenders.cardTerminal.netCents +
+    tenders.cardCnp.netCents +
+    tenders.ach.netCents +
+    tenders.chargeToAr.netCents;
+  const tenderReconciliation = {
+    expectedCents: totalCents,
+    actualCents: actualTenderCents,
+    diffCents: totalCents - actualTenderCents,
+    missingTenderRowIds,
+    extraTenderRowIds: [] as string[],
+  };
+
   return {
     shiftId: shift.id,
     locationId: shift.locationId,
@@ -527,6 +569,7 @@ export async function computeZOut(
       unverifiedRowIds,
       verifiedAgainstStripe,
     },
+    tenderReconciliation,
     cashDrawer,
     salesByCategory,
     topProducts,
@@ -573,6 +616,31 @@ export async function postShiftZOut(
   tx: ZoutTx,
 ): Promise<string> {
   const locationId = snapshot.locationId;
+
+  // Reject before posting when tenders don't reconcile to revenue+tax+tips.
+  // Without this guard `postEntries` rejects the journal with the cryptic
+  // "GL entries do not balance: debits=… credits=…" message at commit; we
+  // surface a 4xx with the actionable detail (gap + offending row IDs)
+  // instead. `postEntries` keeps the same balance assertion as a backstop.
+  const rec = snapshot.tenderReconciliation;
+  if (rec.diffCents !== 0) {
+    const fmt = (c: number) => `$${(Math.abs(c) / 100).toFixed(2)}`;
+    const missingDetail = rec.missingTenderRowIds.length > 0
+      ? `${rec.missingTenderRowIds.length} sale(s) have no recorded tender row` +
+        ` (POS transaction id${rec.missingTenderRowIds.length === 1 ? "" : "s"}: ` +
+        `${rec.missingTenderRowIds.join(", ")}).`
+      : "Recorded tender rows total more than the rung-up revenue, " +
+        "indicating a stray refund or duplicate payment row.";
+    throw Object.assign(
+      new Error(
+        `UNBALANCED_TENDERS: revenue + tax + tips total ${fmt(rec.expectedCents)} ` +
+        `but recorded tenders total ${fmt(rec.actualCents)} ` +
+        `(gap ${fmt(rec.diffCents)}). ${missingDetail} ` +
+        `Fix the missing payment rows before running Z-out.`,
+      ),
+      { statusCode: 422, code: "UNBALANCED_TENDERS" },
+    );
+  }
 
   // ── Debits ──────────────────────────────────────────────────────────────
   const debits: Array<{

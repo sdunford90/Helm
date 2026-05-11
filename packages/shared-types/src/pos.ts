@@ -188,6 +188,22 @@ export interface PosZOutSnapshot {
     unverifiedRowIds: string[];
     verifiedAgainstStripe: boolean;
   };
+  /**
+   * Reconciliation between revenue+tax+tips ("expected" tender we should
+   * have collected for this shift) and the sum of recorded tender net
+   * amounts ("actual"). When `diffCents !== 0` the GL journal would post
+   * unbalanced — Z-out commit refuses, the UI surfaces the gap and the
+   * offending sale rows.
+   */
+  tenderReconciliation: {
+    expectedCents: number;
+    actualCents: number;
+    diffCents: number;
+    /** POS transaction IDs whose `status` doesn't fit a known tender bucket. */
+    missingTenderRowIds: string[];
+    /** Reserved for future "tender > revenue" detection; always [] today. */
+    extraTenderRowIds: string[];
+  };
   cashDrawer: {
     openingFloatCents: number;
     cashSalesCents: number;

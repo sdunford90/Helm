@@ -877,6 +877,46 @@ function RunZoutModal({
               />
             </div>
 
+            {preview.snapshot.tenderReconciliation
+              && preview.snapshot.tenderReconciliation.diffCents !== 0 && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: 12,
+                  background: '#FEE2E2',
+                  color: '#991B1B',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                }}
+              >
+                <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                    Tenders do not reconcile — Z-out will be rejected
+                  </div>
+                  <div>
+                    Revenue + tax + tips total{' '}
+                    {formatCents(preview.snapshot.tenderReconciliation.expectedCents)} but
+                    recorded tenders total{' '}
+                    {formatCents(preview.snapshot.tenderReconciliation.actualCents)} (gap{' '}
+                    {formatCents(preview.snapshot.tenderReconciliation.diffCents)}).
+                  </div>
+                  {preview.snapshot.tenderReconciliation.missingTenderRowIds.length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      {preview.snapshot.tenderReconciliation.missingTenderRowIds.length}{' '}
+                      sale(s) have no recorded payment row:{' '}
+                      <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        {preview.snapshot.tenderReconciliation.missingTenderRowIds.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {(preview.snapshot.stripeMatching.unmatchedRowIds.length > 0
               || preview.snapshot.stripeMatching.uncapturedRowIds.length > 0
               || preview.snapshot.stripeMatching.unverifiedRowIds.length > 0
