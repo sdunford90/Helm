@@ -339,20 +339,47 @@ export async function computeZOut(
   const unverifiedRowIds: string[] = [];
   const verifiedAgainstStripe = stripe !== null;
   if (verifiedAgainstStripe) {
-    // Build a map: piId → list of POS rows that reference it. (Saved-card
-    // off-session POS flows can produce two rows sharing one PI in rare
-    // double-write scenarios; we still only want one Stripe call per PI.)
-    const piToRows = new Map<string, typeof cardSales>();
+    // PI lookups must hit the same Stripe account that took the payment.
+    // For per-location Stripe Connect marinas, that's the location's
+    // connected account — looking the PI up on the platform account
+    // raises `resource_missing` and used to flood Z-out with bogus
+    // "PaymentIntent could not be retrieved" warnings (Task #332).
+    //
+    // Account resolution prefers the row's stored `stripeAccountId`
+    // (captured at sale time, so it survives later location/account
+    // re-mappings), then falls back to the shift location's currently
+    // configured connected account. Null = platform account, exactly
+    // like today.
+    let fallbackAccountId: string | null = null;
+    if (shift.locationId) {
+      const loc = await (db as typeof prisma).location.findFirst({
+        where: { id: shift.locationId, tenantId: shift.tenantId },
+        select: { stripeAccountId: true },
+      });
+      fallbackAccountId = loc?.stripeAccountId ?? null;
+    }
+
+    // Group by (stripeAccountId, piId) so we still hit Stripe at most
+    // once per unique PI. The same PI id can in principle exist on two
+    // different connected accounts, so the account is part of the key.
+    const piToRows = new Map<
+      string,
+      { acctId: string | null; piId: string; rows: typeof cardSales }
+    >();
     for (const t of cardSales) {
       const pi = t.stripePaymentIntentId;
       if (!pi) continue;
-      const rows = piToRows.get(pi) ?? [];
-      rows.push(t);
-      piToRows.set(pi, rows);
+      const acctId = t.stripeAccountId ?? fallbackAccountId;
+      const key = `${acctId ?? ""}::${pi}`;
+      const entry = piToRows.get(key) ?? { acctId, piId: pi, rows: [] };
+      entry.rows.push(t);
+      piToRows.set(key, entry);
     }
-    for (const [piId, rows] of piToRows) {
+    for (const { acctId, piId, rows } of piToRows.values()) {
       try {
-        const pi = await stripe!.paymentIntents.retrieve(piId);
+        const pi = acctId
+          ? await stripe!.paymentIntents.retrieve(piId, undefined, { stripeAccount: acctId })
+          : await stripe!.paymentIntents.retrieve(piId);
         if (pi.status === "succeeded") {
           capturedSumCents += pi.amount_received ?? 0;
           capturedCount += rows.length;
