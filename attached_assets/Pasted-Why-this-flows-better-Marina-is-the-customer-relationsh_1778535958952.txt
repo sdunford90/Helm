@@ -1,0 +1,29 @@
+Why this flows better
+"Marina" is the customer-relationship hub: slips, boats, customers, contracts, and the billing those relationships generate. Staff looking at a customer want their invoices in the same neighborhood, not three sections away.
+"Daily Ops" is purely what you do today. A staff member starting a shift goes here. Rentals is a verb (operational reservations), so it moves out of Revenue.
+"Point of Sale" is the cash drawer — keeps POS and Fuel together, separate from invoice-based billing.
+"Back Office" is books & supply only — Accounting, Purchase Orders, Inventory. Money-in lives with the customer (Marina > Billing); money-out and the GL live here.
+"Pipeline" stays as forward-looking customer acquisition.
+"Communications" finally has a home. Announcements stops being filed under "Admin".
+"Insights" absorbs Reports plus future analytics.
+Settings is pinned to the bottom — visually de-emphasized, single entry point. Audit log lives inside it (it's a compliance/governance tool, not a daily destination).
+Old → new mapping (web)
+Old location	New location
+Overview > Dashboard	Home > Dashboard
+Marina Ops > Slips, Boats, Contracts	Marina > Slips, Boats, Contracts
+Marina Ops > Dock Walks, Transient, Ramp, Concierge	Daily Ops > …
+Revenue > Rentals	Daily Ops > Rentals
+Revenue > POS, Fuel	Point of Sale > POS, Fuel
+Revenue > Billing	Marina > Billing
+Revenue > Inventory, Purchase Orders	Back Office > Inventory, Purchase Orders
+Revenue > Rent Roll (unlinked)	Marina > Billing > Rent Roll (sub-tab)
+CRM > Leads, Waitlist	Pipeline > Leads, Waitlist
+CRM > Customers	Marina > Customers
+Admin > Reports	Insights > Reports
+Admin > Announcements	Communications > Announcements
+Admin > Audit Log	Settings > Audit Log (sub-tab)
+Admin > Accounting Overview	Back Office > Accounting > Overview
+Admin > Accounting Hub	Back Office > Accounting > Setup
+Admin > Settings	⚙ Settings (footer)
+Admin > Portfolio	Removed (move to apps/admin or new portfolio app)
+/settings/billing,tax-rates,products,pos-discounts,quickbooks	Children of /settings/* shell
