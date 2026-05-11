@@ -9,7 +9,10 @@ import {
   Ship,
   Anchor,
   ClipboardCheck,
+  AlertCircle,
+  Loader2,
 } from 'lucide-react';
+import { api, ApiClientError } from '../lib/api';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -28,11 +31,24 @@ interface Lead {
   notes: string;
 }
 
+interface ConvertResult {
+  customer: { id: string; firstName: string; lastName: string; email: string | null };
+  boat?: { id: string; name: string | null; lengthFt: number };
+  contract?: { id: string; slipId: string; startDate: string };
+}
+
 interface ConversionWizardProps {
   lead: Lead;
   onClose: () => void;
-  onConvert: () => void;
+  /** Called after the API successfully creates the customer record. */
+  onConvert: (result: ConvertResult) => void;
 }
+
+const BILLING_CYCLE_MAP: Record<string, 'MONTHLY' | 'QUARTERLY' | 'ANNUAL'> = {
+  Monthly: 'MONTHLY',
+  Quarterly: 'QUARTERLY',
+  Annual: 'ANNUAL',
+};
 
 interface AvailableSlip {
   id: string;
@@ -336,6 +352,19 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [skipSlip, setSkipSlip] = useState(false);
 
+  // Submission state
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Inject keyframes for the Convert button's loading spinner once.
+  useEffect(() => {
+    if (document.getElementById('helm-conversion-wizard-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'helm-conversion-wizard-styles';
+    style.textContent = `@keyframes helmConversionSpin { to { transform: rotate(360deg); } } .helm-spin { animation: helmConversionSpin 1s linear infinite; }`;
+    document.head.appendChild(style);
+  }, []);
+
   // Fetch real available slips when reaching step 3
   useEffect(() => {
     if (step !== 2 || skipSlip) return;
@@ -375,13 +404,87 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
     if (step > 0) setStep(step - 1);
   };
 
+  const handleConvert = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setSubmitError(null);
+
+    // Build payload from wizard state.
+    const payload: {
+      customerOverrides?: Record<string, string>;
+      boat?: Record<string, unknown>;
+      slipAssignment?: Record<string, unknown>;
+    } = {};
+
+    const overrides: Record<string, string> = {};
+    if (email && email !== lead.email) overrides.email = email;
+    if (phone && phone !== lead.phone) overrides.phone = phone;
+    // First/last name corrections are saved by writing them back to the lead
+    // before conversion (the API copies firstName/lastName from the lead row).
+    if (Object.keys(overrides).length > 0) payload.customerOverrides = overrides;
+
+    if (!skipBoat && boatName.trim()) {
+      const lengthNum = Number(boatLength);
+      if (!Number.isFinite(lengthNum) || lengthNum <= 0) {
+        setSubmitError('Boat length must be a positive number.');
+        setSubmitting(false);
+        return;
+      }
+      const boat: Record<string, unknown> = {
+        name: boatName.trim(),
+        lengthFt: lengthNum,
+      };
+      if (boatBeam) {
+        const beamNum = Number(boatBeam);
+        if (Number.isFinite(beamNum) && beamNum > 0) boat.beamFt = beamNum;
+      }
+      if (boatRegistration.trim()) boat.registrationNumber = boatRegistration.trim();
+      payload.boat = boat;
+    }
+
+    if (!skipSlip && selectedSlip && selectedSlipData) {
+      payload.slipAssignment = {
+        slipId: selectedSlip,
+        startDate: new Date().toISOString(),
+        rateCents: Math.round(selectedSlipData.rate * 100),
+        billingCycle: BILLING_CYCLE_MAP[billingCycle] ?? 'MONTHLY',
+      };
+    }
+
+    try {
+      const token = await getToken();
+      // The /convert endpoint only accepts email/phone/company overrides — it
+      // copies firstName/lastName straight from the Lead row. To honor any
+      // corrections the operator made on Step 1, save them back to the lead
+      // BEFORE converting. If this PUT fails we surface the error and stop;
+      // silently continuing would create a customer with stale names.
+      if (firstName !== lead.firstName || lastName !== lead.lastName) {
+        await api.put(`/api/leads/${lead.id}`, { firstName, lastName }, token);
+      }
+      const result = await api.post<ConvertResult>(
+        `/api/leads/${lead.id}/convert`,
+        payload,
+        token,
+      );
+      onConvert(result);
+    } catch (err) {
+      const message = err instanceof ApiClientError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : 'Could not convert lead. Please try again.';
+      setSubmitError(message);
+      setSubmitting(false);
+    }
+  };
+
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay} onClick={() => { if (!submitting) onClose(); }}>
       <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={s.header}>
           <h2 style={s.headerTitle}>Convert Lead to Customer</h2>
-          <button style={s.closeBtn} onClick={onClose}>
+          <button style={s.closeBtn} onClick={onClose} disabled={submitting}>
             <X size={20} />
           </button>
         </div>
@@ -667,11 +770,32 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
           )}
         </div>
 
+        {/* Inline error (visible on summary step) */}
+        {submitError && step === 3 && (
+          <div
+            style={{
+              margin: '0 24px 12px',
+              padding: '10px 12px',
+              borderRadius: '6px',
+              backgroundColor: '#FEF2F2',
+              border: '1px solid #FECACA',
+              color: '#B71C1C',
+              fontSize: '13px',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '8px',
+            }}
+          >
+            <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
+            <span>{submitError}</span>
+          </div>
+        )}
+
         {/* Footer */}
         <div style={s.footer}>
           <div>
             {step > 0 && (
-              <button style={s.backBtn} onClick={goBack}>
+              <button style={s.backBtn} onClick={goBack} disabled={submitting}>
                 <ChevronLeft size={16} />
                 Back
               </button>
@@ -697,9 +821,26 @@ export default function ConversionWizard({ lead, onClose, onConvert }: Conversio
               </button>
             )}
             {step === 3 && (
-              <button style={s.convertBtn} onClick={onConvert}>
-                <Check size={16} />
-                Convert
+              <button
+                style={{
+                  ...s.convertBtn,
+                  opacity: submitting ? 0.7 : 1,
+                  cursor: submitting ? 'not-allowed' : 'pointer',
+                }}
+                onClick={handleConvert}
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 size={16} className="helm-spin" />
+                    Converting…
+                  </>
+                ) : (
+                  <>
+                    <Check size={16} />
+                    Convert
+                  </>
+                )}
               </button>
             )}
           </div>
