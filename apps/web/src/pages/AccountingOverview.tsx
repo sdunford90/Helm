@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import { AlertTriangle, CheckCircle, XCircle, Clock, ChevronRight, RefreshCw } from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import SubNav, { ACCOUNTING_SUBNAV } from '../components/SubNav';
 
 // Color scheme: #0A2342 navy, #E2E8F0 border, #64748B muted, #F8FAFC bg
 // #10B981 green, #F59E0B amber, #EF4444 red
@@ -210,8 +211,20 @@ export default function AccountingOverview() {
     <div style={stl.page}>
       {/* Header */}
       <div style={stl.header}>
-        <h1 style={stl.title}>Accounting Overview</h1>
+        <h1 style={stl.title}>Accounting</h1>
         <p style={stl.subtitle}>Cross-location accounting health and setup status</p>
+      </div>
+
+      <SubNav items={ACCOUNTING_SUBNAV} />
+
+      {/* Action: jump to setup wizard for the active location */}
+      <div style={{ marginBottom: '20px' }}>
+        <button
+          style={{ ...stl.viewBtn, fontSize: '13px' }}
+          onClick={() => navigate('/accounting/setup')}
+        >
+          Open Setup Wizard <ChevronRight size={13} />
+        </button>
       </div>
 
       {/* Error */}

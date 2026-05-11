@@ -1,6 +1,7 @@
 import { Download } from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 
 /* ─── Types ─── */
 interface AgingRow {
@@ -83,8 +84,9 @@ export default function ARaging() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title} className="helm-page-title">A/R Aging</h1>
+      <h1 style={s.title} className="helm-page-title">Billing</h1>
       <hr style={s.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading aging data...</div>}
 

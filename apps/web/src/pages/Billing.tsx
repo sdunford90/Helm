@@ -13,6 +13,7 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 import { formatCents, formatDateOnly } from '../lib/format';
 import { useModules } from '../context/ModulesContext';
 
@@ -168,6 +169,7 @@ export default function Billing() {
     <div style={styles.page}>
       <h1 style={styles.title} className="helm-page-title">Billing</h1>
       <hr style={styles.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
       {/* Summary Cards */}

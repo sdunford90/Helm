@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Check, AlertTriangle, ChevronDown, ChevronRight,
   Plug, BookOpen, Tag, DollarSign, Percent, FileText,
@@ -6,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import { api } from '../lib/api';
+import SubNav, { ACCOUNTING_SUBNAV } from '../components/SubNav';
 
 import QBConnectionPanel from '../components/accounting/QBConnectionPanel';
 import StripeConnectionPanel from '../components/accounting/StripeConnectionPanel';
@@ -32,6 +34,17 @@ interface SetupStatus {
 }
 
 type TabId = 'setup' | 'periods' | 'sync-health' | 'reconciliation' | 'change-log';
+
+const TAB_IDS: TabId[] = ['setup', 'periods', 'sync-health', 'reconciliation', 'change-log'];
+
+function tabFromPath(pathname: string): TabId {
+  const match = pathname.match(/^\/accounting\/([^/]+)/);
+  if (match) {
+    const slug = match[1] as TabId;
+    if (TAB_IDS.includes(slug)) return slug;
+  }
+  return 'setup';
+}
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -177,21 +190,12 @@ const STEPS: StepDef[] = [
   },
 ];
 
-/* ── Tab definition ─────────────────────────────────── */
-
-const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: 'setup', label: 'Setup', icon: <BookOpen size={14} /> },
-  { id: 'periods', label: 'Periods', icon: <Calendar size={14} /> },
-  { id: 'sync-health', label: 'Sync Health', icon: <Activity size={14} /> },
-  { id: 'reconciliation', label: 'Reconciliation', icon: <BarChart2 size={14} /> },
-  { id: 'change-log', label: 'Change Log', icon: <FileText size={14} /> },
-];
-
 /* ── Main component ─────────────────────────────────── */
 
 export default function AccountingHub() {
   const { currentLocationId, locations, setCurrentLocationId } = useModules();
-  const [activeTab, setActiveTab] = useState<TabId>('setup');
+  const { pathname } = useLocation();
+  const activeTab = tabFromPath(pathname);
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
@@ -264,18 +268,8 @@ export default function AccountingHub() {
         </div>
       )}
 
-      {/* Tab navigation */}
-      <div style={stl.tabBar}>
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            style={stl.tab(activeTab === tab.id)}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.icon} {tab.label}
-          </button>
-        ))}
-      </div>
+      {/* Sub-nav (shared) — Overview lives at /accounting; this hub renders the rest */}
+      <SubNav items={ACCOUNTING_SUBNAV} />
 
       {/* Setup tab */}
       {activeTab === 'setup' && (

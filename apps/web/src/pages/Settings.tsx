@@ -11,9 +11,11 @@ import {
   Download, Globe, Webhook, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
   Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi, Package, Mail,
+  ScrollText,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
+import AuditLog from './AuditLog';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 
@@ -280,8 +282,8 @@ export default function Settings() {
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email'];
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email' | 'audit';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email', 'audit'];
   const tabFromUrl = searchParams.get('tab');
   // Integrations is now managed per-Location, and the Catalog editor lives at
   // /settings/products. Old deep-links are normalized by the effect below.
@@ -1320,6 +1322,7 @@ export default function Settings() {
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'email', label: 'Email', icon: Mail },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
+    { key: 'audit', label: 'Audit Log', icon: ScrollText },
   ];
 
   return (
@@ -2758,6 +2761,8 @@ export default function Settings() {
       )}
 
       {tab === 'categories' && <CategoriesSettings />}
+
+      {tab === 'audit' && <AuditLog />}
 
       {tab === 'terminal' && (
         <>

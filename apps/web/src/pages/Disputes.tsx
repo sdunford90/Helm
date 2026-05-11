@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, CheckCircle, Loader2, Send } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents, formatDate } from '../lib/format';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 
 interface Chargeback {
   id: string;
@@ -175,8 +176,9 @@ export default function Disputes() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>Disputes</h1>
+      <h1 style={styles.title} className="helm-page-title">Billing</h1>
       <hr style={styles.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       {loading && <div style={{ padding: 40, textAlign: 'center', color: '#64748B' }}><Loader2 /></div>}
       {error && <div style={{ ...styles.card, borderLeft: '4px solid #B71C1C', color: '#B71C1C' }}>{error}</div>}

@@ -5,6 +5,7 @@ import {
   Anchor, Users, ShieldCheck, Clock, ChevronDown,
   ChevronUp, AlertTriangle, RefreshCw,
 } from 'lucide-react';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -99,8 +100,9 @@ export default function RentRoll() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title} className="helm-page-title">Rent Roll</h1>
+      <h1 style={st.title} className="helm-page-title">Billing</h1>
       <hr style={st.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>
