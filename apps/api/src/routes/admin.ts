@@ -5850,4 +5850,90 @@ router.post("/bulk/tenants/announce", async (req, res, next) => {
 import { buildAdminAnnouncementsRouter } from "./announcements-platform.js";
 router.use("/announcements", buildAdminAnnouncementsRouter());
 
+// A6 — Tenant feature-flag editor.
+import {
+  FEATURE_FLAGS,
+  resolveTenantFlags,
+  setTenantFlag,
+  clearTenantFlag,
+} from "../services/feature-flags.js";
+
+// GET /api/admin/feature-flags/registry — the static flag catalog (no per-tenant data).
+router.get("/feature-flags/registry", (_req, res) => {
+  res.json({ flags: FEATURE_FLAGS });
+});
+
+// GET /api/admin/tenants/:id/feature-flags — resolved flags for one tenant.
+router.get("/tenants/:id/feature-flags", async (req, res, next) => {
+  try {
+    const exists = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!exists) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    const flags = await resolveTenantFlags(req.params.id);
+    res.json({ flags });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/admin/tenants/:id/feature-flags/:flag — upsert override.
+router.put("/tenants/:id/feature-flags/:flag", allowMutations, async (req, res, next) => {
+  try {
+    const { enabled, reason } = req.body as { enabled?: unknown; reason?: unknown };
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ error: "`enabled` must be a boolean" });
+      return;
+    }
+    const trimmedReason = typeof reason === "string" ? reason.trim().slice(0, 500) : null;
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, name: true },
+    });
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    let resolved;
+    try {
+      resolved = await setTenantFlag({
+        tenantId: req.params.id,
+        flag: req.params.flag,
+        enabled,
+        reason: trimmedReason,
+        updatedBy: req.userId ?? null,
+      });
+    } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : "Invalid flag" });
+      return;
+    }
+
+    await recordAdminEvent(req, "FEATURE_FLAG_SET", {
+      tenantId: tenant.id,
+      metadata: {
+        flag: req.params.flag,
+        enabled,
+        reason: trimmedReason,
+      },
+    });
+    res.json(resolved);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/admin/tenants/:id/feature-flags/:flag — remove override (revert to default).
+router.delete("/tenants/:id/feature-flags/:flag", allowMutations, async (req, res, next) => {
+  try {
+    await clearTenantFlag(req.params.id, req.params.flag);
+    await recordAdminEvent(req, "FEATURE_FLAG_CLEARED", {
+      tenantId: req.params.id,
+      metadata: { flag: req.params.flag },
+    });
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
 export default router;

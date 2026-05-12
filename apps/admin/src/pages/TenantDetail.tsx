@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApiFetch } from '../lib/api';
 import { useAdminMe, isSuperuser } from '../hooks/useAdminMe';
+import TenantFeatureFlags from '../components/TenantFeatureFlags';
 
 const API = '/api/admin';
 
@@ -135,7 +136,7 @@ const fmtCents = (c: number) =>
 const fmtDate = (d: string) =>
   d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
-type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'export' | 'danger' | 'notes';
+type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'flags' | 'export' | 'danger' | 'notes';
 
 interface TenantExportRow {
   id: string;
@@ -991,6 +992,7 @@ const TenantDetail: React.FC = () => {
     { key: 'usage', label: 'Usage' },
     { key: 'locations', label: `Locations${locations.length > 0 ? ` (${locations.length})` : ''}` },
     { key: 'users', label: `Users (${tenant.users.length})` },
+    { key: 'flags', label: 'Feature Flags' },
     { key: 'export', label: 'Export Data' },
     { key: 'danger', label: 'Danger Zone' },
     { key: 'notes', label: 'Notes & Activity' },
@@ -1425,6 +1427,11 @@ const TenantDetail: React.FC = () => {
             ))
           )}
         </div>
+      )}
+
+      {/* ── Feature Flags (A6) ── */}
+      {tab === 'flags' && id && (
+        <TenantFeatureFlags tenantId={id} />
       )}
 
       {/* ── Export Data ── */}
