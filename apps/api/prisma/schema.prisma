@@ -3230,3 +3230,23 @@ model FeatureFlagOverride {
   @@index([tenantId])
   @@map("feature_flag_overrides")
 }
+
+// A10 — Support ticket timeline. One row per state-changing action on a
+// ticket: status change, assignment, internal note, or customer reply.
+// Internal notes are visible only to platform admins; status changes
+// are visible in the customer-facing portal.
+model SupportTicketEvent {
+  id          String   @id @default(uuid())
+  ticketId    String
+  actorUserId String?
+  actorEmail  String?
+  kind        String   // NOTE | STATUS | ASSIGNMENT | REPLY
+  body        String?
+  status      String?  // populated when kind=STATUS
+  assignedTo  String?  // populated when kind=ASSIGNMENT
+  internal    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+  @@map("support_ticket_events")
+}

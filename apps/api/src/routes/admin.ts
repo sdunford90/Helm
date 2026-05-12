@@ -1794,6 +1794,36 @@ router.put("/support/tickets/:id", allowMutations, async (req, res, next) => {
       include: { tenant: { select: { name: true } } },
     });
 
+    // A10 — write a timeline event for each kind of change so the right-pane
+    // detail view has a chronological audit trail. We intentionally skip
+    // priority changes (low signal) but record status + assignment.
+    const actorEmail = req.userRecord?.email ?? null;
+    const events: Array<{ kind: string; status?: string; assignedTo?: string; body?: string }> = [];
+    if (status !== undefined && status !== existing.status) {
+      events.push({ kind: "STATUS", status, body: `Status changed: ${existing.status} → ${status}` });
+    }
+    if (assignedTo !== undefined && assignedTo !== existing.assignedTo) {
+      events.push({
+        kind: "ASSIGNMENT",
+        assignedTo: assignedTo ?? "",
+        body: assignedTo ? `Assigned to ${assignedTo}` : "Unassigned",
+      });
+    }
+    if (events.length > 0) {
+      await prisma.supportTicketEvent.createMany({
+        data: events.map((e) => ({
+          ticketId: updated.id,
+          actorUserId: req.userId ?? null,
+          actorEmail,
+          kind: e.kind,
+          body: e.body ?? null,
+          status: e.status ?? null,
+          assignedTo: e.assignedTo ?? null,
+          internal: false,
+        })),
+      });
+    }
+
     res.json({
       id: updated.id,
       tenantId: updated.tenantId,
@@ -1806,6 +1836,50 @@ router.put("/support/tickets/:id", allowMutations, async (req, res, next) => {
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// A10 — Support ticket timeline read + internal note write.
+
+router.get("/support/tickets/:id/events", async (req, res, next) => {
+  try {
+    const events = await prisma.supportTicketEvent.findMany({
+      where: { ticketId: req.params.id },
+      orderBy: { createdAt: "asc" },
+      take: 500,
+    });
+    res.json({ events });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/support/tickets/:id/notes", allowMutations, async (req, res, next) => {
+  try {
+    const body = (req.body && typeof req.body.body === "string") ? req.body.body.trim() : "";
+    if (!body) {
+      res.status(400).json({ error: "body is required" });
+      return;
+    }
+    const internal = req.body.internal !== false;
+    const ticket = await prisma.supportTicket.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!ticket) {
+      res.status(404).json({ error: "Ticket not found" });
+      return;
+    }
+    const event = await prisma.supportTicketEvent.create({
+      data: {
+        ticketId: ticket.id,
+        actorUserId: req.userId ?? null,
+        actorEmail: req.userRecord?.email ?? null,
+        kind: "NOTE",
+        body,
+        internal,
+      },
+    });
+    res.status(201).json(event);
   } catch (err) {
     next(err);
   }

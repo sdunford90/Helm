@@ -74,6 +74,127 @@ const formatDate = (iso: string) => {
   try { return new Date(iso).toLocaleDateString(); } catch { return iso; }
 };
 
+// A10 — Ticket timeline component. Renders the chronological event feed
+// for one ticket and lets a platform admin add an internal note inline.
+
+interface TicketEvent {
+  id: string;
+  ticketId: string;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  kind: 'NOTE' | 'STATUS' | 'ASSIGNMENT' | 'REPLY';
+  body: string | null;
+  status: string | null;
+  assignedTo: string | null;
+  internal: boolean;
+  createdAt: string;
+}
+
+const TicketTimeline: React.FC<{ ticketId: string; allowedToMutate: boolean; apiFetch: ReturnType<typeof useApiFetch> }> = ({ ticketId, allowedToMutate, apiFetch }) => {
+  const [events, setEvents] = useState<TicketEvent[]>([]);
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const body = await apiFetch<{ events: TicketEvent[] }>(`/api/admin/support/tickets/${ticketId}/events`);
+      setEvents(body.events ?? []);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [apiFetch, ticketId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addNote() {
+    if (!note.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/admin/support/tickets/${ticketId}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ body: note.trim(), internal: true }),
+      });
+      setNote('');
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 16 }}>
+      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 8 }}>
+        Timeline ({events.length})
+      </div>
+      {err && (
+        <div style={{ color: '#FCA5A5', fontSize: 12, marginBottom: 8 }}>{err}</div>
+      )}
+      {events.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>No activity yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 240, overflowY: 'auto' }}>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10, fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>
+              <div style={{ color: 'rgba(255,255,255,0.4)' }}>
+                {new Date(ev.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </div>
+              <div>
+                <span style={{
+                  display: 'inline-block', padding: '1px 6px', borderRadius: 4, marginRight: 6,
+                  fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase',
+                  background: ev.kind === 'NOTE' ? 'rgba(250,204,21,0.15)' : 'rgba(96,165,250,0.15)',
+                  color: ev.kind === 'NOTE' ? '#FDE68A' : '#BFDBFE',
+                }}>
+                  {ev.kind === 'NOTE' && ev.internal ? 'INTERNAL' : ev.kind}
+                </span>
+                <span>{ev.body ?? `Status set to ${ev.status ?? ev.assignedTo ?? '—'}`}</span>
+                {ev.actorEmail && (
+                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
+                    by {ev.actorEmail}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {allowedToMutate && (
+        <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Add an internal note…"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void addNote(); } }}
+            style={{
+              flex: 1, padding: '8px 12px', fontSize: 13, background: '#070E18',
+              border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, color: '#FFFFFF',
+              fontFamily: 'inherit',
+            }}
+          />
+          <button
+            onClick={addNote}
+            disabled={saving || !note.trim()}
+            style={{
+              padding: '8px 16px', fontSize: 12, fontWeight: 600,
+              background: 'rgba(250,204,21,0.18)', color: '#FDE68A',
+              border: '1px solid rgba(250,204,21,0.3)', borderRadius: 6,
+              cursor: saving || !note.trim() ? 'wait' : 'pointer',
+              opacity: saving || !note.trim() ? 0.5 : 1,
+              fontFamily: 'inherit',
+            }}
+          >
+            {saving ? 'Adding…' : 'Add note'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Support: React.FC = () => {
   const apiFetch = useApiFetch();
   const { me } = useAdminMe();
@@ -349,6 +470,7 @@ const Support: React.FC = () => {
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 8 }}>Description</div>
               <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{selectedTicket.description}</div>
             </div>
+            <TicketTimeline ticketId={selectedTicket.id} allowedToMutate={allowedToMutate} apiFetch={apiFetch} />
             <div style={{ display: 'flex', gap: 10, marginTop: 24, justifyContent: 'flex-end' }}>
               <button onClick={() => setSelectedTicket(null)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '8px 16px', color: 'rgba(255,255,255,0.6)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
               {allowedToMutate && selectedTicket.status !== 'resolved' && selectedTicket.status !== 'closed' && (
