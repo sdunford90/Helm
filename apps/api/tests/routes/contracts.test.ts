@@ -247,6 +247,16 @@ describe('POST /api/contracts', () => {
 });
 
 describe('POST /api/contracts/:id/terminate', () => {
+  // The terminate route does a pre-flight glAccount.findFirst per deposit
+  // location to check 2300 (Security Deposits Held) and 1200 (A/R) exist —
+  // and 400s with DEPOSIT_GL_UNCONFIGURED if either is missing. Tests
+  // here aren't exercising that error path (a separate file does), so
+  // default the lookup to a found-account stub. Individual tests that
+  // need the "unconfigured" behavior override with .mockResolvedValueOnce.
+  beforeEach(() => {
+    mockPrisma.glAccount.findFirst.mockResolvedValue({ id: 'gl-stub' } as any);
+  });
+
   it('terminates an active contract', async () => {
     const contract = buildContract({
       status: 'ACTIVE',
@@ -324,7 +334,9 @@ describe('POST /api/contracts/:id/terminate', () => {
 
     expect(res.status).toBe(200);
     expect(observedUpdate).not.toBeNull();
-    expect(observedUpdate.data.endDate.toISOString()).toBe(
+    // The route stamps `terminationDate` (not `endDate`) so the scheduled
+    // endDate stays intact for "ended-early vs ended-on-schedule" reporting.
+    expect(observedUpdate.data.terminationDate.toISOString()).toBe(
       '2026-04-15T00:00:00.000Z',
     );
     expect(res.body.terminationDate).toBe('2026-04-15');

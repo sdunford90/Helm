@@ -329,6 +329,45 @@ vi.mock('../src/middleware/auth.js', () => ({
   assertAuthConfigOrExit: () => {},
 }));
 
+// Mock location-context middleware (Task #339).
+//
+// In production this middleware reads the X-Helm-Location-Id header and
+// either narrows the request to that location, opens it up to "All
+// locations" (for bypass roles), or rejects with 400. Tests don't send
+// the header, so without this mock every POST route that calls
+// requireActiveLocation 400s.
+//
+// The mock pretends every test caller is operating against a single
+// fixed location 'test-location-id'. scopedWhere returns the matching
+// `{ locationId: 'test-location-id' }` filter so list endpoints behave
+// like a real single-location request. Bypass admins (PLATFORM_ADMIN
+// etc.) get the same default; tests that need a different behavior can
+// override the mock locally.
+vi.mock('../src/middleware/location-context.js', () => ({
+  locationContext: () => (_req: any, _res: any, next: any) => {
+    _req.locationId = 'test-location-id';
+    _req.isAllLocations = false;
+    next();
+  },
+  scopedWhere: (req: any, opts: { field?: string; includeNull?: boolean } = {}) => {
+    const field = opts.field ?? 'locationId';
+    if (req?.locationId) {
+      return opts.includeNull
+        ? { OR: [{ [field]: req.locationId }, { [field]: null }] }
+        : { [field]: req.locationId };
+    }
+    return {};
+  },
+  requireActiveLocation: (req: any, override?: string | null) => {
+    if (override) return override;
+    if (req?.locationId) return req.locationId;
+    return 'test-location-id';
+  },
+  ALL_LOCATIONS_SENTINEL: '__all__',
+  isLocationBypassRole: (role: string | undefined | null): boolean =>
+    !!role && ['PLATFORM_ADMIN', 'TENANT_ADMIN', 'MARINA_OWNER'].includes(role),
+}));
+
 // Mock tenant middleware
 vi.mock('../src/middleware/tenant.js', () => ({
   tenantMiddleware: (_req: any, _res: any, next: any) => {

@@ -3175,3 +3175,58 @@ model SavedReportView {
   @@index([tenantId, userId])
   @@map("saved_report_views")
 }
+
+// A12 — Platform announcements. Pushed by platform admins, banners
+// surface in web/portal/admin until the window expires or the user
+// dismisses (if dismissable). Audience targets a tenant tier, a user
+// role, or every tenant.
+model PlatformAnnouncement {
+  id            String   @id @default(uuid())
+  severity      String   @default("INFO")      // INFO / WARNING / MAINTENANCE
+  title         String
+  body          String
+  link          String?
+  audience      String   @default("ALL")       // ALL / TIER / ROLE
+  audienceValue String?                        // tier id when audience=TIER, role enum when audience=ROLE
+  startsAt      DateTime @default(now())
+  endsAt        DateTime?
+  dismissable   Boolean  @default(true)
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  dismissals    PlatformAnnouncementDismissal[]
+
+  @@index([startsAt, endsAt])
+  @@map("platform_announcements")
+}
+
+model PlatformAnnouncementDismissal {
+  id             String   @id @default(uuid())
+  announcementId String
+  userId         String
+  dismissedAt    DateTime @default(now())
+
+  announcement PlatformAnnouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, userId])
+  @@map("platform_announcement_dismissals")
+}
+
+// A6 — Tenant feature-flag overrides. Defaults live in code (FEATURE_FLAGS
+// registry); this table only stores explicit per-tenant on/off decisions
+// so the flag set is auditable + sparse.
+model FeatureFlagOverride {
+  id        String   @id @default(uuid())
+  tenantId  String
+  flag      String
+  enabled   Boolean
+  reason    String?
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, flag])
+  @@index([tenantId])
+  @@map("feature_flag_overrides")
+}

@@ -202,18 +202,30 @@ describe('POST /api/invoices — tax derivation', () => {
     // defaultTaxCategory ("food") for both lines.
     const FOOD_1 = '11111111-1111-4111-8111-111111111111';
     const FOOD_2 = '22222222-2222-4222-8222-222222222222';
-    mockPrisma.product.findMany.mockResolvedValue([
+    const products = [
       {
         id: FOOD_1,
         taxClass: null,
-        productCategory: { defaultTaxCategory: 'food', taxable: true },
+        productCategoryId: 'cat-food',
+        productCategory: { name: 'Food', defaultTaxCategory: 'food', taxable: true },
       },
       {
         id: FOOD_2,
         taxClass: null,
-        productCategory: { defaultTaxCategory: 'food', taxable: true },
+        productCategoryId: 'cat-food',
+        productCategory: { name: 'Food', defaultTaxCategory: 'food', taxable: true },
       },
-    ]);
+    ];
+    mockPrisma.product.findMany.mockResolvedValue(products);
+    // The per-line GL resolver calls product.findFirst() + the per-location
+    // productCategoryGlMapping.findFirst(); the legacy test only mocked
+    // findMany. Stub both so the resolver returns a real revenue GL.
+    mockPrisma.product.findFirst.mockImplementation((args: any) =>
+      Promise.resolve(products.find((p) => p.id === args?.where?.id) ?? null),
+    );
+    mockPrisma.productCategoryGlMapping.findFirst.mockResolvedValue({
+      revenueGlAccountId: 'gl-rev', cogsGlAccountId: null, inventoryAssetGlAccountId: null,
+    } as any);
     mockCalculateTax.mockResolvedValue({
       items: [
         { taxCents: 200, taxRate: 0.04 },
@@ -233,7 +245,6 @@ describe('POST /api/invoices — tax derivation', () => {
           { description: 'Snacks', quantity: 1, unitPriceCents: 2500, productId: FOOD_2 },
         ],
       });
-
     expect(res.status).toBe(201);
     expect(mockCalculateTax).toHaveBeenCalledTimes(1);
     const args = mockCalculateTax.mock.calls[0][0] as any;
@@ -250,13 +261,21 @@ describe('POST /api/invoices — tax derivation', () => {
     // pass amountCents=0 for that line so the engine returns zero tax
     // without us having to special-case the engine itself.
     const EXEMPT_ID = '33333333-3333-4333-8333-333333333333';
-    mockPrisma.product.findMany.mockResolvedValue([
+    const products = [
       {
         id: EXEMPT_ID,
         taxClass: 'Tax Exempt',
-        productCategory: { defaultTaxCategory: 'general', taxable: true },
+        productCategoryId: 'cat-svc',
+        productCategory: { name: 'Service', defaultTaxCategory: 'general', taxable: true },
       },
-    ]);
+    ];
+    mockPrisma.product.findMany.mockResolvedValue(products);
+    mockPrisma.product.findFirst.mockImplementation((args: any) =>
+      Promise.resolve(products.find((p) => p.id === args?.where?.id) ?? null),
+    );
+    mockPrisma.productCategoryGlMapping.findFirst.mockResolvedValue({
+      revenueGlAccountId: 'gl-rev', cogsGlAccountId: null, inventoryAssetGlAccountId: null,
+    } as any);
     mockCalculateTax.mockResolvedValue({
       items: [{ taxCents: 0, taxRate: 0 }],
       totalTaxCents: 0,

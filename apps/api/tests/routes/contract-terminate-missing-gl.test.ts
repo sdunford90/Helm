@@ -100,9 +100,13 @@ describe('POST /api/contracts/:id/terminate — missing system GL account', () =
     });
 
     // Pre-flight returns 2300 (so the first guard passes) but null for any
-    // other lookup (so 1200 is reported missing).
+    // other lookup (so 1200 is reported missing). The route's where-clause
+    // wraps the account-number filter in an `OR: [{ accountNumber: '…' }, …]`
+    // since the subType-fallback landed; match either shape.
     mockPrisma.glAccount.findFirst.mockImplementation(async ({ where }: any) => {
-      if (where?.accountNumber === '2300') return { id: 'acct-2300' };
+      const wantedNumber: string | undefined =
+        where?.accountNumber ?? where?.OR?.[0]?.accountNumber;
+      if (wantedNumber === '2300') return { id: 'acct-2300' };
       return null;
     });
 
