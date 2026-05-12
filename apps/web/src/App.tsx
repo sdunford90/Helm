@@ -41,7 +41,14 @@ import Concierge from './pages/Concierge';
 import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
-import Insights from './pages/Insights';
+import InsightsOverview from './pages/insights/InsightsOverview';
+import InsightsOperations from './pages/insights/InsightsOperations';
+import InsightsFinancial from './pages/insights/InsightsFinancial';
+import InsightsCustomers from './pages/insights/InsightsCustomers';
+import InsightsCommunications from './pages/insights/InsightsCommunications';
+import InsightsCompliance from './pages/insights/InsightsCompliance';
+import InsightsScheduled from './pages/insights/InsightsScheduled';
+import InsightsCustomBuilder from './pages/insights/InsightsCustomBuilder';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -93,14 +100,15 @@ function AppRoutes() {
         <Route path="/rent-roll" element={<Navigate to="/billing/rent-roll" replace />} />
         <Route path="/dock-walks" element={<DockWalks />} />
         <Route path="/reports" element={<Navigate to="/insights" replace />} />
-        <Route path="/insights" element={<Insights />} />
-        <Route path="/insights/operations" element={<Insights />} />
-        <Route path="/insights/financial" element={<Insights />} />
-        <Route path="/insights/customers" element={<Insights />} />
-        <Route path="/insights/communications" element={<Insights />} />
-        <Route path="/insights/compliance" element={<Insights />} />
-        <Route path="/insights/scheduled" element={<Insights />} />
-        <Route path="/insights/custom-builder" element={<Insights />} />
+        <Route path="/insights" element={<InsightsOverview />} />
+        <Route path="/insights/operations" element={<InsightsOperations />} />
+        <Route path="/insights/financial" element={<InsightsFinancial />} />
+        <Route path="/insights/financial/sales-tax" element={<ReportsSalesTax />} />
+        <Route path="/insights/customers" element={<InsightsCustomers />} />
+        <Route path="/insights/communications" element={<InsightsCommunications />} />
+        <Route path="/insights/compliance" element={<InsightsCompliance />} />
+        <Route path="/insights/scheduled" element={<InsightsScheduled />} />
+        <Route path="/insights/custom-builder" element={<InsightsCustomBuilder />} />
         <Route path="/announcements" element={<Announcements />} />
         <Route path="/transient" element={<Transient />} />
         <Route path="/ramp" element={<Ramp />} />
@@ -138,7 +146,7 @@ function AppRoutes() {
         <Route path="/accounting/sync-health" element={<AccountingHub />} />
         <Route path="/accounting/reconciliation" element={<AccountingHub />} />
         <Route path="/accounting/change-log" element={<AccountingHub />} />
-        <Route path="/reports/sales-tax" element={<ReportsSalesTax />} />
+        <Route path="/reports/sales-tax" element={<Navigate to="/insights/financial/sales-tax" replace />} />
       </Route>
     </Routes>
   );

@@ -1,0 +1,86 @@
+import {
+  TrendingUp, FileWarning, CreditCard, RotateCcw, Clock4, Receipt,
+  BarChart3, Scale, ArrowLeftRight, BookOpen, FileText,
+} from 'lucide-react';
+import InsightsShell from './InsightsShell';
+import { ReportCard, ReportGrid } from './ReportCard';
+
+export default function InsightsFinancial() {
+  return (
+    <InsightsShell
+      title="Financial Insights"
+      subtitle="Books-grade reporting — revenue, A/R, cash-rail mix, refunds, deferred revenue, tax, and the GL reports an accountant needs at close."
+    >
+      <ReportGrid>
+        <ReportCard
+          title="Revenue"
+          description="By location, product, and period. Recurring (MRR) vs. transient mix, with prior-period comparison."
+          status="phase-5a"
+          icon={TrendingUp}
+        />
+        <ReportCard
+          title="A/R Aging"
+          description="Current / 30 / 60 / 90+ buckets with customer drilldown. Already live as a billing tool — Insights view adds trend & cohort lenses."
+          status="phase-5a"
+          icon={FileWarning}
+        />
+        <ReportCard
+          title="Card Rail Mix"
+          description="Card vs. ACH vs. cash vs. check. Surcharge capture, average ticket per rail."
+          status="phase-5a"
+          icon={CreditCard}
+        />
+        <ReportCard
+          title="Refunds & Chargebacks"
+          description="Volume, reasons, dispute outcomes, and chargeback rate by location."
+          status="phase-5a"
+          icon={RotateCcw}
+        />
+        <ReportCard
+          title="Deferred Revenue"
+          description="Schedules, recognition by period, ASC 606 alignment."
+          status="phase-5a"
+          icon={Clock4}
+          to="/billing/deferred-revenue"
+        />
+        <ReportCard
+          title="Sales Tax"
+          description="Liability by jurisdiction, period filing detail, with audit-trail export."
+          status="live"
+          icon={Receipt}
+          to="/insights/financial/sales-tax"
+        />
+        <ReportCard
+          title="P&L / Income Statement"
+          description="Per-period, per-location income statement straight from the GL."
+          status="phase-5b"
+          icon={BarChart3}
+        />
+        <ReportCard
+          title="Balance Sheet"
+          description="As-of-date balance sheet from the GL."
+          status="phase-5b"
+          icon={Scale}
+        />
+        <ReportCard
+          title="Cash Flow"
+          description="Direct-method cash flow built from payments and transfers."
+          status="phase-5b"
+          icon={ArrowLeftRight}
+        />
+        <ReportCard
+          title="Reconciliation"
+          description="Three-way state: Stripe ⇄ Helm ⇄ QBO. Surfaces variance and breaks."
+          status="phase-5b"
+          icon={BookOpen}
+        />
+        <ReportCard
+          title="Trial Balance"
+          description="GL trial balance for close, drillable to journal-entry detail."
+          status="phase-5b"
+          icon={FileText}
+        />
+      </ReportGrid>
+    </InsightsShell>
+  );
+}
