@@ -1,6 +1,7 @@
-import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { reportApiError } from '../lib/apiError';
+import { setActiveLocationGetter } from '../lib/api';
 
 export interface ApiLocation {
   id: string;
@@ -95,6 +96,23 @@ export function ModulesProvider({ children }: { children: ReactNode }) {
     return stored;
   });
   const [modules, setModules] = useState<ModulesConfig>(FALLBACK);
+
+  // Task #339: register a global getter so the api client can stamp the
+  // active location on every request without us threading it through every
+  // call site. Use a ref so the getter is stable across re-renders but
+  // always reads the latest currentLocationId.
+  const currentLocationIdRef = useRef<string | null>(currentLocationId);
+  useEffect(() => {
+    currentLocationIdRef.current = currentLocationId;
+  }, [currentLocationId]);
+  useEffect(() => {
+    setActiveLocationGetter(() =>
+      currentLocationIdRef.current === null
+        ? ALL_LOCATIONS_SENTINEL
+        : currentLocationIdRef.current,
+    );
+    return () => setActiveLocationGetter(null);
+  }, []);
 
   useEffect(() => {
     // Wait until Clerk has hydrated and the user is signed in. Otherwise

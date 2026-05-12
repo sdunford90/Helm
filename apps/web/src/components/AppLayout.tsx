@@ -567,29 +567,35 @@ export default function AppLayout() {
                   <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
                     Switch Location
                   </div>
-                  <button
-                    key="__all__"
-                    onClick={() => { setCurrentLocationId(null); setLocationDropdownOpen(false); }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      width: '100%',
-                      padding: '10px 12px',
-                      fontSize: '14px',
-                      color: '#0A2342',
-                      background: currentLocationId === null ? '#F0FAFF' : '#FFFFFF',
-                      border: 'none',
-                      borderBottom: '1px solid #F2F4F6',
-                      cursor: 'pointer',
-                      textAlign: 'left' as const,
-                      fontWeight: currentLocationId === null ? 600 : 400,
-                    }}
-                  >
-                    <MapPin size={14} style={{ color: currentLocationId === null ? 'var(--brand-secondary)' : '#94A3B8' }} />
-                    All locations
-                    {currentLocationId === null && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
-                  </button>
+                  {/* Task #339: only show "All locations" when the user has
+                      more than one location to switch between. Single-location
+                      users (or single-location tenants) get a normal picker
+                      with one entry — no all-locations cross-marina view. */}
+                  {locations.length > 1 && (
+                    <button
+                      key="__all__"
+                      onClick={() => { setCurrentLocationId(null); setLocationDropdownOpen(false); }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '10px 12px',
+                        fontSize: '14px',
+                        color: '#0A2342',
+                        background: currentLocationId === null ? '#F0FAFF' : '#FFFFFF',
+                        border: 'none',
+                        borderBottom: '1px solid #F2F4F6',
+                        cursor: 'pointer',
+                        textAlign: 'left' as const,
+                        fontWeight: currentLocationId === null ? 600 : 400,
+                      }}
+                    >
+                      <MapPin size={14} style={{ color: currentLocationId === null ? 'var(--brand-secondary)' : '#94A3B8' }} />
+                      All locations
+                      {currentLocationId === null && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
+                    </button>
+                  )}
                   {locations.map((loc) => (
                     <button
                       key={loc.id}

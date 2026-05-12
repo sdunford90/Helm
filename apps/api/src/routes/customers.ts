@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
@@ -61,6 +66,8 @@ const CustomerEmergencyContactSchema = z
   .nullable();
 
 const CreateCustomerSchema = z.object({
+  // Optional: server stamps from req.locationId when omitted (Task #339).
+  locationId: z.string().uuid().optional().nullable(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email().optional().nullable(),
@@ -198,6 +205,7 @@ async function ensureStripeCustomer(
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET / — List customers ─────────────────────────────────────────────────
 
@@ -208,7 +216,13 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListCustomersQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope to the active location. includeNull keeps any
+        // legacy customer rows visible (the migration backfills most, but
+        // the column stays nullable for now).
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.taxExempt !== undefined) where.taxExempt = query.taxExempt;
@@ -290,7 +304,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           boats: {
             include: {
@@ -400,11 +418,16 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = CreateCustomerSchema.parse(req.body);
+      const locationId = requireActiveLocation(req, data.locationId ?? null);
 
       const customer = await prisma.customer.create({
+        // Pre-existing `as any`: zod's `.nullable()` on addressJson doesn't
+        // line up with Prisma's `InputJsonValue | NullableJsonNullValueInput`.
+        // Not introduced by Task #339 — preserved here unchanged.
         data: {
           tenantId,
           ...data,
+          locationId,
         } as any,
       });
 
@@ -436,7 +459,11 @@ router.put(
       const data = UpdateCustomerSchema.parse(req.body);
 
       const existing = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
       });
       if (!existing) {
         throw appError("Customer not found", 404, "NOT_FOUND");
@@ -444,6 +471,7 @@ router.put(
 
       const updated = await prisma.customer.update({
         where: { id: req.params.id },
+        // Pre-existing addressJson nullable mismatch — see create handler.
         data: data as any,
       });
 
@@ -485,7 +513,11 @@ router.delete(
       const tenantId = req.tenantId!;
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
       });
       if (!customer) {
         throw appError("Customer not found", 404, "NOT_FOUND");
@@ -524,7 +556,7 @@ router.get(
       const { skip, take } = TimelineQuerySchema.parse(req.query);
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!customer) {

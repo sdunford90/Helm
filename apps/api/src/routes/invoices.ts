@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
@@ -239,6 +244,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET / — List invoices ──────────────────────────────────────────────────
 
@@ -249,7 +255,11 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListInvoicesQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope invoices to active location.
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.customerId) where.customerId = query.customerId;
@@ -309,7 +319,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           customer: { select: { firstName: true, lastName: true, email: true, addressJson: true } },
           lineItems: true,
@@ -420,7 +434,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           customer: {
             select: {
@@ -499,9 +517,22 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateInvoiceSchema.parse(req.body);
 
-      // Verify customer exists
+      // Task #339: invoices belong to the marina the picker is on. Require
+      // an active location so we never silently create a tenant-wide row.
+      // CreateInvoiceSchema already accepts an explicit locationId override
+      // for the contract-billing job which knows the slip's marina.
+      const invoiceLocationId = requireActiveLocation(
+        req,
+        (data as { locationId?: string | null }).locationId ?? null,
+      );
+
+      // Verify customer exists AND is reachable from the active location.
       const customer = await prisma.customer.findFirst({
-        where: { id: data.customerId, tenantId },
+        where: {
+          id: data.customerId,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         select: { id: true },
       });
       if (!customer) {
@@ -516,7 +547,10 @@ router.post(
       const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
 
       // Resolve location for tax: caller-supplied → first CONTRACT line's
-      // slip location → null (engine returns zero tax).
+      // slip location → the active picker location (Task #339). With the
+      // picker enforcement, this should now always resolve to a real id;
+      // the contract-derived branch still wins because it's the more
+      // specific source for slip-bound billing.
       let locationId: string | null = data.locationId ?? null;
       if (!locationId) {
         const contractLineItem = data.lineItems.find(
@@ -530,6 +564,10 @@ router.post(
           locationId = contract?.slip?.locationId ?? null;
         }
       }
+      // Final fallback: the active picker location. Guarantees the
+      // persisted invoice carries a non-null scope so it shows up in
+      // the right marina's lists/reports.
+      if (!locationId) locationId = invoiceLocationId;
 
       const taxResult = await calculateTax({
         tenantId,
@@ -648,7 +686,7 @@ router.put(
       const data = UpdateInvoiceSchema.parse(req.body);
 
       const existing = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: { lineItems: true },
       });
 
@@ -778,7 +816,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: { lineItems: true },
       });
 
@@ -885,7 +923,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           payments: { where: { status: "COMPLETED" } },
         },
@@ -961,7 +999,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           customer: {
             select: {

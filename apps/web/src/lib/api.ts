@@ -33,6 +33,29 @@ async function resolveToken(explicit?: string | null): Promise<string | null> {
   }
 }
 
+// Task #339: every authenticated request carries the active location chosen
+// in the top-right picker via the X-Helm-Location-Id header. Registered
+// once from ModulesContext at app bootstrap so call sites don't have to
+// thread the location through every component. Returns the sentinel string
+// "__ALL__" when the user is in All-locations mode, a UUID otherwise, or
+// null before the picker has hydrated (in which case no header is sent and
+// the API falls back to the user's allowed-locations default).
+type LocationGetter = () => string | null;
+let globalLocationGetter: LocationGetter | null = null;
+
+export function setActiveLocationGetter(getter: LocationGetter | null) {
+  globalLocationGetter = getter;
+}
+
+function resolveLocation(): string | null {
+  if (!globalLocationGetter) return null;
+  try {
+    return globalLocationGetter();
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -46,6 +69,14 @@ async function request<T>(
   const resolved = await resolveToken(token);
   if (resolved) {
     headers['Authorization'] = `Bearer ${resolved}`;
+  }
+
+  // Task #339: stamp the active location on every request unless the
+  // caller already supplied one (e.g. the platform-admin overview pages
+  // that legitimately need to bypass the picker for one specific call).
+  if (!('X-Helm-Location-Id' in headers) && !('x-helm-location-id' in headers)) {
+    const loc = resolveLocation();
+    if (loc) headers['X-Helm-Location-Id'] = loc;
   }
 
   const res = await fetch(`${API_BASE}${path}`, {

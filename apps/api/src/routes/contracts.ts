@@ -2,6 +2,10 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import crypto from "node:crypto";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "../lib/email.js";
 import {
@@ -415,6 +419,7 @@ router.post(
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET /expiring — Contracts expiring within N days ───────────────────────
 // Registered before /:id so Express doesn't treat "expiring" as a UUID param.
@@ -437,6 +442,7 @@ router.get(
 
       const where = {
         tenantId,
+        ...scopedWhere(req, { includeNull: true }),
         status: { in: ["ACTIVE", "EXPIRING"] as ("ACTIVE" | "EXPIRING")[] },
         endDate: { gte: now, lte: cutoff },
       };
@@ -490,7 +496,11 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListContractsQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope to active location.
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.customerId) where.customerId = query.customerId;
@@ -549,7 +559,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           slip: true,
           customer: {
@@ -625,9 +639,12 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateContractSchema.parse(req.body);
 
-      // Verify slip exists and is available
+      // Verify slip exists, is available, and belongs to a location the
+      // caller can see (Task #339). Scope on the slip's locationId so a
+      // user with picker on Marina A can't create a contract against a
+      // slip in Marina B by guessing the slip id.
       const slip = await prisma.slip.findFirst({
-        where: { id: data.slipId, tenantId },
+        where: { id: data.slipId, tenantId, ...scopedWhere(req) },
       });
       if (!slip) {
         throw appError("Slip not found", 404, "SLIP_NOT_FOUND");
@@ -716,19 +733,28 @@ router.post(
         }
       }
 
-      // Verify customer exists
+      // Verify customer exists and is visible from the active location.
       const customer = await prisma.customer.findFirst({
-        where: { id: data.customerId, tenantId },
+        where: {
+          id: data.customerId,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         select: { id: true },
       });
       if (!customer) {
         throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
       }
 
-      // Verify boat exists and belongs to customer (if provided)
+      // Verify boat exists and belongs to customer (if provided).
       if (data.boatId) {
         const boat = await prisma.boat.findFirst({
-          where: { id: data.boatId, tenantId, customerId: data.customerId },
+          where: {
+            id: data.boatId,
+            tenantId,
+            customerId: data.customerId,
+            ...scopedWhere(req, { includeNull: true }),
+          },
           select: { id: true },
         });
         if (!boat) {
@@ -759,6 +785,9 @@ router.post(
           data: {
             tenantId,
             ...data,
+            // Task #339: a contract always lives at the slip's marina,
+            // so derive locationId from the slip rather than the picker.
+            locationId: slip.locationId,
             // Plan-defaulted overrides (post-spread so they replace
             // undefined from input; explicit caller values won earlier).
             rateCents: resolvedRateCents,
@@ -867,7 +896,7 @@ router.put(
       const data = UpdateContractSchema.parse(req.body);
 
       const existing = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: { slip: { select: { locationId: true, slipType: true } } },
       });
       if (!existing) {
@@ -997,7 +1026,7 @@ router.post(
       } = TerminateContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           slip: { select: { id: true } },
           securityDeposits: { where: { status: "HELD" } },
@@ -1452,7 +1481,7 @@ router.post(
         RenewContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
       });
 
       if (!contract) {
@@ -1547,7 +1576,7 @@ router.post(
         SendForSignatureSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           customer: {
             select: { id: true, firstName: true, lastName: true, email: true },
@@ -1895,7 +1924,7 @@ router.get(
       const tenantId = req.tenantId!;
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: {
           id: true,
           esignEnvelopeId: true,

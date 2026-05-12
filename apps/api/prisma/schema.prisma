@@ -562,6 +562,11 @@ model Location {
   reconciliationAlerts      ReconciliationAlert[]
   posDiscounts              PosDiscount[]
 
+  // Task #339 inverse relations for the location-scoped operational tables.
+  customers     Customer[]     @relation(name: "LocationCustomers")
+  boats         Boat[]         @relation(name: "LocationBoats")
+  slipContracts SlipContract[] @relation(name: "LocationSlipContracts")
+
   @@index([tenantId])
   @@index([stripeCustomerId])
   @@index([stripeSubscriptionId])
@@ -798,7 +803,15 @@ model Customer {
   posTransactions          PosTransaction[]
   posDiscountCustomers     PosDiscountCustomer[]
 
+  // Task #339: location stamp the customer "belongs to". Backfilled from
+  // the most recent contract→slip, then most recent invoice, then tenant's
+  // first active location. Nullable because legacy rows that fall through
+  // every backfill rule still need to be visible to operators.
+  locationId String?
+  location   Location? @relation(name: "LocationCustomers", fields: [locationId], references: [id])
+
   @@index([tenantId])
+  @@index([tenantId, locationId])
   @@map("customers")
 }
 
@@ -885,7 +898,14 @@ model Boat {
   slipContracts    SlipContract[]
   photos           BoatPhoto[]
 
+  // Task #339: location the boat is currently associated with (current
+  // contract's slip → customer's location). Nullable for the same legacy
+  // reasons as Customer.locationId.
+  locationId String?
+  location   Location? @relation(name: "LocationBoats", fields: [locationId], references: [id])
+
   @@index([tenantId])
+  @@index([tenantId, locationId])
   @@map("boats")
 }
 
@@ -1001,7 +1021,13 @@ model SlipContract {
   dockageRate      DockageRate?      @relation(fields: [dockageRateId], references: [id], onDelete: SetNull)
   securityDeposits SecurityDeposit[]
 
+  // Task #339: contract location (denormalized from slip.locationId at
+  // create/renewal time). Lets list endpoints filter without joining slips.
+  locationId String?
+  location   Location? @relation(name: "LocationSlipContracts", fields: [locationId], references: [id])
+
   @@index([tenantId])
+  @@index([tenantId, locationId])
   @@index([dockageRateId])
   @@map("slip_contracts")
 }

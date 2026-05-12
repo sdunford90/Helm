@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { deleteFile as deleteFileFromStorage } from "../lib/storage.js";
 import {
@@ -103,6 +108,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET / — List boats ─────────────────────────────────────────────────────
 
@@ -113,7 +119,12 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListBoatsQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope to active location (boats inherit from customer
+        // at create-time; includeNull keeps legacy unscoped boats visible).
+        ...scopedWhere(req, { includeNull: true }),
+      };
       if (query.customerId) where.customerId = query.customerId;
 
       // `insuranceExpiry` is not a column on `boats`, so defer ordering to
@@ -227,7 +238,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           customer: {
             select: { id: true, firstName: true, lastName: true, email: true },
@@ -270,19 +285,32 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateBoatSchema.parse(req.body);
 
-      // Verify customer exists in this tenant
+      // Verify customer exists in this tenant AND is visible in the active
+      // location (Task #339). The customer's locationId is the source of
+      // truth for the boat's locationId — boats always live with their
+      // owner's marina.
       const customer = await prisma.customer.findFirst({
-        where: { id: data.customerId, tenantId },
-        select: { id: true },
+        where: {
+          id: data.customerId,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
+        select: { id: true, locationId: true },
       });
       if (!customer) {
         throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
       }
 
+      // Prefer the customer's location; fall back to the active picker
+      // location if the customer is a legacy unscoped row. requireActive
+      // guards against creating in All-locations mode with no source.
+      const locationId = requireActiveLocation(req, customer.locationId ?? null);
+
       const boat = await prisma.boat.create({
         data: {
           tenantId,
           ...data,
+          locationId,
         },
       });
 
@@ -313,7 +341,11 @@ router.put(
       const data = UpdateBoatSchema.parse(req.body);
 
       const existing = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
       });
       if (!existing) {
         throw appError("Boat not found", 404, "NOT_FOUND");
@@ -372,7 +404,11 @@ router.delete(
       const tenantId = req.tenantId!;
 
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           slipContracts: {
             where: { status: { in: ["ACTIVE", "DRAFT"] } },
@@ -422,7 +458,7 @@ router.get(
       const tenantId = req.tenantId!;
 
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!boat) {
@@ -460,7 +496,7 @@ router.get(
     try {
       const tenantId = req.tenantId!;
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!boat) throw appError("Boat not found", 404, "NOT_FOUND");
@@ -492,7 +528,7 @@ router.post(
       }
 
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!boat) throw appError("Boat not found", 404, "NOT_FOUND");
@@ -554,7 +590,7 @@ router.post(
       const data = SafetyInspectionSchema.parse(req.body);
 
       const boat = await prisma.boat.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!boat) {
