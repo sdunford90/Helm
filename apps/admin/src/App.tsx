@@ -17,6 +17,7 @@ import Webhooks from './pages/Webhooks';
 import Queues from './pages/Queues';
 import Announcements from './pages/Announcements';
 import ImpersonationLog from './pages/ImpersonationLog';
+import TenantOnboard from './pages/TenantOnboard';
 
 const App: React.FC = () => {
   return (
@@ -24,6 +25,7 @@ const App: React.FC = () => {
       <Route element={<AdminLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/tenants" element={<Tenants />} />
+        <Route path="/tenants/new" element={<TenantOnboard />} />
         <Route path="/tenants/:id/deep-dive" element={<TenantDeepDive />} />
         <Route path="/tenants/:id" element={<TenantDetail />} />
         <Route path="/trials" element={<Trials />} />

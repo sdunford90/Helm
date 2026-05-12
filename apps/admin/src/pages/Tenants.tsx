@@ -332,12 +332,20 @@ const Tenants: React.FC = () => {
             <option value="locked">Locked</option>
           </select>
         </div>
-        <button
-          onClick={openModal}
-          style={{ background: '#0A2342', color: '#00D4FF', border: '1px solid #00D4FF', borderRadius: 6, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >
-          + Create Tenant
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => navigate('/tenants/new')}
+            style={{ background: '#00D4FF', color: '#070E18', border: 'none', borderRadius: 6, padding: '9px 20px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+          >
+            + Onboard Tenant
+          </button>
+          <button
+            onClick={openModal}
+            style={{ background: 'transparent', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '9px 14px', fontSize: 12, fontWeight: 500, cursor: 'pointer' }}
+          >
+            Quick create
+          </button>
+        </div>
       </div>
 
       {loading && (
