@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Ship, CheckCircle, AlertTriangle, Edit, Anchor, Camera, Plus, Trash2, Loader } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import type { CSSProperties } from 'react';
@@ -467,7 +468,9 @@ export default function MyBoats() {
                   </div>
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-                      <h2 style={{ fontSize: 20, fontWeight: 700, color: NAVY, margin: 0 }}>{boat.name || 'Unnamed Vessel'}</h2>
+                      <Link to={`/boats/${boat.id}`} style={{ fontSize: 20, fontWeight: 700, color: NAVY, margin: 0, textDecoration: 'none' }}>
+                        {boat.name || 'Unnamed Vessel'}
+                      </Link>
                       <span style={complianceBadge(expiresAt)}>
                         {isGood ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
                         {isGood ? 'Registration Current' : 'Reg. Expiring Soon'}

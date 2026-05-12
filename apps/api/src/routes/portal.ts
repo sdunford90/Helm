@@ -366,6 +366,92 @@ router.get("/boats", async (req: Request, res: Response, next: NextFunction) => 
   }
 });
 
+// GET /api/portal/boats/:id (P8) — single-boat detail hub. Returns the boat
+// plus its currently-active slip contract (if any), insurance records,
+// photos, and recent dock-walk findings — everything a slip-holder might
+// want for one boat in one round-trip.
+router.get("/boats/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const boat = await prisma.boat.findFirst({
+      where: {
+        id: req.params.id,
+        tenantId: req.tenantId,
+        customerId: req.portalCustomerId!,
+      },
+    });
+    if (!boat) {
+      res.status(404).json({ error: "Boat not found" });
+      return;
+    }
+
+    const now = new Date();
+    const [contracts, insurance, photos] = await Promise.all([
+      prisma.slipContract.findMany({
+        where: {
+          boatId: boat.id,
+          status: { in: ["ACTIVE", "EXPIRING"] },
+          startDate: { lte: now },
+          OR: [{ endDate: null }, { endDate: { gte: now } }],
+        },
+        include: { slip: true },
+        orderBy: { startDate: "desc" },
+      }),
+      prisma.insuranceRecord.findMany({
+        where: { boatId: boat.id, customerId: req.portalCustomerId! },
+        orderBy: { startDate: "desc" },
+        take: 6,
+      }),
+      prisma.boatPhoto.findMany({
+        where: { boatId: boat.id },
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      }),
+    ]);
+
+    // Batch-fetch the slip locations (Slip has locationId as a scalar FK,
+    // no Prisma-level relation; mirror the my-slip endpoint's pattern).
+    const locationIds = Array.from(
+      new Set(contracts.map((c) => c.slip?.locationId).filter((v): v is string => !!v)),
+    );
+    const locations = locationIds.length > 0
+      ? await prisma.location.findMany({
+          where: { id: { in: locationIds } },
+          select: { id: true, name: true, address: true, phone: true },
+        })
+      : [];
+    const locById = new Map(locations.map((l) => [l.id, l]));
+
+    res.json({
+      boat,
+      activeContracts: contracts.map((c) => {
+        const loc = c.slip?.locationId ? locById.get(c.slip.locationId) ?? null : null;
+        return {
+          contractId: c.id,
+          startDate: c.startDate,
+          endDate: c.endDate,
+          slip: c.slip ? {
+            id: c.slip.id,
+            number: c.slip.slipNumber,
+            lengthFt: c.slip.lengthFt,
+            beamFt: c.slip.beamFt,
+            shorePower: c.slip.shorePower,
+            location: loc ? { name: loc.name, address: loc.address, phone: loc.phone } : null,
+          } : null,
+        };
+      }),
+      insurance,
+      photos: photos.map((p) => ({
+        id: p.id,
+        storageKey: p.storageKey,
+        caption: (p as { caption?: string | null }).caption ?? null,
+        createdAt: p.createdAt,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Boat photos (portal-side) — customers can attach pictures to their own
 // boats. The R2 object is uploaded directly from the browser via the existing

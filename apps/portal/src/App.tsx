@@ -16,6 +16,7 @@ import AccountSecurity from './pages/AccountSecurity';
 import AccountHelp from './pages/AccountHelp';
 import Documents from './pages/Documents';
 import MySlip from './pages/MySlip';
+import BoatDetail from './pages/BoatDetail';
 import AutopayManager from './pages/AutopayManager';
 import ThankYou from './pages/ThankYou';
 
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/autopay" element={<AutopayManager />} />
         <Route path="/slip" element={<MySlip />} />
         <Route path="/boats" element={<MyBoats />} />
+        <Route path="/boats/:id" element={<BoatDetail />} />
         <Route path="/insurance" element={<Insurance />} />
         <Route path="/documents" element={<Documents />} />
         <Route path="/concierge" element={<ConciergeRequests />} />
