@@ -13,6 +13,51 @@ interface AgingRow {
   days90plus: number;
 }
 
+interface ApiAgingDetail {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  customer: { id: string; firstName: string | null; lastName: string | null; email: string | null } | null;
+  dueDate: string;
+  balanceCents: number;
+  daysOverdue: number;
+  bucket: 'current' | 'days30' | 'days60' | 'days90' | 'days120plus';
+}
+
+interface ApiAgingResponse {
+  buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number };
+  totalOutstanding: number;
+  invoiceCount: number;
+  details: ApiAgingDetail[];
+}
+
+const BUCKET_TO_FIELD: Record<ApiAgingDetail['bucket'], keyof Omit<AgingRow, 'customer'>> = {
+  current: 'current',
+  days30: 'days1to30',
+  days60: 'days31to60',
+  days90: 'days61to90',
+  days120plus: 'days90plus',
+};
+
+function customerLabel(c: ApiAgingDetail['customer']): string {
+  if (!c) return 'Unknown customer';
+  const name = `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim();
+  return name || c.email || 'Unknown customer';
+}
+
+function aggregateRows(details: ApiAgingDetail[]): AgingRow[] {
+  const byCustomer = new Map<string, AgingRow>();
+  for (const d of details) {
+    const key = d.customer?.id ?? `noid:${customerLabel(d.customer)}`;
+    let row = byCustomer.get(key);
+    if (!row) {
+      row = { customer: customerLabel(d.customer), current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 };
+      byCustomer.set(key, row);
+    }
+    row[BUCKET_TO_FIELD[d.bucket]] += d.balanceCents;
+  }
+  return Array.from(byCustomer.values()).sort((a, b) => rowTotal(b) - rowTotal(a));
+}
+
 /* ─── Helpers ─── */
 const rowTotal = (r: AgingRow) => r.current + r.days1to30 + r.days31to60 + r.days61to90 + r.days90plus;
 const colSum = (data: AgingRow[], field: keyof Omit<AgingRow, 'customer'>) =>
@@ -77,8 +122,8 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 ];
 
 export default function ARaging() {
-  const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/api/reports/ar-aging', { immediate: true });
-  const agingData = apiAgingData ?? [];
+  const { data: apiAgingData, loading } = useApi<ApiAgingResponse>('get', '/api/reports/ar-aging', { immediate: true });
+  const agingData = apiAgingData ? aggregateRows(apiAgingData.details ?? []) : [];
 
   const grandTotal = agingData.reduce((s, r) => s + rowTotal(r), 0);
 
