@@ -1,8 +1,9 @@
 import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { useUser, useClerk } from '@clerk/clerk-react';
+import { useUser, useClerk, useAuth } from '@clerk/clerk-react';
 import { useAdminMe, adminRoleLabel } from '../hooks/useAdminMe';
 import GlobalSearch from './GlobalSearch';
+import { AnnouncementBanner } from '@helm/ui-kit';
 
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 
@@ -36,6 +37,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: '/health', label: 'Health', icon: '♥' },
       { path: '/webhooks', label: 'Webhooks', icon: '⚡' },
       { path: '/queues', label: 'Queues', icon: '↻' },
+      { path: '/announcements', label: 'Announcements', icon: '📣' },
       { path: '/support', label: 'Support', icon: '✉' },
       { path: '/activity', label: 'Admin Activity', icon: '◷' },
     ],
@@ -213,6 +215,7 @@ const DevBypassUserControls: React.FC = () => {
 
 const AdminLayout: React.FC = () => {
   const location = useLocation();
+  const { getToken } = useAuth();
 
   const getNavStyle = (path: string): React.CSSProperties => {
     const isActive = path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
@@ -238,6 +241,9 @@ const AdminLayout: React.FC = () => {
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', background: '#070E18', minHeight: '100vh', color: '#E0E0E0' }}>
+      <div style={{ marginLeft: 240 }}>
+        <AnnouncementBanner getToken={getToken} />
+      </div>
       <aside style={sidebar}>
         <div style={logoArea}>
           <div style={logoText}>HELM</div>

@@ -41,6 +41,9 @@ import posDiscountsRouter from "./routes/pos-discounts.js";
 import rentalsRouter from "./routes/rentals.js";
 import reportsRouter from "./routes/reports.js";
 import insightsRouter from "./routes/insights.js";
+import platformAnnouncementsRouter, {
+  buildAdminAnnouncementsRouter,
+} from "./routes/announcements-platform.js";
 import announcementsRouter from "./routes/announcements.js";
 import adminRouter from "./routes/admin.js";
 import onboardingRouter from "./routes/onboarding.js";
@@ -282,6 +285,8 @@ app.use("/api/pos", posRouter);
 app.use("/api/rentals", rentalsRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/insights", insightsRouter);
+// A12 — Platform announcements: tenant feed + admin CRUD.
+app.use("/api/platform-announcements", platformAnnouncementsRouter);
 app.use("/api/announcements", announcementsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/onboarding", onboardingRouter);

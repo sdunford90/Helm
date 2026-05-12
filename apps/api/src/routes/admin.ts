@@ -5828,4 +5828,8 @@ router.post("/bulk/tenants/announce", async (req, res, next) => {
   }
 });
 
+// A12 — Platform announcements admin CRUD sub-router.
+import { buildAdminAnnouncementsRouter } from "./announcements-platform.js";
+router.use("/announcements", buildAdminAnnouncementsRouter());
+
 export default router;

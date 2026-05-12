@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import ImpersonationBanner from './ImpersonationBanner';
+import { useAuth } from '@clerk/clerk-react';
+import { AnnouncementBanner } from '@helm/ui-kit';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
@@ -85,6 +87,7 @@ const FOOTER_SECTION: NavSection = {
 
 export default function PortalLayout() {
   const navigate = useNavigate();
+  const { getToken } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const headerStyle: CSSProperties = {
@@ -186,6 +189,7 @@ export default function PortalLayout() {
   return (
     <div style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
       <ImpersonationBanner />
+      <AnnouncementBanner getToken={getToken} />
       {/* Header */}
       <header style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>

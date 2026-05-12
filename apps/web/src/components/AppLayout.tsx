@@ -3,6 +3,7 @@ import { Outlet, useLocation, Link, useNavigate } from 'react-router-dom';
 import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import ImpersonationBanner from './ImpersonationBanner';
+import { AnnouncementBanner } from '@helm/ui-kit';
 import { useModules } from '../context/ModulesContext';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import {
@@ -382,7 +383,7 @@ function getPageTitle(pathname: string): string {
 export default function AppLayout() {
   const location = useLocation();
   const { user, isLoaded } = useUser();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { modules, locations, currentLocationId, setCurrentLocationId } = useModules();
   const { user: currentUser } = useCurrentUser();
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
@@ -418,6 +419,7 @@ export default function AppLayout() {
   return (
     <>
       <ImpersonationBanner />
+      <AnnouncementBanner getToken={getToken} />
     <div style={styles.container}>
       {/* Mobile overlay */}
       {sidebarOpen && (

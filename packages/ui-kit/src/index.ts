@@ -31,3 +31,6 @@ export {
   SETTINGS_SECTIONS,
 } from './components/SubNav';
 export type { SubNavProps, SubNavItem, SettingsSection, SettingsLeaf } from './components/SubNav';
+
+export { AnnouncementBanner } from './components/AnnouncementBanner';
+export type { Announcement } from './components/AnnouncementBanner';

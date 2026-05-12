@@ -15,6 +15,7 @@ import AdminActivity from './pages/AdminActivity';
 import MyProfile from './pages/MyProfile';
 import Webhooks from './pages/Webhooks';
 import Queues from './pages/Queues';
+import Announcements from './pages/Announcements';
 
 const App: React.FC = () => {
   return (
@@ -31,6 +32,7 @@ const App: React.FC = () => {
         <Route path="/support" element={<Support />} />
         <Route path="/webhooks" element={<Webhooks />} />
         <Route path="/queues" element={<Queues />} />
+        <Route path="/announcements" element={<Announcements />} />
         <Route path="/activity" element={<AdminActivity />} />
         <Route path="/settings" element={<PlatformSettings />} />
         <Route path="/me" element={<MyProfile />} />
