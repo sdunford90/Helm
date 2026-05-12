@@ -3,7 +3,7 @@ import {
   BarChart3, TrendingUp, Anchor, Users, MessageSquare,
   ShieldCheck, Calendar, Wrench, ArrowRight,
 } from 'lucide-react';
-import SubNav, { INSIGHTS_SUBNAV } from '../components/SubNav';
+import { SubNav, INSIGHTS_SUBNAV } from '@helm/ui-kit';
 import Reports from './Reports';
 import { useApi } from '../hooks/useApi';
 

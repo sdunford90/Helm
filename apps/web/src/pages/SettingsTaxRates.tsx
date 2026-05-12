@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronRight, Loader2, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useModules } from '../context/ModulesContext';
-import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
+import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 
 const NAVY = '#0A2342';
 

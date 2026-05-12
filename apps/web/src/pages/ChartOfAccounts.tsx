@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useModules } from '../context/ModulesContext';
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 
 /* ─── Types ─── */
 type AccountType = 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE';

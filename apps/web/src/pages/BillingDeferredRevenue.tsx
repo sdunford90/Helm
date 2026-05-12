@@ -1,4 +1,4 @@
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 
 const styles: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },

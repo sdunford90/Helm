@@ -3,7 +3,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { Plus, Trash2, X, Tag, Search, ToggleLeft, ToggleRight, Edit2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
-import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
+import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 
 // Per-location auto-applied POS discounts. CRUD UI for the discount engine
 // implemented in apps/api/src/routes/pos-discounts.ts.

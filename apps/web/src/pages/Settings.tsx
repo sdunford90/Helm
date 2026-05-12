@@ -16,7 +16,7 @@ import {
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
 import AuditLog from './AuditLog';
-import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
+import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 

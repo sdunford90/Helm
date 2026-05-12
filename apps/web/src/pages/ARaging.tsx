@@ -1,7 +1,7 @@
 import { Download } from 'lucide-react';
 import { formatCents } from '../lib/format';
 import { useApi } from '../hooks/useApi';
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 
 /* ─── Types ─── */
 interface AgingRow {

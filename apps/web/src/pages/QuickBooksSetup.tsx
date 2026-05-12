@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
+import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 import {
   RefreshCw,
   ExternalLink,

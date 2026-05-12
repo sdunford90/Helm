@@ -4,7 +4,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { CheckCircle, AlertTriangle, CreditCard, ExternalLink, Loader2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '../lib/format';
-import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
+import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 
 interface Tier {
   id: string;

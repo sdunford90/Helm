@@ -1,3 +1,4 @@
+import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
 export interface SubNavItem {
@@ -5,7 +6,7 @@ export interface SubNavItem {
   label: string;
 }
 
-interface Props {
+export interface SubNavProps {
   items: SubNavItem[];
 }
 
@@ -34,7 +35,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-export default function SubNav({ items }: Props) {
+export const SubNav: React.FC<SubNavProps> = ({ items }) => {
   const { pathname } = useLocation();
 
   // Pick the most specific (longest) match so e.g. /billing/ar-aging
@@ -66,7 +67,9 @@ export default function SubNav({ items }: Props) {
       })}
     </nav>
   );
-}
+};
+
+SubNav.displayName = 'SubNav';
 
 export const BILLING_SUBNAV: SubNavItem[] = [
   { path: '/billing', label: 'Invoices' },

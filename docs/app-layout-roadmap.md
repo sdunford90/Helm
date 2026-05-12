@@ -33,14 +33,14 @@ Most of **Phase 1** and a large chunk of **Phase 2** for the web app have alread
 | Location-picker scoping for the 5 main entities + inventory isolation | ✅ Done (Tasks #339, #340) | API enforcement layer |
 | Z-Reports nav link | ✅ Done (commit `bf86acb`) | `AppLayout.tsx` |
 | **Web Settings shell split** — 13 in-page tabs still live inside `Settings.tsx` (only Audit Log was added as a tab) | ⏳ Partial | `apps/web/src/pages/Settings.tsx` (1309 lines) |
-| **Portal sidebar restructure** — still flat (Dashboard, Invoices, Payment Methods, My Boats, Insurance, Concierge, Waitlist, Announcements; no Account / Documents / Reservations / Messages) | ⏳ Not started | `apps/portal/src/components/PortalLayout.tsx` |
-| **Admin sidebar grouping** — still 9 flat items | ⏳ Not started | `apps/admin/src/components/AdminLayout.tsx` |
-| **`ui-kit` extraction** — `SubNav` and the new sidebar primitives live inside `apps/web`, not `packages/ui-kit` | ⏳ Not started | — |
+| **Portal sidebar restructure** — grouped into HOME / MY MARINA / BILLING / SERVICES / COMMUNICATIONS + Account footer; Messages now in nav | ✅ Done | `apps/portal/src/components/PortalLayout.tsx` (this branch) |
+| **Admin sidebar grouping** — 4 groups + Configuration footer; `/me` page added | ✅ Done | `apps/admin/src/components/AdminLayout.tsx` (this branch) |
+| **`ui-kit` extraction** — `SubNav` and the 4 nav constants moved into `packages/ui-kit`; web imports from `@helm/ui-kit`. Sidebar / TopBar / Breadcrumb / EmptyState deferred (need design tokens first) | ⏳ Partial | `packages/ui-kit/src/components/SubNav.tsx` |
 | **Insights sub-section content** — all stubs except Overview | ⏳ Not started | `apps/web/src/pages/Insights.tsx` |
 | **Universal Report Builder** | ⏳ Not started | — |
 | **Test-pyramid build-out** | ⏳ Not started | — |
 
-What this means for the rest of the doc: the **vision and target IA below are already partially live on web** — they describe the destination, and the phased rollout has had Phase 1 + ~60% of Phase 2 already completed. The remaining sections (portal, admin, ui-kit extraction, insights content, universal builder, tests) are still ahead of us.
+What this means for the rest of the doc: the **vision and target IA below are now live across all three apps**. Phase 1 + ~60% of Phase 2 had shipped on the source branch (commit `6f9c18c`); this branch adds the rest of Phase 2's route-based Settings shell, all of Phase 3 (portal + admin restructure), and the SubNav slice of Phase 4. What remains: Insights content build-out, Universal Report Builder, the heavier ui-kit unification (Sidebar/TopBar primitives with design tokens), Settings tab file-by-file extraction, and the test-pyramid build-out.
 
 ---
 
@@ -643,7 +643,7 @@ These belong in `packages/ui-kit` and should be designed once for all three apps
 |---|---|---|
 | Web nav definition (the `NAV_SECTIONS` array) | `apps/web/src/components/AppLayout.tsx` (around line 163) | ✅ done in Task #328 |
 | Web router | `apps/web/src/App.tsx` | ✅ done in Task #328 (Insights routes, redirects) |
-| Web shared sub-nav primitive | `apps/web/src/components/SubNav.tsx` | ✅ done; move to `packages/ui-kit` in Phase 4 |
+| Web shared sub-nav primitive | `packages/ui-kit/src/components/SubNav.tsx` | ✅ moved to ui-kit; web imports from `@helm/ui-kit` |
 | Web settings monolith (split into shell + tabs) | `apps/web/src/pages/Settings.tsx` (1309 lines) | ⏳ still needs Phase-2 work |
 | Web Insights sub-section content | `apps/web/src/pages/Insights.tsx` (199 lines, mostly stubs) | ⏳ Phase 5 content build-out |
 | Portal layout (add footer slot, group sections) | `apps/portal/src/components/PortalLayout.tsx` | ⏳ Phase 3 |
@@ -651,7 +651,7 @@ These belong in `packages/ui-kit` and should be designed once for all three apps
 | Admin layout (add groups + footer slot) | `apps/admin/src/components/AdminLayout.tsx` | ⏳ Phase 3 |
 | Admin router | `apps/admin/src/App.tsx` | ⏳ Phase 3 |
 | Admin tenant monolith (81KB → nested routes) | `apps/admin/src/pages/TenantDetail.tsx` | ⏳ Phase 5 |
-| Shared sidebar/topbar components | `packages/ui-kit/src` | ⏳ Phase 4 |
+| Shared sidebar/topbar components | `packages/ui-kit/src` | ⏳ Phase 4 deferred (need design tokens) |
 
 ---
 
@@ -688,13 +688,17 @@ Portal and admin haven't been touched yet; both still match the "current state" 
 
 **Verify:** click through each nav item in both apps; confirm no route 404s.
 
-### Phase 4 — Shared `ui-kit` extraction (≈1 week, parallelizable)
-The web app already grew a local `apps/web/src/components/SubNav.tsx` with `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` constants. The cleanest path is to **move that file** into `packages/ui-kit` rather than re-design from scratch, then promote `AppLayout`'s sidebar primitives alongside it.
+### Phase 4 — Shared `ui-kit` extraction (~60% done)
+**Step 1 done.** `SubNav` (with `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` / `SETTINGS_SUBNAV`) now lives in `packages/ui-kit/src/components/SubNav.tsx` and is exported from the package. All 15 web callsites import from `@helm/ui-kit`; the local `apps/web/src/components/SubNav.tsx` is gone. `react-router-dom` is now a peer dep of ui-kit.
 
-1. Move `SubNav.tsx` (and its three exported nav arrays) into `packages/ui-kit/src/SubNav.tsx`; have all three apps import from there.
-2. Extract the sidebar + footer-slot pattern from `AppLayout.tsx` into `packages/ui-kit/src/Sidebar.tsx` so portal and admin can adopt it in Phase 3.
-3. Extract `<TopBar>` (with notifications bell), `<Breadcrumb>`, `<EmptyState>` into `packages/ui-kit`.
-4. Wire a notifications bell in all three top bars (data feed wired in Phase 5).
+**Deferred** — the remaining extraction items need design work first, not pure mechanical moves:
+
+- **`Sidebar`** — a primitive already exists in `packages/ui-kit/src/components/Sidebar.tsx` but no app uses it. The three real sidebars are visually distinct on purpose: light web with a location switcher and module-gated items, dark portal, dark-gradient admin with `GlobalSearch`. Unifying them requires shared design tokens (active-state color, footer-slot pattern, section-label typography) and a polymorphic API that exposes those slots. Track separately; do not rush a primitive that the apps will then have to fight.
+- **`TopBar`** — same shape: web has location switcher + page title, portal has user chip + sign-out, admin has `GlobalSearch` + ENV badge + Clerk controls. One primitive needs a config surface to hold all three. Pair with the notifications-bell wiring.
+- **`Breadcrumb`** / **`EmptyState`** — small primitives; build when first re-used cross-app. Currently no callers outside web.
+- **Notifications bell** — needs a backend feed (a `Notification` table or stream) before the UI is worth building. Tracked under Phase 5 big rocks.
+
+The dead `Sidebar.tsx` already in ui-kit can stay; it documents an early API but is not imported anywhere.
 
 ### Phase 5 — Big rocks behind the new IA (≈6-8 weeks, parallelizable)
 With the navigation skeleton in place, these new surfaces drop into the right slots:

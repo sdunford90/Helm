@@ -5,7 +5,7 @@ import {
   Anchor, Users, ShieldCheck, Clock, ChevronDown,
   ChevronUp, AlertTriangle, RefreshCw,
 } from 'lucide-react';
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 
 /* ── Types ─────────────────────────────────────────────── */
 

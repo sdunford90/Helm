@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, CheckCircle, Loader2, Send } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents, formatDate } from '../lib/format';
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 
 interface Chargeback {
   id: string;

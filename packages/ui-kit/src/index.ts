@@ -21,3 +21,12 @@ export type { ModalProps } from './components/Modal';
 
 export { Sidebar } from './components/Sidebar';
 export type { SidebarProps, NavItem, NavSection } from './components/Sidebar';
+
+export {
+  SubNav,
+  BILLING_SUBNAV,
+  ACCOUNTING_SUBNAV,
+  INSIGHTS_SUBNAV,
+  SETTINGS_SUBNAV,
+} from './components/SubNav';
+export type { SubNavProps, SubNavItem } from './components/SubNav';

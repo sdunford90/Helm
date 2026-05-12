@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import { api } from '../lib/api';
-import SubNav, { ACCOUNTING_SUBNAV } from '../components/SubNav';
+import { SubNav, ACCOUNTING_SUBNAV } from '@helm/ui-kit';
 
 import QBConnectionPanel from '../components/accounting/QBConnectionPanel';
 import StripeConnectionPanel from '../components/accounting/StripeConnectionPanel';

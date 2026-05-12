@@ -5,7 +5,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import { AlertTriangle, CheckCircle, XCircle, Clock, ChevronRight, RefreshCw } from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
-import SubNav, { ACCOUNTING_SUBNAV } from '../components/SubNav';
+import { SubNav, ACCOUNTING_SUBNAV } from '@helm/ui-kit';
 
 // Color scheme: #0A2342 navy, #E2E8F0 border, #64748B muted, #F8FAFC bg
 // #10B981 green, #F59E0B amber, #EF4444 red

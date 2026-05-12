@@ -13,7 +13,7 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
-import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { SubNav, BILLING_SUBNAV } from '@helm/ui-kit';
 import { formatCents, formatDateOnly } from '../lib/format';
 import { useModules } from '../context/ModulesContext';
 
