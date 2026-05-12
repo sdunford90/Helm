@@ -686,18 +686,28 @@ interface DockageRateForm {
   name: string;
   slipType: string;
   billingCadence: BillingCadence;
-  monthlyRateCents: number | '';
-  quarterlyRateCents: number | '';
-  annualRateCents: number | '';
-  seasonalRateCents: number | '';
+  monthlyRate: string;
+  quarterlyRate: string;
+  annualRate: string;
+  seasonalRate: string;
   taxClass: string;
   glAccountId: string;
   effectiveFrom: string;
   effectiveTo: string;
   electricityMode: 'METERED' | 'FLAT_FEE';
-  electricityRateCents: number | '';
+  electricityRate: string;
   active: boolean;
 }
+
+const centsToInputStr = (c: number | null | undefined): string =>
+  c == null ? '' : (c / 100).toString();
+const inputStrToCents = (s: string): number | null => {
+  const t = s.trim();
+  if (!t) return null;
+  const n = parseFloat(t);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+};
 
 function DockageRateModal({
   initial,
@@ -718,16 +728,16 @@ function DockageRateModal({
       name: '',
       slipType: '',
       billingCadence: 'MONTHLY',
-      monthlyRateCents: '',
-      quarterlyRateCents: '',
-      annualRateCents: '',
-      seasonalRateCents: '',
+      monthlyRate: '',
+      quarterlyRate: '',
+      annualRate: '',
+      seasonalRate: '',
       taxClass: 'Standard',
       glAccountId: '',
       effectiveFrom: '',
       effectiveTo: '',
       electricityMode: 'METERED',
-      electricityRateCents: '',
+      electricityRate: '',
       active: true,
     },
   );
@@ -741,7 +751,8 @@ function DockageRateModal({
     setErr(null);
     if (!form.locationId) { setErr('Location is required'); return; }
     if (!form.slipType.trim()) { setErr('Slip type is required'); return; }
-    if (form.monthlyRateCents === '' || Number(form.monthlyRateCents) < 0) {
+    const monthlyCents = inputStrToCents(form.monthlyRate);
+    if (monthlyCents == null || monthlyCents < 0) {
       setErr('Monthly rate is required'); return;
     }
     setSaving(true);
@@ -847,11 +858,8 @@ function DockageRateModal({
               type="number"
               step="0.01"
               min="0"
-              value={form.monthlyRateCents === '' ? '' : (Number(form.monthlyRateCents) / 100).toFixed(2)}
-              onChange={(e) => {
-                const v = e.target.value;
-                upd('monthlyRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
-              }}
+              value={form.monthlyRate}
+              onChange={(e) => upd('monthlyRate', e.target.value)}
             />
           </div>
           {form.billingCadence === 'QUARTERLY' && (
@@ -860,11 +868,8 @@ function DockageRateModal({
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
-                value={form.quarterlyRateCents === '' ? '' : (Number(form.quarterlyRateCents) / 100).toFixed(2)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  upd('quarterlyRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
-                }}
+                value={form.quarterlyRate}
+                onChange={(e) => upd('quarterlyRate', e.target.value)}
               />
             </div>
           )}
@@ -874,11 +879,8 @@ function DockageRateModal({
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
-                value={form.annualRateCents === '' ? '' : (Number(form.annualRateCents) / 100).toFixed(2)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  upd('annualRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
-                }}
+                value={form.annualRate}
+                onChange={(e) => upd('annualRate', e.target.value)}
               />
             </div>
           )}
@@ -888,11 +890,8 @@ function DockageRateModal({
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
-                value={form.seasonalRateCents === '' ? '' : (Number(form.seasonalRateCents) / 100).toFixed(2)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  upd('seasonalRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
-                }}
+                value={form.seasonalRate}
+                onChange={(e) => upd('seasonalRate', e.target.value)}
               />
             </div>
           )}
@@ -935,11 +934,8 @@ function DockageRateModal({
                 type="number"
                 step="0.01"
                 min="0"
-                value={form.electricityRateCents === '' ? '' : (Number(form.electricityRateCents) / 100).toFixed(2)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  upd('electricityRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
-                }}
+                value={form.electricityRate}
+                onChange={(e) => upd('electricityRate', e.target.value)}
               />
             </div>
           ) : null}
@@ -1207,17 +1203,17 @@ export default function SettingsProducts() {
       name: form.name.trim() || null,
       slipType: form.slipType.trim(),
       billingCadence: form.billingCadence,
-      monthlyRateCents: Number(form.monthlyRateCents),
-      quarterlyRateCents: form.quarterlyRateCents === '' ? null : Number(form.quarterlyRateCents),
-      annualRateCents: form.annualRateCents === '' ? null : Number(form.annualRateCents),
-      seasonalRateCents: form.seasonalRateCents === '' ? null : Number(form.seasonalRateCents),
+      monthlyRateCents: inputStrToCents(form.monthlyRate) ?? 0,
+      quarterlyRateCents: inputStrToCents(form.quarterlyRate),
+      annualRateCents: inputStrToCents(form.annualRate),
+      seasonalRateCents: inputStrToCents(form.seasonalRate),
       taxClass: form.taxClass || 'Standard',
       glAccountId: form.glAccountId || null,
       effectiveFrom: form.effectiveFrom || null,
       effectiveTo: form.effectiveTo || null,
       electricityMode: form.electricityMode,
-      electricityRateCents: form.electricityMode === 'FLAT_FEE' && form.electricityRateCents !== ''
-        ? Number(form.electricityRateCents)
+      electricityRateCents: form.electricityMode === 'FLAT_FEE'
+        ? inputStrToCents(form.electricityRate)
         : null,
       active: form.active,
     };
@@ -1503,16 +1499,16 @@ export default function SettingsProducts() {
                           name: rate.name ?? '',
                           slipType: rate.slipType,
                           billingCadence: (rate.billingCadence ?? 'MONTHLY') as BillingCadence,
-                          monthlyRateCents: rate.monthlyRateCents,
-                          quarterlyRateCents: rate.quarterlyRateCents ?? '',
-                          annualRateCents: rate.annualRateCents ?? '',
-                          seasonalRateCents: rate.seasonalRateCents ?? '',
+                          monthlyRate: centsToInputStr(rate.monthlyRateCents),
+                          quarterlyRate: centsToInputStr(rate.quarterlyRateCents),
+                          annualRate: centsToInputStr(rate.annualRateCents),
+                          seasonalRate: centsToInputStr(rate.seasonalRateCents),
                           taxClass: rate.taxClass ?? 'Standard',
                           glAccountId: rate.glAccountId ?? '',
                           effectiveFrom: rate.effectiveFrom ? rate.effectiveFrom.slice(0, 10) : '',
                           effectiveTo: rate.effectiveTo ? rate.effectiveTo.slice(0, 10) : '',
                           electricityMode: (rate.electricityMode === 'FLAT_FEE' ? 'FLAT_FEE' : 'METERED'),
-                          electricityRateCents: rate.electricityRateCents ?? '',
+                          electricityRate: centsToInputStr(rate.electricityRateCents),
                           active: rate.active,
                         });
                         setShowDockageModal(true);
