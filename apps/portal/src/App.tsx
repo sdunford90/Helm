@@ -16,6 +16,7 @@ import AccountSecurity from './pages/AccountSecurity';
 import AccountHelp from './pages/AccountHelp';
 import Documents from './pages/Documents';
 import MySlip from './pages/MySlip';
+import AutopayManager from './pages/AutopayManager';
 import ThankYou from './pages/ThankYou';
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/invoices" element={<Invoices />} />
         <Route path="/invoices/:id" element={<InvoiceDetail />} />
         <Route path="/payments" element={<PaymentMethods />} />
+        <Route path="/autopay" element={<AutopayManager />} />
         <Route path="/slip" element={<MySlip />} />
         <Route path="/boats" element={<MyBoats />} />
         <Route path="/insurance" element={<Insurance />} />

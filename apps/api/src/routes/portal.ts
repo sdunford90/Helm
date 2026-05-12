@@ -1123,6 +1123,90 @@ router.put(
 );
 
 // ---------------------------------------------------------------------------
+// GET /api/portal/autopay/upcoming (P10) — projected autopay charges
+//
+// Looks at active SlipContract rows and projects the next N (default 3)
+// billing dates per contract, given billingCycle + billingAnchor +
+// startDate. Returns a flat sorted list so the portal can render "you'll
+// be auto-charged $X on YYYY-MM-DD" rows.
+//
+// This is a best-effort projection — actual invoices are still generated
+// by the recurring-billing job. The intent is to give the customer a
+// heads-up so an expiring card or expected charge isn't a surprise.
+// ---------------------------------------------------------------------------
+router.get(
+  "/autopay/upcoming",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const customerId = req.portalCustomerId!;
+      const horizonDays = Math.min(180, Math.max(7, Number(req.query.days ?? 60)));
+      const horizon = new Date(Date.now() + horizonDays * 86400_000);
+      const now = new Date();
+
+      const contracts = await prisma.slipContract.findMany({
+        where: {
+          customerId,
+          status: { in: ["ACTIVE", "EXPIRING"] },
+          startDate: { lte: horizon },
+          OR: [{ endDate: null }, { endDate: { gte: now } }],
+        },
+        include: {
+          slip: { select: { slipNumber: true } },
+        },
+        orderBy: { startDate: "asc" },
+        take: 50,
+      });
+
+      function step(date: Date, cycle: string): Date {
+        const d = new Date(date);
+        if (cycle === "QUARTERLY") d.setMonth(d.getMonth() + 3);
+        else if (cycle === "ANNUAL") d.setFullYear(d.getFullYear() + 1);
+        else if (cycle === "SEASONAL") d.setMonth(d.getMonth() + 6);
+        else d.setMonth(d.getMonth() + 1); // MONTHLY default
+        return d;
+      }
+
+      const items: Array<{
+        contractId: string;
+        slipNumber: string | null;
+        amountCents: number;
+        chargeDate: string;
+        billingCycle: string;
+      }> = [];
+
+      for (const c of contracts) {
+        // Find the next billing date after `now`. Walk forward from startDate.
+        let next = new Date(c.startDate);
+        // Fast-forward to the first occurrence after now (rather than stepping
+        // through years of monthly increments).
+        while (next < now) next = step(next, c.billingCycle);
+        // Cap at the contract's endDate if set.
+        const endCap = c.endDate ?? null;
+        // Project up to 6 occurrences in the window.
+        for (let i = 0; i < 6 && next <= horizon; i++) {
+          if (endCap && next > endCap) break;
+          items.push({
+            contractId: c.id,
+            slipNumber: c.slip?.slipNumber ?? null,
+            amountCents: c.rateCents,
+            chargeDate: next.toISOString().slice(0, 10),
+            billingCycle: c.billingCycle,
+          });
+          next = step(next, c.billingCycle);
+        }
+      }
+
+      items.sort((a, b) => a.chargeDate.localeCompare(b.chargeDate));
+      const totalCents = items.reduce((s, it) => s + it.amountCents, 0);
+
+      res.json({ horizonDays, totalCents, items });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // GET /api/portal/insurance — list customer's insurance records
 // ---------------------------------------------------------------------------
 router.get(

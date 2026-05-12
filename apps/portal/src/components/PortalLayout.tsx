@@ -54,6 +54,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: '/invoices', label: 'Invoices', icon: FileText },
       { to: '/payments', label: 'Payment Methods', icon: CreditCard },
+      { to: '/autopay', label: 'Auto-pay', icon: Clock },
     ],
   },
   {
