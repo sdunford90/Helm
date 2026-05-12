@@ -52,6 +52,7 @@ import InsightsCompliance from './pages/insights/InsightsCompliance';
 import InsightsScheduled from './pages/insights/InsightsScheduled';
 import InsightsCustomBuilder from './pages/insights/InsightsCustomBuilder';
 import CardExpiryForecast from './pages/insights/CardExpiryForecast';
+import TrialBalance from './pages/insights/TrialBalance';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -107,6 +108,7 @@ function AppRoutes() {
         <Route path="/insights/operations" element={<InsightsOperations />} />
         <Route path="/insights/financial" element={<InsightsFinancial />} />
         <Route path="/insights/financial/sales-tax" element={<ReportsSalesTax />} />
+        <Route path="/insights/financial/trial-balance" element={<TrialBalance />} />
         <Route path="/insights/customers" element={<InsightsCustomers />} />
         <Route path="/insights/customers/card-expiry" element={<CardExpiryForecast />} />
         <Route path="/insights/communications" element={<InsightsCommunications />} />

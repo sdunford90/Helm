@@ -76,9 +76,10 @@ export default function InsightsFinancial() {
         />
         <ReportCard
           title="Trial Balance"
-          description="GL trial balance for close, drillable to journal-entry detail."
-          status="phase-5b"
+          description="Period debits, credits, and net per GL account, grouped by Asset/Liability/Equity/Revenue/Expense. Surfaces the trial-balance check so an accountant knows the books tie."
+          status="live"
           icon={FileText}
+          to="/insights/financial/trial-balance"
         />
       </ReportGrid>
     </InsightsShell>

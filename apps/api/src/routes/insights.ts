@@ -103,6 +103,67 @@ router.post("/run", async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+// POST /api/insights/run.csv — R2: same engine, CSV response.
+//
+// Streams a text/csv body. Values are escaped per RFC 4180 (double-quote
+// any cell containing comma, quote, newline; double up internal quotes).
+// Up to HARD_ROW_CAP rows; for bigger results the async-export path will
+// eventually take over (queued job → R2 → Export Center). The MVP just
+// inlines the response since 10k rows is small enough for any browser.
+function csvCell(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  let s: string;
+  if (typeof v === "object") {
+    try { s = JSON.stringify(v); }
+    catch { s = String(v); }
+  } else {
+    s = String(v);
+  }
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+router.post("/run.csv", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId;
+    if (!tenantId) {
+      res.status(400).json({ error: "Tenant scope is required" });
+      return;
+    }
+    const spec = ReportSpecSchema.parse(req.body);
+    const result = await runReportSpec(spec, tenantId, {
+      userId: req.userId ?? null,
+      allowSensitive: canSeeSensitiveFields(req),
+    });
+
+    const header = result.fields.map(csvCell).join(",");
+    const body = result.rows
+      .map((row) => result.fields.map((f) => csvCell(row[f])).join(","))
+      .join("\n");
+    const csv = `${header}\n${body}\n`;
+
+    const filename = `${result.model}-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    // Surface warnings in a header so the UI can show them even though
+    // the body is binary-ish CSV.
+    if (result.warnings.length > 0) {
+      res.setHeader("X-Helm-Report-Warnings", JSON.stringify(result.warnings).slice(0, 1024));
+    }
+    res.setHeader("X-Helm-Report-Rows", String(result.rowCount));
+    res.setHeader("X-Helm-Report-HasMore", String(result.hasMore));
+    res.status(200).send(csv);
+  } catch (err) {
+    if (err instanceof ReportEngineError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
 // GET /api/insights/runs — recent run-log entries for the tenant. Default
 // limit 50, max 200. Returns the spec hash + summary (not the full spec
 // JSON) for the listing; the per-row endpoint expands.

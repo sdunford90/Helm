@@ -144,6 +144,144 @@ function modelDelegate(modelName: string): unknown {
   return delegate;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R3 — Relation traversal
+//
+// Resolves dotted field paths like "customer.firstName" or
+// "customer.location.name" into a nested Prisma `select` tree. Walks the
+// catalog graph for each segment; refuses any path that:
+//
+//   • leaves the catalog,
+//   • crosses a sensitive field (unless allowSensitive),
+//   • hits a list relation (we don't traverse one-to-many in MVP),
+//   • exceeds MAX_JOIN_DEPTH,
+//   • lands on a non-scalar / non-enum leaf.
+//
+// Returns: (a) a Prisma select tree, (b) the canonical list of leaf paths
+// in the order they should appear in the result, and (c) any warnings.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAX_JOIN_DEPTH = 4;
+
+interface ResolvedProjection {
+  select: Record<string, unknown>;
+  leafPaths: string[];
+  warnings: string[];
+}
+
+function resolveProjection(
+  paths: string[],
+  baseModel: CatalogModel,
+  catalog: ReturnType<typeof getReportCatalog>,
+  allowSensitive: boolean,
+): ResolvedProjection {
+  const select: Record<string, unknown> = {};
+  const leafPaths: string[] = [];
+  const warnings: string[] = [];
+  const modelByName = new Map(catalog.models.map((m) => [m.name, m]));
+
+  for (const path of paths) {
+    const segments = path.split(".");
+    if (segments.length - 1 > MAX_JOIN_DEPTH) {
+      warnings.push(`Field "${path}" exceeds the ${MAX_JOIN_DEPTH}-level join depth and was dropped`);
+      continue;
+    }
+
+    let currentModel: CatalogModel | undefined = baseModel;
+    let cursor: Record<string, unknown> = select;
+    let bailed = false;
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const isLeaf = i === segments.length - 1;
+
+      if (!currentModel) {
+        warnings.push(`Field "${path}" walked off the catalog`);
+        bailed = true;
+        break;
+      }
+      const field = currentModel.fields.find((f) => f.name === seg);
+      if (!field) {
+        warnings.push(`Field "${path}" dropped (segment "${seg}" unknown on ${currentModel.name})`);
+        bailed = true;
+        break;
+      }
+      if ((field.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(field.name)) {
+        warnings.push(`Field "${path}" dropped (sensitive segment "${seg}")`);
+        bailed = true;
+        break;
+      }
+
+      if (isLeaf) {
+        if (field.kind === "relation" || field.kind === "json") {
+          warnings.push(`Field "${path}" dropped (terminal "${seg}" is a ${field.kind})`);
+          bailed = true;
+          break;
+        }
+        if (field.isList) {
+          warnings.push(`Field "${path}" dropped (terminal "${seg}" is a list)`);
+          bailed = true;
+          break;
+        }
+        cursor[seg] = true;
+      } else {
+        // Intermediate segment — must be a relation, not a list.
+        if (field.kind !== "relation") {
+          warnings.push(`Field "${path}" dropped (intermediate "${seg}" is not a relation)`);
+          bailed = true;
+          break;
+        }
+        if (field.isList) {
+          warnings.push(`Field "${path}" dropped (one-to-many traversal not supported)`);
+          bailed = true;
+          break;
+        }
+        const target = modelByName.get(field.type);
+        if (!target) {
+          warnings.push(`Field "${path}" dropped (target model ${field.type} not in catalog)`);
+          bailed = true;
+          break;
+        }
+        // Nest the select tree.
+        const existing = cursor[seg] as { select?: Record<string, unknown> } | undefined;
+        if (existing && typeof existing === "object" && "select" in existing) {
+          cursor = (existing.select ??= {});
+        } else {
+          const sub: Record<string, unknown> = {};
+          cursor[seg] = { select: sub };
+          cursor = sub;
+        }
+        currentModel = target;
+      }
+    }
+
+    if (!bailed) leafPaths.push(path);
+  }
+
+  return { select, leafPaths, warnings };
+}
+
+// Pull a dotted-path value out of a Prisma row. Handles nulls along the way.
+function readPath(row: Record<string, unknown>, path: string): unknown {
+  const segs = path.split(".");
+  let cursor: unknown = row;
+  for (const seg of segs) {
+    if (cursor == null || typeof cursor !== "object") return null;
+    cursor = (cursor as Record<string, unknown>)[seg];
+  }
+  return cursor;
+}
+
+// Flatten a nested row (from Prisma's relation include) into a single
+// object keyed by dotted leaf paths.
+function flattenRow(row: Record<string, unknown>, leafPaths: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const path of leafPaths) {
+    out[path] = readPath(row, path);
+  }
+  return out;
+}
+
 // Stable-ish hash of a spec so two identical runs share a hash even though
 // their object identity is different (JSON.stringify with sorted keys).
 function hashSpec(spec: ReportSpec): string {
@@ -282,9 +420,10 @@ async function runReportSpecInternal(
 
 
   // ─── Field projection ─────────────────────────────────────────────────────
-  // Scalar + enum fields only. Drop sensitive, engine-blocked, relation,
-  // and json fields. If the caller didn't ask for a specific list, project
-  // every safe scalar/enum field.
+  // Scalar + enum fields only at the base level. Sensitive, engine-blocked,
+  // relation, json, and list fields are filtered out (relations can still be
+  // *traversed* via dotted paths below; what we ban here is naked relation
+  // projection).
   //
   // R10: when allowSensitive is on, the catalog's `sensitive` flag is
   // bypassed but ENGINE_BLOCKED_FIELDS is still absolute.
@@ -295,32 +434,29 @@ async function runReportSpecInternal(
       !ENGINE_BLOCKED_FIELDS.has(f.name) &&
       !f.isList,
   );
-  const safeFieldNames = new Set(safeFields.map((f) => f.name));
 
-  let projectedNames: string[];
+  // Build the projection. Dotted paths like "customer.firstName" walk
+  // through the catalog graph (R3). Single-segment paths fall through to
+  // the simple scalar-field check.
+  let leafPaths: string[];
+  let nestedSelect: Record<string, unknown>;
   if (spec.fields && spec.fields.length > 0) {
-    projectedNames = [];
-    for (const name of spec.fields) {
-      if (!safeFieldNames.has(name)) {
-        const reason =
-          !model.fields.some((f) => f.name === name) ? "unknown" :
-          model.fields.some((f) => f.name === name && f.sensitive) ? "sensitive" :
-          model.fields.some((f) => f.name === name && f.kind === "relation") ? "relation" :
-          model.fields.some((f) => f.name === name && f.kind === "json") ? "json" :
-          model.fields.some((f) => f.name === name && f.isList) ? "list" :
-          "blocked";
-        warnings.push(`Field "${name}" dropped (${reason})`);
-        continue;
-      }
-      projectedNames.push(name);
-    }
-    if (projectedNames.length === 0) {
+    const resolved = resolveProjection(spec.fields, model, catalog, allowSensitive);
+    leafPaths = resolved.leafPaths;
+    nestedSelect = resolved.select;
+    warnings.push(...resolved.warnings);
+    if (leafPaths.length === 0) {
       // Always project at least the id so the result isn't empty objects.
       const id = safeFields.find((f) => f.isId);
-      if (id) projectedNames.push(id.name);
+      if (id) {
+        leafPaths.push(id.name);
+        nestedSelect[id.name] = true;
+      }
     }
   } else {
-    projectedNames = safeFields.map((f) => f.name);
+    leafPaths = safeFields.map((f) => f.name);
+    nestedSelect = {};
+    for (const f of safeFields) nestedSelect[f.name] = true;
   }
 
   // ─── Limit + offset ───────────────────────────────────────────────────────
@@ -340,11 +476,6 @@ async function runReportSpecInternal(
     );
   }
 
-  const select: Record<string, true> = {};
-  for (const name of projectedNames) {
-    select[name] = true;
-  }
-
   // Fetch limit+1 rows; trim the tail and set hasMore based on whether the
   // extra row was present. Saves a separate COUNT query for the common case.
   let rows: Array<Record<string, unknown>>;
@@ -352,7 +483,7 @@ async function runReportSpecInternal(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rows = await (delegate as any).findMany({
       where: whereClauses,
-      select,
+      select: nestedSelect,
       orderBy: buildOrderBy(model, spec.sort),
       skip: offset,
       take: limit + 1,
@@ -367,11 +498,15 @@ async function runReportSpecInternal(
   const hasMore = rows.length > limit;
   const trimmed = hasMore ? rows.slice(0, limit) : rows;
 
+  // Flatten nested relation rows back into dotted-key shape so the UI sees
+  // a uniform record per result regardless of join depth.
+  const flatRows = trimmed.map((r) => flattenRow(r, leafPaths));
+
   return {
     model: model.name,
-    fields: projectedNames,
-    rows: trimmed,
-    rowCount: trimmed.length,
+    fields: leafPaths,
+    rows: flatRows,
+    rowCount: flatRows.length,
     hasMore,
     runtimeMs: Date.now() - startedAt,
     warnings,

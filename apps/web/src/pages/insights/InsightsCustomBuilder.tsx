@@ -3,12 +3,15 @@ import {
   Wrench, Database, ShieldCheck, Brain, Search,
   ChevronRight, MapPin, Building2, EyeOff,
   Play, Plus, Trash2, Loader2, AlertCircle,
+  Download, Save, FolderOpen, Sigma,
 } from 'lucide-react';
 import type {
   ReportSpec,
   ReportFilter,
   ReportFilterOp,
   ReportRunResult,
+  ReportAggregate,
+  AggregateFn,
 } from '@helm/shared-types';
 import InsightsShell from './InsightsShell';
 import { useApi } from '../../hooks/useApi';
@@ -235,10 +238,22 @@ function SchemaView({ model }: { model: CatalogModel }) {
   );
 }
 
+interface SavedViewSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  model: string;
+  updatedAt: string;
+}
+
+const NUMERIC_TYPES = new Set(['Int', 'BigInt', 'Float', 'Decimal']);
+const AGG_FNS: AggregateFn[] = ['count', 'sum', 'avg', 'min', 'max'];
+
 function BuildView({ model }: { model: CatalogModel }) {
   const buildable = useMemo(() => model.fields.filter(isBuildable), [model]);
+  const numericFields = useMemo(() => buildable.filter((f) => NUMERIC_TYPES.has(f.type)), [buildable]);
+
   const [selectedFields, setSelectedFields] = useState<Set<string>>(() => {
-    // Default-select id + a handful of obvious display fields if present.
     const defaults = new Set<string>();
     const id = buildable.find((f) => f.isId);
     if (id) defaults.add(id.name);
@@ -248,11 +263,28 @@ function BuildView({ model }: { model: CatalogModel }) {
     return defaults;
   });
   const [filters, setFilters] = useState<ReportFilter[]>([]);
+  // R4: group-by + aggregates state. When either is non-empty the engine
+  // routes to the grouped path and Fields are ignored.
+  const [groupBy, setGroupBy] = useState<string[]>([]);
+  const [aggregates, setAggregates] = useState<ReportAggregate[]>([]);
   const [limit, setLimit] = useState(100);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ReportRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { getToken } = useAuth();
+
+  // R1: saved views state.
+  const [savedViews, setSavedViews] = useState<SavedViewSummary[]>([]);
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveDescription, setSaveDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // R2: CSV export state.
+  const [exporting, setExporting] = useState(false);
+
+  const isGrouped = groupBy.length > 0 || aggregates.length > 0;
 
   function toggleField(name: string) {
     setSelectedFields((prev) => {
@@ -261,6 +293,22 @@ function BuildView({ model }: { model: CatalogModel }) {
       else next.add(name);
       return next;
     });
+  }
+
+  function toggleGroupBy(name: string) {
+    setGroupBy((prev) => prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]);
+  }
+
+  function addAggregate() {
+    setAggregates((prev) => [...prev, { fn: 'count', field: '_all' }]);
+  }
+
+  function updateAggregate(idx: number, patch: Partial<ReportAggregate>) {
+    setAggregates((prev) => prev.map((a, i) => i === idx ? { ...a, ...patch } : a));
+  }
+
+  function removeAggregate(idx: number) {
+    setAggregates((prev) => prev.filter((_, i) => i !== idx));
   }
 
   function addFilter() {
@@ -277,29 +325,131 @@ function BuildView({ model }: { model: CatalogModel }) {
     setFilters((prev) => prev.filter((_, i) => i !== idx));
   }
 
+  function buildSpec(): ReportSpec {
+    return {
+      model: model.name,
+      fields: !isGrouped && selectedFields.size > 0 ? Array.from(selectedFields) : undefined,
+      filters: filters.map((f) =>
+        f.op === 'isNull' || f.op === 'isNotNull'
+          ? { field: f.field, op: f.op }
+          : f,
+      ),
+      groupBy: groupBy.length > 0 ? groupBy : undefined,
+      aggregates: aggregates.length > 0 ? aggregates : undefined,
+      limit,
+    };
+  }
+
   async function run() {
     setRunning(true);
     setError(null);
     try {
-      const spec: ReportSpec = {
-        model: model.name,
-        fields: selectedFields.size > 0 ? Array.from(selectedFields) : undefined,
-        // Drop value for unary ops so the engine doesn't get confused.
-        filters: filters.map((f) =>
-          f.op === 'isNull' || f.op === 'isNotNull'
-            ? { field: f.field, op: f.op }
-            : f,
-        ),
-        limit,
-      };
       const token = await getToken();
-      const res = await api.post<ReportRunResult>('/api/insights/run', spec, token);
+      const res = await api.post<ReportRunResult>('/api/insights/run', buildSpec(), token);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setResult(null);
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/insights/run.csv', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(buildSpec()),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(body || `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${model.name}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function loadSavedViews() {
+    try {
+      const token = await getToken();
+      const res = await api.get<{ views: SavedViewSummary[] }>('/api/insights/views', token);
+      setSavedViews(res.views ?? []);
+    } catch (err) {
+      // non-fatal
+      console.error(err);
+    }
+  }
+
+  async function openSavedViews() {
+    setSavedOpen((open) => !open);
+    if (!savedOpen) await loadSavedViews();
+  }
+
+  async function loadView(id: string) {
+    try {
+      const token = await getToken();
+      const res = await api.get<{ specJson: ReportSpec; name: string }>(`/api/insights/views/${id}`, token);
+      const spec = res.specJson;
+      // Apply spec back into state
+      setSelectedFields(new Set(spec.fields ?? []));
+      setFilters(spec.filters ?? []);
+      setGroupBy(spec.groupBy ?? []);
+      setAggregates(spec.aggregates ?? []);
+      setLimit(spec.limit ?? 100);
+      setSavedOpen(false);
+      setResult(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to load view');
+    }
+  }
+
+  async function deleteView(id: string) {
+    if (!confirm('Delete this saved view?')) return;
+    try {
+      const token = await getToken();
+      await api.delete(`/api/insights/views/${id}`, token);
+      await loadSavedViews();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete view');
+    }
+  }
+
+  async function saveView() {
+    if (!saveName.trim()) return;
+    setSaving(true);
+    try {
+      const token = await getToken();
+      await api.post('/api/insights/views', {
+        name: saveName.trim(),
+        description: saveDescription.trim() || null,
+        spec: buildSpec(),
+      }, token);
+      setSaveOpen(false);
+      setSaveName('');
+      setSaveDescription('');
+      await loadSavedViews();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -319,8 +469,11 @@ function BuildView({ model }: { model: CatalogModel }) {
 
   return (
     <div style={styles.tabBody}>
-      <div style={styles.sectionLabel}>Fields to include</div>
-      <div style={styles.fieldList}>
+      <div style={styles.sectionLabel}>
+        Fields to include
+        {isGrouped && <span style={{ marginLeft: 8, color: '#94A3B8', fontWeight: 500 }}>(ignored while Group by / Aggregates are set)</span>}
+      </div>
+      <div style={{ ...styles.fieldList, opacity: isGrouped ? 0.4 : 1, pointerEvents: isGrouped ? 'none' : undefined }}>
         {model.fields.map((f) => {
           const ok = isBuildable(f);
           const checked = selectedFields.has(f.name);
@@ -398,7 +551,72 @@ function BuildView({ model }: { model: CatalogModel }) {
         <Plus size={12} /> Add filter
       </button>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 20 }}>
+      {/* Group-by + aggregates (R4). When either is set, the engine
+          routes to the grouped path and the Fields list above is
+          ignored — result columns become groupBy + aggregate aliases. */}
+      <div style={{ ...styles.sectionLabel, marginTop: 22 }}>
+        <Sigma size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+        Group by
+        {groupBy.length > 0 && <span style={{ marginLeft: 8, color: '#94A3B8', fontWeight: 500 }}>({groupBy.length} selected — Fields will be ignored)</span>}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+        {buildable.map((f) => {
+          const active = groupBy.includes(f.name);
+          return (
+            <button
+              key={f.name}
+              type="button"
+              onClick={() => toggleGroupBy(f.name)}
+              style={{
+                padding: '4px 10px', borderRadius: 999, fontSize: 12,
+                border: active ? '1px solid #00D4FF' : '1px solid #CBD5E1',
+                background: active ? 'rgba(0,212,255,0.10)' : '#FFFFFF',
+                color: active ? '#0A2342' : '#64748B',
+                fontWeight: active ? 700 : 500,
+                cursor: 'pointer',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              }}
+            >
+              {f.name}
+            </button>
+          );
+        })}
+        {buildable.length === 0 && <span style={{ fontSize: 12, color: '#94A3B8' }}>No groupable fields on this model.</span>}
+      </div>
+
+      <div style={styles.sectionLabel}>Aggregates</div>
+      {aggregates.map((agg, idx) => (
+        <div key={idx} style={{ display: 'grid', gridTemplateColumns: '120px 1fr auto', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          <select
+            style={styles.select}
+            value={agg.fn}
+            onChange={(e) => updateAggregate(idx, { fn: e.target.value as AggregateFn })}
+          >
+            {AGG_FNS.map((fn) => <option key={fn} value={fn}>{fn}</option>)}
+          </select>
+          <select
+            style={styles.select}
+            value={agg.field ?? ''}
+            onChange={(e) => updateAggregate(idx, { field: e.target.value })}
+          >
+            {agg.fn === 'count' && <option value="_all">* (all rows)</option>}
+            {(agg.fn === 'count' ? buildable : numericFields).map((f) => (
+              <option key={f.name} value={f.name}>{f.name} ({f.type})</option>
+            ))}
+            {agg.fn !== 'count' && numericFields.length === 0 && (
+              <option value="">No numeric fields on this model</option>
+            )}
+          </select>
+          <button style={styles.iconBtn} onClick={() => removeAggregate(idx)} title="Remove aggregate">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+      <button style={styles.smallBtn} onClick={addAggregate}>
+        <Plus size={12} /> Add aggregate
+      </button>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 24, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 12, color: '#64748B' }}>Limit</div>
         <input
           type="number"
@@ -409,14 +627,101 @@ function BuildView({ model }: { model: CatalogModel }) {
           onChange={(e) => setLimit(Math.max(1, Math.min(10000, Number(e.target.value) || 1)))}
         />
         <button
-          style={{ ...styles.runBtn, opacity: running || selectedFields.size === 0 ? 0.6 : 1 }}
+          style={{ ...styles.runBtn, opacity: running || (!isGrouped && selectedFields.size === 0) ? 0.6 : 1 }}
           onClick={run}
-          disabled={running || selectedFields.size === 0}
+          disabled={running || (!isGrouped && selectedFields.size === 0)}
         >
           {running ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
           {running ? 'Running…' : 'Run report'}
         </button>
+        <button
+          style={{ ...styles.smallBtn, opacity: exporting ? 0.6 : 1 }}
+          onClick={exportCsv}
+          disabled={exporting || (!isGrouped && selectedFields.size === 0)}
+          title="Export CSV"
+        >
+          {exporting ? <Loader2 size={12} /> : <Download size={12} />}
+          Export CSV
+        </button>
+        <button style={styles.smallBtn} onClick={() => setSaveOpen((o) => !o)}>
+          <Save size={12} /> Save view
+        </button>
+        <div style={{ position: 'relative' }}>
+          <button style={styles.smallBtn} onClick={openSavedViews}>
+            <FolderOpen size={12} /> Saved views{savedViews.length > 0 && ` (${savedViews.length})`}
+          </button>
+          {savedOpen && (
+            <div style={{
+              position: 'absolute', top: 36, right: 0, zIndex: 50,
+              background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 8,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.08)', minWidth: 280, maxHeight: 320, overflowY: 'auto',
+            }}>
+              {savedViews.length === 0 ? (
+                <div style={{ padding: 16, fontSize: 12, color: '#94A3B8', textAlign: 'center' }}>
+                  No saved views yet. Build one and click "Save view".
+                </div>
+              ) : savedViews.map((v) => (
+                <div
+                  key={v.id}
+                  style={{ padding: '10px 14px', borderBottom: '1px solid #F1F5F9', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                  onClick={() => loadView(v.id)}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0A2342' }}>{v.name}</div>
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                      {v.model} · {new Date(v.updatedAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    style={{ ...styles.iconBtn, width: 22, height: 22 }}
+                    onClick={(e) => { e.stopPropagation(); void deleteView(v.id); }}
+                    title="Delete saved view"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
+
+      {saveOpen && (
+        <div style={{
+          marginTop: 14, padding: 14, background: '#F8FAFC',
+          border: '1px solid #E2E8F0', borderRadius: 8,
+        }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'flex-end' }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>View name</div>
+              <input
+                style={{ ...styles.input, width: '100%' }}
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                placeholder="e.g. Annual contracts expiring this quarter"
+                autoFocus
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>Description (optional)</div>
+              <input
+                style={{ ...styles.input, width: '100%' }}
+                value={saveDescription}
+                onChange={(e) => setSaveDescription(e.target.value)}
+                placeholder="What this report shows"
+              />
+            </div>
+            <button
+              style={{ ...styles.runBtn, opacity: saving || !saveName.trim() ? 0.6 : 1 }}
+              onClick={saveView}
+              disabled={saving || !saveName.trim()}
+            >
+              {saving ? <Loader2 size={14} /> : <Save size={14} />}
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div style={styles.errorBox}>
