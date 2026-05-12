@@ -13,34 +13,191 @@ This doc proposes a new sidebar structure for **all three apps**, built around t
 
 ---
 
-## Status as of `b6b393e` (May 11, 2026)
+## Accomplished so far
 
-Most of **Phase 1** and a large chunk of **Phase 2** for the web app have already shipped via Task #328 (`6f9c18c Task #328: Redesign marina dashboard sidebar into intent-based sections`) and its follow-ons. The remainder of this roadmap should be read against that baseline.
+The original roadmap envisioned six phases (web sidebar reorder → settings shell → portal & admin → ui-kit extraction → big rocks → testing). Phases 1–3 and meaningful pieces of 4 and 5 are now live across the three apps. The list below records what shipped, organized by surface area, with the commit each chunk lives in so future archaeology is cheap.
 
-| Item | Status | Where |
-|---|---|---|
-| Web sidebar reorganized into HOME / MARINA / DAILY OPS / POINT OF SALE / BACK OFFICE / PIPELINE / COMMUNICATIONS / INSIGHTS | ✅ Done | `apps/web/src/components/AppLayout.tsx` (`NAV_SECTIONS`) |
-| Billing nested under Marina | ✅ Done | `NAV_SECTIONS` line 177 |
-| Settings pinned to sidebar footer | ✅ Done | `FOOTER_NAV_ITEM` + footer render block |
-| Audit Log promoted into a Settings tab + `/audit-log` redirect | ✅ Done | `Settings.tsx` audit tab; `App.tsx` redirect |
-| Insights replaces Reports with Overview + 7 sub-sections | ✅ Done | `apps/web/src/pages/Insights.tsx` (199 lines, live KPIs on Overview, stubs elsewhere) |
-| Shared `SubNav` primitive + `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` constants | ✅ Done | `apps/web/src/components/SubNav.tsx` |
-| Billing sub-nav (Invoices, A/R Aging, Disputes, Chart of Accounts, Deferred Revenue, Rent Roll) | ✅ Done | Wired through Billing/ARaging/Disputes/ChartOfAccounts/RentRoll/`BillingDeferredRevenue.tsx` |
-| Rent Roll routed at `/billing/rent-roll` + `/rent-roll` redirect | ✅ Done | `App.tsx` |
-| Accounting Hub folded into routed `/accounting/{setup,periods,sync-health,reconciliation,change-log}` | ✅ Done | `AccountingHub.tsx`, `AccountingOverview.tsx` |
-| `/portfolio` defanged with migration banner | ✅ Done | `PortfolioDashboard.tsx` |
-| `/reports` redirect → `/insights`; legacy `/email-automation` route restored under Communications | ✅ Done | `App.tsx` |
-| Location-picker scoping for the 5 main entities + inventory isolation | ✅ Done (Tasks #339, #340) | API enforcement layer |
-| Z-Reports nav link | ✅ Done (commit `bf86acb`) | `AppLayout.tsx` |
-| **Web Settings shell split** — 13 in-page tabs still live inside `Settings.tsx` (only Audit Log was added as a tab) | ⏳ Partial | `apps/web/src/pages/Settings.tsx` (1309 lines) |
-| **Portal sidebar restructure** — grouped into HOME / MY MARINA / BILLING / SERVICES / COMMUNICATIONS + Account footer; Messages now in nav | ✅ Done | `apps/portal/src/components/PortalLayout.tsx` (this branch) |
-| **Admin sidebar grouping** — 4 groups + Configuration footer; `/me` page added | ✅ Done | `apps/admin/src/components/AdminLayout.tsx` (this branch) |
-| **`ui-kit` extraction** — `SubNav` and the 4 nav constants moved into `packages/ui-kit`; web imports from `@helm/ui-kit`. Sidebar / TopBar / Breadcrumb / EmptyState deferred (need design tokens first) | ⏳ Partial | `packages/ui-kit/src/components/SubNav.tsx` |
-| **Insights sub-section content** — all stubs except Overview | ⏳ Not started | `apps/web/src/pages/Insights.tsx` |
-| **Universal Report Builder** | ⏳ Not started | — |
-| **Test-pyramid build-out** | ⏳ Not started | — |
+### Information architecture
+| Item | Where it shipped |
+|---|---|
+| Web sidebar grouped into HOME / MARINA / DAILY OPS / POINT OF SALE / BACK OFFICE / PIPELINE / COMMUNICATIONS / INSIGHTS, Settings pinned to footer | Task #328 (`6f9c18c`) — pre-existing |
+| Billing nested under Marina; Back Office holds Accounting + POs + Inventory | Task #328 (`6f9c18c`) |
+| Web Settings shell — every tab gets its own `/settings/<tab>` URL; the 5 standalone `/settings/*` pages adopt the same shared SubNav; `?tab=` query strings redirect; `/audit-log` → `/settings/audit` | This branch (`0ff599e`) |
+| Portal sidebar regrouped into HOME / MY MARINA / BILLING / SERVICES / COMMUNICATIONS with an Account footer (Profile / Notifications / Security / Help); Messages promoted into nav | This branch (`30b0508`) |
+| Admin sidebar regrouped into HOME / TENANTS / REVENUE / OPERATIONS with a Configuration footer (Platform Settings, My Profile) | This branch (`30b0508`) |
+| Account stub pages for portal (4) + admin `/me` page that reads from Clerk + `useAdminMe` | This branch (`30b0508`) |
 
-What this means for the rest of the doc: the **vision and target IA below are now live across all three apps**. Phase 1 + ~60% of Phase 2 had shipped on the source branch (commit `6f9c18c`); this branch adds the rest of Phase 2's route-based Settings shell, all of Phase 3 (portal + admin restructure), and the SubNav slice of Phase 4. What remains: Insights content build-out, Universal Report Builder, the heavier ui-kit unification (Sidebar/TopBar primitives with design tokens), Settings tab file-by-file extraction, and the test-pyramid build-out.
+### Reporting & Insights
+| Item | Where it shipped |
+|---|---|
+| Insights surface broken into 8 per-section pages — Overview (KPIs + section index), Operations, Financial, Customers & CRM, Communications, Compliance & Audit, Scheduled & Saved, Custom Builder | This branch (`669e6e6`) |
+| Each section page lists a real report inventory with status badges (Live / Phase 5a / 5b / 5c) instead of a single "Coming soon" stub | This branch (`669e6e6`) |
+| `/insights/financial/sales-tax` mounts the existing Sales Tax report; old `/reports/sales-tax` redirects | This branch (`669e6e6`) |
+| Deferred Revenue page replaced with a live schedule table (totals, recognition %, per-schedule progress bars) backed by `/api/reports/deferred-revenue` | This branch (`1b8c41e`) |
+| **Universal Report Builder — catalog foundation**: `apps/api/src/services/report-catalog.ts` parses `prisma/schema.prisma` and emits a JSON catalog (112 models, every field with type/kind/optional/list/id/unique/default flags). Sensitive fields (secrets, signatures, raw webhook payloads, Stripe/Clerk IDs) flagged. Served at `GET /api/insights/catalog`. Frontend renders a two-pane catalog browser. | This branch (`c38eabb`) |
+| **Universal Report Builder — MVP engine + UI**: `apps/api/src/services/report-engine.ts` translates a `ReportSpec` to a Prisma query with hard guardrails (tenant scope, sensitive-field allowlist, limit clamp, limit+1 has-more trick). Filter ops: eq / ne / lt / lte / gt / gte / in / notIn / contains / startsWith / endsWith / isNull / isNotNull / between. `POST /api/insights/run`. Custom Builder UI has a Build tab with field checkboxes, type-aware filter ops, Run button, result table, and warning banners for ignored fields/filters. | This branch (`e27d816`) |
+| `ReportSpec` / `ReportFilter` / `ReportRunResult` types live in `@helm/shared-types`; Group-by + aggregates typed but rejected by the MVP engine | This branch (`e27d816`) |
+
+### Cross-app primitives
+| Item | Where it shipped |
+|---|---|
+| `SubNav` + `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` / `SETTINGS_SUBNAV` moved to `@helm/ui-kit`; all 15 web callsites import from the package; `react-router-dom` is a peer dep | This branch (`64f8be7`) |
+| `InsightsShell` + `ReportCard` + `ReportGrid` primitives under `apps/web/src/pages/insights/` (will graduate to ui-kit once portal/admin need them) | This branch (`669e6e6`) |
+
+### Platform admin
+| Item | Where it shipped |
+|---|---|
+| Webhooks console at `/webhooks` (Operations group). Three KPI cards for Stripe Payments / Stripe Connect / QBO delivery rates with color-coded success ratios. Tab switcher between QBO failures and Stripe payment failures with a recent-failures table. Auto-refresh every 30s. Backed by existing `/api/admin/health/system` and `/api/admin/health/system/failures`. | This branch (`819e904`) |
+
+### Marina dashboard (web) features
+| Item | Where it shipped |
+|---|---|
+| Customer Merge — backend service, route, modal, page integration. Field-level conflict resolution. Includes undo within a 15-min window. | Pre-existing on this branch's base |
+
+### What this means for the rest of the doc
+
+The **target IA below is now live across all three apps**. The original "Phased rollout" section at the bottom is preserved for archaeology; the **Next-up upgrades** section below replaces it as the planning surface going forward.
+
+---
+
+## Next-up upgrades — sized chunks
+
+Each chunk below is **one focused PR**, scoped small enough that one engineer (or one Claude session) can ship it without a planning meeting. Sizes are working-day estimates, not calendar days. Items in the same area can be parallelized across people; items within an area have ordering dependencies called out.
+
+### Reporting & Insights
+- **R1. Save / share a report view** (≈3 days). New Prisma tables `SavedReportView` and `ReportSubscription`, "Save" button on the Build tab, list page at `/insights/saved`. Surfacing in Scheduled & Saved.
+- **R2. CSV / XLSX export from Build results** (≈2 days). Wire `report-scheduler` queue, write result to R2, surface in an Export Center inside Scheduled & Saved. Async path for >1000-row results.
+- **R3. Relation traversal in the engine** (≈5 days). Dotted-path fields like `customer.firstName` and `customer.location.name`. Walk catalog relations, emit `select` graphs, cap JOIN depth at 4. Filter-on-relation as a follow-up sub-chunk.
+- **R4. Aggregates + group-by** (≈5 days). Switch the engine to `prisma.<model>.groupBy` when the spec has `groupBy` / `aggregates`. Functions: count / sum / avg / min / max.
+- **R5. AI assist on the builder** (≈3 days). Claude tool-calling that emits a `ReportSpec`. Engine validates and runs as usual; model never touches raw data.
+- **R6. Anchor Operations reports** (≈5 days each, parallelizable). Real pages for Occupancy trend, Dock-walk findings, Transient overstay, Rentals utilization — built on top of the engine + chart primitive (R7).
+- **R7. Chart primitive in `ui-kit`** (≈3 days). Wraps Recharts (or similar) for line / bar / donut. Used by anchor reports.
+- **R8. P&L / Balance Sheet / Trial Balance** (≈5 days each). Books-grade reports straight from the GL — built once the engine has aggregates + relation traversal.
+- **R9. Custom-report audit + run log** (≈2 days). `ReportRun` table; every `/api/insights/run` writes a row with spec hash, runtime, row count. Surface in Compliance & Audit > Admin Actions.
+- **R10. Saved-view permissions** (≈2 days). `reports:run-custom`, `reports:run-sensitive-fields` permissions on `CustomRole`; engine reads them.
+
+### Portal depth
+- **P1. Real `/account/profile`** (≈2 days). Read/write a `/api/portal/me` endpoint backed by the `Customer` row. Replace the stub.
+- **P2. Real `/account/notifications`** (≈3 days). UI on top of the existing `communication-prefs` API.
+- **P3. Real `/account/security`** (≈2 days). Surface Clerk's password / 2FA / session controls embedded in the portal.
+- **P4. Real `/account/help`** (≈3 days). FAQ list + "send a question to the office" form posting to the existing support-ticket API.
+- **P5. Documents hub** (`/my-marina/documents`, ≈3 days). List signed contracts, certificates, receipts. Links to `CustomerDocument` rows.
+- **P6. "My Slip"** (`/my-marina/slip`, ≈2 days). Read-only map snippet + dockmaster contact info.
+- **P7. Portal "Year in review"** (≈3 days). Small spend / usage rollups on the Dashboard and Invoices page.
+
+### Platform admin
+- **A1. Webhooks retry / replay actions** (≈2 days). `POST /api/admin/qbo-webhooks/:id/replay` and an audit-replay endpoint for Stripe; buttons on the Webhooks console rows.
+- **A2. Webhooks "all deliveries" tab** (≈2 days). Today the table only shows failures — add a tab for the full feed with a status filter.
+- **A3. `TenantDetail.tsx` breakup** (≈3 days). Split the 81 KB file into nested routes (Overview / Users / Billing / Audit / Feature Flags).
+- **A4. Tenant Deep Dive promotion** (≈1 day). Add a top-level entry point from the Tenants list — currently the route exists but is orphaned.
+- **A5. Job queue dashboard** (≈2 days). Embed Bull Board (or a thin equivalent) under admin Operations.
+
+### Notifications
+- **N1. Backend feed** (≈4 days). `Notification` table + service that fans out from existing audit events. One row per recipient.
+- **N2. Bell UI in all three top bars** (≈3 days). Unread badge, dropdown with the 10 most recent, "mark all read" action. Reads from `/api/notifications`.
+- **N3. Notification preferences** (≈2 days). Plug into P2 for the portal; add a Settings tab for staff.
+
+### Web feature gaps
+- **W1. Transient overstay queue** (≈3 days). List in `Daily Ops > Transient`. Contact actions (email / SMS) + late-fee escalation.
+- **W2. Rental pricing suggestions UI** (≈3 days). Surface the existing surge engine in a tab under `Daily Ops > Rentals` with "accept suggested rate" actions.
+- **W3. Customer card-expiry forecast page** (≈2 days). Already on the roadmap inventory under Customers & CRM — list customers whose saved cards expire in the next 60 / 90 days.
+- **W4. Settings file-by-file extraction** (≈1 day per tab, 13 tabs). Slice each tab out of `Settings.tsx` into its own component. Risk is per-tab regressions; do one at a time.
+- **W5. Insurance AI review step in portal** (≈3 days). Confirm extracted fields before save, coverage-gap warning.
+
+### `ui-kit` extraction (deferred until design tokens land)
+- **U1. Design-token pass** (≈3 days). Define color, spacing, typography tokens that span web's light theme and portal/admin's dark theme. Today's `tokens.ts` is partial.
+- **U2. `Sidebar` primitive with footer slot + theme support** (≈5 days). Replace the three bespoke sidebars (web `AppLayout`, `PortalLayout`, `AdminLayout`) one at a time.
+- **U3. `TopBar` primitive** (≈3 days). Slots for page title / location switcher / search / user chip / notifications bell.
+- **U4. `Breadcrumb` + `EmptyState`** (≈2 days each). Build when first re-used cross-app.
+- **U5. Storybook + visual-regression for ui-kit** (≈3 days). Set up Chromatic (or Playwright screenshots) — only worth it once U2–U4 land.
+
+### Testing (parallel with everything)
+- **T1. Playwright smoke per app** (≈3 days). One spec per top-level nav section. Opens every entry, asserts a known DOM marker. Catches dead links during future moves.
+- **T2. axe-core a11y scan in CI** (≈2 days). Fail on serious violations across the new shells.
+- **T3. RTL on layout shells** (≈3 days). Tests for `AppLayout` / `PortalLayout` / `AdminLayout` covering role gating, module gating, location switcher, footer slot.
+- **T4. 301-redirect regression test** (≈1 day). Assert every legacy URL (`/audit-log`, `/reports/sales-tax`, `/settings?tab=*`, `/rent-roll`, `/portfolio`) still resolves.
+- **T5. Lighthouse CI budgets** (≈2 days). TTI < 3s, LCP < 2.5s, JS bundle < 500 KB on web.
+- **T6. Multi-tenant isolation test generator** (≈3 days). For each route, assert it 403/404s on a cross-tenant ID.
+- **T7. Permission-matrix test generator** (≈3 days). Iterate every `CustomRole` permission, assert route access matches the spec.
+- **T8. Migration rehearsal in CI** (≈1 day). Run `prisma migrate deploy` against a frozen prod-schema snapshot on every PR; fail on drift.
+
+---
+
+## Left to complete
+
+Everything below is bigger than a single chunk and either depends on the chunks above or hasn't been designed yet. Roughly ordered by ROI inside each area; not all of it will (or should) ship.
+
+### Reporting depth
+- Full Operations / Financial / Customer dashboards beyond the anchor set (R6, R8) — each non-trivial domain has 3-8 more reports planned.
+- Communications reports — email deliverability, SMS volume, automation performance, suppression-list growth.
+- Compliance reports — Period Close attestations, QBO sync history, Admin Actions.
+- Universal Report Builder additions: **scheduling** (cron, recipients, run history), **subscriptions** (per-user "email me this weekly"), **computed fields** (a small whitelisted expression DSL), **per-tenant catalog overrides** (Settings > Reporting toggles).
+- Platform admin Insights revamp — MRR, churn, trial conversion, tenant benchmarks, support SLAs, reliability dashboards.
+
+### Big-rock features (from the New-Feature Catalog further down)
+- **Service / work-order system** — haul-out, launch, winterize, bottom paint. New domain; hooks into Inventory + Billing + Calendar.
+- **Two-way SMS conversations** — currently SMS is one-way notifications only.
+- **Drip / sequence email campaigns** — multi-step automations beyond single rules.
+- **Cash drawer / shift management** — POS shift open/close, over/short reporting.
+- **Slip swap / sublet** — owner sublets slip to a transient; revenue split.
+- **Waitlist auto-promote** — auto-offer to next eligible when a slip frees up.
+- **Public-facing slip application** — long-term lease widget feeding `Lead` + `WaitlistEntry`.
+- **Approvals workflow** — POs / refunds above a threshold need manager approval.
+- **Vendor portal** — vendors submit invoices, see PO status.
+- **Expense management** — staff expense submission with receipts.
+- **Gift cards / store credit** — POS-integrated, ties to Stripe + GL.
+- **Membership tiers / loyalty** — tiered pricing, perks, slip discounts.
+- **Slip-for-sale marketplace** — for marinas where slips are owned.
+- **Bank feeds / Plaid** — direct bank reconciliation without QBO.
+- **1099-NEC reporting** + **W-9 collection workflow**.
+- **Multi-currency** — for marinas in CAD / MXN / Caribbean.
+
+### Compliance, security, governance
+- **GDPR / CCPA customer export** + **right-to-be-forgotten** flow.
+- **SOC 2 evidence package** — automated control evidence collection.
+- **SSO (SAML / OIDC)** + **SCIM provisioning** for enterprise tenants.
+- **2FA enforcement policy**; **API key management UI**; **IP allowlisting** per tenant.
+- **Tenant audit packet export** — bundle audit log + period close + reconciliation for auditors.
+
+### AI-powered (Anthropic key already configured)
+- **Natural-language report builder** (R5 above is the wiring; this is the prompt + tool design).
+- **Dock-walk voice notes** — speech-to-text + auto-categorize issues.
+- **Smart concierge triage** — classify and route concierge requests; suggest replies.
+- **Lead scoring + next-best-action**.
+- **Churn prediction**.
+- **Invoice line-item categorization** — auto-suggest GL category.
+- **Email draft assistant** with tone presets.
+- **Insurance AI v2** — coverage-gap warnings, review/correct extracted fields.
+
+### Mobile & portfolio
+- **Mobile staff PWA** — expand offline support beyond dock walks to transient check-in, ramp tickets, POS.
+- **Native iOS / Android customer app** — wrap the PWA or build native; Wallet pass + push.
+- **Portfolio app / section** — for owners of multiple marinas; current `/portfolio` is a stub.
+- **Tenant benchmarks** (admin) — anonymized cross-tenant percentiles.
+- **Group billing / consolidation** — single invoice across a customer's boats at multiple locations.
+
+### Internationalization & accessibility
+- **i18n framework** — start with en-US, structure for future locales.
+- **WCAG 2.1 AA compliance pass** — color contrast, keyboard nav, ARIA on every shell.
+- **High-contrast / dark mode polish** for web + portal (admin is already dark).
+- **Print stylesheets** for invoices, reports, work orders.
+
+### Hardware & integrations
+- **Smart gate / lock access** — issue and revoke keys; webhooks from the hardware.
+- **Pedestal metering wrap-up** — power / water with billing.
+- **License plate recognition for ramp** — auto-create tickets.
+- **Fuel pump SCADA / Veeder-Root integration** — auto-import sales.
+- **Public REST + webhook API for tenants** — first-party integrations.
+- **Zapier / Make integration**.
+- **Slack / Teams notifications** for staff channel pings.
+- **DocuSign embed** — alternative to native eSign.
+
+### Quality & ops
+- **Synthetic monitoring** — staging + prod uptime checks.
+- **Slow-query log surfacer** — pg_stat_statements top-10 panel under admin Operations.
+- **Error budget / SLO dashboard** — paired with Sentry.
+- **Chaos / resilience testing** — Redis / QBO / Stripe / R2 outages.
+- **PDF / export determinism** — hash-stable PDFs for invoices and reports.
 
 ---
 
