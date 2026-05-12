@@ -14,3 +14,4 @@ export * from './concierge.js';
 export * from './transient.js';
 export * from './ramp.js';
 export * from './date-only.js';
+export * from './insights-builder.js';
