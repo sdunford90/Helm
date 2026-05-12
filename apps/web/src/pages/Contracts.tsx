@@ -454,7 +454,12 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const selectedCustomer = customers.find((c) => c.id === customerId);
   const availableBoats = selectedCustomer?.boats ?? [];
   const selectedSlip = slips.find((s) => s.id === slipId);
-  const eligibleRates = (ratesResp?.data ?? []).filter((r) => {
+  const allRates = ratesResp?.data ?? [];
+  const eligibleRates = allRates.filter((r) => {
+    // Always keep the currently-selected plan in the list, even if a
+    // later slip pick would otherwise filter it out — otherwise the
+    // picker visually clears while the id is still in form state.
+    if (r.id === dockageRateId) return true;
     if (!r.active) return false;
     // Slip-based filtering only kicks in once a slip is selected; before
     // that, show all active plans (still respecting effective dates) so
@@ -471,6 +476,13 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
     if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
     return true;
   });
+  const selectedPlan = allRates.find((r) => r.id === dockageRateId) ?? null;
+  const selectedPlanMismatch = !!(
+    selectedPlan && selectedSlip && (
+      (selectedSlip.locationId && selectedPlan.locationId !== selectedSlip.locationId) ||
+      (selectedSlip.slipType && selectedPlan.slipType !== selectedSlip.slipType)
+    )
+  );
 
   // Plan cadence is authoritative: picking a plan overwrites both the
   // rate and the billing cycle to match the plan, mirroring server
@@ -596,9 +608,14 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
                 inputStyle={st.input}
                 title="Drives GL account + tax class on invoices"
               />
-              {slipId && eligibleRates.length === 0 && (
+              {slipId && eligibleRates.filter((r) => r.id !== dockageRateId).length === 0 && (
                 <span style={{ fontSize: '12px', color: '#B45309' }}>
                   No active rate plan matches this slip — billing will use the legacy lookup.
+                </span>
+              )}
+              {selectedPlanMismatch && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  Selected plan doesn't match the chosen slip's location/type — pick a different plan or change the slip.
                 </span>
               )}
             </div>
