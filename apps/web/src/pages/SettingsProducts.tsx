@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 import {
   AlertTriangle, Settings, Package,
   Anchor, DollarSign, Edit2, Check, X, ExternalLink,
@@ -1332,11 +1331,9 @@ export default function SettingsProducts() {
   const hasGlAccounts = data?.hasGlAccounts ?? false;
 
   return (
-    <div style={s.page}>
-      <SubNav items={SETTINGS_SUBNAV} />
-
+    <>
       <div style={s.header}>
-        <h1 style={s.title} className="helm-page-title">Products &amp; Revenue</h1>
+        <h2 style={{ ...s.title, fontSize: 24 }} className="helm-page-title">Products &amp; Revenue</h2>
         <p style={s.subtitle}>
           Assign GL accounts to each product and service type to ensure revenue posts to the correct accounts.
         </p>
@@ -1728,6 +1725,6 @@ export default function SettingsProducts() {
           onSave={saveServiceFee}
         />
       ) : null}
-    </div>
+    </>
   );
 }

@@ -28,5 +28,6 @@ export {
   ACCOUNTING_SUBNAV,
   INSIGHTS_SUBNAV,
   SETTINGS_SUBNAV,
+  SETTINGS_SECTIONS,
 } from './components/SubNav';
-export type { SubNavProps, SubNavItem } from './components/SubNav';
+export type { SubNavProps, SubNavItem, SettingsSection, SettingsLeaf } from './components/SubNav';

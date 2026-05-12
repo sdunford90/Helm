@@ -16,7 +16,6 @@ import {
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
 import AuditLog from './AuditLog';
-import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 
@@ -286,56 +285,61 @@ export default function Settings() {
   const location = useLocation();
   type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email' | 'audit';
 
-  // Path-based tab routing. The in-page "billing" tab (Payment Terms) is
-  // routed at /settings/payment-terms to avoid colliding with the standalone
-  // /settings/billing (SaaS subscription) page rendered by SettingsBilling.tsx.
+  // S1: Two-level Settings IA. Path is now /settings/<section>/<leaf>;
+  // SettingsLayout renders the section + leaf nav and Settings.tsx
+  // dispatches on path to render only the relevant tab body.
+  //
+  // The legacy flat URLs (/settings/profile, /settings/audit, etc.) are
+  // redirected in App.tsx; the ?tab= query-string redirect also still
+  // honors the old keys for shareable links.
   const PATH_TO_TAB: Record<string, SettingsTab> = {
-    '/settings': 'profile',
-    '/settings/profile': 'profile',
-    '/settings/branding': 'branding',
-    '/settings/payment-terms': 'billing',
-    '/settings/team': 'team',
-    '/settings/roles': 'roles',
-    '/settings/advanced': 'advanced',
-    '/settings/modules': 'modules',
-    '/settings/locations': 'locations',
-    '/settings/tax': 'tax',
-    '/settings/categories': 'categories',
-    '/settings/terminal': 'terminal',
-    '/settings/email': 'email',
-    '/settings/audit': 'audit',
+    '/settings/marina/profile': 'profile',
+    '/settings/marina/branding': 'branding',
+    // Domain + API Keys + Webhooks-API currently piggyback on the
+    // advanced tab until S2–S6 extract those slices into their own
+    // dedicated files. Both URLs render the same JSX so the nav
+    // highlights the right leaf even while content overlaps.
+    '/settings/marina/domain': 'advanced',
+    '/settings/integrations/api': 'advanced',
+    '/settings/team/members': 'team',
+    '/settings/team/roles': 'roles',
+    '/settings/team/audit': 'audit',
+    '/settings/payments/terms': 'billing',
+    '/settings/payments/stripe': 'locations',
+    '/settings/payments/card-readers': 'terminal',
+    '/settings/catalog/categories': 'categories',
+    '/settings/catalog/modules': 'modules',
+    '/settings/integrations/email': 'email',
   };
   const TAB_TO_PATH: Record<SettingsTab, string> = {
-    profile: '/settings/profile',
-    branding: '/settings/branding',
-    billing: '/settings/payment-terms',
-    team: '/settings/team',
-    roles: '/settings/roles',
-    advanced: '/settings/advanced',
-    modules: '/settings/modules',
-    locations: '/settings/locations',
-    tax: '/settings/tax',
-    categories: '/settings/categories',
-    terminal: '/settings/terminal',
-    email: '/settings/email',
-    audit: '/settings/audit',
+    profile: '/settings/marina/profile',
+    branding: '/settings/marina/branding',
+    advanced: '/settings/marina/domain',
+    billing: '/settings/payments/terms',
+    team: '/settings/team/members',
+    roles: '/settings/team/roles',
+    locations: '/settings/payments/stripe',
+    modules: '/settings/catalog/modules',
+    tax: '/settings/payments/tax',
+    categories: '/settings/catalog/categories',
+    terminal: '/settings/payments/card-readers',
+    email: '/settings/integrations/email',
+    audit: '/settings/team/audit',
   };
 
-  // Honor legacy `?tab=` query strings (and old `tab=catalog` / `tab=integrations`
-  // deep links) by redirecting to the new path-based routes once on mount.
+  // Legacy `?tab=` deep-link redirects (old single-page URL scheme).
   const tabFromUrl = searchParams.get('tab');
   React.useEffect(() => {
     if (tabFromUrl === 'catalog') {
-      navigate('/settings/products', { replace: true });
+      navigate('/settings/catalog/products', { replace: true });
       return;
     }
     if (tabFromUrl === 'integrations') {
-      navigate('/settings/locations', { replace: true });
+      navigate('/settings/payments/stripe', { replace: true });
       return;
     }
     if (tabFromUrl && tabFromUrl in TAB_TO_PATH) {
-      const target = TAB_TO_PATH[tabFromUrl as SettingsTab];
-      navigate(target, { replace: true });
+      navigate(TAB_TO_PATH[tabFromUrl as SettingsTab], { replace: true });
     }
   }, [tabFromUrl, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1339,13 +1343,10 @@ export default function Settings() {
   };
 
   return (
-    <div style={st.page}>
-      <h1 style={st.title} className="helm-page-title">Settings</h1>
-      <hr style={st.divider} />
-
+    <>
+      {/* Outer chrome (h1, divider, section + leaf nav) is rendered by
+          SettingsLayout. This file only emits the active tab body. */}
       {savedMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{savedMsg}</div>}
-
-      <SubNav items={SETTINGS_SUBNAV} />
 
       {/* Marina Profile */}
       {tab === 'profile' && (
@@ -2932,6 +2933,6 @@ export default function Settings() {
           )}
         </>
       )}
-    </div>
+    </>
   );
 }

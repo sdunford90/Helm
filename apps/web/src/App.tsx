@@ -26,11 +26,13 @@ import DockWalkRunner from './pages/DockWalkRunner';
 import Announcements from './pages/Announcements';
 import EmailAutomation from './pages/EmailAutomation';
 import Settings from './pages/Settings';
+import SettingsLayout from './components/SettingsLayout';
 import SettingsBilling from './pages/SettingsBilling';
 import SettingsTaxRates from './pages/SettingsTaxRates';
 import SettingsProducts from './pages/SettingsProducts';
 import SettingsPosDiscounts from './pages/SettingsPosDiscounts';
 import QuickBooksSetup from './pages/QuickBooksSetup';
+import TeamApiKeys from './pages/settings/TeamApiKeys';
 import AccountingHub from './pages/AccountingHub';
 import AccountingOverview from './pages/AccountingOverview';
 import ReportsSalesTax from './pages/ReportsSalesTax';
@@ -113,32 +115,59 @@ function AppRoutes() {
         <Route path="/transient" element={<Transient />} />
         <Route path="/ramp" element={<Ramp />} />
         <Route path="/concierge" element={<Concierge />} />
-        <Route path="/audit-log" element={<Navigate to="/settings/audit" replace />} />
+        <Route path="/audit-log" element={<Navigate to="/settings/team/audit" replace />} />
         <Route path="/email-automation" element={<EmailAutomation />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
-        {/* Settings — 13 in-page tabs are routed via the Settings shell which
-            reads the current path to pick the active tab. The 5 standalone
-            settings pages each render the same SETTINGS_SUBNAV so the
-            navigation feels unified. */}
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/settings/profile" element={<Settings />} />
-        <Route path="/settings/branding" element={<Settings />} />
-        <Route path="/settings/payment-terms" element={<Settings />} />
-        <Route path="/settings/team" element={<Settings />} />
-        <Route path="/settings/roles" element={<Settings />} />
-        <Route path="/settings/advanced" element={<Settings />} />
-        <Route path="/settings/modules" element={<Settings />} />
-        <Route path="/settings/locations" element={<Settings />} />
-        <Route path="/settings/tax" element={<Settings />} />
-        <Route path="/settings/categories" element={<Settings />} />
-        <Route path="/settings/terminal" element={<Settings />} />
-        <Route path="/settings/email" element={<Settings />} />
-        <Route path="/settings/audit" element={<Settings />} />
-        <Route path="/settings/billing" element={<SettingsBilling />} />
-        <Route path="/settings/tax-rates" element={<SettingsTaxRates />} />
-        <Route path="/settings/products" element={<SettingsProducts />} />
-        <Route path="/settings/pos-discounts" element={<SettingsPosDiscounts />} />
-        <Route path="/settings/quickbooks" element={<QuickBooksSetup />} />
+        {/* Settings — five sections, 19 leaves, two-level nav. The layout
+            renders the section + leaf strips; each leaf route renders just
+            the content for that leaf. */}
+        <Route path="/settings" element={<Navigate to="/settings/marina/profile" replace />} />
+        <Route path="/settings" element={<SettingsLayout />}>
+          {/* Marina */}
+          <Route path="marina/profile" element={<Settings />} />
+          <Route path="marina/branding" element={<Settings />} />
+          <Route path="marina/domain" element={<Settings />} />
+          {/* Team */}
+          <Route path="team/members" element={<Settings />} />
+          <Route path="team/roles" element={<Settings />} />
+          <Route path="team/api-keys" element={<TeamApiKeys />} />
+          <Route path="team/audit" element={<Settings />} />
+          {/* Pricing & Payments */}
+          <Route path="payments/terms" element={<Settings />} />
+          <Route path="payments/stripe" element={<Settings />} />
+          <Route path="payments/tax" element={<SettingsTaxRates />} />
+          <Route path="payments/card-readers" element={<Settings />} />
+          <Route path="payments/discounts" element={<SettingsPosDiscounts />} />
+          <Route path="payments/subscription" element={<SettingsBilling />} />
+          {/* Catalog */}
+          <Route path="catalog/products" element={<SettingsProducts />} />
+          <Route path="catalog/categories" element={<Settings />} />
+          <Route path="catalog/modules" element={<Settings />} />
+          {/* Integrations */}
+          <Route path="integrations/quickbooks" element={<QuickBooksSetup />} />
+          <Route path="integrations/email" element={<Settings />} />
+          <Route path="integrations/api" element={<Settings />} />
+        </Route>
+        {/* Legacy flat-URL redirects — every old /settings/<X> route lands
+            on its new home in the section/leaf tree. */}
+        <Route path="/settings/profile" element={<Navigate to="/settings/marina/profile" replace />} />
+        <Route path="/settings/branding" element={<Navigate to="/settings/marina/branding" replace />} />
+        <Route path="/settings/payment-terms" element={<Navigate to="/settings/payments/terms" replace />} />
+        <Route path="/settings/team" element={<Navigate to="/settings/team/members" replace />} />
+        <Route path="/settings/roles" element={<Navigate to="/settings/team/roles" replace />} />
+        <Route path="/settings/advanced" element={<Navigate to="/settings/marina/domain" replace />} />
+        <Route path="/settings/modules" element={<Navigate to="/settings/catalog/modules" replace />} />
+        <Route path="/settings/locations" element={<Navigate to="/settings/payments/stripe" replace />} />
+        <Route path="/settings/tax" element={<Navigate to="/settings/payments/tax" replace />} />
+        <Route path="/settings/categories" element={<Navigate to="/settings/catalog/categories" replace />} />
+        <Route path="/settings/terminal" element={<Navigate to="/settings/payments/card-readers" replace />} />
+        <Route path="/settings/email" element={<Navigate to="/settings/integrations/email" replace />} />
+        <Route path="/settings/audit" element={<Navigate to="/settings/team/audit" replace />} />
+        <Route path="/settings/billing" element={<Navigate to="/settings/payments/subscription" replace />} />
+        <Route path="/settings/tax-rates" element={<Navigate to="/settings/payments/tax" replace />} />
+        <Route path="/settings/products" element={<Navigate to="/settings/catalog/products" replace />} />
+        <Route path="/settings/pos-discounts" element={<Navigate to="/settings/payments/discounts" replace />} />
+        <Route path="/settings/quickbooks" element={<Navigate to="/settings/integrations/quickbooks" replace />} />
         <Route path="/settings/accounting" element={<Navigate to="/accounting/setup" replace />} />
         <Route path="/accounting" element={<AccountingOverview />} />
         <Route path="/accounting/setup" element={<AccountingHub />} />

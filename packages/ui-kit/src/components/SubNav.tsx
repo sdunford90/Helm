@@ -120,3 +120,75 @@ export const SETTINGS_SUBNAV: SubNavItem[] = [
   { path: '/settings/advanced', label: 'Advanced' },
   { path: '/settings/audit', label: 'Audit Log' },
 ];
+
+// Settings IA — five sections, each with its own leaves. Two-level nav
+// (sections at the top, leaves underneath) is rendered by SettingsLayout
+// in the web app. Every leaf has a real URL at /settings/<section>/<leaf>;
+// bare /settings redirects to /settings/marina/profile.
+export interface SettingsLeaf {
+  path: string;
+  label: string;
+}
+export interface SettingsSection {
+  key: string;
+  label: string;
+  /** Default route for the section — usually the first leaf. */
+  path: string;
+  leaves: SettingsLeaf[];
+}
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  {
+    key: 'marina',
+    label: 'Marina',
+    path: '/settings/marina/profile',
+    leaves: [
+      { path: '/settings/marina/profile', label: 'Profile' },
+      { path: '/settings/marina/branding', label: 'Branding' },
+      { path: '/settings/marina/domain', label: 'Custom Domain' },
+    ],
+  },
+  {
+    key: 'team',
+    label: 'Team',
+    path: '/settings/team/members',
+    leaves: [
+      { path: '/settings/team/members', label: 'Members' },
+      { path: '/settings/team/roles', label: 'Roles' },
+      { path: '/settings/team/api-keys', label: 'API Keys' },
+      { path: '/settings/team/audit', label: 'Audit Log' },
+    ],
+  },
+  {
+    key: 'payments',
+    label: 'Pricing & Payments',
+    path: '/settings/payments/terms',
+    leaves: [
+      { path: '/settings/payments/terms', label: 'Payment Terms' },
+      { path: '/settings/payments/stripe', label: 'Stripe Connect' },
+      { path: '/settings/payments/tax', label: 'Tax' },
+      { path: '/settings/payments/card-readers', label: 'Card Readers' },
+      { path: '/settings/payments/discounts', label: 'Discounts' },
+      { path: '/settings/payments/subscription', label: 'Subscription' },
+    ],
+  },
+  {
+    key: 'catalog',
+    label: 'Catalog',
+    path: '/settings/catalog/products',
+    leaves: [
+      { path: '/settings/catalog/products', label: 'Products & Rates' },
+      { path: '/settings/catalog/categories', label: 'Categories' },
+      { path: '/settings/catalog/modules', label: 'Modules' },
+    ],
+  },
+  {
+    key: 'integrations',
+    label: 'Integrations',
+    path: '/settings/integrations/quickbooks',
+    leaves: [
+      { path: '/settings/integrations/quickbooks', label: 'QuickBooks' },
+      { path: '/settings/integrations/email', label: 'Email Sender' },
+      { path: '/settings/integrations/api', label: 'Webhooks & API' },
+    ],
+  },
+];

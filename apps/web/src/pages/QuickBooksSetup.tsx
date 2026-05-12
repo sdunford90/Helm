@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { SubNav, SETTINGS_SUBNAV } from '@helm/ui-kit';
 import {
   RefreshCw,
   ExternalLink,
@@ -347,20 +346,12 @@ export default function QuickBooksSetup() {
 
   if (loading) {
     return (
-      <div style={s.page}>
-        <h1 style={s.title}>Settings</h1>
-        <SubNav items={SETTINGS_SUBNAV} />
-        <div style={s.subtitle}>Loading QuickBooks setup…</div>
-      </div>
+      <div style={s.subtitle}>Loading QuickBooks setup…</div>
     );
   }
 
   return (
-    <div style={s.page}>
-      <h1 style={s.title}>Settings</h1>
-
-      <SubNav items={SETTINGS_SUBNAV} />
-
+    <>
       <h2 style={{ ...s.title, fontSize: 24, marginTop: 8 }}>QuickBooks Setup</h2>
       <div style={s.subtitle}>
         Connect each location to its own QuickBooks Online company and pull its
@@ -694,6 +685,6 @@ export default function QuickBooksSetup() {
           </div>
         );
       })}
-    </div>
+    </>
   );
 }
