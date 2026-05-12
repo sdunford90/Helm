@@ -2737,14 +2737,24 @@ model InvoiceLineItemTax {
 //  CATALOG — DOCKAGE RATES
 // ==========================================================================
 
+enum BillingCadence {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+  SEASONAL
+}
+
 model DockageRate {
   id                   String          @id @default(uuid())
   tenantId             String
   locationId           String
+  name                 String?
   slipType             String
+  billingCadence       BillingCadence  @default(MONTHLY)
   monthlyRateCents     Int
   quarterlyRateCents   Int?
   annualRateCents      Int?
+  seasonalRateCents    Int?
   electricityMode      ElectricityMode @default(METERED)
   electricityRateCents Int?
   glAccountId          String?

@@ -1881,11 +1881,16 @@ router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER",
 router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
     const {
-      locationId, slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      locationId, name, slipType, billingCadence,
+      monthlyRateCents, quarterlyRateCents, annualRateCents, seasonalRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
     if (!locationId || !slipType || monthlyRateCents == null) {
       res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
+    }
+    const allowedCadences = ["MONTHLY", "QUARTERLY", "ANNUAL", "SEASONAL"] as const;
+    if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
+      res.status(400).json({ error: "Invalid billingCadence" }); return;
     }
     if (glAccountId) {
       try {
@@ -1899,10 +1904,13 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
       data: {
         tenantId: req.tenantId!,
         locationId,
+        name: name?.trim() ? String(name).trim() : null,
         slipType,
+        billingCadence: billingCadence ?? "MONTHLY",
         monthlyRateCents: Number(monthlyRateCents),
         quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null,
         annualRateCents: annualRateCents != null ? Number(annualRateCents) : null,
+        seasonalRateCents: seasonalRateCents != null ? Number(seasonalRateCents) : null,
         electricityMode: electricityMode ?? "METERED",
         electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null,
         glAccountId: glAccountId ?? null,
@@ -1950,10 +1958,15 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
     const {
-      slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      name, slipType, billingCadence,
+      monthlyRateCents, quarterlyRateCents, annualRateCents, seasonalRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
       confirm,
     } = req.body;
+    const allowedCadences = ["MONTHLY", "QUARTERLY", "ANNUAL", "SEASONAL"] as const;
+    if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
+      res.status(400).json({ error: "Invalid billingCadence" }); return;
+    }
     // Deactivating keeps live contracts pointed at this plan (locked
     // rate + plan's GL mapping). It only stops appearing in pickers
     // and billing warns each cycle. Confirm step so operators see it.
@@ -1987,10 +2000,13 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const updated = await prisma.dockageRate.update({
       where: { id: req.params.id },
       data: {
+        ...(name !== undefined && { name: name?.trim() ? String(name).trim() : null }),
         ...(slipType != null && { slipType }),
+        ...(billingCadence != null && { billingCadence }),
         ...(monthlyRateCents != null && { monthlyRateCents: Number(monthlyRateCents) }),
         ...(quarterlyRateCents !== undefined && { quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null }),
         ...(annualRateCents !== undefined && { annualRateCents: annualRateCents != null ? Number(annualRateCents) : null }),
+        ...(seasonalRateCents !== undefined && { seasonalRateCents: seasonalRateCents != null ? Number(seasonalRateCents) : null }),
         ...(electricityMode != null && { electricityMode }),
         ...(electricityRateCents !== undefined && { electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null }),
         ...(glAccountId !== undefined && { glAccountId }),

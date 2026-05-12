@@ -81,31 +81,47 @@ export async function generateRecurringInvoices(
       // still returned so we can warn-and-fall-back rather than
       // silently mis-billing.
       dockageRate: {
-        select: { id: true, glAccountId: true, active: true, slipType: true, taxClass: true },
+        select: {
+          id: true, glAccountId: true, active: true, slipType: true, taxClass: true,
+          name: true, billingCadence: true, effectiveFrom: true, effectiveTo: true,
+        },
       },
     },
   });
-
-  // Filter out contracts that already have an invoice for this month.
-  // Use UTC components throughout so the month window aligns with the
-  // UTC-midnight contract dates we compare against below.
-  const currentMonth = today.getUTCMonth();
-  const currentYear = today.getUTCFullYear();
-  const monthStart = new Date(Date.UTC(currentYear, currentMonth, 1));
-  const monthEnd = new Date(
-    Date.UTC(currentYear, currentMonth + 1, 0, 23, 59, 59, 999),
-  );
 
   const results: GeneratedInvoice[] = [];
 
   for (const contract of contracts) {
     try {
-      // Check if invoice already exists for this billing period
+      // Compute the billing period containing `today` based on the
+      // contract's billingCycle (or the linked plan's SEASONAL cadence).
+      // This is what makes a quarterly contract bill once every 3
+      // months instead of every month — the previous logic always used
+      // a calendar month window which silently overbilled non-monthly
+      // contracts.
+      const period = getBillingPeriod(
+        contract.startDate,
+        contract.endDate ?? null,
+        contract.billingCycle,
+        contract.dockageRate?.billingCadence ?? null,
+        today,
+      );
+      if (!period) continue;
+      const { periodStart, periodEnd } = period;
+
+      // Don't bill a period that hasn't started yet (contract starts
+      // in a future cycle).
+      if (today < periodStart) continue;
+
+      // Skip if an invoice already exists for THIS contract for THIS
+      // billing period. The sourceType/sourceId join blocks
+      // double-billing on re-run within the same period (whether
+      // monthly, quarterly, annual, or seasonal).
       const existingInvoice = await prisma.invoice.findFirst({
         where: {
           tenantId,
           customerId: contract.customerId,
-          issuedDate: { gte: monthStart, lte: monthEnd },
+          issuedDate: { gte: periodStart, lte: periodEnd },
           lineItems: {
             some: { sourceType: "CONTRACT", sourceId: contract.id },
           },
@@ -126,20 +142,21 @@ export async function generateRecurringInvoices(
         sourceId: string;
       }[] = [];
 
-      // 1. Slip rental — billing window and contract start are both
-      // calendar values; keep both at UTC midnight so the proration check
-      // ("did this contract start mid-month?") behaves identically on
-      // every server timezone.
-      const billingStart = new Date(Date.UTC(currentYear, currentMonth, 1));
-      const billingEnd = new Date(Date.UTC(currentYear, currentMonth + 1, 0));
+      // 1. Slip rental — billing window comes from the cadence-aware
+      // period we computed above so quarterly/annual/seasonal contracts
+      // get period-aligned line items and (when needed) period-aligned
+      // proration.
+      const billingStart = periodStart;
+      const billingEnd = periodEnd;
       const contractStart = contract.startDate;
       const needsProration =
         contractStart > billingStart && contractStart <= billingEnd;
 
       const rentalAmount = needsProration
-        ? calculateProration(
+        ? calculateProrationForPeriod(
             contract.rateCents,
             contractStart,
+            billingStart,
             billingEnd,
           )
         : contract.rateCents;
@@ -155,6 +172,19 @@ export async function generateRecurringInvoices(
         if (!linkedPlan.active) {
           console.warn(
             `[billing] contract ${contract.id} uses deactivated dockage rate ${linkedPlan.id}; re-link to an active plan to silence`,
+          );
+        }
+        // Honor plan's effective window — warn (not skip) if billing
+        // is happening outside the configured dates so operators see
+        // the issue without silently producing a bad invoice.
+        if (linkedPlan.effectiveFrom && billingStart < linkedPlan.effectiveFrom) {
+          console.warn(
+            `[billing] contract ${contract.id} bills before plan ${linkedPlan.id} effectiveFrom ${linkedPlan.effectiveFrom.toISOString()}`,
+          );
+        }
+        if (linkedPlan.effectiveTo && billingStart > linkedPlan.effectiveTo) {
+          console.warn(
+            `[billing] contract ${contract.id} bills after plan ${linkedPlan.id} effectiveTo ${linkedPlan.effectiveTo.toISOString()}`,
           );
         }
         const resolved = await resolveDockageRateGlAccount(
@@ -197,13 +227,29 @@ export async function generateRecurringInvoices(
             ? slipTaxClass
             : "slip_rental");
 
+      // Use a period-aware label so quarterly/annual/seasonal lines
+      // read as "Apr 1, 2026 – Jun 30, 2026" instead of just one month.
+      // Plan cadence is authoritative when present (matches the
+      // billing-period selection above); contract cycle is the
+      // fallback for unlinked contracts.
+      const planCadence = contract.dockageRate?.billingCadence ?? null;
+      const isMultiPeriod = planCadence
+        ? planCadence !== "MONTHLY"
+        : contract.billingCycle !== "MONTHLY";
+      const periodLabel = !isMultiPeriod
+        ? billingStart.toLocaleDateString("en-US", { month: "long", year: "numeric" })
+        : `${billingStart.toISOString().slice(0, 10)} – ${billingEnd.toISOString().slice(0, 10)}`;
+
       lineItems.push({
-        description: `Slip ${contract.slip.slipNumber} — ${billingStart.toLocaleDateString("en-US", { month: "long", year: "numeric" })}${needsProration ? " (prorated)" : ""}`,
+        description: `Slip ${contract.slip.slipNumber} — ${periodLabel}${needsProration ? " (prorated)" : ""}`,
         quantity: 1,
         unitPriceCents: rentalAmount,
         taxCategory: slipTaxCategory,
         glAccountId: slipGlAccountId,
-        isDeferred: contract.billingCycle !== "MONTHLY",
+        // Non-monthly periods (including SEASONAL plans) should defer
+        // revenue across the period instead of recognizing it all on
+        // the issue date.
+        isDeferred: isMultiPeriod,
         sourceType: "CONTRACT",
         sourceId: contract.id,
       });
@@ -668,6 +714,117 @@ export async function calculateElectricity(
  * @param endDate     End of the partial period
  * @returns Prorated amount in cents
  */
+// ---------------------------------------------------------------------------
+// Cadence-aware billing period helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the billing period containing `today` for a contract.
+ *
+ * The period anchors to `contractStart` and advances by:
+ *  - 1 month for MONTHLY
+ *  - 3 months for QUARTERLY
+ *  - 6 months for SEMI_ANNUAL
+ *  - 12 months for ANNUAL
+ *  - the entire contractStart→contractEnd window for SEASONAL plans
+ *
+ * Returns null when the contract is SEASONAL but has no end date (we
+ * can't bound a season without one — operator needs to fix the contract
+ * or the plan).
+ */
+export function getBillingPeriod(
+  contractStart: Date,
+  contractEnd: Date | null,
+  billingCycle: "MONTHLY" | "QUARTERLY" | "SEMI_ANNUAL" | "ANNUAL" | string,
+  planCadence: "MONTHLY" | "QUARTERLY" | "ANNUAL" | "SEASONAL" | null,
+  today: Date,
+): { periodStart: Date; periodEnd: Date } | null {
+  // SEASONAL is plan-only (the contract enum has no SEASONAL slot).
+  // One billing period = the full contract window; bills once.
+  if (planCadence === "SEASONAL") {
+    if (!contractEnd) return null;
+    // Normalize end to end-of-day so issuedDate (a full timestamp)
+    // comparisons against the seasonal window are inclusive of the
+    // last calendar day of the season.
+    const endOfDay = new Date(contractEnd.getTime() + 24 * 60 * 60 * 1000 - 1);
+    return { periodStart: contractStart, periodEnd: endOfDay };
+  }
+
+  // Plan cadence is authoritative when present — a QUARTERLY/ANNUAL
+  // plan linked to a (potentially mis-set) MONTHLY contract still
+  // bills on the plan's cadence. Falls back to the contract cycle for
+  // unlinked contracts.
+  const effectiveCycle: string =
+    planCadence === "QUARTERLY" ? "QUARTERLY"
+    : planCadence === "ANNUAL" ? "ANNUAL"
+    : planCadence === "MONTHLY" ? "MONTHLY"
+    : billingCycle;
+
+  let monthsPerCycle = 1;
+  if (effectiveCycle === "QUARTERLY") monthsPerCycle = 3;
+  else if (effectiveCycle === "SEMI_ANNUAL") monthsPerCycle = 6;
+  else if (effectiveCycle === "ANNUAL") monthsPerCycle = 12;
+
+  const startY = contractStart.getUTCFullYear();
+  const startM = contractStart.getUTCMonth();
+  const startD = contractStart.getUTCDate();
+
+  // Build a UTC date with the anchor day clamped to the target month's
+  // length, so a contract started on Jan 31 produces Feb 28/29, Mar 31,
+  // Apr 30, etc. — instead of overflowing into the next month.
+  const anchorOn = (year: number, monthOffset: number): Date => {
+    const y = year;
+    const m = startM + monthOffset;
+    // Last day of the resulting month (handles Y/M wrap automatically).
+    const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const d = Math.min(startD, lastDay);
+    return new Date(Date.UTC(y, m, d));
+  };
+
+  // Walk cycles forward from contract start until we find the one
+  // containing `today`. Bounded loop guards against pathological inputs.
+  let cycleIndex = 0;
+  for (let i = 0; i < 600; i++) {
+    const a = anchorOn(startY, i * monthsPerCycle);
+    const b = anchorOn(startY, (i + 1) * monthsPerCycle);
+    if (today < b) {
+      cycleIndex = i;
+      // If today is before the very first anchor, stay on cycle 0
+      // (caller checks today < periodStart and skips billing).
+      if (today < a && i > 0) cycleIndex = i - 1;
+      break;
+    }
+    cycleIndex = i;
+  }
+
+  const periodStart = anchorOn(startY, cycleIndex * monthsPerCycle);
+  // periodEnd = 1ms before next periodStart, so range comparisons
+  // against `issuedDate` timestamps are inclusive of the entire period.
+  const nextPeriodStart = anchorOn(startY, (cycleIndex + 1) * monthsPerCycle);
+  const periodEnd = new Date(nextPeriodStart.getTime() - 1);
+  return { periodStart, periodEnd };
+}
+
+/**
+ * Prorate a per-period rate when a contract starts mid-period.
+ * Per-diem = rate / days-in-period; charge for actual service days.
+ */
+export function calculateProrationForPeriod(
+  rateCents: number,
+  contractStart: Date,
+  periodStart: Date,
+  periodEnd: Date,
+): number {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const totalDays =
+    Math.floor((periodEnd.getTime() - periodStart.getTime()) / msPerDay) + 1;
+  const serviceDays =
+    Math.floor((periodEnd.getTime() - contractStart.getTime()) / msPerDay) + 1;
+  if (totalDays <= 0) return rateCents;
+  const perDiem = rateCents / totalDays;
+  return Math.round(perDiem * Math.max(0, serviceDays));
+}
+
 export function calculateProration(
   rateCents: number,
   startDate: Date,

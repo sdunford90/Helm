@@ -335,7 +335,21 @@ const st: Record<string, React.CSSProperties> = {
 interface ApiBoat { id: string; name: string; }
 interface ApiCustomer { id: string; firstName: string; lastName: string; email: string | null; boats: ApiBoat[]; }
 interface ApiSlip { id: string; slipNumber: string; dockId: string; status: string; locationId?: string | null; slipType?: string | null; }
-interface ApiDockageRate { id: string; locationId: string; slipType: string; monthlyRateCents: number; electricityMode?: string | null; active: boolean; }
+interface ApiDockageRate {
+  id: string;
+  locationId: string;
+  name?: string | null;
+  slipType: string;
+  billingCadence?: 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+  monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  electricityMode?: string | null;
+  active: boolean;
+}
 interface ApiContract {
   id: string;
   status: string;
@@ -354,7 +368,7 @@ interface ApiContract {
   // Linked rate plan, hydrated by the list/get endpoint.
   // `null` means the contract was created before the link existed
   // (or the plan was deleted) — UI shows an "Unlinked" badge.
-  dockageRate?: { id: string; slipType: string; monthlyRateCents: number; active: boolean } | null;
+  dockageRate?: { id: string; name?: string | null; slipType: string; monthlyRateCents: number; active: boolean } | null;
 }
 
 const API_STATUS_MAP: Record<string, ContractStatus> = {
@@ -395,7 +409,7 @@ function mapApiContract(c: ApiContract): Contract {
     signatureStatus,
     dockageRateId: c.dockageRateId ?? c.dockageRate?.id ?? null,
     planLabel: c.dockageRate
-      ? `${c.dockageRate.slipType} · $${(c.dockageRate.monthlyRateCents / 100).toFixed(0)}/mo`
+      ? `${c.dockageRate.name ? `${c.dockageRate.name} · ` : ''}${c.dockageRate.slipType} · $${(c.dockageRate.monthlyRateCents / 100).toFixed(0)}/mo`
       : null,
     planActive: c.dockageRate ? c.dockageRate.active : undefined,
     slipLocationId: c.slip.locationId ?? null,
@@ -444,17 +458,36 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
     if (!selectedSlip) return true;
     if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
     if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    // Filter by effective dates against the contract start (if entered);
+    // when no startDate yet, compare against today so operators see only
+    // currently-effective plans. Server re-validates on POST.
+    const probe = startDate || new Date().toISOString().slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
     return true;
   });
 
-  // Auto-fill the rate from the selected plan when the operator hasn't
-  // typed one yet. Don't clobber a manually-entered rate — operators
-  // sometimes negotiate a one-off price and the plan is just for GL.
+  // Plan cadence is authoritative: picking a plan overwrites both the
+  // rate and the billing cycle to match the plan, mirroring server
+  // behavior. This prevents a stale "Monthly" form value from locking
+  // in a monthly amount on a quarterly/annual/seasonal plan.
+  const CADENCE_TO_LABEL: Record<string, string> = {
+    MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+  };
   const handlePlanChange = (val: string) => {
     setDockageRateId(val);
-    if (val && !rate) {
+    if (val) {
       const plan = eligibleRates.find((r) => r.id === val);
-      if (plan) setRate((plan.monthlyRateCents / 100).toFixed(2));
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(CADENCE_TO_LABEL[cadence] ?? 'Monthly');
+      }
     }
   };
 
@@ -560,7 +593,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
                 <option value="">{slipId ? 'Unlinked (legacy fallback)' : 'Select slip first…'}</option>
                 {eligibleRates.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
+                    {r.name ? `${r.name} · ` : ''}{r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
                   </option>
                 ))}
               </select>
@@ -685,18 +718,35 @@ function ContractDetailModal({
     if (!r.active) return false;
     if (contract.slipLocationId && r.locationId !== contract.slipLocationId) return false;
     if (contract.slipType && r.slipType !== contract.slipType) return false;
+    // Same effective-date filter as the new-contract picker, anchored
+    // to the contract's start date so re-linking on a long-running
+    // contract still surfaces plans that were valid when it began.
+    const probe = (contract.start || new Date().toISOString()).slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
     return true;
   });
 
-  // When the operator picks a different plan, auto-fill the rate
-  // field with that plan's monthly rate (the API would do this
-  // server-side too, but showing it locally lets the operator confirm
-  // before clicking Save).
+  // Plan cadence is authoritative on re-link too: pick the plan's
+  // cadence-aligned rate AND align the contract billing cycle to the
+  // plan's cadence. Mirrors server behavior in PUT /api/contracts/:id.
+  const CADENCE_TO_LABEL_EDIT: Record<string, string> = {
+    MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+  };
   const handlePlanPick = (val: string) => {
     setDockageRateId(val);
     if (val) {
       const plan = eligibleRates.find((r) => r.id === val);
-      if (plan) setRate((plan.monthlyRateCents / 100).toFixed(2));
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(CADENCE_TO_LABEL_EDIT[cadence] ?? 'Monthly');
+      }
     }
   };
 
@@ -928,7 +978,7 @@ function ContractDetailModal({
             planLabel: dockageRateId
               ? (() => {
                   const p = eligibleRates.find((r) => r.id === dockageRateId);
-                  return p ? `${p.slipType} · $${(p.monthlyRateCents / 100).toFixed(0)}/mo` : null;
+                  return p ? `${p.name ? `${p.name} · ` : ''}${p.slipType} · $${(p.monthlyRateCents / 100).toFixed(0)}/mo` : null;
                 })()
               : null,
             planActive: dockageRateId ? true : undefined,
@@ -1109,7 +1159,7 @@ function ContractDetailModal({
                     )}
                     {eligibleRates.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
+                        {r.name ? `${r.name} · ` : ''}{r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
                       </option>
                     ))}
                   </select>

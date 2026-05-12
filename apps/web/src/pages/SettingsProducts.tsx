@@ -18,19 +18,35 @@ interface GlAccount {
   locationId?: string | null;
 }
 
+type BillingCadence = 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+
 interface DockageRate {
   id: string;
   locationId: string;
+  name?: string | null;
   slipType: string;
+  billingCadence?: BillingCadence;
   monthlyRateCents: number;
   quarterlyRateCents?: number | null;
   annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
   electricityMode: string;
   electricityRateCents?: number | null;
   glAccountId?: string | null;
+  taxClass?: string | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
   active: boolean;
   location: { name: string };
 }
+
+const TAX_CLASS_OPTIONS = ['Standard', 'Tax Exempt', 'Reduced', 'Zero-Rated'];
+const CADENCE_LABELS: Record<BillingCadence, string> = {
+  MONTHLY: 'Monthly',
+  QUARTERLY: 'Quarterly',
+  ANNUAL: 'Annual',
+  SEASONAL: 'Seasonal',
+};
 
 interface ServiceFee {
   id: string;
@@ -667,8 +683,17 @@ function FlatRentalProductRow({
 interface DockageRateForm {
   id?: string;
   locationId: string;
+  name: string;
   slipType: string;
+  billingCadence: BillingCadence;
   monthlyRateCents: number | '';
+  quarterlyRateCents: number | '';
+  annualRateCents: number | '';
+  seasonalRateCents: number | '';
+  taxClass: string;
+  glAccountId: string;
+  effectiveFrom: string;
+  effectiveTo: string;
   electricityMode: 'METERED' | 'FLAT_FEE';
   electricityRateCents: number | '';
   active: boolean;
@@ -677,19 +702,30 @@ interface DockageRateForm {
 function DockageRateModal({
   initial,
   locations,
+  glAccounts,
   onClose,
   onSave,
 }: {
   initial: DockageRateForm | null;
   locations: LocationLite[];
+  glAccounts: GlAccount[];
   onClose: () => void;
   onSave: (form: DockageRateForm) => Promise<void>;
 }) {
   const [form, setForm] = useState<DockageRateForm>(
     initial ?? {
       locationId: locations[0]?.id ?? '',
+      name: '',
       slipType: '',
+      billingCadence: 'MONTHLY',
       monthlyRateCents: '',
+      quarterlyRateCents: '',
+      annualRateCents: '',
+      seasonalRateCents: '',
+      taxClass: 'Standard',
+      glAccountId: '',
+      effectiveFrom: '',
+      effectiveTo: '',
       electricityMode: 'METERED',
       electricityRateCents: '',
       active: true,
@@ -743,6 +779,16 @@ function DockageRateModal({
             </select>
           </div>
           <div style={s.field}>
+            <label style={s.label}>Plan name</label>
+            <input
+              style={s.input}
+              type="text"
+              placeholder='e.g. "2026 Summer Premium"'
+              value={form.name}
+              onChange={(e) => upd('name', e.target.value)}
+            />
+          </div>
+          <div style={s.field}>
             <label style={s.label}>Slip Type *</label>
             <input
               style={s.input}
@@ -751,6 +797,48 @@ function DockageRateModal({
               value={form.slipType}
               onChange={(e) => upd('slipType', e.target.value)}
             />
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Tax Class</label>
+            <select
+              style={s.input}
+              value={form.taxClass}
+              onChange={(e) => upd('taxClass', e.target.value)}
+            >
+              {TAX_CLASS_OPTIONS.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Revenue GL Account</label>
+            <select
+              style={s.input}
+              value={form.glAccountId}
+              onChange={(e) => upd('glAccountId', e.target.value)}
+            >
+              <option value="">— Not mapped —</option>
+              {glAccounts
+                .filter((a) => a.type === 'REVENUE')
+                .filter((a) => !form.locationId || a.locationId === form.locationId || a.locationId == null)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.accountNumber} · {a.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div style={s.field}>
+            <label style={s.label}>Billing Cadence</label>
+            <select
+              style={s.input}
+              value={form.billingCadence}
+              onChange={(e) => upd('billingCadence', e.target.value as BillingCadence)}
+            >
+              {(['MONTHLY', 'QUARTERLY', 'ANNUAL', 'SEASONAL'] as BillingCadence[]).map((c) => (
+                <option key={c} value={c}>{CADENCE_LABELS[c]}</option>
+              ))}
+            </select>
           </div>
           <div style={s.field}>
             <label style={s.label}>Monthly Rate (USD) *</label>
@@ -765,6 +853,68 @@ function DockageRateModal({
                 upd('monthlyRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
               }}
             />
+          </div>
+          {form.billingCadence === 'QUARTERLY' && (
+            <div style={s.field}>
+              <label style={s.label}>Quarterly Rate (USD)</label>
+              <input
+                style={s.input}
+                type="number" step="0.01" min="0"
+                value={form.quarterlyRateCents === '' ? '' : (Number(form.quarterlyRateCents) / 100).toFixed(2)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('quarterlyRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+                }}
+              />
+            </div>
+          )}
+          {form.billingCadence === 'ANNUAL' && (
+            <div style={s.field}>
+              <label style={s.label}>Annual Rate (USD)</label>
+              <input
+                style={s.input}
+                type="number" step="0.01" min="0"
+                value={form.annualRateCents === '' ? '' : (Number(form.annualRateCents) / 100).toFixed(2)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('annualRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+                }}
+              />
+            </div>
+          )}
+          {form.billingCadence === 'SEASONAL' && (
+            <div style={s.field}>
+              <label style={s.label}>Seasonal Rate (USD)</label>
+              <input
+                style={s.input}
+                type="number" step="0.01" min="0"
+                value={form.seasonalRateCents === '' ? '' : (Number(form.seasonalRateCents) / 100).toFixed(2)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  upd('seasonalRateCents', v === '' ? '' : Math.round(parseFloat(v) * 100));
+                }}
+              />
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div style={s.field}>
+              <label style={s.label}>Effective Start</label>
+              <input
+                style={s.input}
+                type="date"
+                value={form.effectiveFrom}
+                onChange={(e) => upd('effectiveFrom', e.target.value)}
+              />
+            </div>
+            <div style={s.field}>
+              <label style={s.label}>Effective End</label>
+              <input
+                style={s.input}
+                type="date"
+                value={form.effectiveTo}
+                onChange={(e) => upd('effectiveTo', e.target.value)}
+              />
+            </div>
           </div>
           <div style={s.field}>
             <label style={s.label}>Electricity</label>
@@ -1054,8 +1204,17 @@ export default function SettingsProducts() {
   const saveDockageRate = async (form: DockageRateForm) => {
     const payload = {
       locationId: form.locationId,
+      name: form.name.trim() || null,
       slipType: form.slipType.trim(),
+      billingCadence: form.billingCadence,
       monthlyRateCents: Number(form.monthlyRateCents),
+      quarterlyRateCents: form.quarterlyRateCents === '' ? null : Number(form.quarterlyRateCents),
+      annualRateCents: form.annualRateCents === '' ? null : Number(form.annualRateCents),
+      seasonalRateCents: form.seasonalRateCents === '' ? null : Number(form.seasonalRateCents),
+      taxClass: form.taxClass || 'Standard',
+      glAccountId: form.glAccountId || null,
+      effectiveFrom: form.effectiveFrom || null,
+      effectiveTo: form.effectiveTo || null,
       electricityMode: form.electricityMode,
       electricityRateCents: form.electricityMode === 'FLAT_FEE' && form.electricityRateCents !== ''
         ? Number(form.electricityRateCents)
@@ -1270,8 +1429,11 @@ export default function SettingsProducts() {
           <thead>
             <tr>
               <th style={s.th}>Location</th>
+              <th style={s.th}>Plan</th>
               <th style={s.th}>Slip Type</th>
+              <th style={s.th}>Cadence</th>
               <th style={s.th}>Monthly Rate</th>
+              <th style={s.th}>Effective</th>
               <th style={s.th}>Electricity</th>
               <th style={s.th}>GL Account (Revenue)</th>
               <th style={s.th}>Actions</th>
@@ -1280,7 +1442,7 @@ export default function SettingsProducts() {
           <tbody>
             {dockageRates.length === 0 ? (
               <tr>
-                <td colSpan={6} style={s.emptyRow}>
+                <td colSpan={9} style={s.emptyRow}>
                   No dockage rates configured. Click "Add rate" to create one.
                 </td>
               </tr>
@@ -1291,12 +1453,28 @@ export default function SettingsProducts() {
                     <span style={{ fontSize: '13px', color: '#475569' }}>{rate.location.name}</span>
                   </td>
                   <td style={s.td}>
+                    <span style={{ fontSize: '13px', color: '#0A2342', fontWeight: 600 }}>
+                      {rate.name || <span style={{ color: '#94A3B8', fontWeight: 400 }}>—</span>}
+                    </span>
+                  </td>
+                  <td style={s.td}>
                     <span style={{ ...s.badge, backgroundColor: '#E0F2FE', color: '#0369A1' }}>
                       {rate.slipType}
                     </span>
                   </td>
                   <td style={s.td}>
+                    <span style={{ fontSize: '12px', color: '#475569' }}>
+                      {CADENCE_LABELS[(rate.billingCadence ?? 'MONTHLY') as BillingCadence]}
+                    </span>
+                  </td>
+                  <td style={s.td}>
                     ${(rate.monthlyRateCents / 100).toFixed(2)}/mo
+                  </td>
+                  <td style={s.td}>
+                    <span style={{ fontSize: '12px', color: '#64748B' }}>
+                      {rate.effectiveFrom ? rate.effectiveFrom.slice(0, 10) : '—'}
+                      {rate.effectiveTo ? ` → ${rate.effectiveTo.slice(0, 10)}` : ''}
+                    </span>
                   </td>
                   <td style={s.td}>
                     <span style={{ ...s.badge, backgroundColor: '#F0FDF4', color: '#16A34A' }}>
@@ -1322,8 +1500,17 @@ export default function SettingsProducts() {
                         setEditingDockage({
                           id: rate.id,
                           locationId: rate.locationId,
+                          name: rate.name ?? '',
                           slipType: rate.slipType,
+                          billingCadence: (rate.billingCadence ?? 'MONTHLY') as BillingCadence,
                           monthlyRateCents: rate.monthlyRateCents,
+                          quarterlyRateCents: rate.quarterlyRateCents ?? '',
+                          annualRateCents: rate.annualRateCents ?? '',
+                          seasonalRateCents: rate.seasonalRateCents ?? '',
+                          taxClass: rate.taxClass ?? 'Standard',
+                          glAccountId: rate.glAccountId ?? '',
+                          effectiveFrom: rate.effectiveFrom ? rate.effectiveFrom.slice(0, 10) : '',
+                          effectiveTo: rate.effectiveTo ? rate.effectiveTo.slice(0, 10) : '',
                           electricityMode: (rate.electricityMode === 'FLAT_FEE' ? 'FLAT_FEE' : 'METERED'),
                           electricityRateCents: rate.electricityRateCents ?? '',
                           active: rate.active,
@@ -1534,6 +1721,7 @@ export default function SettingsProducts() {
         <DockageRateModal
           initial={editingDockage}
           locations={data?.locations ?? []}
+          glAccounts={glAccounts}
           onClose={() => { setShowDockageModal(false); setEditingDockage(null); }}
           onSave={saveDockageRate}
         />

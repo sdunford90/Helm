@@ -529,7 +529,11 @@ router.get(
             boat: { select: { id: true, name: true } },
             // Plan label + active flag for the list "Unlinked" badge.
             dockageRate: {
-              select: { id: true, slipType: true, monthlyRateCents: true, active: true },
+              select: {
+                id: true, name: true, slipType: true,
+                monthlyRateCents: true, billingCadence: true,
+                effectiveFrom: true, effectiveTo: true, active: true,
+              },
             },
           },
         }),
@@ -582,8 +586,12 @@ router.get(
           dockageRate: {
             select: {
               id: true,
+              name: true,
               slipType: true,
+              billingCadence: true,
               monthlyRateCents: true,
+              effectiveFrom: true,
+              effectiveTo: true,
               active: true,
               taxClass: true,
             },
@@ -657,6 +665,7 @@ router.post(
       let linkedPlanForDefaults: {
         monthlyRateCents: number;
         electricityMode: "FLAT_FEE" | "METERED";
+        billingCycle: "MONTHLY" | "QUARTERLY" | "ANNUAL" | null;
       } | null = null;
       if (data.dockageRateId) {
         const plan = await prisma.dockageRate.findFirst({
@@ -667,11 +676,34 @@ router.post(
             slipType: true,
             active: true,
             monthlyRateCents: true,
+            quarterlyRateCents: true,
+            annualRateCents: true,
+            seasonalRateCents: true,
+            billingCadence: true,
+            effectiveFrom: true,
+            effectiveTo: true,
             electricityMode: true,
           },
         });
         if (!plan) {
           throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        // Reject contracts whose start date falls outside the plan's
+        // effective window — operators should pick a different plan
+        // (or extend this one) rather than locking in the wrong rate.
+        if (plan.effectiveFrom && data.startDate < plan.effectiveFrom) {
+          throw appError(
+            `Rate plan is not yet effective on ${data.startDate.toISOString().slice(0, 10)} (starts ${plan.effectiveFrom.toISOString().slice(0, 10)})`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        if (plan.effectiveTo && data.startDate > plan.effectiveTo) {
+          throw appError(
+            `Rate plan ended on ${plan.effectiveTo.toISOString().slice(0, 10)}; pick a current plan`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
         }
         if (slip.locationId && plan.locationId !== slip.locationId) {
           throw appError(
@@ -694,16 +726,41 @@ router.post(
             "DOCKAGE_RATE_INACTIVE",
           );
         }
+        // Plan cadence is authoritative for the rate slot — picking
+        // off the contract's billingCycle would mean a quarterly plan
+        // accidentally linked to a monthly contract locks in the
+        // monthly rate. SEASONAL falls back to monthly when no
+        // seasonalRateCents is set.
+        const cadenceRate =
+          plan.billingCadence === "QUARTERLY" && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : plan.billingCadence === "ANNUAL" && plan.annualRateCents != null ? plan.annualRateCents
+          : plan.billingCadence === "SEASONAL" && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        // Align contract.billingCycle with plan cadence so the
+        // contract's own enum doesn't disagree with the plan in
+        // reports/UI. SEASONAL has no contract-side equivalent, so we
+        // leave the contract cycle alone (billing engine reads plan
+        // cadence directly for SEASONAL).
+        const alignedCycle =
+          plan.billingCadence === "QUARTERLY" ? "QUARTERLY"
+          : plan.billingCadence === "ANNUAL" ? "ANNUAL"
+          : plan.billingCadence === "MONTHLY" ? "MONTHLY"
+          : null;
         linkedPlanForDefaults = {
-          monthlyRateCents: plan.monthlyRateCents,
+          monthlyRateCents: cadenceRate,
           electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+          billingCycle: alignedCycle,
         };
       }
 
-      // Default from plan when caller omitted; explicit values win so
-      // off-plan negotiated rates stay locked on the contract.
+      // When a plan is linked, plan cadence is authoritative — the
+      // plan's cadence-aligned rate is persisted on the contract
+      // regardless of any caller-supplied rateCents that might disagree
+      // (a UI bug or stale form value can otherwise lock in a monthly
+      // amount on a quarterly plan, causing real revenue errors).
+      // For unlinked contracts, caller-supplied rateCents is required.
       const resolvedRateCents =
-        data.rateCents ?? linkedPlanForDefaults?.monthlyRateCents;
+        linkedPlanForDefaults?.monthlyRateCents ?? data.rateCents;
       if (resolvedRateCents == null) {
         // Belt-and-braces: refine() should have rejected this already.
         throw appError(
@@ -769,11 +826,17 @@ router.post(
       const startDate = data.startDate;
       const endDate = data.endDate ?? null;
 
+      // Plan cadence wins over caller-supplied cycle when linking, so
+      // proration + the persisted contract.billingCycle stay aligned
+      // with the plan even if the form sent a stale/wrong cycle.
+      const resolvedBillingCycle =
+        linkedPlanForDefaults?.billingCycle ?? data.billingCycle ?? "MONTHLY";
+
       // Calculate proration if mid-month start
       const proration = calculateProration(
         resolvedRateCents,
         startDate,
-        data.billingCycle ?? "MONTHLY",
+        resolvedBillingCycle,
       );
 
       // Set billing anchor to start day if not specified
@@ -792,6 +855,7 @@ router.post(
             // undefined from input; explicit caller values won earlier).
             rateCents: resolvedRateCents,
             electricityMode: resolvedElectricityMode,
+            billingCycle: resolvedBillingCycle,
             startDate,
             endDate,
             billingAnchor,
@@ -905,9 +969,13 @@ router.put(
 
       // Re-validate the link on update and capture the plan for
       // defaulting rate / electricity when the caller is just re-linking.
+      // Mirrors the POST flow: validates effective window + picks the
+      // cadence-aligned rate so a re-link to a quarterly/annual/seasonal
+      // plan defaults to the right slot, not the monthly rate.
       let linkedPlanForDefaults: {
-        monthlyRateCents: number;
+        rateCents: number;
         electricityMode: "FLAT_FEE" | "METERED";
+        billingCycle: "MONTHLY" | "QUARTERLY" | "ANNUAL" | null;
       } | null = null;
       if (data.dockageRateId) {
         const plan = await prisma.dockageRate.findFirst({
@@ -918,11 +986,34 @@ router.put(
             slipType: true,
             active: true,
             monthlyRateCents: true,
+            quarterlyRateCents: true,
+            annualRateCents: true,
+            seasonalRateCents: true,
+            billingCadence: true,
+            effectiveFrom: true,
+            effectiveTo: true,
             electricityMode: true,
           },
         });
         if (!plan) {
           throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        // Effective-window check — startDate isn't editable on PUT,
+        // so anchor on the existing contract's start.
+        const probeStart = existing.startDate;
+        if (plan.effectiveFrom && probeStart < plan.effectiveFrom) {
+          throw appError(
+            `Rate plan is not yet effective on ${probeStart.toISOString().slice(0, 10)} (starts ${plan.effectiveFrom.toISOString().slice(0, 10)})`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        if (plan.effectiveTo && probeStart > plan.effectiveTo) {
+          throw appError(
+            `Rate plan ended on ${plan.effectiveTo.toISOString().slice(0, 10)}; pick a current plan`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
         }
         const slipLoc = existing.slip?.locationId;
         const slipType = existing.slip?.slipType;
@@ -943,22 +1034,43 @@ router.put(
         if (!plan.active) {
           throw appError("Rate plan is inactive", 400, "DOCKAGE_RATE_INACTIVE");
         }
+        // Plan cadence is authoritative — picking off the contract's
+        // billingCycle would mean a quarterly plan accidentally linked
+        // to a monthly contract locks in the monthly rate.
+        const cadenceRate =
+          plan.billingCadence === "QUARTERLY" && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : plan.billingCadence === "ANNUAL" && plan.annualRateCents != null ? plan.annualRateCents
+          : plan.billingCadence === "SEASONAL" && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        // Align contract billingCycle with the plan's cadence so the
+        // contract enum doesn't drift out of sync with the linked plan.
+        const alignedCycle =
+          plan.billingCadence === "QUARTERLY" ? "QUARTERLY"
+          : plan.billingCadence === "ANNUAL" ? "ANNUAL"
+          : plan.billingCadence === "MONTHLY" ? "MONTHLY"
+          : null;
         linkedPlanForDefaults = {
-          monthlyRateCents: plan.monthlyRateCents,
+          rateCents: cadenceRate,
           electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+          billingCycle: alignedCycle,
         };
       }
 
       const persistData: Record<string, unknown> = { ...data };
 
-      // Re-link flow: inherit rate / electricity from the new plan
-      // when the caller didn't pass them. Explicit values still win.
+      // Re-link flow: plan cadence is authoritative — when the caller
+      // links to a plan, persist the plan's cadence-aligned rate and
+      // billingCycle even if the caller passed disagreeing values
+      // (prevents the UI from locking in a monthly amount on a
+      // quarterly plan due to a stale form field). Electricity mode
+      // still defers to caller intent if explicitly passed.
       if (linkedPlanForDefaults) {
-        if (data.rateCents == null) {
-          persistData.rateCents = linkedPlanForDefaults.monthlyRateCents;
-        }
+        persistData.rateCents = linkedPlanForDefaults.rateCents;
         if (data.electricityMode == null) {
           persistData.electricityMode = linkedPlanForDefaults.electricityMode;
+        }
+        if (linkedPlanForDefaults.billingCycle) {
+          persistData.billingCycle = linkedPlanForDefaults.billingCycle;
         }
       }
 
