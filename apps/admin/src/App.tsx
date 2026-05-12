@@ -8,6 +8,12 @@ import TenantDeepDive from './pages/TenantDeepDive';
 import Trials from './pages/Trials';
 import Billing from './pages/Billing';
 import Analytics from './pages/Analytics';
+import Insights from './pages/Insights';
+import InsightsOverview from './pages/insights/InsightsOverview';
+import InsightsBenchmarks from './pages/insights/InsightsBenchmarks';
+import InsightsSupport from './pages/insights/InsightsSupport';
+import InsightsReliability from './pages/insights/InsightsReliability';
+import InsightsAdoption from './pages/insights/InsightsAdoption';
 import Health from './pages/Health';
 import Support from './pages/Support';
 import PlatformSettings from './pages/PlatformSettings';
@@ -31,6 +37,14 @@ const App: React.FC = () => {
         <Route path="/trials" element={<Trials />} />
         <Route path="/billing" element={<Billing />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/insights" element={<Insights />}>
+          <Route index element={<InsightsOverview />} />
+          <Route path="benchmarks" element={<InsightsBenchmarks />} />
+          <Route path="support" element={<InsightsSupport />} />
+          <Route path="reliability" element={<InsightsReliability />} />
+          <Route path="adoption" element={<InsightsAdoption />} />
+          <Route path="cohorts" element={<Analytics />} />
+        </Route>
         <Route path="/health" element={<Health />} />
         <Route path="/support" element={<Support />} />
         <Route path="/webhooks" element={<Webhooks />} />

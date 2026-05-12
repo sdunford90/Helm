@@ -42,7 +42,9 @@ describe('POST /api/admin/tenants/:id/impersonate', () => {
       users: [ownerRow],
     });
 
-    const res = await request(app).post('/api/admin/tenants/tenant-1/impersonate');
+    const res = await request(app)
+      .post('/api/admin/tenants/tenant-1/impersonate')
+      .send({ reason: 'Investigating reported billing discrepancy' });
 
     expect(res.status).toBe(200);
     expect(res.body.token).toMatch(/^imp_/);
@@ -63,14 +65,28 @@ describe('POST /api/admin/tenants/:id/impersonate', () => {
 
   it('404s when tenant is missing', async () => {
     mockPrisma.tenant.findUnique.mockResolvedValue(null);
-    const res = await request(app).post('/api/admin/tenants/missing/impersonate');
+    const res = await request(app)
+      .post('/api/admin/tenants/missing/impersonate')
+      .send({ reason: 'customer escalation' });
     expect(res.status).toBe(404);
   });
 
   it('400s when tenant has no active owner', async () => {
     mockPrisma.tenant.findUnique.mockResolvedValue({ ...tenantRow(), users: [] });
+    const res = await request(app)
+      .post('/api/admin/tenants/tenant-1/impersonate')
+      .send({ reason: 'customer escalation' });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when no reason supplied (A11)', async () => {
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      ...tenantRow(),
+      users: [ownerRow],
+    });
     const res = await request(app).post('/api/admin/tenants/tenant-1/impersonate');
     expect(res.status).toBe(400);
+    expect(res.body.code).toBe('IMPERSONATION_REASON_REQUIRED');
   });
 });
 
@@ -80,7 +96,9 @@ describe('Public impersonation handoff', () => {
       ...tenantRow(),
       users: [ownerRow],
     });
-    const res = await request(app).post('/api/admin/tenants/tenant-1/impersonate');
+    const res = await request(app)
+      .post('/api/admin/tenants/tenant-1/impersonate')
+      .send({ reason: 'support session' });
     return res.body.token;
   }
 

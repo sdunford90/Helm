@@ -28,7 +28,7 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'Revenue',
     items: [
       { path: '/billing', label: 'Billing', icon: '$' },
-      { path: '/analytics', label: 'Analytics', icon: '◈' },
+      { path: '/insights', label: 'Insights', icon: '◈' },
     ],
   },
   {

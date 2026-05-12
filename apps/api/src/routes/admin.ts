@@ -27,6 +27,13 @@ import {
   type AnalyticsRange,
 } from "../services/cross-tenant-analytics.js";
 import {
+  getPlatformHealth,
+  getTenantBenchmarks,
+  getSupportSlaReport,
+  getReliabilityReport,
+  getAdoptionReport,
+} from "../services/admin-insights.js";
+import {
   BillingError,
   BillingLocationSelect,
   openPortalForLocation,
@@ -1243,7 +1250,51 @@ router.put("/billing/tiers/:id", async (req, res, next) => {
   }
 });
 
-//  PLATFORM ANALYTICS
+//  PLATFORM ANALYTICS / INSIGHTS
+
+// --------------------------------------------------------------------------
+// A7 — Cross-Tenant Insights sub-pages. Each call is a self-contained
+// aggregation in `services/admin-insights.ts`; the routes are thin.
+// --------------------------------------------------------------------------
+router.get("/insights/platform-health", async (_req, res, next) => {
+  try {
+    res.json(await getPlatformHealth());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/insights/tenant-benchmarks", async (_req, res, next) => {
+  try {
+    res.json(await getTenantBenchmarks());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/insights/support-sla", async (_req, res, next) => {
+  try {
+    res.json(await getSupportSlaReport());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/insights/reliability", async (_req, res, next) => {
+  try {
+    res.json(await getReliabilityReport());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/insights/adoption", async (_req, res, next) => {
+  try {
+    res.json(await getAdoptionReport());
+  } catch (err) {
+    next(err);
+  }
+});
 
 // --------------------------------------------------------------------------
 // GET /api/admin/analytics/overview — platform-wide KPIs
