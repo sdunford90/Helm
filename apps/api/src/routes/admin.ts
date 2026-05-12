@@ -16,6 +16,7 @@ import {
   publicExportView,
 } from "../services/tenant-export.js";
 import { GRACE_PERIOD_MS } from "../services/tenant-deletion.js";
+import { processDelivery as processQboDelivery } from "../services/qbo-webhook-deliveries.js";
 import {
   getCohortsReport,
   getFunnelReport,
@@ -2896,6 +2897,73 @@ router.get("/health/system/failures", async (req, res, next) => {
         occurredAt: r.createdAt.toISOString(),
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/admin/webhooks/qbo — A2: all-deliveries view (not just failures)
+// --------------------------------------------------------------------------
+router.get("/webhooks/qbo", async (req, res, next) => {
+  try {
+    const status = typeof req.query.status === "string" ? req.query.status : null;
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 100));
+    const rows = await prisma.qboWebhookDelivery.findMany({
+      where: status ? { status } : {},
+      orderBy: { receivedAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        realmId: true,
+        tenantId: true,
+        locationId: true,
+        attempts: true,
+        status: true,
+        lastError: true,
+        receivedAt: true,
+        processedAt: true,
+      },
+    });
+    const tenantNames = await loadTenantNameMap(rows.map((r) => r.tenantId));
+    res.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        tenantId: r.tenantId,
+        tenantName: r.tenantId ? tenantNames.get(r.tenantId) ?? null : null,
+        locationId: r.locationId,
+        realmId: r.realmId,
+        attempts: r.attempts,
+        status: r.status,
+        error: r.lastError,
+        receivedAt: r.receivedAt.toISOString(),
+        processedAt: r.processedAt?.toISOString() ?? null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/admin/webhooks/qbo/:id/retry — A1: replay a failed QBO delivery
+//
+// Calls processDelivery() directly without re-checking tenant scope (admin
+// console is platform-level). Returns the engine's PROCESSED / FAILED result
+// so the UI can show the outcome inline.
+// --------------------------------------------------------------------------
+router.post("/webhooks/qbo/:id/retry", async (req, res, next) => {
+  try {
+    const row = await prisma.qboWebhookDelivery.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!row) {
+      res.status(404).json({ error: "Webhook delivery not found" });
+      return;
+    }
+    const result = await processQboDelivery(req.params.id);
+    res.json(result);
   } catch (err) {
     next(err);
   }

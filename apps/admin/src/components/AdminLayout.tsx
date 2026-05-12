@@ -35,6 +35,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { path: '/health', label: 'Health', icon: '♥' },
       { path: '/webhooks', label: 'Webhooks', icon: '⚡' },
+      { path: '/queues', label: 'Queues', icon: '↻' },
       { path: '/support', label: 'Support', icon: '✉' },
       { path: '/activity', label: 'Admin Activity', icon: '◷' },
     ],

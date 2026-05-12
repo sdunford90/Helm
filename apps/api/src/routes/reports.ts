@@ -1395,5 +1395,91 @@ router.delete("/schedules/:id", async (req: Request, res: Response, next: NextFu
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/card-expiry-forecast (W3) ────────────────────────────────
+//
+// Customers whose saved cards expire within the next N months (default 6),
+// grouped by expiry month so an operator can ring through each cohort.
+// Reads from CardExpiryReminder rows that are populated by the daily sweep
+// — accurate as of the last sweep run.
+router.get("/card-expiry-forecast", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const within = Math.min(24, Math.max(1, parseInt(req.query.within as string) || 6));
+
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth() + 1;
+    const endTotal = curYear * 12 + (curMonth - 1) + within;
+    const endYear = Math.floor(endTotal / 12);
+    const endMonth = (endTotal % 12) + 1;
+
+    const rows = await prisma.cardExpiryReminder.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { expYear: { gt: curYear } },
+          { expYear: curYear, expMonth: { gte: curMonth } },
+        ],
+        AND: [{
+          OR: [
+            { expYear: { lt: endYear } },
+            { expYear: endYear, expMonth: { lte: endMonth } },
+          ],
+        }],
+      },
+      select: { customerId: true, brand: true, last4: true, expMonth: true, expYear: true },
+    });
+
+    const customerIds = Array.from(new Set(rows.map((r) => r.customerId)));
+    const customers = customerIds.length > 0
+      ? await prisma.customer.findMany({
+          where: { id: { in: customerIds }, tenantId },
+          select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true },
+        })
+      : [];
+    const custById = new Map(customers.map((c) => [c.id, c]));
+
+    // Deduplicate by (customerId, brand, last4, expMonth, expYear) — the
+    // reminders table can hold multiple SENT rows per card across the
+    // 60d/30d/0d windows.
+    const seen = new Set<string>();
+    const items: Array<{
+      customerId: string; customerName: string;
+      email: string | null; phone: string | null;
+      brand: string | null; last4: string | null;
+      expMonth: number; expYear: number; expiryLabel: string;
+    }> = [];
+    for (const r of rows) {
+      const key = `${r.customerId}:${r.brand ?? ''}:${r.last4 ?? ''}:${r.expMonth}:${r.expYear}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const c = custById.get(r.customerId);
+      const customerName = c
+        ? [c.firstName, c.lastName].filter(Boolean).join(" ") || c.company || c.email || c.id.slice(0, 8)
+        : r.customerId.slice(0, 8);
+      items.push({
+        customerId: r.customerId,
+        customerName,
+        email: c?.email ?? null,
+        phone: c?.phone ?? null,
+        brand: r.brand,
+        last4: r.last4,
+        expMonth: r.expMonth,
+        expYear: r.expYear,
+        expiryLabel: `${String(r.expMonth).padStart(2, "0")}/${r.expYear}`,
+      });
+    }
+    items.sort((a, b) => (a.expYear - b.expYear) || (a.expMonth - b.expMonth));
+
+    const buckets = new Map<string, number>();
+    for (const it of items) buckets.set(it.expiryLabel, (buckets.get(it.expiryLabel) ?? 0) + 1);
+    const summary = Array.from(buckets.entries())
+      .map(([month, count]) => ({ month, count }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    res.json({ within, totalCards: items.length, summary, items });
+  } catch (err) { next(err); }
+});
+
 export default router;
 

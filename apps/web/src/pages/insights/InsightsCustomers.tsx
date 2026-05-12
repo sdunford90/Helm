@@ -49,9 +49,10 @@ export default function InsightsCustomers() {
         />
         <ReportCard
           title="Card Expiry Forecast"
-          description="Which saved cards expire next month / quarter, with proactive outreach lists."
-          status="phase-5b"
+          description="Which saved cards expire over the next 3–24 months, with click-to-call / click-to-email contact lists for proactive outreach."
+          status="live"
           icon={CreditCard}
+          to="/insights/customers/card-expiry"
         />
       </ReportGrid>
     </InsightsShell>
