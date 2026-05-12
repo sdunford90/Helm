@@ -562,18 +562,15 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
         { barcode: { contains: query.search } },
       ];
     }
-    // Single-location mode: include products tied to this location AND
-    // tenant-wide products (locationId IS NULL) so anything not yet
-    // assigned to a specific marina is still visible.
+    // Single-location mode: only return products that belong to THIS
+    // location. We used to also include tenant-wide products
+    // (locationId IS NULL) here, but that leaked legacy unassigned
+    // products into every marina's inventory list. The
+    // 20260512000000_backfill_product_location migration assigns every
+    // remaining null-location product to each tenant's primary
+    // location so the strict filter is safe (Task #340).
     if (query.locationId) {
-      const locFilter = [
-        { locationId: query.locationId },
-        { locationId: null },
-      ];
-      where.AND = [
-        ...(Array.isArray(where.AND) ? where.AND : []),
-        { OR: locFilter },
-      ];
+      where.locationId = query.locationId;
     }
 
     // Low-stock filter is applied in JS because reorderPoint comparison is

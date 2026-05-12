@@ -91,10 +91,13 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveCogsGlAccountId).toBe('gl-cogs-cat');
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBe('gl-inv-cat');
 
-    // Confirm the where clause includes the location-OR-null filter.
+    // Confirm the where clause filters strictly by the requested location.
+    // Task #340: tenant-wide (locationId IS NULL) products are NO LONGER
+    // unioned in here — that used to leak legacy unassigned products into
+    // every marina's inventory list.
     const findManyCall = mockPrisma.product.findMany.mock.calls[0][0];
-    expect(JSON.stringify(findManyCall.where)).toContain('"locationId":"loc-1"');
-    expect(JSON.stringify(findManyCall.where)).toContain('"locationId":null');
+    expect(findManyCall.where.locationId).toBe('loc-1');
+    expect(JSON.stringify(findManyCall.where)).not.toContain('"locationId":null');
 
     // Confirm the per-location category resolver scoped its lookup correctly.
     expect(mockPrisma.productCategoryGlMapping.findMany).toHaveBeenCalledWith(
@@ -126,6 +129,43 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveRevenueGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveCogsGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBeNull();
+  });
+
+  it('does not leak products from other locations or tenant-wide products (Task #340)', async () => {
+    // Regression: in single-location mode the route used to OR in
+    // `locationId IS NULL` — which leaked every legacy tenant-wide
+    // product into every marina, AND would happily return another
+    // location's products if the underlying query had been built loosely.
+    // We exercise the where-clause shape directly here so a future
+    // refactor can't reintroduce the leak even if the mock returns rows.
+    mockPrisma.product.findMany.mockImplementation(async ({ where }: any) => {
+      // Simulate Prisma honoring the strict where: only loc-1 matches.
+      const all = [
+        buildProduct({ id: 'prod-loc-A', locationId: 'loc-1' }),
+        buildProduct({ id: 'prod-loc-B', locationId: 'loc-2' }),
+        buildProduct({ id: 'prod-tenant-wide', locationId: null }),
+      ];
+      return all.filter((p) => p.locationId === where.locationId);
+    });
+    mockPrisma.product.count.mockResolvedValue(1);
+    mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([]);
+    mockPrisma.location.findUnique.mockResolvedValue({
+      qboAccessToken: null,
+      qboRealmId: null,
+    } as any);
+
+    const res = await request(app).get('/api/inventory/products?locationId=loc-1');
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((p: any) => p.id);
+    expect(ids).toEqual(['prod-loc-A']);
+    expect(ids).not.toContain('prod-loc-B');
+    expect(ids).not.toContain('prod-tenant-wide');
+
+    const findManyCall = mockPrisma.product.findMany.mock.calls[0][0];
+    expect(findManyCall.where.locationId).toBe('loc-1');
+    // Defensive: no OR clause that smuggles in null-location rows.
+    expect(JSON.stringify(findManyCall.where)).not.toContain('"locationId":null');
   });
 
   it('returns 404 when locationId belongs to another tenant', async () => {
