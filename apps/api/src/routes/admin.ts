@@ -5932,6 +5932,9 @@ import {
   clearTenantFlag,
 } from "../services/feature-flags.js";
 
+// A8 — Tenant outbound webhook destinations.
+import { STANDARD_EVENTS, generateSigningSecret } from "../services/outbound-webhooks.js";
+
 // GET /api/admin/feature-flags/registry — the static flag catalog (no per-tenant data).
 router.get("/feature-flags/registry", (_req, res) => {
   res.json({ flags: FEATURE_FLAGS });
@@ -6007,6 +6010,124 @@ router.delete("/tenants/:id/feature-flags/:flag", allowMutations, async (req, re
       metadata: { flag: req.params.flag },
     });
     res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+// ─── A8: Tenant outbound webhook destinations + delivery log ───────────────
+
+// GET /api/admin/webhooks/events — catalog of standard event names.
+router.get("/webhooks/events", (_req, res) => {
+  res.json({ events: STANDARD_EVENTS });
+});
+
+// GET /api/admin/tenants/:id/webhooks — destinations for this tenant.
+router.get("/tenants/:id/webhooks", async (req, res, next) => {
+  try {
+    const destinations = await prisma.webhookDestination.findMany({
+      where: { tenantId: req.params.id },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ destinations });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/tenants/:id/webhooks — create destination.
+router.post("/tenants/:id/webhooks", allowMutations, async (req, res, next) => {
+  try {
+    const { name, url, events } = req.body as {
+      name?: string; url?: string; events?: unknown;
+    };
+    if (typeof name !== "string" || !name.trim()) {
+      res.status(400).json({ error: "name is required" }); return;
+    }
+    if (typeof url !== "string" || !/^https?:\/\//.test(url.trim())) {
+      res.status(400).json({ error: "url must start with http(s)://" }); return;
+    }
+    const eventList = Array.isArray(events)
+      ? events.filter((e): e is string => typeof e === "string" && STANDARD_EVENTS.includes(e as never))
+      : [];
+    if (eventList.length === 0) {
+      res.status(400).json({ error: "Pick at least one event to subscribe to" }); return;
+    }
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!tenant) { res.status(404).json({ error: "Tenant not found" }); return; }
+
+    const created = await prisma.webhookDestination.create({
+      data: {
+        tenantId: req.params.id,
+        name: name.trim(),
+        url: url.trim(),
+        signingSecret: generateSigningSecret(),
+        events: eventList,
+      },
+    });
+    res.status(201).json(created);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/admin/tenants/:id/webhooks/:destId — update name/url/events/enabled.
+router.put("/tenants/:id/webhooks/:destId", allowMutations, async (req, res, next) => {
+  try {
+    const dest = await prisma.webhookDestination.findFirst({
+      where: { id: req.params.destId, tenantId: req.params.id },
+    });
+    if (!dest) { res.status(404).json({ error: "Destination not found" }); return; }
+    const { name, url, events, enabled } = req.body as {
+      name?: unknown; url?: unknown; events?: unknown; enabled?: unknown;
+    };
+    const data: Record<string, unknown> = {};
+    if (typeof name === "string" && name.trim()) data.name = name.trim();
+    if (typeof url === "string" && /^https?:\/\//.test(url.trim())) data.url = url.trim();
+    if (Array.isArray(events)) {
+      data.events = events.filter((e): e is string =>
+        typeof e === "string" && STANDARD_EVENTS.includes(e as never),
+      );
+    }
+    if (typeof enabled === "boolean") {
+      data.enabled = enabled;
+      // Re-enabling a destination resets failure tracking.
+      if (enabled) {
+        data.consecutiveFailures = 0;
+        data.disabledAt = null;
+      }
+    }
+    const updated = await prisma.webhookDestination.update({ where: { id: dest.id }, data });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/admin/tenants/:id/webhooks/:destId — remove destination.
+router.delete("/tenants/:id/webhooks/:destId", allowMutations, async (req, res, next) => {
+  try {
+    const dest = await prisma.webhookDestination.findFirst({
+      where: { id: req.params.destId, tenantId: req.params.id },
+      select: { id: true },
+    });
+    if (!dest) { res.status(404).json({ error: "Destination not found" }); return; }
+    await prisma.webhookDestination.delete({ where: { id: dest.id } });
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/tenants/:id/webhooks/:destId/deliveries — recent log.
+router.get("/tenants/:id/webhooks/:destId/deliveries", async (req, res, next) => {
+  try {
+    const dest = await prisma.webhookDestination.findFirst({
+      where: { id: req.params.destId, tenantId: req.params.id },
+      select: { id: true },
+    });
+    if (!dest) { res.status(404).json({ error: "Destination not found" }); return; }
+    const deliveries = await prisma.webhookDelivery.findMany({
+      where: { destinationId: dest.id },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true, event: true, status: true, httpStatus: true,
+        responseSnippet: true, attempts: true, nextRetryAt: true,
+        createdAt: true, deliveredAt: true,
+      },
+    });
+    res.json({ deliveries });
   } catch (err) { next(err); }
 });
 
