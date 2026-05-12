@@ -3,7 +3,7 @@ import { z } from "zod";
 import type Stripe from "stripe";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { deleteFile as deleteFileFromStorage } from "../lib/storage.js";
+import { deleteFile as deleteFileFromStorage, getPresignedDownloadUrl } from "../lib/storage.js";
 import { requireStripe } from "../lib/stripe.js";
 
 const router: Router = Router();
@@ -172,6 +172,119 @@ router.get("/me", async (req: Request, res: Response, next: NextFunction) => {
     next(err);
   }
 });
+
+// PATCH /api/portal/me — let the customer update their own basic contact
+// fields. Restricted to a small allowlist (name, company, email, phone) —
+// sensitive PII (dl*, dob, emergencyContactJson) and back-office fields
+// (tax exemption, ACH block) stay marina-managed.
+router.patch("/me", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = z.object({
+      firstName: z.string().trim().min(1).max(120).optional(),
+      lastName: z.string().trim().min(1).max(120).optional(),
+      company: z.string().trim().max(200).nullable().optional(),
+      email: z.string().email().max(254).nullable().optional(),
+      phone: z.string().trim().max(40).nullable().optional(),
+    }).parse(req.body);
+
+    const updated = await prisma.customer.update({
+      where: { id: req.portalCustomerId! },
+      data: body,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        company: true,
+        email: true,
+        phone: true,
+        stripeCustomerId: true,
+      },
+    });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Communication preferences (P2)
+//
+// Mirrors /api/communication-prefs/:customerId on the staff side but
+// scoped to the portal customer. The (channel, category) grid is hard-coded
+// to match the staff side: channels are email + sms; categories are
+// billing, inspections, marketing, announcements. Marketing defaults to
+// opted-out; everything else defaults to opted-in.
+// ---------------------------------------------------------------------------
+
+const PORTAL_PREF_CHANNELS = ["email", "sms"] as const;
+const PORTAL_PREF_CATEGORIES = ["billing", "inspections", "marketing", "announcements"] as const;
+
+async function ensurePortalPrefs(tenantId: string, customerId: string) {
+  const existing = await prisma.communicationPreference.findMany({
+    where: { customerId },
+  });
+  if (existing.length > 0) return existing;
+  const defaults: Array<{ channel: string; category: string; optedIn: boolean }> = [];
+  for (const channel of PORTAL_PREF_CHANNELS) {
+    for (const category of PORTAL_PREF_CATEGORIES) {
+      defaults.push({ channel, category, optedIn: category !== "marketing" });
+    }
+  }
+  return prisma.$transaction(
+    defaults.map((pref) =>
+      prisma.communicationPreference.create({
+        data: { tenantId, customerId, channel: pref.channel, category: pref.category, optedIn: pref.optedIn },
+      }),
+    ),
+  );
+}
+
+router.get(
+  "/communication-prefs",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.portalCustomerId!;
+      const prefs = await ensurePortalPrefs(tenantId, customerId);
+      res.json({ prefs });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const PortalPrefsUpdateSchema = z.array(z.object({
+  channel: z.enum(PORTAL_PREF_CHANNELS),
+  category: z.enum(PORTAL_PREF_CATEGORIES),
+  optedIn: z.boolean(),
+}));
+
+router.put(
+  "/communication-prefs",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.portalCustomerId!;
+      const updates = PortalPrefsUpdateSchema.parse(req.body);
+      // Upsert by (customerId, channel, category) using a transaction.
+      await prisma.$transaction(
+        updates.map((p) =>
+          prisma.communicationPreference.upsert({
+            where: {
+              customerId_channel_category: { customerId, channel: p.channel, category: p.category },
+            },
+            create: { tenantId, customerId, channel: p.channel, category: p.category, optedIn: p.optedIn },
+            update: { optedIn: p.optedIn },
+          }),
+        ),
+      );
+      const prefs = await prisma.communicationPreference.findMany({ where: { customerId } });
+      res.json({ prefs });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // GET /api/portal/invoices — list invoices for the customer
@@ -1268,6 +1381,140 @@ router.post(
         },
       });
       res.status(201).json(message);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// My Slip (P6)
+//
+// Returns the customer's active slip assignments: dockage contracts that are
+// currently in effect (started, not ended, not terminated). For each slip
+// we surface the slip number, dock, location name + address, and a few
+// dimensions. The portal renders this as a read-only "your slot at the
+// marina" page so a slip-holder doesn't have to call to remind themselves
+// which dock they're on.
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/my-slip",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const now = new Date();
+      const contracts = await prisma.slipContract.findMany({
+        where: {
+          customerId: req.portalCustomerId!,
+          startDate: { lte: now },
+          OR: [
+            { endDate: null },
+            { endDate: { gte: now } },
+          ],
+          status: { in: ["ACTIVE", "EXPIRING"] },
+        },
+        include: {
+          slip: true,
+          boat: { select: { id: true, name: true, registrationNumber: true } },
+        },
+        orderBy: { startDate: "desc" },
+      });
+
+      // Slip has only the id columns for dock + location (no schema-level
+      // relation), so batch-fetch the names ourselves.
+      const locationIds = Array.from(new Set(
+        contracts.map((c) => c.slip?.locationId).filter((v): v is string => !!v),
+      ));
+      const locationsArr = locationIds.length > 0
+        ? await prisma.location.findMany({
+            where: { id: { in: locationIds } },
+            select: { id: true, name: true, address: true, phone: true },
+          })
+        : [];
+      const locById = new Map(locationsArr.map((l) => [l.id, l]));
+
+      res.json({
+        slips: contracts.map((c) => {
+          const loc = c.slip?.locationId ? locById.get(c.slip.locationId) ?? null : null;
+          return {
+            contractId: c.id,
+            startDate: c.startDate,
+            endDate: c.endDate,
+            slip: c.slip ? {
+              id: c.slip.id,
+              number: c.slip.slipNumber,
+              lengthFt: c.slip.lengthFt,
+              beamFt: c.slip.beamFt,
+              shorePower: c.slip.shorePower,
+              // dockId stored but no Dock model exists; surfacing the
+              // raw FK isn't useful so leave dock null until a Dock
+              // model lands.
+              dock: null as string | null,
+              location: loc ? {
+                name: loc.name,
+                address: loc.address,
+                phone: loc.phone,
+              } : null,
+            } : null,
+            boat: c.boat ? {
+              name: c.boat.name,
+              registrationNumber: c.boat.registrationNumber,
+            } : null,
+          };
+        }),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Customer documents (P5)
+//
+// Read-only listing for the portal user — signed contracts, certificates,
+// receipts. Download is gated by a presigned URL so the customer never sees
+// the raw R2 key. Upload from the portal is intentionally not part of this
+// MVP (staff side already handles document upload through /api/customers).
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/documents",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const docs = await prisma.customerDocument.findMany({
+        where: { customerId: req.portalCustomerId! },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          category: true,
+          filename: true,
+          contentType: true,
+          sizeBytes: true,
+          createdAt: true,
+        },
+      });
+      res.json({ documents: docs });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  "/documents/:id/download",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const doc = await prisma.customerDocument.findFirst({
+        where: { id: req.params.id, customerId: req.portalCustomerId! },
+        select: { storageKey: true, filename: true },
+      });
+      if (!doc) {
+        res.status(404).json({ error: "Document not found" });
+        return;
+      }
+      const url = await getPresignedDownloadUrl(doc.storageKey, 300);
+      res.json({ url, filename: doc.filename });
     } catch (err) {
       next(err);
     }

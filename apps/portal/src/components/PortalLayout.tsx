@@ -16,6 +16,7 @@ import {
   User,
   HelpCircle,
   Lock,
+  Folder,
 } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import ImpersonationBanner from './ImpersonationBanner';
@@ -40,8 +41,10 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: 'My Marina',
     items: [
+      { to: '/slip', label: 'My Slip', icon: Anchor },
       { to: '/boats', label: 'My Boats', icon: Ship },
       { to: '/insurance', label: 'Insurance', icon: Shield },
+      { to: '/documents', label: 'Documents', icon: Folder },
     ],
   },
   {

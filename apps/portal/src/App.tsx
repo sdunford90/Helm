@@ -14,6 +14,8 @@ import AccountProfile from './pages/AccountProfile';
 import AccountNotifications from './pages/AccountNotifications';
 import AccountSecurity from './pages/AccountSecurity';
 import AccountHelp from './pages/AccountHelp';
+import Documents from './pages/Documents';
+import MySlip from './pages/MySlip';
 import ThankYou from './pages/ThankYou';
 
 export default function App() {
@@ -27,8 +29,10 @@ export default function App() {
         <Route path="/invoices" element={<Invoices />} />
         <Route path="/invoices/:id" element={<InvoiceDetail />} />
         <Route path="/payments" element={<PaymentMethods />} />
+        <Route path="/slip" element={<MySlip />} />
         <Route path="/boats" element={<MyBoats />} />
         <Route path="/insurance" element={<Insurance />} />
+        <Route path="/documents" element={<Documents />} />
         <Route path="/concierge" element={<ConciergeRequests />} />
         <Route path="/waitlist" element={<WaitlistStatus />} />
         <Route path="/announcements" element={<Announcements />} />
