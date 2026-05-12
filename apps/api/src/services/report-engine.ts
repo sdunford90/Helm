@@ -16,6 +16,7 @@
 // 400 for a typo'd field.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createHash } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import {
   getReportCatalog,
@@ -141,12 +142,79 @@ function modelDelegate(modelName: string): unknown {
   return delegate;
 }
 
+// Stable-ish hash of a spec so two identical runs share a hash even though
+// their object identity is different (JSON.stringify with sorted keys).
+function hashSpec(spec: ReportSpec): string {
+  const sorted = JSON.stringify(spec, Object.keys(spec).sort());
+  return createHash("sha256").update(sorted).digest("hex").slice(0, 16);
+}
+
+async function writeRunLog(args: {
+  tenantId: string;
+  userId: string | null;
+  spec: ReportSpec;
+  result: ReportRunResult | null;
+  errorMessage: string | null;
+  startedAt: number;
+}): Promise<void> {
+  try {
+    await prisma.insightsRunLog.create({
+      data: {
+        tenantId: args.tenantId,
+        userId: args.userId,
+        specHash: hashSpec(args.spec),
+        model: args.spec.model,
+        rowCount: args.result?.rowCount ?? 0,
+        hasMore: args.result?.hasMore ?? false,
+        runtimeMs: args.result?.runtimeMs ?? Date.now() - args.startedAt,
+        warningCount: args.result?.warnings.length ?? 0,
+        errorMessage: args.errorMessage,
+        specJson: args.spec as unknown as object,
+      },
+    });
+  } catch {
+    // Audit logging is best-effort — never let a logging failure break the
+    // user-facing query. The console error already surfaces in stdout.
+  }
+}
+
+export interface RunOptions {
+  /** Caller user id, written to the audit row. */
+  userId?: string | null;
+  /**
+   * R10: when true the engine lets fields tagged `sensitive` in the catalog
+   * pass through (Stripe IDs, QBO IDs, PII like DL number). The truly
+   * non-negotiable subset (secrets, signatures, raw webhook payloads,
+   * Clerk IDs) is still blocked via ENGINE_BLOCKED_FIELDS regardless.
+   */
+  allowSensitive?: boolean;
+}
+
 export async function runReportSpec(
   spec: ReportSpec,
   tenantId: string,
+  options: RunOptions = {},
+): Promise<ReportRunResult> {
+  const startedAt = Date.now();
+  const userId = options.userId ?? null;
+  try {
+    const result = await runReportSpecInternal(spec, tenantId, startedAt, !!options.allowSensitive);
+    await writeRunLog({ tenantId, userId, spec, result, errorMessage: null, startedAt });
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await writeRunLog({ tenantId, userId, spec, result: null, errorMessage: message, startedAt });
+    throw err;
+  }
+}
+
+async function runReportSpecInternal(
+  spec: ReportSpec,
+  tenantId: string,
+  startedAt: number,
+  allowSensitive: boolean,
 ): Promise<ReportRunResult> {
   const warnings: string[] = [];
-  const startedAt = Date.now();
 
   // ─── Catalog lookup ───────────────────────────────────────────────────────
   const catalog = getReportCatalog();
@@ -173,10 +241,13 @@ export async function runReportSpec(
   // Scalar + enum fields only. Drop sensitive, engine-blocked, relation,
   // and json fields. If the caller didn't ask for a specific list, project
   // every safe scalar/enum field.
+  //
+  // R10: when allowSensitive is on, the catalog's `sensitive` flag is
+  // bypassed but ENGINE_BLOCKED_FIELDS is still absolute.
   const safeFields: CatalogField[] = model.fields.filter(
     (f) =>
       (f.kind === "scalar" || f.kind === "enum") &&
-      !f.sensitive &&
+      (allowSensitive || !f.sensitive) &&
       !ENGINE_BLOCKED_FIELDS.has(f.name) &&
       !f.isList,
   );
@@ -220,7 +291,7 @@ export async function runReportSpec(
       warnings.push(`Filter on unknown field "${filter.field}" ignored`);
       continue;
     }
-    if (field.sensitive || ENGINE_BLOCKED_FIELDS.has(field.name)) {
+    if ((field.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(field.name)) {
       warnings.push(`Filter on sensitive field "${filter.field}" ignored`);
       continue;
     }

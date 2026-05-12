@@ -56,19 +56,43 @@ export interface ReportCatalog {
   models: CatalogModel[];
 }
 
-// Field names we never want to expose to a custom report. The list is small
-// and well-known — secrets, raw third-party payloads, signature material.
+// Field names the catalog flags as sensitive. Two intersecting concepts:
+//
+//  1. Secrets & raw third-party material (hashed keys, signatures, raw
+//     webhook payloads, Clerk IDs). These overlap with the engine's
+//     ENGINE_BLOCKED_FIELDS list — they are *never* exposed, no override.
+//
+//  2. PII & high-trust references (driver-license fields, date of birth,
+//     emergency contact JSON, Stripe / QBO IDs). These are off by default
+//     but a tenant admin with `allowSensitive` can opt them in. The route
+//     computes that flag from the caller's role.
+//
+// The catalog itself doesn't distinguish between the two — both surface as
+// `sensitive: true`. The engine consults its own block list for the
+// non-overridable subset.
 const SENSITIVE_FIELD_PATTERNS = [
+  // (1) Secrets / third-party raw material
   /hashedkey/i,
   /\bsecret\b/i,
   /signature/i,
   /payloadjson/i,
+  /clerkid/i,
+  /webhooksecret/i,
+  // (2) Stripe / QBO identifiers
   /stripecharge/i,
   /stripepaymentintent/i,
   /stripecustomer/i,
   /stripesubscription/i,
-  /clerkid/i,
-  /webhooksecret/i,
+  /stripeaccount/i,
+  /qboaccountid/i,
+  /qbocustomerid/i,
+  /qbosyncref/i,
+  // (2) PII
+  /^dl[A-Z]/, // dlNumber, dlState, dlExpiry, dlPhotoUrl
+  /^dob$/i,
+  /emergencycontactjson/i,
+  /exemptioncerturl/i,
+  /\bssn\b/i,
 ];
 
 // Prisma scalar types we treat as plain values. Anything else is either a

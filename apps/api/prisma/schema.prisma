@@ -3135,3 +3135,43 @@ model PlatformSetting {
 
   @@map("platform_settings")
 }
+
+// Universal Report Builder — one row per /api/insights/run call. Used as
+// the audit feed for tenant admins and as the data source for the
+// eventual cost-warning heuristics in front of the engine.
+model InsightsRunLog {
+  id           String   @id @default(uuid())
+  tenantId     String
+  userId       String?
+  specHash     String
+  model        String
+  rowCount     Int      @default(0)
+  hasMore      Boolean  @default(false)
+  runtimeMs    Int      @default(0)
+  warningCount Int      @default(0)
+  errorMessage String?
+  specJson     Json
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@map("insights_run_log")
+}
+
+// Universal Report Builder — persisted ReportSpec + display metadata.
+// Each user can save views under their own scope; future work adds
+// sharing within a tenant.
+model SavedReportView {
+  id          String   @id @default(uuid())
+  tenantId    String
+  userId      String?
+  name        String
+  description String?
+  specJson    Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@map("saved_report_views")
+}
