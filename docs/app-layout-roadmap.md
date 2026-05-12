@@ -64,6 +64,25 @@ The **target IA below is now live across all three apps**. The original "Phased 
 
 Each chunk below is **one focused PR**, scoped small enough that one engineer (or one Claude session) can ship it without a planning meeting. Sizes are working-day estimates, not calendar days. Items in the same area can be parallelized across people; items within an area have ordering dependencies called out.
 
+### Immediate queue (current ordering)
+
+What's next, in order, based on the latest priority pass:
+
+1. **Settings clean redesign** — S1 → S2 → S3 → S4 → S5 → S6 → S7. See the dedicated *Settings — clean redesign* section below; replaces W4.
+2. **Portal depth** — P1, P2, P3 (account stubs become real), then P5, P6 (Documents hub + My Slip).
+3. **Platform admin operations** — A1 (webhook retry / replay), A2 (all-deliveries tab), A5 (job queue dashboard).
+4. **Card-expiry forecast** — W3.
+5. **Reporting follow-ups** — R3, R2, R8, and the Build UI for R1 + R3 + R4 (catalog + saved views are backend-ready; need a unified UI pass).
+
+### Settings — clean redesign
+- **S1. Layout shell + new routes** (≈2 days). New `SettingsLayout`; route tree at `/settings/<section>/<leaf>`; bare `/settings` redirects.
+- **S2. Marina section** (≈2 days). Profile / Branding / Custom Domain.
+- **S3. Team section** (≈3 days). Members / Roles / API Keys (new) / Audit Log.
+- **S4. Pricing & Payments section** (≈4 days). 6 leaves; merges Tax Jurisdictions + Tax Rates.
+- **S5. Catalog section** (≈2 days). Products & Rates / Categories / Modules.
+- **S6. Integrations section** (≈2 days). QuickBooks / Email Sender / Webhooks & API.
+- **S7. Drop the legacy `Settings.tsx`** (≈1 day). 2937-line monolith gone once leaves are migrated.
+
 ### Reporting & Insights
 - **R1. Save / share a report view** (≈3 days). New Prisma tables `SavedReportView` and `ReportSubscription`, "Save" button on the Build tab, list page at `/insights/saved`. Surfacing in Scheduled & Saved.
 - **R2. CSV / XLSX export from Build results** (≈2 days). Wire `report-scheduler` queue, write result to R2, surface in an Export Center inside Scheduled & Saved. Async path for >1000-row results.
@@ -101,7 +120,7 @@ Each chunk below is **one focused PR**, scoped small enough that one engineer (o
 - **W1. Transient overstay queue** (≈3 days). List in `Daily Ops > Transient`. Contact actions (email / SMS) + late-fee escalation.
 - **W2. Rental pricing suggestions UI** (≈3 days). Surface the existing surge engine in a tab under `Daily Ops > Rentals` with "accept suggested rate" actions.
 - **W3. Customer card-expiry forecast page** (≈2 days). Already on the roadmap inventory under Customers & CRM — list customers whose saved cards expire in the next 60 / 90 days.
-- **W4. Settings file-by-file extraction** (≈1 day per tab, 13 tabs). Slice each tab out of `Settings.tsx` into its own component. Risk is per-tab regressions; do one at a time.
+- **W4.** *(retired — superseded by the Settings clean redesign, S1–S7 above.)*
 - **W5. Insurance AI review step in portal** (≈3 days). Confirm extracted fields before save, coverage-gap warning.
 
 ### `ui-kit` extraction (deferred until design tokens land)
@@ -198,6 +217,135 @@ Everything below is bigger than a single chunk and either depends on the chunks 
 - **Error budget / SLO dashboard** — paired with Sentry.
 - **Chaos / resilience testing** — Redis / QBO / Stripe / R2 outages.
 - **PDF / export determinism** — hash-stable PDFs for invoices and reports.
+
+---
+
+## Settings — clean redesign
+
+Treat Helm as a new product and design Settings from scratch.
+
+### The problem
+
+A user opens Settings to do one of five things:
+
+1. **"This is who we are"** — name, logo, hours, domain.
+2. **"Who's on the team"** — invite people, scope what they can do.
+3. **"How money moves"** — what we charge, what we pay tax on, how cards clear.
+4. **"What we sell"** — rate plans, categories, which modules are on.
+5. **"Plumbing"** — integrations, audit, API keys.
+
+The mental model is five buckets. The page should reflect those five buckets.
+
+### Proposed IA
+
+Five sections at the top, leaves underneath. Every leaf has its own URL.
+
+```
+/settings
+│
+├── Marina
+│     ├── Profile           name, contact, address, timezone, fiscal year, operating hours
+│     ├── Branding          colors, logo, favicon, display name, tagline
+│     └── Custom Domain     CNAME + DNS verification
+│
+├── Team
+│     ├── Members           invite, role assignment, location scoping
+│     ├── Roles             custom roles + permission matrix
+│     ├── API Keys          tenant API keys, last-used, rotation
+│     └── Audit Log         search by user / record / action / date
+│
+├── Pricing & Payments
+│     ├── Payment Terms     default Net terms, late fee %, grace period, default tax rate
+│     ├── Stripe Connect    per-location card processing accounts
+│     ├── Tax               jurisdictions (state/county/city/special) + rates per category, in one place
+│     ├── Card Readers      Stripe terminal pairing per location
+│     ├── Discounts         POS auto-applied customer discounts
+│     └── Subscription      Helm's bill to the tenant (per-location SaaS tier, Stripe portal link)
+│
+├── Catalog
+│     ├── Products & Rates  dockage rates, service fees, rental products, GL mappings
+│     ├── Categories        POS / product / contract category taxonomy
+│     └── Modules           per-location feature toggles (transient, rentals, ramp, concierge)
+│
+└── Integrations
+      ├── QuickBooks        per-location QBO setup, sync controls
+      ├── Email Sender      per-tenant + per-location Resend From mailbox
+      └── Webhooks & API    outbound webhook destinations and API surface controls
+```
+
+### Why this is easier
+
+- **Five sections instead of 18 flat tabs**. Sections fit in working memory; you can scan the top nav and know roughly where to look.
+- **Names describe the job, not the page**. "Card Readers" instead of "Terminal". "Subscription" instead of "Billing" (so it doesn't collide with the customer-facing billing flow). "Tax" instead of separate "Tax Jurisdictions" and "Tax Rates" — they're one task, one page.
+- **Related work lives together**. Tax jurisdictions and rates are one page. Per-location Stripe and per-location QBO are no longer split across two different tabs. The catalog's product/category/module trio is one section.
+- **No more "Advanced" dump**. Custom domain → Marina. API keys → Team. Webhooks → Integrations. Every leaf has a real home.
+- **Routes are predictable**: `/settings/<section>/<leaf>`. Deep-linkable, shareable, no tab state to keep track of.
+
+### URL structure
+
+| Section | Leaf | URL |
+|---|---|---|
+| Marina | Profile | `/settings/marina/profile` |
+| Marina | Branding | `/settings/marina/branding` |
+| Marina | Custom Domain | `/settings/marina/domain` |
+| Team | Members | `/settings/team/members` |
+| Team | Roles | `/settings/team/roles` |
+| Team | API Keys | `/settings/team/api-keys` |
+| Team | Audit Log | `/settings/team/audit` |
+| Pricing & Payments | Payment Terms | `/settings/payments/terms` |
+| Pricing & Payments | Stripe Connect | `/settings/payments/stripe` |
+| Pricing & Payments | Tax | `/settings/payments/tax` |
+| Pricing & Payments | Card Readers | `/settings/payments/card-readers` |
+| Pricing & Payments | Discounts | `/settings/payments/discounts` |
+| Pricing & Payments | Subscription | `/settings/payments/subscription` |
+| Catalog | Products & Rates | `/settings/catalog/products` |
+| Catalog | Categories | `/settings/catalog/categories` |
+| Catalog | Modules | `/settings/catalog/modules` |
+| Integrations | QuickBooks | `/settings/integrations/quickbooks` |
+| Integrations | Email Sender | `/settings/integrations/email` |
+| Integrations | Webhooks & API | `/settings/integrations/api` |
+
+19 leaves under 5 sections. Bare `/settings` lands on `/settings/marina/profile`.
+
+### Layout pattern
+
+Two-level navigation:
+
+```
+┌─ Settings ───────────────────────────────────────────────────────────────┐
+│  [Marina] [Team] [Pricing & Payments] [Catalog] [Integrations]           │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Profile · Branding · Custom Domain                                       │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   <leaf content>                                                         │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Top strip = section. Sub-strip = leaves of the active section. Both update the URL. Top strip is visible from anywhere in Settings; the sub-strip changes per section.
+
+This matches the pattern Billing / Insights / Accounting already use, so users don't learn a new nav.
+
+### Implementation chunks
+
+The redesign is its own track, sized for delivery one leaf at a time:
+
+- **S1. Layout shell + new routes** (≈2 days). New `SettingsLayout` component renders the section + sub-strip; new route tree at `/settings/<section>/<leaf>`; bare `/settings` redirects to `/settings/marina/profile`. All 19 routes mounted but rendering thin placeholders.
+- **S2. Marina section** (≈2 days). Three leaves: Profile, Branding, Custom Domain. Each is one file under `apps/web/src/pages/settings/marina/`. Lift the current marina-profile + branding + custom-domain UI verbatim into the new files; drop the old single-page glue.
+- **S3. Team section** (≈3 days). Members, Roles, API Keys (new), Audit Log. API Keys is a new leaf surfaced from the existing `ApiKey` Prisma model. Audit Log is the existing component rendered in-shell.
+- **S4. Pricing & Payments section** (≈4 days). Six leaves. The biggest single chunk because it also merges the Tax Jurisdictions + Sales Tax Rates pages into one Tax page, and renames Subscription clearly.
+- **S5. Catalog section** (≈2 days). Lift Products & Rates (the 1736-line `SettingsProducts.tsx`), Categories (`CategoriesSettings.tsx`), Modules tab.
+- **S6. Integrations section** (≈2 days). QuickBooks (existing), Email Sender (lift), Webhooks & API (new — pulls together webhook destinations + the API key list cross-link to Team).
+- **S7. Delete the legacy monolith** (≈1 day). Drop the old `Settings.tsx` 2937-line file once every leaf is migrated. Drop the legacy `?tab=` query-string handling. Update `SETTINGS_SUBNAV` to the new 19-entry structure (or replace it with two coordinated subnav arrays).
+
+S1 first, then S2–S6 in any order, then S7. Each leaf inside a section can be split across PRs if the lift is heavy (e.g. `Products & Rates` alone is bigger than some whole sections).
+
+### What stays the same
+
+- `/api/settings/*` endpoints. Backend doesn't move.
+- All Prisma models. Pure UI/routing change.
+- The 5 sub-app routes (`SettingsBilling`, `SettingsTaxRates`, etc.) keep their underlying components — they just get re-homed under the new IA. The Tax page merges two old screens into one but reuses the same `SettingsTaxRates` logic; Subscription is the existing `SettingsBilling`.
 
 ---
 
