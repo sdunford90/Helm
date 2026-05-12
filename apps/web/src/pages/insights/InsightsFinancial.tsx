@@ -39,7 +39,7 @@ export default function InsightsFinancial() {
         <ReportCard
           title="Deferred Revenue"
           description="Schedules, recognition by period, ASC 606 alignment."
-          status="phase-5a"
+          status="live"
           icon={Clock4}
           to="/billing/deferred-revenue"
         />
