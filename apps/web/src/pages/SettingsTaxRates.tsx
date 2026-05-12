@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronRight, Loader2, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useModules } from '../context/ModulesContext';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 
 const NAVY = '#0A2342';
 
@@ -317,8 +318,10 @@ export default function SettingsTaxRates() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>Sales Tax Rates</h1>
+      <h1 style={styles.title}>Settings</h1>
       <hr style={styles.divider} />
+
+      <SubNav items={SETTINGS_SUBNAV} />
 
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Add Jurisdiction</div>

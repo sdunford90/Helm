@@ -96,3 +96,24 @@ export const INSIGHTS_SUBNAV: SubNavItem[] = [
   { path: '/insights/scheduled', label: 'Scheduled & Saved' },
   { path: '/insights/custom-builder', label: 'Custom Builder' },
 ];
+
+export const SETTINGS_SUBNAV: SubNavItem[] = [
+  { path: '/settings/profile', label: 'Marina Profile' },
+  { path: '/settings/locations', label: 'Locations' },
+  { path: '/settings/branding', label: 'Branding' },
+  { path: '/settings/team', label: 'Team' },
+  { path: '/settings/roles', label: 'Roles' },
+  { path: '/settings/billing', label: 'Subscription' },
+  { path: '/settings/payment-terms', label: 'Payment Terms' },
+  { path: '/settings/tax', label: 'Tax Jurisdictions' },
+  { path: '/settings/tax-rates', label: 'Tax Rates' },
+  { path: '/settings/categories', label: 'Categories' },
+  { path: '/settings/products', label: 'Catalog' },
+  { path: '/settings/pos-discounts', label: 'POS Discounts' },
+  { path: '/settings/quickbooks', label: 'QuickBooks' },
+  { path: '/settings/terminal', label: 'Terminal' },
+  { path: '/settings/modules', label: 'Modules' },
+  { path: '/settings/email', label: 'Email' },
+  { path: '/settings/advanced', label: 'Advanced' },
+  { path: '/settings/audit', label: 'Audit Log' },
+];

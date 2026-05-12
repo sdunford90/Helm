@@ -105,10 +105,27 @@ function AppRoutes() {
         <Route path="/transient" element={<Transient />} />
         <Route path="/ramp" element={<Ramp />} />
         <Route path="/concierge" element={<Concierge />} />
-        <Route path="/audit-log" element={<Navigate to="/settings?tab=audit" replace />} />
+        <Route path="/audit-log" element={<Navigate to="/settings/audit" replace />} />
         <Route path="/email-automation" element={<EmailAutomation />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
+        {/* Settings — 13 in-page tabs are routed via the Settings shell which
+            reads the current path to pick the active tab. The 5 standalone
+            settings pages each render the same SETTINGS_SUBNAV so the
+            navigation feels unified. */}
         <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/profile" element={<Settings />} />
+        <Route path="/settings/branding" element={<Settings />} />
+        <Route path="/settings/payment-terms" element={<Settings />} />
+        <Route path="/settings/team" element={<Settings />} />
+        <Route path="/settings/roles" element={<Settings />} />
+        <Route path="/settings/advanced" element={<Settings />} />
+        <Route path="/settings/modules" element={<Settings />} />
+        <Route path="/settings/locations" element={<Settings />} />
+        <Route path="/settings/tax" element={<Settings />} />
+        <Route path="/settings/categories" element={<Settings />} />
+        <Route path="/settings/terminal" element={<Settings />} />
+        <Route path="/settings/email" element={<Settings />} />
+        <Route path="/settings/audit" element={<Settings />} />
         <Route path="/settings/billing" element={<SettingsBilling />} />
         <Route path="/settings/tax-rates" element={<SettingsTaxRates />} />
         <Route path="/settings/products" element={<SettingsProducts />} />

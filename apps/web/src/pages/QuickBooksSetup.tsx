@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 import {
   RefreshCw,
   ExternalLink,
@@ -347,15 +348,20 @@ export default function QuickBooksSetup() {
   if (loading) {
     return (
       <div style={s.page}>
-        <h1 style={s.title}>QuickBooks Setup</h1>
-        <div style={s.subtitle}>Loading…</div>
+        <h1 style={s.title}>Settings</h1>
+        <SubNav items={SETTINGS_SUBNAV} />
+        <div style={s.subtitle}>Loading QuickBooks setup…</div>
       </div>
     );
   }
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>QuickBooks Setup</h1>
+      <h1 style={s.title}>Settings</h1>
+
+      <SubNav items={SETTINGS_SUBNAV} />
+
+      <h2 style={{ ...s.title, fontSize: 24, marginTop: 8 }}>QuickBooks Setup</h2>
       <div style={s.subtitle}>
         Connect each location to its own QuickBooks Online company and pull its
         chart of accounts. Per-location product/category/dockage/fee mappings

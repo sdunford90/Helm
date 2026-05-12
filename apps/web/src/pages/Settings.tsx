@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
@@ -16,6 +16,7 @@ import {
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
 import AuditLog from './AuditLog';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 
@@ -280,37 +281,69 @@ export default function Settings() {
   const { getToken } = useAuth();
   const { modules, setModule } = useModules();
   const { applyBranding } = useBranding();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email' | 'audit';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email', 'audit'];
-  const tabFromUrl = searchParams.get('tab');
-  // Integrations is now managed per-Location, and the Catalog editor lives at
-  // /settings/products. Old deep-links are normalized by the effect below.
-  const initialTab: SettingsTab =
-    tabFromUrl === 'integrations'
-      ? 'locations'
-      : tabFromUrl && (VALID_TABS as string[]).includes(tabFromUrl)
-        ? (tabFromUrl as SettingsTab)
-        : 'profile';
-  const [tab, setTabState] = useState<SettingsTab>(initialTab);
-  const setTab = (next: SettingsTab) => {
-    setTabState(next);
-    const sp = new URLSearchParams(searchParams);
-    sp.set('tab', next);
-    if (next !== 'locations') sp.delete('locationId');
-    setSearchParams(sp, { replace: true });
+
+  // Path-based tab routing. The in-page "billing" tab (Payment Terms) is
+  // routed at /settings/payment-terms to avoid colliding with the standalone
+  // /settings/billing (SaaS subscription) page rendered by SettingsBilling.tsx.
+  const PATH_TO_TAB: Record<string, SettingsTab> = {
+    '/settings': 'profile',
+    '/settings/profile': 'profile',
+    '/settings/branding': 'branding',
+    '/settings/payment-terms': 'billing',
+    '/settings/team': 'team',
+    '/settings/roles': 'roles',
+    '/settings/advanced': 'advanced',
+    '/settings/modules': 'modules',
+    '/settings/locations': 'locations',
+    '/settings/tax': 'tax',
+    '/settings/categories': 'categories',
+    '/settings/terminal': 'terminal',
+    '/settings/email': 'email',
+    '/settings/audit': 'audit',
+  };
+  const TAB_TO_PATH: Record<SettingsTab, string> = {
+    profile: '/settings/profile',
+    branding: '/settings/branding',
+    billing: '/settings/payment-terms',
+    team: '/settings/team',
+    roles: '/settings/roles',
+    advanced: '/settings/advanced',
+    modules: '/settings/modules',
+    locations: '/settings/locations',
+    tax: '/settings/tax',
+    categories: '/settings/categories',
+    terminal: '/settings/terminal',
+    email: '/settings/email',
+    audit: '/settings/audit',
   };
 
+  // Honor legacy `?tab=` query strings (and old `tab=catalog` / `tab=integrations`
+  // deep links) by redirecting to the new path-based routes once on mount.
+  const tabFromUrl = searchParams.get('tab');
   React.useEffect(() => {
     if (tabFromUrl === 'catalog') {
       navigate('/settings/products', { replace: true });
-    } else if (tabFromUrl === 'integrations') {
-      const sp = new URLSearchParams(searchParams);
-      sp.set('tab', 'locations');
-      setSearchParams(sp, { replace: true });
+      return;
     }
-  }, [tabFromUrl, navigate, searchParams, setSearchParams]);
+    if (tabFromUrl === 'integrations') {
+      navigate('/settings/locations', { replace: true });
+      return;
+    }
+    if (tabFromUrl && tabFromUrl in TAB_TO_PATH) {
+      const target = TAB_TO_PATH[tabFromUrl as SettingsTab];
+      navigate(target, { replace: true });
+    }
+  }, [tabFromUrl, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tab: SettingsTab = PATH_TO_TAB[location.pathname] ?? 'profile';
+  const setTab = (next: SettingsTab) => {
+    const target = TAB_TO_PATH[next];
+    if (target) navigate(target);
+  };
 
   // API calls
   const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
@@ -1305,26 +1338,6 @@ export default function Settings() {
     if (selectedRoleId === roleId) setSelectedRoleId(roles.find((r) => r.id !== roleId)?.id ?? null);
   };
 
-  type TabItem =
-    | { key: SettingsTab; label: string; icon: typeof Building2 }
-    | { key: string; label: string; icon: typeof Building2; to: string };
-  const tabItems: TabItem[] = [
-    { key: 'profile', label: 'Marina Profile', icon: Building2 },
-    { key: 'locations', label: 'Locations', icon: MapPin },
-    { key: 'branding', label: 'Branding', icon: Palette },
-    { key: 'billing', label: 'Billing', icon: CreditCard },
-    { key: 'team', label: 'Team', icon: Users },
-    { key: 'roles', label: 'Roles', icon: Shield },
-    { key: 'tax', label: 'Tax', icon: Landmark },
-    { key: 'categories', label: 'Categories', icon: Tag },
-    { key: 'catalog', label: 'Catalog', icon: Package, to: '/settings/products' },
-    { key: 'terminal', label: 'Terminal', icon: Wifi },
-    { key: 'modules', label: 'Modules', icon: ToggleRight },
-    { key: 'email', label: 'Email', icon: Mail },
-    { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
-    { key: 'audit', label: 'Audit Log', icon: ScrollText },
-  ];
-
   return (
     <div style={st.page}>
       <h1 style={st.title} className="helm-page-title">Settings</h1>
@@ -1332,22 +1345,7 @@ export default function Settings() {
 
       {savedMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{savedMsg}</div>}
 
-      <div style={st.tabs} className="helm-tabs">
-        {tabItems.map((t) => {
-          const Icon = t.icon;
-          const isExternal = 'to' in t;
-          const isActive = !isExternal && tab === t.key;
-          return (
-            <button
-              key={t.key}
-              style={{ ...st.tab, ...(isActive ? st.tabActive : {}), display: 'flex', alignItems: 'center', gap: '6px' }}
-              onClick={() => ('to' in t ? navigate(t.to) : setTab(t.key))}
-            >
-              <Icon size={16} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <SubNav items={SETTINGS_SUBNAV} />
 
       {/* Marina Profile */}
       {tab === 'profile' && (

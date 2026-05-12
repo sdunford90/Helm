@@ -4,6 +4,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { CheckCircle, AlertTriangle, CreditCard, ExternalLink, Loader2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '../lib/format';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 
 interface Tier {
   id: string;
@@ -233,8 +234,10 @@ export default function SettingsBilling() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>Billing</h1>
+      <h1 style={styles.title}>Settings</h1>
       <hr style={styles.divider} />
+
+      <SubNav items={SETTINGS_SUBNAV} />
 
       {justCompleted && (
         <div style={{ ...styles.banner, ...styles.bannerSuccess }}>

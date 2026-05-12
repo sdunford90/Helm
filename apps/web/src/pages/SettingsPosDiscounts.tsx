@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
-import { Plus, Trash2, X, Tag, ArrowLeft, Search, ToggleLeft, ToggleRight, Edit2 } from 'lucide-react';
+import { Plus, Trash2, X, Tag, Search, ToggleLeft, ToggleRight, Edit2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { api } from '../lib/api';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 
 // Per-location auto-applied POS discounts. CRUD UI for the discount engine
 // implemented in apps/api/src/routes/pos-discounts.ts.
@@ -82,7 +82,6 @@ function formatValue(d: Pick<Discount, 'kind' | 'value'>): string {
 
 export default function SettingsPosDiscounts(): React.ReactElement {
   const { getToken } = useAuth();
-  const navigate = useNavigate();
 
   const { data: locsResp } = useApi<{ data: Location[] } | Location[]>('get', '/api/locations', { immediate: true });
   const locations: Location[] = useMemo(() => {
@@ -258,15 +257,16 @@ export default function SettingsPosDiscounts(): React.ReactElement {
 
   return (
     <div style={st.page}>
-      <button onClick={() => navigate('/settings')} style={{ ...st.outline, marginBottom: '16px' }}>
-        <ArrowLeft size={14} /> Back to settings
-      </button>
-      <h1 style={st.title}><Tag size={22} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px' }} />POS Discounts</h1>
+      <h1 style={st.title}>Settings</h1>
+      <hr style={st.divider} />
+
+      <SubNav items={SETTINGS_SUBNAV} />
+
+      <h2 style={{ ...st.title, fontSize: 24, marginTop: 0 }}><Tag size={22} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '8px' }} />POS Discounts</h2>
       <div style={st.subtitle}>
         Per-location, auto-applied at the register when a customer is attached to the sale.
         Best discount per line wins — discounts never stack.
       </div>
-      <hr style={st.divider} />
 
       <div style={st.card}>
         <div style={st.row}>

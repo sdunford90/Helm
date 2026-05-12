@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import SubNav, { SETTINGS_SUBNAV } from '../components/SubNav';
 import {
-  AlertTriangle, ChevronRight, Settings, Package,
+  AlertTriangle, Settings, Package,
   Anchor, DollarSign, Edit2, Check, X, ExternalLink,
   Info, ChevronDown, Plus, Trash2,
 } from 'lucide-react';
@@ -1332,11 +1333,7 @@ export default function SettingsProducts() {
 
   return (
     <div style={s.page}>
-      <div style={s.breadcrumb}>
-        <Link to="/settings" style={s.breadcrumbLink}>Settings</Link>
-        <ChevronRight size={14} />
-        <span>Products &amp; Revenue</span>
-      </div>
+      <SubNav items={SETTINGS_SUBNAV} />
 
       <div style={s.header}>
         <h1 style={s.title} className="helm-page-title">Products &amp; Revenue</h1>
