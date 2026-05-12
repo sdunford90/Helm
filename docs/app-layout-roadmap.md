@@ -298,6 +298,378 @@ After U2 lands, U3 (`TopBar`), U4 (`Breadcrumb` + `EmptyState`), and U5 (Storybo
 
 ---
 
+## Admin-side features (detailed)
+
+The web app dominated the top-11. Admin needs its own focused build-out. The Webhooks console (A1+A2), Queues dashboard (A5), and `/me` page are live; below is what comes next for platform operators.
+
+---
+
+### A6. Tenant Feature Flags editor — ~5 days
+
+**What.** A per-tenant flag matrix so platform admins can gate experimental features (AI builder, two-way SMS, advanced reporting) on a tenant-by-tenant basis.
+
+**Why.** Today `featureFlagsJson` on `PlatformSetting` is global. A real-world rollout wants "Marina X is on AI builder; everyone else is off." Hand-editing JSON in a dev console isn't an interface.
+
+**Data model.**
+- Repurpose / replace `featureFlagsJson` with a `FeatureFlagOverride` table: `id, tenantId, flag, enabled, reason?, updatedBy, updatedAt`.
+- `FEATURE_FLAGS` registry in code: `{ key, label, description, defaultEnabled, category }` — single source of truth.
+
+**Backend.**
+- `GET /api/admin/tenants/:id/flags` — resolves: defaults from registry + override rows for the tenant.
+- `PUT /api/admin/tenants/:id/flags/:flag` — body `{ enabled, reason? }`. Writes an `AdminAuditLog` event.
+- New helper `tenantHasFlag(tenantId, flag)` used by every gated endpoint / page.
+
+**UI.**
+- New "Feature Flags" tab on the TenantDetail page (post-A3 breakup).
+- List grouped by category (Reporting / Communications / Beta). Each row: flag label, description, toggle, last changed by + when.
+- Bulk action: copy flag set from one tenant to another (for replicating a successful pilot).
+
+**Out of scope.** Time-windowed flags, percentage rollouts (use a real flag platform later).
+
+---
+
+### A7. Cross-Tenant Insights (Analytics page revamp) — ~10 days
+
+**What.** Replace the current Analytics page with a real cross-tenant Insights surface: MRR / ARR, churn, trial conversion funnel, cohort retention, tenant benchmarks.
+
+**Why.** Today admin Analytics shows top-line counters. You can't answer "how is May trending versus April for trial conversion?" or "which tenants are about to churn?" The data exists in `cross-tenant-analytics.ts`; the surface doesn't.
+
+**Sub-tabs.**
+
+1. **Revenue** — MRR / ARR / GMV / take-rate line charts, broken out by tier and by region. Quarter-over-quarter and year-over-year.
+2. **Acquisition & Activation** — trial signups, trial-to-paid conversion funnel by step (signed up → invited team → first invoice → first payment), time-to-value.
+3. **Retention** — cohort retention grid by signup month, churn rate trend, "at-risk" list (tenants whose 30-day usage is < 50% of their median).
+4. **Benchmarks** — anonymized percentile bands (P10/P25/P50/P75/P90) for occupancy, A/R days, refund rate. A tenant can see where they sit; the platform sees the shape of the herd.
+5. **Reliability** — webhook delivery success, queue lag, API error rate, email-send failure rate per tenant. Already-existing data, but here it's framed for the platform team rather than for an individual tenant.
+
+**Backend.**
+- Extend `cross-tenant-analytics.ts` with the per-sub-tab aggregators. Cache hot ones (cohort retention) for 1h.
+- New endpoints under `/api/admin/insights/<sub-tab>`.
+
+**UI.**
+- New admin page at `/insights` (note: collides with web `/insights` — uses admin's own router, no overlap). Section tabs match the five sub-tabs above. Each renders charts (uses the same ui-kit chart primitive from web's #5) + drill-down tables.
+- "Open in tenant impersonation" deep-link on each tenant row in the at-risk list.
+
+**Out of scope.** Forecasting (use a follow-up).
+
+---
+
+### A8. Webhook destination configuration (per-tenant outbound) — ~6 days
+
+**What.** Let tenants subscribe their own systems to outbound events (e.g. "POST to my-erp.example.com when an invoice is paid"). Currently outbound webhooks are platform-side only.
+
+**Why.** Tenants who want integrations are stuck. Building this once unlocks dozens of integration possibilities without writing one-off code per integration.
+
+**Data model.**
+- `WebhookDestination` — `id, tenantId, name, url, signingSecret, events: string[], enabled, lastSuccessAt?, lastFailureAt?, consecutiveFailures, disabledAt?`
+- `WebhookDelivery` — `id, destinationId, event, payloadJson, status (PENDING/SUCCESS/FAILED), httpStatus?, responseSnippet?, attempts, nextRetryAt?, createdAt`
+
+**Backend.**
+- New service `apps/api/src/services/outbound-webhooks.ts` — emit, sign (HMAC-SHA256), persist delivery row, BullMQ job to attempt with exponential backoff.
+- Standard hooks: invoice.paid, invoice.issued, contract.signed, contract.expired, payment.refunded, dock-walk.completed, customer.created.
+- Auto-disable after N consecutive failures with notification.
+- Endpoints (admin): `GET/POST/PUT/DELETE /api/admin/tenants/:id/webhooks`; (tenant): `GET/POST/PUT/DELETE /api/webhooks-out` (under the new Settings → Integrations → Webhooks & API leaf).
+
+**UI.**
+- Admin: per-tenant list of destinations on TenantDetail.
+- Tenant: settings page with "Add destination", event picker, signing-secret display + reveal, recent deliveries table, retry button per failed delivery, replay action for any delivery (regenerate payload from source).
+
+**Out of scope.** OAuth-style auth, rate limiting per destination, custom event payload shapes — all follow-on.
+
+---
+
+### A9. Tenant Onboarding Wizard — ~4 days
+
+**What.** A platform-admin guided flow to create a new tenant with sane defaults: org info, primary location, initial admin user, default tier, default tax jurisdiction, default GL chart of accounts.
+
+**Why.** Today onboarding requires hitting six different endpoints in sequence (POST /tenants, POST /locations, POST /users, etc.) plus seed data. Sales / onboarding teams need a self-serve flow.
+
+**UI.**
+- New flow at `/tenants/new`. Five steps:
+  1. Org info (name, contact, subdomain, country, currency)
+  2. First location (name, address, timezone, hours)
+  3. Owner user (name, email — sends Clerk invite)
+  4. Tier + trial settings (defaultTier from PlatformSetting, trial length)
+  5. Optional defaults (seed sample customers, sample dockage rate, default chart of accounts from preset)
+- Review screen, then Create. Backend handles the multi-step transactional creation; if any step fails the whole thing rolls back.
+
+**Backend.**
+- New service `apps/api/src/services/tenant-provisioning.ts` — single `provisionTenant(spec)` call wrapping the existing creation endpoints in a Prisma transaction.
+- `POST /api/admin/tenants/provision` accepts the full wizard spec.
+
+**Out of scope.** Stripe Connect setup (still onboarded later from the location), QuickBooks connection (per-location wizard already exists).
+
+---
+
+### A10. Support inbox revamp — ~5 days
+
+**What.** Replace the current Support page (basic ticket list) with a real inbox: filters, assignment, status workflow, internal notes, SLA tracking.
+
+**Why.** Support tickets are the platform team's daily inbox; today the UI is read-only and stale.
+
+**Data model additions.**
+- `SupportTicket` already exists. Add `assignedAdminId, slaDueAt, internalNotes (JSON / separate table)`.
+- New `SupportTicketEvent` for status transitions + internal notes (audit-style).
+
+**Backend.**
+- Endpoints for assign, status change, internal note append, response (sends email to customer).
+- SLA computed from tier (Pro: 4h first response; Premium: 1h; etc.).
+
+**UI.**
+- Two-pane inbox at `/support`. Filters by status, assignee, severity, SLA-at-risk. Right pane: ticket detail with full timeline (customer messages + internal notes + status changes), reply composer, internal-note toggle.
+- Top-bar pill on every admin page showing unread / SLA-at-risk ticket counts.
+
+---
+
+### A11. Impersonation audit + safety — ~3 days
+
+**What.** Surface every impersonation event in a dedicated audit feed, plus session-level safety rails (banner in tenant UI when impersonated, auto-expiry).
+
+**Why.** Impersonation is the platform team's god-mode. Today there's no obvious "who impersonated which tenant last week" feed.
+
+**Backend.**
+- `Impersonation` table likely already exists; if not, add `id, actorAdminId, targetTenantId, reason, startedAt, endedAt?, ip`.
+- Auto-expire impersonation sessions after 30min.
+- Webhook event on impersonation start.
+
+**UI.**
+- New section in admin Operations → "Impersonation Log". Searchable by tenant, admin, date range.
+- Top banner on every web/portal page during an impersonation session ("You are impersonating Bayshore Marina · End session").
+- Required `reason` field at the start.
+
+---
+
+### A12. Platform Announcements — ~3 days
+
+**What.** Let platform admins push a banner to all tenants ("Scheduled maintenance Sat 2am ET", "New AI builder is live for Premium tenants").
+
+**Why.** Today email is the only path. In-product banners catch more eyes.
+
+**Data model.**
+- `PlatformAnnouncement` — `id, severity (INFO/WARNING/MAINTENANCE), title, body, link?, audience (ALL/TIER/ROLE), audienceValue?, startsAt, endsAt?, dismissable, createdBy, createdAt`
+- `PlatformAnnouncementDismissal` — `userId, announcementId, dismissedAt`
+
+**Backend.**
+- `GET /api/announcements/active` (auth, returns active + not-dismissed for the user).
+- Admin CRUD at `/api/admin/announcements`.
+
+**UI.**
+- Admin Operations → "Announcements" list + create form.
+- Banner component in web/portal/admin top bar; respects severity color, dismiss action.
+
+---
+
+### A13. Bulk tenant ops — ~3 days
+
+**What.** Cross-tenant batch actions for the platform team: pause SMS, lock billing, send announcement to a subset, export CSV of tenants matching a filter.
+
+**Why.** When an incident happens ("Twilio is down — pause all SMS for everyone"), you need one button, not 47 trips through TenantDetail.
+
+**UI.**
+- New "Bulk Actions" tab in admin Tenants. Filter set (tier, status, region) → list preview → pick action → confirm + dry-run preview.
+- Common actions: pause SMS, pause autopay, force-logout users, send announcement, export CSV.
+
+**Backend.**
+- New `/api/admin/tenants/bulk` endpoint with a discriminated-union body (`action: 'pause-sms' | …`). Each action is a small service handler. Logs to `AdminAuditLog`.
+
+---
+
+## Portal-side features (detailed)
+
+P1–P3, P5, P6 (real Profile / Notifications / Security pages + Documents hub + My Slip) shipped on this branch. Below is what comes next for the slip-holder experience.
+
+---
+
+### P8. Boat detail page (per-boat hub) — ~4 days
+
+**What.** Today the portal has "My Boats" listing all the customer's boats. There's no detail view per boat. Build one — make each boat a real destination with all its info.
+
+**Why.** A customer wants to see one boat at a time: which slip, insurance, service history, registration status, photos. Currently they have to bounce between Insurance, Documents, and My Slip to assemble a picture.
+
+**Surfaces on `/boats/:id`:**
+- Header: boat name, registration #, dimensions, make/model/year, primary photo.
+- "Where it lives" — links to active SlipContract (uses P6 endpoint).
+- Insurance — current policy summary + expiry, history (uses existing /api/portal/insurance).
+- Documents — auto-filtered to documents linked to this boat (Documents API extended with `boatId` filter).
+- Service history — read-only list of completed WorkOrders for this boat (depends on #2 in the web list).
+- Photos — gallery with thumbnails; upload from camera or file.
+- Maintenance reminders — upcoming service intervals (engine hours, last bottom paint, etc.) once that data exists.
+
+**Backend.**
+- `GET /api/portal/boats/:id` — single boat with related (insurance, contract, recent work orders).
+- `POST /api/portal/boats/:id/photos` — upload to R2.
+- `DELETE /api/portal/boats/:id/photos/:photoId`.
+
+**UI.** Card-based dashboard layout (similar to MySlip). Sections collapse/expand.
+
+---
+
+### P9. Online slip application (public widget + portal flow) — ~6 days
+
+**What.** A widget marinas can embed on their public website ("Apply for a slip"), feeding leads + waitlist. Plus a portal-side application flow for existing customers wanting a different slip.
+
+**Why.** Currently slip applications come in via phone, email, or paper. They go straight into someone's inbox. The data lands in Helm only if a staff member transcribes it. Direct funnel.
+
+**Data model.**
+- `SlipApplication` — `id, tenantId, locationId, applicantName, email, phone, company?, boat (length/beam/draft/year/make/model), desiredStart, desiredEnd?, monthlyOk, annualOk, notes, status (NEW/CONTACTED/WAITLISTED/APPROVED/REJECTED), createdAt, source ('widget'/'portal')`
+- Tied to optional `Lead` row once contact info collected.
+
+**Backend.**
+- Public-facing: `POST /api/public/slip-applications/:tenantSlug` with rate limiting + captcha. No auth.
+- Portal: `POST /api/portal/slip-applications` — pre-fills with the customer's data.
+- Staff: list/triage at `/api/leads` (or new `/api/applications`).
+
+**UI.**
+- Widget (`apps/widgets/...` or new package): standalone iframe-able React app. Marina embeds via `<iframe src="https://app.helm/widget/slips/<slug>">`.
+- Portal: "Apply for a different slip" action under My Slip; pre-fills name/phone.
+- Staff: applications appear in CRM > Leads, with a flag for the source.
+
+---
+
+### P10. Autopay management — ~4 days
+
+**What.** Customer-facing autopay controls: enable/disable, switch default card, see upcoming autopay charges.
+
+**Why.** Today autopay is set up by staff at contract signing; customers have no self-service path to change cards. Result: card expires → autopay fails → invoice goes past-due → angry phone call.
+
+**Data model.** No new tables (autopay is `Customer.defaultPaymentMethodId` + per-contract config); just surface the existing state.
+
+**Backend.**
+- `GET /api/portal/autopay` — returns enabled status, default payment method, list of contracts with their autopay state.
+- `PUT /api/portal/autopay` — body `{ enabled, defaultPaymentMethodId? }`.
+- `GET /api/portal/autopay/upcoming` — next 60 days of expected charges.
+
+**UI.**
+- New "Autopay" section in Billing (portal). Toggle + payment-method picker + preview of upcoming charges. Warning banner if the default card expires before the next charge.
+
+---
+
+### P11. Invoice dispute / question flow — ~3 days
+
+**What.** Customers can raise a question on an invoice without calling the office. Creates a structured record the marina can respond to.
+
+**Why.** Right now an invoice question goes to email, gets lost, and a customer holds a payment for unclear reasons. Structured flow surfaces this for the staff.
+
+**Data model.**
+- `InvoiceQuestion` — `id, tenantId, invoiceId, customerId, body, status (OPEN/RESOLVED), createdAt, resolvedAt?, resolvedBy?, resolutionNotes?`
+- Threaded replies stored in `PortalMessage` linked by `invoiceQuestionId`.
+
+**Backend.**
+- `POST /api/portal/invoices/:id/question` — opens.
+- `GET /api/portal/invoices/:id/questions` — thread.
+- Staff side gets a new tab on Invoice detail "Questions" + a count badge in Billing > Invoices.
+
+**UI.**
+- "Ask a question about this invoice" button on portal Invoice detail. Modal with body + submit. Thread shows below.
+- Staff: matching surface on the marina-side invoice detail.
+
+---
+
+### P12. Family / multi-user accounts — ~7 days
+
+**What.** Let one Customer have multiple linked logins (spouse, captain, kids). Each can view + pay invoices, talk to concierge, etc.
+
+**Why.** Right now `Customer.email` is the single sign-in. A husband-and-wife pair has to share a login or one of them is locked out. Boat captains can't access without sharing the owner's credentials.
+
+**Data model.**
+- `CustomerMember` — `id, customerId, email, role ('PRIMARY'/'MEMBER'), invitedAt, acceptedAt?, clerkUserId?`
+- Portal auth resolves Clerk user to a `CustomerMember`, then to the `Customer`.
+
+**Backend.**
+- `GET /api/portal/members` — list members of the current customer.
+- `POST /api/portal/members/invite` — send Clerk invitation, create row.
+- `DELETE /api/portal/members/:id` — revoke (only primary can).
+- `resolvePortalCustomer` middleware updated: look up member → customer.
+
+**UI.**
+- New portal Account → "Family & Sharing" page. Member list with role badge, "Invite" form, revoke action.
+
+**Out of scope.** Per-member permissions (e.g. captain-can-see-not-pay) — start with everyone gets same access; permissions follow-up.
+
+---
+
+### P13. Unified Reservations (rentals + transient + ramp from one place) — ~5 days
+
+**What.** A single "Reservations" page in the portal where a customer can book a transient slip, a rental, or a ramp slot. Today these live in separate widgets / aren't portal-accessible.
+
+**Why.** Slip-holders are also potential rental customers. They shouldn't have to bounce to a different page (or worse, call) to book a one-day boat rental at their own marina.
+
+**Data model.**
+- No new model; reuses existing `TransientBooking`, `RentalReservation`, `RampTicket`.
+- Unified `Reservation` view-model on the server.
+
+**Backend.**
+- `GET /api/portal/reservations` — combined feed of upcoming reservations across all three types, sorted by date.
+- `GET /api/portal/reservations/availability?type=...&date=...` — list available slots.
+- `POST /api/portal/reservations` — discriminated-union body keyed by `type`.
+
+**UI.**
+- New `/services/reservations` portal page (already in the nav under Services). Card-per-type "Book a transient slip / rental / ramp slot". Tabbed list of past + upcoming.
+
+---
+
+### P14. PWA + push notifications — ~5 days
+
+**What.** Make the portal installable as a PWA on phones and desktops, with web-push for the notifications system (#1 above).
+
+**Why.** Boaters live on their phones. A native-feeling app icon, offline shell, and push notifications meaningfully outperform an email reminder.
+
+**Plan.**
+- Service worker for the portal (cache app shell, network-first for API).
+- `manifest.json` with the marina's branding (uses tenant theme).
+- Web Push: register VAPID keys, hook into the notifications service from feature #1 so any `inAppEnabled` notification also fires a push if subscribed.
+- Wallet pass (Apple/Google) for slip access — defer to follow-up.
+
+---
+
+### P15. Marina events calendar — ~3 days
+
+**What.** Marinas often host events (race nights, fall haul-out party, fuel discount weekends). Surface those as a portal calendar.
+
+**Data model.**
+- `MarinaEvent` — `id, tenantId, locationId, title, description, startsAt, endsAt?, eventType, rsvpEnabled, capacity?`
+- `MarinaEventRsvp` — `id, eventId, customerId, status, createdAt`
+
+**Backend.** CRUD on staff side; `GET /api/portal/events` returns upcoming for the customer's location.
+
+**UI.** Portal `/services/events` page with a list + RSVP button. Staff CRUD page under Communications.
+
+---
+
+### P16. NPS / review prompts — ~3 days
+
+**What.** After a noteworthy event (contract signed, work order completed, transient stay finished), prompt the customer for a 0-10 NPS + Google/Yelp deep-link.
+
+**Why.** Marina reputation lives on Google reviews. Right now the marina gets reviews from angry customers (who self-select). Prompting after positive moments closes that loop.
+
+**Data model.** `NpsSurvey` exists. Extend with `triggerType` ('contract-signed' / 'work-order-completed' / 'stay-ended'), `googleReviewClickedAt?`, `yelpReviewClickedAt?`.
+
+**Backend.** New service emits a survey row after configured events; portal serves a one-tap response page.
+
+**UI.** Portal modal post-trigger; admin Insights → Customers → NPS tab gets review-conversion funnel.
+
+---
+
+### P17. Pre-arrival concierge — ~3 days
+
+**What.** A transient guest fills in their ETA, boat info, special needs (water hookup, ice, fuel before arrival) the day before showing up.
+
+**Why.** Today dockmasters get a name + boat length and a date — no idea when the guest will actually pull in. Better intel = better service.
+
+**Backend.** Extension of `TransientBooking` with `eta, etaConfirmedAt, arrivalNotes`. Endpoint to update from portal.
+
+**UI.** Portal: pre-arrival form linked from a confirmation email + dashboard tile if booking is within 48h. Staff: dock-walk runner UI shows the day's expected arrivals with ETAs.
+
+---
+
+## Cross-cutting (admin + portal both)
+
+- **AI assistant in the portal** — a chat panel where the customer can ask "when is my next bill?" or "is my insurance current?" Backed by the same engine as web's #6, scoped to the caller's portal customer.
+- **Multi-language support** — i18n framework, start with en-US + es-MX. Portal first (boaters are international); admin/web second.
+- **Two-factor enforcement** — per-tenant policy that requires 2FA for staff. Clerk supports it; just needs admin UI + a tenant-level policy switch.
+
+---
+
 ## Tier-two queue (smaller / follow-on)
 
 These are smaller chunks that ride alongside the top 11 without warranting a full spec block.
