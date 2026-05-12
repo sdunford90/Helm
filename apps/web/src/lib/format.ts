@@ -17,6 +17,25 @@ export function formatDate(date: string | Date): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
+// Timezone-invariant formatter for date-only fields (invoice issue/due dates,
+// contract start/end, etc.). The backend stores these as either a bare
+// "YYYY-MM-DD" string or a noon-UTC timestamp; both render as the same
+// calendar day in every timezone when read via UTC components.
+export function formatDateOnly(date: string | Date | null | undefined): string {
+  if (!date) return '—';
+  if (typeof date === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
+    if (m) {
+      const y = Number(m[1]);
+      const mo = Number(m[2]) - 1;
+      const day = Number(m[3]);
+      return `${MONTHS[mo]} ${day}, ${y}`;
+    }
+  }
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
 export function formatDateTime(date: string | Date): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   const hours = d.getHours();

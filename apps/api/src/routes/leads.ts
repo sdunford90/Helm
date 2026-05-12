@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { convertLeadToCustomer } from "../services/lead-conversion.js";
 
@@ -151,6 +156,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET /stats — Pipeline statistics ───────────────────────────────────────
 // Registered before /:id so Express doesn't treat "stats" as a UUID param.
@@ -160,12 +166,16 @@ router.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
+      // Task #339: scope all stats aggregations to the active location so
+      // pipeline numbers reflect the marina the user is looking at, not a
+      // tenant-wide total.
+      const locationScope = scopedWhere(req, { includeNull: true });
 
       // Count by stage
       const stageCounts = await prisma.lead.groupBy({
         by: ["stage"],
         _count: { id: true },
-        where: { tenantId },
+        where: { tenantId, ...locationScope },
       });
 
       const countByStage: Record<string, number> = {};
@@ -186,7 +196,7 @@ router.get(
 
       // Average time-to-convert (days) for WON leads that have convertedAt
       const convertedLeads = await prisma.lead.findMany({
-        where: { tenantId, stage: "WON", convertedAt: { not: null } },
+        where: { tenantId, ...locationScope, stage: "WON", convertedAt: { not: null } },
         select: { createdAt: true, convertedAt: true },
       });
 
@@ -206,7 +216,7 @@ router.get(
       const sourceStageCounts = await prisma.lead.groupBy({
         by: ["source", "stage"],
         _count: { id: true },
-        where: { tenantId },
+        where: { tenantId, ...locationScope },
       });
 
       const sourceTotals: Record<string, { total: number; won: number; lost: number }> = {};
@@ -264,7 +274,11 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListLeadsQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope leads to active location.
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.stage) where.stage = query.stage;
       if (query.assignedTo) where.assignedTo = query.assignedTo;
@@ -320,7 +334,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const lead = await prisma.lead.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           sourceForm: { select: { id: true, name: true, formType: true } },
           waitlistEntries: true,
@@ -353,11 +371,14 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = CreateLeadSchema.parse(req.body);
+      // Task #339: stamp active location (caller may override).
+      const locationId = requireActiveLocation(req, data.locationId ?? null);
 
       const lead = await prisma.lead.create({
         data: {
           tenantId,
           ...data,
+          locationId,
         },
       });
 
@@ -393,7 +414,7 @@ router.put(
       const data = UpdateLeadSchema.parse(req.body);
 
       const existing = await prisma.lead.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
       });
       if (!existing) {
         throw appError("Lead not found", 404, "NOT_FOUND");
@@ -444,7 +465,7 @@ router.put(
       const { stage, lostReason } = StageTransitionSchema.parse(req.body);
 
       const lead = await prisma.lead.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
       });
       if (!lead) {
         throw appError("Lead not found", 404, "NOT_FOUND");
@@ -558,7 +579,7 @@ router.delete(
       const { lostReason } = DeleteLeadSchema.parse(req.body);
 
       const lead = await prisma.lead.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
       });
       if (!lead) {
         throw appError("Lead not found", 404, "NOT_FOUND");

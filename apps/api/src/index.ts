@@ -11,6 +11,7 @@ import express, { type Application } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { clerkMiddleware } from "@clerk/express";
 
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
@@ -148,7 +149,72 @@ app.use(
     credentials: true,
   }),
 );
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "script-src": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://js.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "https://challenges.cloudflare.com",
+        ],
+        "script-src-elem": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://js.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "https://challenges.cloudflare.com",
+        ],
+        "style-src": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+        ],
+        "style-src-elem": [
+          "'self'",
+          "'unsafe-inline'",
+          "https://fonts.googleapis.com",
+        ],
+        "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
+        "img-src": ["'self'", "data:", "blob:", "https:"],
+        "connect-src": [
+          "'self'",
+          "https://fonts.googleapis.com",
+          "https://fonts.gstatic.com",
+          "https://api.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://*.clerk.dev",
+          "wss://*.clerk.accounts.dev",
+          "wss://*.clerk.com",
+        ],
+        "frame-src": [
+          "'self'",
+          "https://js.stripe.com",
+          "https://hooks.stripe.com",
+          "https://*.stripe.com",
+          "https://*.clerk.accounts.dev",
+          "https://*.clerk.com",
+          "https://challenges.cloudflare.com",
+        ],
+        "worker-src": ["'self'", "blob:"],
+        "object-src": ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
 
 // Webhook routes MUST be mounted before express.json() so their raw body
 // is preserved for signature verification. The routers themselves apply
@@ -161,6 +227,18 @@ app.use("/api/email", emailComplianceRouter);
 app.use("/api/qbo/webhook", qboWebhookRouter);
 
 app.use(express.json());
+
+// Register Clerk's per-request middleware ONCE, globally. Without this,
+// `getAuth(req)` inside our auth helpers throws
+// "clerkMiddleware should be registered before using getAuth". Previously
+// `requireAuth()` registered it implicitly per-route, but we removed
+// requireAuth() because it 302-redirects unauthenticated requests to `/`,
+// which broke XHR callers (they parsed the SPA index.html as JSON and
+// died on "Unexpected token '<'"). Mounting clerkMiddleware here gives
+// every downstream handler a populated auth context without forcing a
+// redirect on missing sessions — our own clerkAuth() handler then
+// returns a JSON 401 instead.
+app.use(clerkMiddleware());
 
 // Public impersonation handoff (verify/end). Mounted after express.json()
 // so the JSON body is parsed, but before tenantMiddleware so it can be
@@ -238,10 +316,12 @@ app.use("/api/accounting", accountingRouter);
 // same process so a single autoscale deployment hosts both the API and the
 // web client. Mounted AFTER all /api/* routes (so API handlers always win)
 // and BEFORE error handlers (so a missing static file flows through them).
-// In dev this is skipped; vite serves the SPA on its own port.
+// In dev the API runs on a different port than vite, so this is harmless
+// even when apps/web/dist exists locally; in production this is what makes
+// app.tracktheturn.com serve the React app.
 // --------------------------------------------------------------------------
 
-if (process.env.NODE_ENV === "production") {
+{
   // Compiled file lives at apps/api/dist/index.js, so the web build sits at
   // ../../web/dist relative to it.
   const webDist = path.resolve(import.meta.dirname, "../../web/dist");
@@ -254,7 +334,7 @@ if (process.env.NODE_ENV === "production") {
     console.log(`[helm-api] serving SPA from ${webDist}`);
   } else {
     console.warn(
-      `[helm-api] WARNING: web build not found at ${webDist} — SPA will not be served`,
+      `[helm-api] web build not found at ${webDist} — SPA will not be served (API-only mode)`,
     );
   }
 }

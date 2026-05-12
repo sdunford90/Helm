@@ -1,0 +1,133 @@
+2026-05-05 21:06:59.13
+21403a58
+User
+warn The configuration property `package.json#prisma` is deprecated and will be removed in Prisma 7. Please migrate to a Prisma config file (e.g., `prisma.config.ts`).
+2026-05-05 21:06:59.51
+21403a58
+User
+Prisma schema loaded from prisma/schema.prisma
+2026-05-05 21:06:59.52
+21403a58
+User
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-damp-grass-an9hu5hr.c-6.us-east-1.aws.neon.tech"
+2026-05-05 21:07:00.49
+21403a58
+User
+Error: P3008
+2026-05-05 21:07:00.49
+21403a58
+User
+The migration `20260503160000_pos_customer_and_discounts` is already recorded as applied in the database.
+2026-05-05 21:07:00.52
+21403a58
+User
+undefined
+2026-05-05 21:07:00.53
+21403a58
+User
+/home/runner/workspace/apps/api:
+2026-05-05 21:07:00.53
+21403a58
+User
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: prisma migrate resolve --applied 20260503160000_pos_customer_and_discounts
+2026-05-05 21:07:02.47
+21403a58
+User
+For more information, see: https://pris.ly/prisma-config
+2026-05-05 21:07:02.47
+21403a58
+User
+warn The configuration property `package.json#prisma` is deprecated and will be removed in Prisma 7. Please migrate to a Prisma config file (e.g., `prisma.config.ts`).
+2026-05-05 21:07:02.58
+21403a58
+User
+Prisma schema loaded from prisma/schema.prisma
+2026-05-05 21:07:02.60
+21403a58
+User
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-damp-grass-an9hu5hr.c-6.us-east-1.aws.neon.tech"
+2026-05-05 21:07:03.24
+21403a58
+User
+Error: P3008
+2026-05-05 21:07:03.24
+21403a58
+User
+The migration `20260506000000_email_sender_settings` is already recorded as applied in the database.
+2026-05-05 21:07:03.27
+21403a58
+User
+undefined
+2026-05-05 21:07:03.28
+21403a58
+User
+/home/runner/workspace/apps/api:
+2026-05-05 21:07:03.28
+21403a58
+User
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: prisma migrate resolve --applied 20260506000000_email_sender_settings
+2026-05-05 21:07:05.22
+21403a58
+User
+For more information, see: https://pris.ly/prisma-config
+2026-05-05 21:07:05.22
+21403a58
+User
+warn The configuration property `package.json#prisma` is deprecated and will be removed in Prisma 7. Please migrate to a Prisma config file (e.g., `prisma.config.ts`).
+2026-05-05 21:07:05.34
+21403a58
+User
+Prisma schema loaded from prisma/schema.prisma
+2026-05-05 21:07:05.35
+21403a58
+User
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-damp-grass-an9hu5hr.c-6.us-east-1.aws.neon.tech"
+2026-05-05 21:07:05.66
+21403a58
+User
+52 migrations found in prisma/migrations
+2026-05-05 21:07:06.04
+21403a58
+User
+No pending migrations to apply.
+2026-05-05 21:07:06.72
+21403a58
+User
+> @helm/api@0.1.0 start /home/runner/workspace/apps/api
+2026-05-05 21:07:06.72
+21403a58
+User
+> node dist/index.js
+2026-05-05 21:07:11.31
+21403a58
+User
+[helm-workers] All workers started
+2026-05-05 21:07:11.31
+21403a58
+User
+[auth] mode=CLERK NODE_ENV=(unset) ENABLE_AUTH_DEV_BYPASS=(unset)
+2026-05-05 21:07:11.32
+21403a58
+User
+[helm-api] serving SPA from /home/runner/workspace/apps/web/dist
+2026-05-05 21:07:11.32
+21403a58
+User
+[qbo-inventory-retry] scheduled — next sweep at 2026-05-06T02:15:00.000Z, then every 15min
+
+2026-05-05 21:07:11.35
+21403a58
+User
+[helm-api] listening on port 5000
+2026-05-05 21:07:11.43
+21403a58
+User
+[redis] connected to Upstash
+2026-05-05 21:07:11.78
+21403a58
+User
+[helm-workers] Repeatable cron jobs scheduled
+2026-05-05 21:07:11.78
+21403a58
+User
+[helm-workers] Repeatable cron jobs scheduled

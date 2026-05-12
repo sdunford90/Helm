@@ -1040,6 +1040,7 @@ router.get("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         rentalsEnabled: true,
         autoExecuteRenewals: true,
         posAchEnabled: true,
+        posChargeToARAllowed: true,
         logoUrl: true,
         brandingJson: true,
         qboRealmId: true,
@@ -1090,7 +1091,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
 
     const {
       name, address, city, state, zip, phone, timezone, active,
-      transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, logoUrl,
+      transientEnabled, rentalsEnabled, autoExecuteRenewals, posAchEnabled, posChargeToARAllowed, logoUrl,
       // Per-location email sender overrides (Task #273). When set, these
       // take precedence over the tenant-level emailFrom* values for any
       // sendEmail() call that passes locationId. See email-sender.ts.
@@ -1099,7 +1100,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       req.body as Partial<{
         name: string; address: string; city: string; state: string; zip: string; phone: string;
         timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-        autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
+        autoExecuteRenewals: boolean; posAchEnabled: boolean; posChargeToARAllowed: boolean; logoUrl: string;
         emailFromDomain: string | null; emailFromAddress: string | null;
         emailFromName: string | null; emailReplyTo: string | null;
       }>;
@@ -1134,6 +1135,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
         ...(rentalsEnabled !== undefined && { rentalsEnabled }),
         ...(autoExecuteRenewals !== undefined && { autoExecuteRenewals }),
         ...(posAchEnabled !== undefined && { posAchEnabled }),
+        ...(posChargeToARAllowed !== undefined && { posChargeToARAllowed }),
         ...(logoUrl !== undefined && { logoUrl }),
         // Empty-string treated as "clear override".
         ...(emailFromDomain !== undefined && { emailFromDomain: emailFromDomain || null }),
@@ -1144,7 +1146,7 @@ router.put("/locations/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA
       select: {
         id: true, name: true, address: true, city: true, state: true, zip: true, phone: true,
         timezone: true, active: true, transientEnabled: true, rentalsEnabled: true,
-        autoExecuteRenewals: true, posAchEnabled: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
+        autoExecuteRenewals: true, posAchEnabled: true, posChargeToARAllowed: true, logoUrl: true, qboRealmId: true, qboConnectedAt: true,
         emailFromDomain: true, emailFromAddress: true, emailFromName: true, emailReplyTo: true,
       },
     });
@@ -1879,11 +1881,16 @@ router.get("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER",
 router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER"), async (req, res, next) => {
   try {
     const {
-      locationId, slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      locationId, name, slipType, billingCadence,
+      monthlyRateCents, quarterlyRateCents, annualRateCents, seasonalRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
     } = req.body;
     if (!locationId || !slipType || monthlyRateCents == null) {
       res.status(400).json({ error: "locationId, slipType, and monthlyRateCents are required" }); return;
+    }
+    const allowedCadences = ["MONTHLY", "QUARTERLY", "ANNUAL", "SEASONAL"] as const;
+    if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
+      res.status(400).json({ error: "Invalid billingCadence" }); return;
     }
     if (glAccountId) {
       try {
@@ -1897,10 +1904,13 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
       data: {
         tenantId: req.tenantId!,
         locationId,
+        name: name?.trim() ? String(name).trim() : null,
         slipType,
+        billingCadence: billingCadence ?? "MONTHLY",
         monthlyRateCents: Number(monthlyRateCents),
         quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null,
         annualRateCents: annualRateCents != null ? Number(annualRateCents) : null,
+        seasonalRateCents: seasonalRateCents != null ? Number(seasonalRateCents) : null,
         electricityMode: electricityMode ?? "METERED",
         electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null,
         glAccountId: glAccountId ?? null,
@@ -1948,9 +1958,35 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
     const {
-      slipType, monthlyRateCents, quarterlyRateCents, annualRateCents,
+      name, slipType, billingCadence,
+      monthlyRateCents, quarterlyRateCents, annualRateCents, seasonalRateCents,
       electricityMode, electricityRateCents, glAccountId, taxClass, active, effectiveFrom, effectiveTo,
+      confirm,
     } = req.body;
+    const allowedCadences = ["MONTHLY", "QUARTERLY", "ANNUAL", "SEASONAL"] as const;
+    if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
+      res.status(400).json({ error: "Invalid billingCadence" }); return;
+    }
+    // Deactivating keeps live contracts pointed at this plan (locked
+    // rate + plan's GL mapping). It only stops appearing in pickers
+    // and billing warns each cycle. Confirm step so operators see it.
+    if (active === false && existing.active === true) {
+      const linkedActive = await prisma.slipContract.count({
+        where: {
+          tenantId: req.tenantId!,
+          dockageRateId: req.params.id,
+          status: { in: ["ACTIVE", "EXPIRING"] },
+        },
+      });
+      if (linkedActive > 0 && !confirm) {
+        res.status(409).json({
+          error: `Rate plan is linked to ${linkedActive} active contract(s). Resend with { "confirm": true } to deactivate; existing contracts will keep billing their locked rate against this plan's GL mapping (with a warning each cycle) until you re-link them.`,
+          code: "DOCKAGE_RATE_HAS_LINKED_CONTRACTS",
+          linkedContractCount: linkedActive,
+        });
+        return;
+      }
+    }
     if (glAccountId && existing.locationId) {
       try {
         await assertGlAccountForCatalogItem(req.tenantId!, existing.locationId, glAccountId);
@@ -1964,10 +2000,13 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const updated = await prisma.dockageRate.update({
       where: { id: req.params.id },
       data: {
+        ...(name !== undefined && { name: name?.trim() ? String(name).trim() : null }),
         ...(slipType != null && { slipType }),
+        ...(billingCadence != null && { billingCadence }),
         ...(monthlyRateCents != null && { monthlyRateCents: Number(monthlyRateCents) }),
         ...(quarterlyRateCents !== undefined && { quarterlyRateCents: quarterlyRateCents != null ? Number(quarterlyRateCents) : null }),
         ...(annualRateCents !== undefined && { annualRateCents: annualRateCents != null ? Number(annualRateCents) : null }),
+        ...(seasonalRateCents !== undefined && { seasonalRateCents: seasonalRateCents != null ? Number(seasonalRateCents) : null }),
         ...(electricityMode != null && { electricityMode }),
         ...(electricityRateCents !== undefined && { electricityRateCents: electricityRateCents != null ? Number(electricityRateCents) : null }),
         ...(glAccountId !== undefined && { glAccountId }),
@@ -2029,6 +2068,27 @@ router.delete("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_
   try {
     const existing = await prisma.dockageRate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Rate not found" }); return; }
+    // a delete here is non-destructive for live contracts —
+    // the FK is ON DELETE SET NULL — but the contracts will appear as
+    // "unlinked" in the UI and the billing engine will fall back to
+    // the legacy (location, slipType) lookup. Require an explicit
+    // confirm so operators understand that before clicking delete.
+    const linkedActive = await prisma.slipContract.count({
+      where: {
+        tenantId: req.tenantId!,
+        dockageRateId: req.params.id,
+        status: { in: ["ACTIVE", "EXPIRING"] },
+      },
+    });
+    const confirm = req.body?.confirm === true || req.query?.confirm === "true";
+    if (linkedActive > 0 && !confirm) {
+      res.status(409).json({
+        error: `Rate plan is linked to ${linkedActive} active contract(s). Resend with { "confirm": true } to delete; those contracts will appear as unlinked and bill via the legacy fallback.`,
+        code: "DOCKAGE_RATE_HAS_LINKED_CONTRACTS",
+        linkedContractCount: linkedActive,
+      });
+      return;
+    }
     await prisma.dockageRate.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -2421,8 +2481,8 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
     // so block the delete until the operator reassigns them. Inventory
     // products no longer carry their own glAccountId — they resolve through
     // the per-(category, location) ProductCategoryGlMapping row, so check
-    // those instead. Rental products use the per-location
-    // RentalProductGlMapping table across the revenue / COGS / asset slots.
+    // those instead. Rental products are non-inventory and only carry a
+    // per-location revenueGlAccountId on RentalProductGlMapping.
     const [
       dockageRateRefs,
       serviceFeeRefs,
@@ -2445,11 +2505,7 @@ router.delete("/gl-accounts/:id", ...clerkAuth(), requireRole("MARINA_OWNER", "M
       prisma.rentalProductGlMapping.findMany({
         where: {
           tenantId,
-          OR: [
-            { revenueGlAccountId: req.params.id },
-            { cogsGlAccountId: req.params.id },
-            { inventoryAssetGlAccountId: req.params.id },
-          ],
+          revenueGlAccountId: req.params.id,
         },
         select: { rentalProductId: true },
       }),
@@ -2536,15 +2592,14 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
           select: { id: true, name: true, category: true, active: true },
         }),
         prisma.glAccount.findMany({
-          // Include REVENUE, EXPENSE, and ASSET so the rental-product per-
-          // location editor can populate Revenue / COGS / Inventory dropdowns.
-          // Other product editors filter the list down by `type` on the
-          // client side.
+          // Rental products are non-inventory, so the per-location editor
+          // only needs Revenue accounts. Other product editors also filter
+          // by `type` on the client side.
           where: {
             tenantId,
             active: true,
             isActive: true,
-            type: { in: ["REVENUE", "EXPENSE", "ASSET"] },
+            type: "REVENUE",
           },
           select: { id: true, accountNumber: true, name: true, type: true, locationId: true },
           orderBy: [{ locationId: "asc" }, { accountNumber: "asc" }],
@@ -2557,8 +2612,6 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
             rentalProductId: true,
             locationId: true,
             revenueGlAccountId: true,
-            cogsGlAccountId: true,
-            inventoryAssetGlAccountId: true,
           },
         }),
         prisma.location.findMany({
@@ -2601,17 +2654,11 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
     // from the per-location override (or null when unmapped).
     const rpMapByPair = new Map<
       string,
-      {
-        revenueGlAccountId: string | null;
-        cogsGlAccountId: string | null;
-        inventoryAssetGlAccountId: string | null;
-      }
+      { revenueGlAccountId: string | null }
     >();
     for (const m of rpMappings) {
       rpMapByPair.set(`${m.rentalProductId}|${m.locationId}`, {
         revenueGlAccountId: m.revenueGlAccountId,
-        cogsGlAccountId: m.cogsGlAccountId,
-        inventoryAssetGlAccountId: m.inventoryAssetGlAccountId,
       });
     }
     // When a single locationId is provided, narrow the per-location
@@ -2631,13 +2678,9 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
           locationName: l.name,
           override: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
         };
       });
@@ -2692,8 +2735,9 @@ router.get("/catalog/products-summary", ...clerkAuth(), requireRole("MARINA_OWNE
         glAccounts,
         unconfiguredCount,
         // The "no GL accounts configured" banner is about *revenue*
-        // accounts; the EXPENSE/ASSET rows we now include are only for
-        // populating COGS/inventory dropdowns on rental products.
+        // accounts. All product editors (dockage, service fees, rentals)
+        // are revenue-only; rentals are non-inventory so no EXPENSE/ASSET
+        // rows are needed.
         hasGlAccounts: glAccounts.some((a) => a.type === "REVENUE"),
         missingMappingWarnings: warnings,
       },
@@ -3133,13 +3177,9 @@ router.get(
           qboConnected,
           override: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
           effective: {
             revenueGlAccountId: mm?.revenueGlAccountId ?? null,
-            cogsGlAccountId: mm?.cogsGlAccountId ?? null,
-            inventoryAssetGlAccountId: mm?.inventoryAssetGlAccountId ?? null,
           },
         };
       });
@@ -3158,7 +3198,13 @@ router.put(
   async (req, res, next) => {
     try {
       const tenantId = req.tenantId!;
-      const body = productMappingPutSchema.parse(req.body);
+      // Rental products are non-inventory: only a revenue mapping is
+      // configurable. Any cogs/inventory-asset values in the legacy payload
+      // are silently ignored — those columns no longer exist after the
+      // 20260511000000_drop_rental_product_inventory_gl_slots migration.
+      const body = z
+        .object({ revenueGlAccountId: z.string().nullable().optional() })
+        .parse({ revenueGlAccountId: (req.body as { revenueGlAccountId?: string | null } | null)?.revenueGlAccountId ?? null });
       const { id, locationId } = req.params;
       const [product, location] = await Promise.all([
         prisma.rentalProduct.findFirst({
@@ -3178,24 +3224,14 @@ router.put(
         res.status(404).json({ error: "Location not found" });
         return;
       }
-      await Promise.all([
-        validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId),
-        validateGlAccountForLocation(tenantId, locationId, body.cogsGlAccountId),
-        validateGlAccountForLocation(
-          tenantId,
-          locationId,
-          body.inventoryAssetGlAccountId,
-        ),
-      ]);
+      await validateGlAccountForLocation(tenantId, locationId, body.revenueGlAccountId);
       const data = {
         revenueGlAccountId: body.revenueGlAccountId ?? null,
-        cogsGlAccountId: body.cogsGlAccountId ?? null,
-        inventoryAssetGlAccountId: body.inventoryAssetGlAccountId ?? null,
       };
       // Fetch existing mapping for before-values
       const existingRpMapping = await prisma.rentalProductGlMapping.findUnique({
         where: { rentalProductId_locationId: { rentalProductId: id, locationId } },
-        select: { revenueGlAccountId: true, cogsGlAccountId: true, inventoryAssetGlAccountId: true },
+        select: { revenueGlAccountId: true },
       });
       const result = await prisma.rentalProductGlMapping.upsert({
         where: {
@@ -3209,12 +3245,6 @@ router.put(
         const rpChanges: Record<string, { from: unknown; to: unknown }> = {};
         if ((existingRpMapping?.revenueGlAccountId ?? null) !== result.revenueGlAccountId) {
           rpChanges.revenueGlAccountId = { from: existingRpMapping?.revenueGlAccountId ?? null, to: result.revenueGlAccountId };
-        }
-        if ((existingRpMapping?.cogsGlAccountId ?? null) !== result.cogsGlAccountId) {
-          rpChanges.cogsGlAccountId = { from: existingRpMapping?.cogsGlAccountId ?? null, to: result.cogsGlAccountId };
-        }
-        if ((existingRpMapping?.inventoryAssetGlAccountId ?? null) !== result.inventoryAssetGlAccountId) {
-          rpChanges.inventoryAssetGlAccountId = { from: existingRpMapping?.inventoryAssetGlAccountId ?? null, to: result.inventoryAssetGlAccountId };
         }
         if (Object.keys(rpChanges).length > 0) {
           await logAccountingChange({

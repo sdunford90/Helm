@@ -676,3 +676,143 @@ describe('applyCredits', () => {
     expect(mockPrisma.payment.findMany).not.toHaveBeenCalled();
   });
 });
+
+// ─── Task #274 — Linked DockageRate drives GL resolution ──────────
+//
+// When a contract is linked to a rate plan, the billing engine must
+// resolve GL via that plan (deterministic, audit-traceable). When the
+// link is absent or the plan was deactivated, it must fall back to
+// the legacy (location, slipType) lookup so historical contracts
+// keep billing — surfacing the gap via console.warn rather than
+// crashing the run.
+describe('generateRecurringInvoices — DockageRate link (Task #274)', () => {
+  let resolveMock: any;
+  beforeEach(async () => {
+    const resolver = await import('../../src/services/gl-account-resolver.js');
+    resolveMock = resolver.resolveDockageRateGlAccount as any;
+    resolveMock.mockReset();
+  });
+
+  function makeRow({ dockageRate, locationId = 'loc-1', slipType = 'STANDARD' }: any) {
+    const today = new Date();
+    const customer = buildCustomer({ stripeCustomerId: null });
+    const slip = buildSlip({ slipNumber: 'A-12', locationId, slipType });
+    const contract = buildContract({
+      status: 'ACTIVE',
+      billingAnchor: today.getDate(),
+      rateCents: 150000,
+      customerId: customer.id,
+      slipId: slip.id,
+      billingCycle: 'MONTHLY',
+      startDate: new Date(today.getFullYear(), today.getMonth() - 1, 1),
+    });
+    return {
+      ...contract,
+      customer: {
+        id: customer.id, stripeCustomerId: null, achBlocked: false,
+        firstName: 'A', lastName: 'B',
+      },
+      slip: {
+        id: slip.id, slipNumber: 'A-12', locationId, slipType,
+        electricityMode: null, flatFeeCents: null, kwhRateCents: null,
+      },
+      dockageRate,
+    };
+  }
+
+  function bootRunMocks() {
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const inv = buildInvoice({ totalCents: 150000, lineItems: [{ id: 'li-1', extendedCents: 150000, taxCents: 0, isDeferred: false }] });
+      const tx = { invoice: { create: vi.fn().mockResolvedValue(inv) } };
+      return fn(tx);
+    });
+  }
+
+  it('uses the linked plan for GL resolution and skips the (location, slipType) fallback', async () => {
+    const PLAN_ID = 'rate-linked';
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      makeRow({ dockageRate: { id: PLAN_ID, glAccountId: 'gl-from-plan', active: true, slipType: 'STANDARD', taxClass: null } }),
+    ]);
+    bootRunMocks();
+    resolveMock.mockResolvedValue('gl-resolved');
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    // Resolver was called with the linked plan id, not via a fallback findFirst.
+    expect(resolveMock).toHaveBeenCalledWith('tenant-1', PLAN_ID, 'loc-1');
+    expect(mockPrisma.dockageRate.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("uses the linked plan's taxClass to drive line-item taxCategory", async () => {
+    // The taxClass on the linked rate plan must flow through to the
+    // tax engine's per-line taxCategory so an EXEMPT plan books slip
+    // dockage as exempt rather than taxable "slip_rental".
+    const taxEngine: any = await import('../../src/services/tax-engine.js');
+    const captured: any[] = [];
+    taxEngine.getTaxProvider.mockReturnValue({
+      calculateTax: vi.fn().mockImplementation(async (args: any) => {
+        captured.push(args);
+        return { items: args.lineItems.map((li: any) => ({ description: li.description, taxRate: 0, taxCents: 0, breakdowns: [] })), totalTaxCents: 0 };
+      }),
+    });
+    // Force the tax engine to actually be invoked (skip the customer-
+    // exempt + missing-location shortcut in billing.ts).
+    mockPrisma.location.findUnique.mockResolvedValue({ taxProvider: 'noop' });
+
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      makeRow({ dockageRate: { id: 'plan-tx', glAccountId: 'gl-x', active: true, slipType: 'STANDARD', taxClass: 'EXEMPT' } }),
+    ]);
+    bootRunMocks();
+    resolveMock.mockResolvedValue('gl-x');
+
+    await generateRecurringInvoices('tenant-1');
+
+    const slipLine = captured[0]?.lineItems?.find((li: any) =>
+      li.description.startsWith('Slip '),
+    );
+    expect(slipLine?.taxCategory).toBe('exempt');
+  });
+
+  it('uses the linked plan even when deactivated and warns rather than re-routing GL', async () => {
+    // deactivating a rate plan removes it from new-contract
+    // pickers but historical contracts already pointed at that plan
+    // must keep billing to the same GL the operator originally chose.
+    // Silently re-routing to a different (location, slipType) plan
+    // would corrupt the audit trail. We warn so the gap is visible
+    // and the operator can re-link to a current plan.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const DEAD_PLAN_ID = 'rate-dead';
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      makeRow({ dockageRate: { id: DEAD_PLAN_ID, glAccountId: 'gl-from-plan', active: false, slipType: 'STANDARD', taxClass: null } }),
+    ]);
+    bootRunMocks();
+    resolveMock.mockResolvedValue('gl-from-plan');
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    // Resolver was still called with the linked (deactivated) plan id.
+    expect(resolveMock).toHaveBeenCalledWith('tenant-1', DEAD_PLAN_ID, 'loc-1');
+    // The (location, slipType) fallback lookup must NOT run when a link exists.
+    expect(mockPrisma.dockageRate.findFirst).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('deactivated dockage rate'));
+    warnSpy.mockRestore();
+  });
+
+  it('warns and falls back when no plan is linked at all', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockPrisma.slipContract.findMany.mockResolvedValue([
+      makeRow({ dockageRate: null }),
+    ]);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue(null);
+    bootRunMocks();
+
+    const results = await generateRecurringInvoices('tenant-1');
+
+    expect(results).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no linked dockage rate'));
+    warnSpy.mockRestore();
+  });
+});

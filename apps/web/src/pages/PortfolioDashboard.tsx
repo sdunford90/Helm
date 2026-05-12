@@ -292,6 +292,22 @@ export default function PortfolioDashboard() {
 
   return (
     <div style={s.page}>
+      <div
+        style={{
+          marginBottom: 16,
+          padding: '10px 14px',
+          borderRadius: 8,
+          background: '#FEF3C7',
+          border: '1px solid #FCD34D',
+          color: '#78350F',
+          fontSize: 13,
+          fontWeight: 500,
+        }}
+      >
+        This Portfolio view is being migrated to the platform admin app. The
+        deep-link route remains available for now, but it has been removed
+        from the marina sidebar.
+      </div>
       <div style={s.headerRow}>
         <h1 style={s.title} className="helm-page-title">Portfolio Overview</h1>
         <select

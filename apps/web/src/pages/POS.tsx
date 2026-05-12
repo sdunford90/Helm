@@ -81,6 +81,8 @@ interface ApiShift {
   openingFloatCents: number;
   closingCashCents: number | null;
   salesTotal: number;
+  cashSalesCents: number;
+  cashRefundsCents: number;
   expectedCashCents: number;
   varianceCents: number | null;
 }
@@ -102,7 +104,14 @@ function mapApiProduct(p: ApiProduct): Product {
 }
 
 const PAYMENT_METHOD_API: Record<string, string> = {
-  Card: 'CARD', Cash: 'CASH', ACH: 'ACH', 'Charge to Slip': 'CHARGE_TO_ACCOUNT',
+  Card: 'CARD', Cash: 'CASH', ACH: 'ACH',
+  // "Charge to A/R" replaces the legacy "Charge to Slip" wording. The server
+  // now creates a real A/R Invoice for the attached customer (gated on the
+  // location's posChargeToARAllowed toggle).
+  'Charge to A/R': 'CHARGE_TO_AR',
+  // Saved-card picks reuse the CARD path; the server charges the saved
+  // PaymentMethod off-session via savedPaymentMethodId.
+  'Saved Card': 'CARD',
 };
 
 /* ── Styles ─────────────────────────────────────────────── */
@@ -203,17 +212,41 @@ function OpenShiftModal({ onClose, onOpen, loading }: { onClose: () => void; onO
 
 /* ── Close Shift Modal ─────────────────────────────────── */
 
-function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, submitError }: {
+function CloseShiftModal({ onClose, onConfirm, floatAmt, shiftCashSales, loading, submitError }: {
   onClose: () => void;
-  onConfirm: (closingCash: number, notes: string) => void;
+  onConfirm: (
+    closingCash: number,
+    notes: string,
+    declaredCheck: number,
+    declaredOther: number,
+    paidOuts: number,
+  ) => void;
   floatAmt: number;
-  runningTotal: number;
+  // Cash-tender net for the CURRENT shift only (sales − refunds), in
+  // dollars. Sourced from the API's enriched shift payload — the prior
+  // implementation used a today-wide running total that happened to
+  // match for single-shift days but produced the wrong expected drawer
+  // figure as soon as a shift spanned a day boundary or there were
+  // multiple shifts on the same day.
+  shiftCashSales: number;
   loading?: boolean;
   submitError?: string;
 }) {
-  const [closingCash, setClosingCash] = useState((floatAmt + runningTotal).toFixed(2));
+  // Task #320 added cashier-declared check / other / paid-outs fields so
+  // the manager has a full reconciliation picture at Z-out. All optional;
+  // expected drawer math now subtracts paid-outs and the declared
+  // check/other amounts (those bills/checks physically leave the cash
+  // drawer at close, so they shouldn't be in the expected cash count).
+  const [closingCash, setClosingCash] = useState((floatAmt + shiftCashSales).toFixed(2));
   const [notes, setNotes] = useState('');
-  const expected = floatAmt + runningTotal;
+  const [declaredCheck, setDeclaredCheck] = useState('0.00');
+  const [declaredOther, setDeclaredOther] = useState('0.00');
+  const [paidOuts, setPaidOuts] = useState('0.00');
+  const paidOutsNum = parseFloat(paidOuts) || 0;
+  const declaredCheckNum = parseFloat(declaredCheck) || 0;
+  const declaredOtherNum = parseFloat(declaredOther) || 0;
+  const expected =
+    floatAmt + shiftCashSales - paidOutsNum - declaredCheckNum - declaredOtherNum;
   const variance = (parseFloat(closingCash) || 0) - expected;
   return (
     <div style={st.overlay} onClick={() => { if (!loading) onClose(); }}>
@@ -226,7 +259,7 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
           <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px', marginBottom: '20px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Opening Float</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${floatAmt.toFixed(2)}</div></div>
-              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${runningTotal.toFixed(2)}</div></div>
+              <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Cash Sales (this shift)</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${shiftCashSales.toFixed(2)}</div></div>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Expected in Drawer</div><div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342', fontVariantNumeric: 'tabular-nums' }}>${expected.toFixed(2)}</div></div>
               <div><div style={{ fontSize: '11px', color: '#64748B', marginBottom: '2px' }}>Variance</div><div style={{ fontSize: '16px', fontWeight: 700, color: variance >= 0 ? '#059669' : '#DC2626', fontVariantNumeric: 'tabular-nums' }}>{variance >= 0 ? '+' : ''}${variance.toFixed(2)}</div></div>
             </div>
@@ -235,15 +268,38 @@ function CloseShiftModal({ onClose, onConfirm, floatAmt, runningTotal, loading, 
             <label style={st.label}>Actual Closing Cash Count ($) *</label>
             <input style={{ ...st.input, fontSize: '20px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={closingCash} onChange={(e) => setClosingCash(e.target.value)} autoFocus />
           </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+            <div style={st.field}>
+              <label style={st.label}>Declared Checks ($)</label>
+              <input style={st.input} type="number" step="0.01" value={declaredCheck} onChange={(e) => setDeclaredCheck(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Declared Other ($)</label>
+              <input style={st.input} type="number" step="0.01" value={declaredOther} onChange={(e) => setDeclaredOther(e.target.value)} />
+            </div>
+            <div style={st.field}>
+              <label style={st.label}>Paid-Outs ($)</label>
+              <input style={st.input} type="number" step="0.01" value={paidOuts} onChange={(e) => setPaidOuts(e.target.value)} />
+            </div>
+          </div>
           <div style={st.field}>
             <label style={st.label}>Notes (optional)</label>
             <input style={st.input} placeholder="e.g. $5 short, recount confirmed" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '4px' }}>
+            After Close, a manager runs Z-out to lock the shift and post the GL journal.
           </div>
           {submitError && <div style={{ fontSize: '13px', color: '#DC2626', marginTop: '4px' }}>{submitError}</div>}
         </div>
         <div style={st.modalFooter}>
           <button style={st.cancelBtn} onClick={onClose} disabled={loading}>Cancel</button>
-          <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(parseFloat(closingCash) || 0, notes)}>{loading ? 'Closing...' : 'Close Shift'}</button>
+          <button style={{ ...st.saveBtn, backgroundColor: '#DC2626', opacity: loading ? 0.7 : 1 }} disabled={loading} onClick={() => onConfirm(
+            parseFloat(closingCash) || 0,
+            notes,
+            parseFloat(declaredCheck) || 0,
+            parseFloat(declaredOther) || 0,
+            parseFloat(paidOuts) || 0,
+          )}>{loading ? 'Closing...' : 'Close Shift'}</button>
         </div>
       </div>
     </div>
@@ -880,10 +936,25 @@ function PaymentModal({
                   <div style={{ color: '#64748B', fontSize: '14px' }}>ACH payment will be initiated on confirmation</div>
                 </div>
               )}
-              {method === 'Charge to Slip' && (
-                <div style={st.field}>
-                  <label style={st.label}>Slip Number</label>
-                  <input style={st.input} placeholder="e.g. A-01" value={slip} onChange={(e) => setSlip(e.target.value)} autoFocus />
+              {method === 'Charge to A/R' && (
+                <div style={{ textAlign: 'center', padding: '20px', background: '#F0F9FF', borderRadius: '8px', border: '1px solid #BFDBFE' }}>
+                  <DollarSign size={28} style={{ color: '#1D4ED8', marginBottom: '8px' }} />
+                  <div style={{ fontSize: '14px', color: '#0F2E4D', fontWeight: 600, marginBottom: '4px' }}>
+                    A new A/R invoice will be created for the attached customer.
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748B' }}>
+                    Due in 30 days. The customer can pay it from the portal or you can collect later.
+                  </div>
+                  {/* Hidden field — kept to avoid no-unused-vars on `slip`/`setSlip`. */}
+                  <input type="hidden" value={slip} onChange={() => setSlip('')} />
+                </div>
+              )}
+              {method === 'Saved Card' && (
+                <div style={{ textAlign: 'center', padding: '20px', background: '#F0FDF4', borderRadius: '8px', border: '1px solid #86EFAC' }}>
+                  <CreditCard size={28} style={{ color: '#15803D', marginBottom: '8px' }} />
+                  <div style={{ fontSize: '14px', color: '#0F2E4D', fontWeight: 600 }}>
+                    The customer's saved card will be charged immediately.
+                  </div>
                 </div>
               )}
             </>
@@ -1554,6 +1625,13 @@ export default function POS() {
   const [discountPreview, setDiscountPreview] = useState<PreviewLine[]>([]);
   const [shiftOpen, setShiftOpen] = useState(false);
   const [shiftId, setShiftId] = useState<string | null>(null);
+  // Cash-tender net for the active shift (sales − refunds, in dollars),
+  // sourced from the API's enriched /shifts response. The close-shift
+  // modal uses this rather than a today-wide running total so the
+  // expected drawer figure is correct across day boundaries / multiple
+  // shifts on one day. Refreshed via the same useEffect that picks up
+  // the open shift after a transaction or shift change.
+  const [shiftCashNet, setShiftCashNet] = useState<number>(0);
   const [shiftCashier, setShiftCashier] = useState('');
   const [shiftFloat, setShiftFloat] = useState(0);
   const [shiftOpenedAt, setShiftOpenedAt] = useState<Date | null>(null);
@@ -1566,7 +1644,7 @@ export default function POS() {
   // would re-render the still-mounted CardPaymentModal with a fresh
   // `total = 0`, making the "Payment Complete — $0.00" screen and the
   // printed receipt show $0 even though Stripe charged the correct amount.
-  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[]; totalSnapshot: number } | null>(null);
+  const [paymentModal, setPaymentModal] = useState<{ method: string; cartSnapshot: CartItem[]; totalSnapshot: number; savedPaymentMethodId?: string } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
   const [editingQtyValue, setEditingQtyValue] = useState('');
   const [recalledTxn, setRecalledTxn] = useState<string | null>(null);
@@ -1580,6 +1658,43 @@ export default function POS() {
   // per-location, and defaulted to ON.
   // In All-locations mode (no currentLocationId) we hide ACH — there's no
   // single location to bill against, so the choice is moot.
+  // Per-location toggle for the "Charge to A/R" button. When off (default),
+  // the button is hidden entirely so the legacy "Charge to Slip" wording
+  // can never resurface for marinas that haven't opted in.
+  const posChargeToAREnabled = useMemo(() => {
+    if (!currentLocationId) return false;
+    const loc = locations?.find((l) => l.id === currentLocationId);
+    return !!loc?.posChargeToARAllowed;
+  }, [currentLocationId, locations]);
+
+  // Saved Stripe payment methods for the attached customer that have been
+  // explicitly opted in for POS use (metadata.usableInPos === "true"). Empty
+  // until a customer is attached.
+  type PosUsableCard = { id: string; label: string; last4: string };
+  const [usableSavedCards, setUsableSavedCards] = useState<PosUsableCard[]>([]);
+  useEffect(() => {
+    if (!attachedCustomer) { setUsableSavedCards([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch(`/api/customers/${attachedCustomer.id}/payment-methods`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) { if (!cancelled) setUsableSavedCards([]); return; }
+        const json = await res.json();
+        const methods = (json?.methods ?? []) as Array<{ id: string; kind: string; label: string; last4: string; usableInPos?: boolean }>;
+        if (!cancelled) {
+          setUsableSavedCards(
+            methods.filter((m) => m.kind === 'card' && m.usableInPos)
+              .map((m) => ({ id: m.id, label: m.label, last4: m.last4 })),
+          );
+        }
+      } catch { if (!cancelled) setUsableSavedCards([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [attachedCustomer, getToken]);
+
   const achEnabled = useMemo(() => {
     if (!currentLocationId) return false;
     const loc = locations.find((l) => l.id === currentLocationId);
@@ -1608,9 +1723,15 @@ export default function POS() {
         setShiftId(openShift.id);
         setShiftFloat(openShift.openingFloatCents / 100);
         setShiftOpenedAt(new Date(openShift.openedAt));
+        // Net cash for this shift (sales − refunds), in dollars. Drives
+        // the close-shift modal's expected drawer math.
+        setShiftCashNet(
+          (openShift.cashSalesCents - openShift.cashRefundsCents) / 100,
+        );
       } else {
         setShiftOpen(false);
         setShiftId(null);
+        setShiftCashNet(0);
       }
     }
   }, [shiftsData]);
@@ -1627,13 +1748,25 @@ export default function POS() {
     }
   };
 
-  const handleCloseShift = async (closingCash: number, notes: string) => {
+  const handleCloseShift = async (
+    closingCash: number,
+    notes: string,
+    declaredCheck = 0,
+    declaredOther = 0,
+    paidOuts = 0,
+  ) => {
     if (!shiftId) return;
     setClosingShift(true);
     setCloseShiftError('');
     try {
       const token = await getToken();
-      await api.post(`/api/pos/shifts/${shiftId}/close`, { closingCashCents: Math.round(closingCash * 100), notes: notes || undefined }, token);
+      await api.post(`/api/pos/shifts/${shiftId}/close`, {
+        closingCashCents: Math.round(closingCash * 100),
+        declaredCheckCents: Math.round(declaredCheck * 100),
+        declaredOtherCents: Math.round(declaredOther * 100),
+        paidOutsCents: Math.round(paidOuts * 100),
+        notes: notes || undefined,
+      }, token);
       setShiftOpen(false);
       setShiftId(null);
       setShiftCashier('');
@@ -1684,7 +1817,7 @@ export default function POS() {
 
   const transactions = apiTransactionsMapped;
 
-  const handlePaymentComplete = async (method: string, cardMeta?: CardPaymentMeta) => {
+  const handlePaymentComplete = async (method: string, cardMeta?: CardPaymentMeta, savedPaymentMethodId?: string) => {
     const lineItems = cart.map((i) => {
       const unitPriceCents = Math.round(i.product.price * 100);
       const qty = Math.max(1, Math.round(i.quantity));
@@ -1719,10 +1852,15 @@ export default function POS() {
         cnpFallbackReason: cardMeta.cnpFallbackReason ?? null,
         stripePaymentIntentId: cardMeta.stripePaymentIntentId ?? null,
       } : {}),
+      // Saved-card pick: server creates + confirms the PaymentIntent
+      // off-session and writes its own proof audit row.
+      ...(savedPaymentMethodId ? { savedPaymentMethodId } : {}),
     });
 
     if (result !== null) {
-      await refreshTransactions();
+      // Refresh shifts alongside transactions so the close-shift modal's
+      // expected drawer figure reflects the cash sale we just rang.
+      await Promise.all([refreshTransactions(), fetchShifts()]);
       setCart([]);
       // Reset the attached customer between sales — the next walk-in is
       // typically a different person, and leaving stale attachment risks
@@ -1756,7 +1894,7 @@ export default function POS() {
       const token = await getToken();
       await api.post(`/api/pos/transactions/${recalledTxnData.id}/refund`, {}, token);
       setRefundDone(true);
-      await refreshTransactions();
+      await Promise.all([refreshTransactions(), fetchShifts()]);
     } catch (err: any) {
       alert((err as Error).message ?? 'Refund failed');
     } finally {
@@ -1916,13 +2054,26 @@ export default function POS() {
             <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${shiftFloat.toFixed(2)}</div></div>
             <div><div style={st.shiftLabel}>Running Total</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
           </div>
-          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => { setCloseShiftError(''); setShowCloseShiftModal(true); }}>Close Shift</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a href={shiftId ? `/pos/x-report/${shiftId}` : '#'}
+               target="_blank" rel="noopener noreferrer"
+               style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: shiftId ? 1 : 0.5, pointerEvents: shiftId ? 'auto' : 'none' }}>
+              X-Report
+            </a>
+            <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              Z-Reports
+            </a>
+            <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => { setCloseShiftError(''); setShowCloseShiftModal(true); }}>Close Shift</button>
+          </div>
         </div>
       ) : (
-        <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center' }}>
+        <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center', gap: 8 }}>
           <button style={st.addBtn} onClick={() => setShowShiftModal(true)}>
             <Clock size={16} /> Open Shift
           </button>
+          <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            Z-Reports
+          </a>
         </div>
       )}
 
@@ -2332,8 +2483,34 @@ export default function POS() {
                     {achEnabled && (
                       <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart, totalSnapshot: total })}><Building2 size={16} /> ACH</button>
                     )}
-                    <button style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2' }} onClick={() => total > 0 && setPaymentModal({ method: 'Charge to Slip', cartSnapshot: cart, totalSnapshot: total })}><DollarSign size={16} /> Charge to Slip</button>
+                    {posChargeToAREnabled && (
+                      <button
+                        style={{ ...st.payBtn, gridColumn: achEnabled ? undefined : 'span 2', opacity: attachedCustomer ? 1 : 0.5, cursor: attachedCustomer ? 'pointer' : 'not-allowed' }}
+                        onClick={() => attachedCustomer && total > 0 && setPaymentModal({ method: 'Charge to A/R', cartSnapshot: cart, totalSnapshot: total })}
+                        title={attachedCustomer ? 'Create an A/R invoice for the attached customer' : 'Attach a customer first to charge to A/R'}
+                      ><DollarSign size={16} /> Charge to A/R</button>
+                    )}
                   </div>
+                  {/* Saved-card picker: appears only when a customer is attached
+                      AND has at least one card explicitly opted-in for POS use. */}
+                  {attachedCustomer && usableSavedCards.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
+                        Charge a saved card
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {usableSavedCards.map((c) => (
+                          <button
+                            key={c.id}
+                            style={{ ...st.payBtn, justifyContent: 'flex-start', background: '#F0FDF4', border: '1px solid #86EFAC', color: '#0F2E4D' }}
+                            onClick={() => total > 0 && setPaymentModal({ method: 'Saved Card', cartSnapshot: cart, totalSnapshot: total, savedPaymentMethodId: c.id })}
+                          >
+                            <CreditCard size={16} /> {c.label} •••• {c.last4}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -2440,7 +2617,7 @@ export default function POS() {
           onClose={() => { setShowCloseShiftModal(false); setCloseShiftError(''); }}
           onConfirm={handleCloseShift}
           floatAmt={shiftFloat}
-          runningTotal={runningTotal - total}
+          shiftCashSales={shiftCashNet}
           loading={closingShift}
           submitError={closeShiftError}
         />
@@ -2461,7 +2638,7 @@ export default function POS() {
           total={paymentModal.totalSnapshot}
           method={paymentModal.method}
           onClose={() => setPaymentModal(null)}
-          onComplete={(method) => handlePaymentComplete(method)}
+          onComplete={(method) => handlePaymentComplete(method, undefined, paymentModal.savedPaymentMethodId)}
           cartItems={paymentModal.cartSnapshot}
         />
       )}

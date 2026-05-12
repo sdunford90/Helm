@@ -202,7 +202,7 @@ const s: Record<string, React.CSSProperties> = {
     padding: '16px',
     borderRadius: '8px',
     fontSize: '13px',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     lineHeight: 1.6,
     overflowX: 'auto' as const,
     position: 'relative' as const,

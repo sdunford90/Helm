@@ -28,10 +28,14 @@ router.get("/", async (req: Request, res: Response) => {
       rentalsEnabled: true,
       rampEnabled: true,
       conciergeEnabled: true,
-      // Per-location POS toggles. Right now only ACH; the POS reads this
-      // to decide whether to show the ACH button alongside Cash, Card and
-      // Charge to Slip.
+      // Per-location POS toggles. POS reads these to decide which payment
+      // buttons to render (ACH, Charge to A/R) alongside Cash and Card.
       posAchEnabled: true,
+      posChargeToARAllowed: true,
+      // Z-report distribution list (Task #320). Returned here so the
+      // Locations settings UI can render + edit the configured
+      // recipients alongside the other per-location toggles.
+      zReportRecipients: true,
     },
   });
 
@@ -47,12 +51,33 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
     return res.status(403).json({ error: "Forbidden for this location", code: "LOCATION_FORBIDDEN" });
   }
 
-  const { transientEnabled, rentalsEnabled, rampEnabled, conciergeEnabled } = req.body as {
+  const { transientEnabled, rentalsEnabled, rampEnabled, conciergeEnabled, zReportRecipients } = req.body as {
     transientEnabled?: boolean;
     rentalsEnabled?: boolean;
     rampEnabled?: boolean;
     conciergeEnabled?: boolean;
+    zReportRecipients?: string[];
   };
+
+  // Validate the optional Z-report distribution list. We accept an array
+  // of email addresses, dedupe + lowercase, and reject anything that
+  // doesn't look like an email so a typo can't silently break end-of-day
+  // reporting. Empty array is allowed and clears the list.
+  let normalizedRecipients: string[] | undefined;
+  if (zReportRecipients !== undefined) {
+    if (!Array.isArray(zReportRecipients)) {
+      return res.status(400).json({ error: "zReportRecipients must be an array", code: "BAD_INPUT" });
+    }
+    const cleaned = Array.from(
+      new Set(zReportRecipients.map((s) => String(s).trim().toLowerCase()).filter(Boolean)),
+    );
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const bad = cleaned.find((e) => !emailRe.test(e));
+    if (bad) {
+      return res.status(400).json({ error: `Invalid email: ${bad}`, code: "BAD_INPUT" });
+    }
+    normalizedRecipients = cleaned;
+  }
 
   const existing = await prisma.location.findFirst({
     where: { id, tenantId },
@@ -66,6 +91,7 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
       ...(rentalsEnabled !== undefined && { rentalsEnabled }),
       ...(rampEnabled !== undefined && { rampEnabled }),
       ...(conciergeEnabled !== undefined && { conciergeEnabled }),
+      ...(normalizedRecipients !== undefined && { zReportRecipients: normalizedRecipients }),
     },
     select: {
       id: true,
@@ -74,6 +100,7 @@ router.patch("/:id/features", async (req: Request, res: Response) => {
       rentalsEnabled: true,
       rampEnabled: true,
       conciergeEnabled: true,
+      zReportRecipients: true,
     },
   });
 

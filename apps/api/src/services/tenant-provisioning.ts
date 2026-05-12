@@ -21,13 +21,24 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   // Assets
   { accountNumber: "1000", name: "Cash / Operating Bank", type: "ASSET" },
   { accountNumber: "1010", name: "Stripe Clearing", type: "ASSET" },
+  // ACH settlements + undeposited (check / other) funds get their own
+  // asset accounts so POS Z-out tender postings reconcile cleanly
+  // against bank deposits and ACH batches (Task #320).
+  { accountNumber: "1015", name: "ACH Clearing", type: "ASSET" },
+  { accountNumber: "1020", name: "Undeposited Funds", type: "ASSET" },
   { accountNumber: "1200", name: "Accounts Receivable", type: "ASSET" },
   // Liabilities (deferred-revenue accounts flagged for rev-rec)
   { accountNumber: "2100", name: "Deferred Revenue - Slips", type: "LIABILITY", isDeferredRevenue: true },
   { accountNumber: "2110", name: "Deferred Revenue - Rentals", type: "LIABILITY", isDeferredRevenue: true },
-  { accountNumber: "2200", name: "Security Deposits Held", type: "LIABILITY" },
   { accountNumber: "2210", name: "Customer Deposits", type: "LIABILITY" },
-  { accountNumber: "2300", name: "Tips Payable", type: "LIABILITY" },
+  // 2300 is the number `gl-posting.ts` (ACCOUNTS.SECURITY_DEPOSITS_HELD) has
+  // always posted security-deposit liability journals against. The historical
+  // seed mislabeled this row "Tips Payable" while creating an empty 2200
+  // "Security Deposits Held" row that nothing posted to — confusing for
+  // operators reconciling against QuickBooks. The 2200 row is dropped from
+  // the default seed; existing tenants are renamed by
+  // `scripts/backfill-system-gl-accounts.ts`.
+  { accountNumber: "2300", name: "Security Deposits Held", type: "LIABILITY" },
   { accountNumber: "2400", name: "Sales Tax Payable", type: "LIABILITY" },
   { accountNumber: "2401", name: "State Sales Tax Payable", type: "LIABILITY" },
   { accountNumber: "2402", name: "County Sales Tax Payable", type: "LIABILITY" },
@@ -46,6 +57,9 @@ const DEFAULT_GL_ACCOUNTS: DefaultAccount[] = [
   // Expenses
   { accountNumber: "5000", name: "COGS", type: "EXPENSE" },
   { accountNumber: "5100", name: "Payment Processing Fees", type: "EXPENSE" },
+  // POS Z-out cash drawer variance dump (Task #320). Debited when the
+  // counted drawer comes up short; credited when over.
+  { accountNumber: "5900", name: "Cash Over/Short", type: "EXPENSE" },
 ];
 
 /**

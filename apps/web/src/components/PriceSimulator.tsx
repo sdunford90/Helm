@@ -176,7 +176,7 @@ const cs: Record<string, React.CSSProperties> = {
   cardTitle: { fontSize: '16px', fontWeight: 700, color: '#0A2342', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' },
   field: { display: 'flex', flexDirection: 'column' as const, gap: '4px', marginBottom: '16px' },
   label: { fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B' },
-  input: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', boxSizing: 'border-box' as const, width: '100%', fontFamily: '"JetBrains Mono", monospace' },
+  input: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', boxSizing: 'border-box' as const, width: '100%', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   select: { padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', background: '#FFFFFF', cursor: 'pointer', width: '100%', boxSizing: 'border-box' as const },
   simBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 24px', fontSize: '15px', fontWeight: 700, color: '#FFFFFF', background: 'linear-gradient(135deg, #0A2342, #1a3a5c)', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%', marginTop: '8px' },
   step: { display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '10px 0', borderBottom: '1px solid #F1F5F9' },
@@ -185,15 +185,15 @@ const cs: Record<string, React.CSSProperties> = {
   stepSkipped: { background: '#F3F4F6', color: '#94A3B8' },
   stepName: { fontSize: '14px', fontWeight: 600, color: '#0A2342' },
   stepDesc: { fontSize: '12px', color: '#64748B', marginTop: '2px' },
-  stepAdj: { fontFamily: '"JetBrains Mono", monospace', fontSize: '13px', fontWeight: 600, marginLeft: 'auto', textAlign: 'right' as const, flexShrink: 0 },
+  stepAdj: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '13px', fontWeight: 600, marginLeft: 'auto', textAlign: 'right' as const, flexShrink: 0 },
   finalRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 0', marginTop: '8px', borderTop: '2px solid #0A2342' },
   finalLabel: { fontSize: '16px', fontWeight: 800, color: '#0A2342' },
-  finalPrice: { fontSize: '28px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  finalPrice: { fontSize: '28px', fontWeight: 800, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   modeBar: { display: 'flex', gap: '8px', marginBottom: '20px' },
   modeBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', fontSize: '13px', fontWeight: 600, borderRadius: '6px', border: '1px solid #E2E8F0', cursor: 'pointer' },
   batchTable: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '13px', marginTop: '16px' },
   batchTh: { textAlign: 'left' as const, padding: '8px 12px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '2px solid #E2E8F0' },
-  batchTd: { padding: '8px 12px', borderBottom: '1px solid #F1F5F9', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' },
+  batchTd: { padding: '8px 12px', borderBottom: '1px solid #F1F5F9', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '13px' },
   resetBtn: { display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', fontSize: '12px', fontWeight: 600, color: '#64748B', background: 'none', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginLeft: 'auto' },
   twoCol: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' },
 };
@@ -440,16 +440,16 @@ export default function PriceSimulator() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '40px' }}>
                 <div style={{ textAlign: 'center' as const }}>
                   <div style={{ fontSize: '12px', fontWeight: 700, color: '#00D4FF', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' }}>Scenario A</div>
-                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: '"JetBrains Mono", monospace', color: '#0A2342' }}>${(resultA.finalCents / 100).toFixed(2)}</div>
+                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', color: '#0A2342' }}>${(resultA.finalCents / 100).toFixed(2)}</div>
                 </div>
                 <div style={{ fontSize: '24px', color: '#94A3B8', fontWeight: 300 }}>vs</div>
                 <div style={{ textAlign: 'center' as const }}>
                   <div style={{ fontSize: '12px', fontWeight: 700, color: '#F59E0B', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' }}>Scenario B</div>
-                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: '"JetBrains Mono", monospace', color: '#0A2342' }}>${(resultB.finalCents / 100).toFixed(2)}</div>
+                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', color: '#0A2342' }}>${(resultB.finalCents / 100).toFixed(2)}</div>
                 </div>
                 <div style={{ textAlign: 'center' as const }}>
                   <div style={{ fontSize: '12px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' }}>Difference</div>
-                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: '"JetBrains Mono", monospace', color: resultA.finalCents > resultB.finalCents ? '#DC2626' : '#059669' }}>
+                  <div style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', color: resultA.finalCents > resultB.finalCents ? '#DC2626' : '#059669' }}>
                     {resultA.finalCents > resultB.finalCents ? '+' : '-'}${(Math.abs(resultA.finalCents - resultB.finalCents) / 100).toFixed(2)}
                   </div>
                 </div>

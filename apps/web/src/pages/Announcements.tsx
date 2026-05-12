@@ -375,6 +375,79 @@ export default function Announcements() {
   const [composeDate, setComposeDate] = useState('');
   const [composeTime, setComposeTime] = useState('');
 
+  // Custom-audience customer picker state
+  type PickerCustomer = {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    phone: string | null;
+    company: string | null;
+  };
+  const [composeCustomRecipients, setComposeCustomRecipients] = useState<PickerCustomer[]>([]);
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [customerResults, setCustomerResults] = useState<PickerCustomer[]>([]);
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false);
+  const [customerSearchError, setCustomerSearchError] = useState<string | null>(null);
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+
+  React.useEffect(() => {
+    if (composeAudience !== 'Custom') {
+      setCustomerResults([]);
+      setCustomerSearchError(null);
+      return;
+    }
+    const q = customerQuery.trim();
+    if (q.length < 2) {
+      setCustomerResults([]);
+      setCustomerSearchLoading(false);
+      setCustomerSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    setCustomerSearchLoading(true);
+    setCustomerSearchError(null);
+    const timer = window.setTimeout(async () => {
+      try {
+        const token = await getToken();
+        const qs = new URLSearchParams({ search: q, take: '20' });
+        const res = await api.get<{ data: PickerCustomer[] }>(`/api/customers?${qs}`, token);
+        if (!cancelled) setCustomerResults(res?.data ?? []);
+      } catch (e) {
+        if (!cancelled) {
+          setCustomerResults([]);
+          setCustomerSearchError(e instanceof Error ? e.message : 'Failed to search customers');
+        }
+      } finally {
+        if (!cancelled) setCustomerSearchLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [customerQuery, composeAudience, getToken]);
+
+  const customerLabel = (c: PickerCustomer): string => {
+    const name = [c.firstName, c.lastName].filter(Boolean).join(' ').trim();
+    return name || c.email || c.phone || c.company || 'Unnamed customer';
+  };
+  const customerSecondary = (c: PickerCustomer): string => {
+    return c.email || c.phone || c.company || '';
+  };
+
+  const addCustomRecipient = (c: PickerCustomer) => {
+    setComposeCustomRecipients(prev =>
+      prev.some(p => p.id === c.id) ? prev : [...prev, c],
+    );
+    setCustomerQuery('');
+    setCustomerResults([]);
+    setCustomerPickerOpen(false);
+  };
+  const removeCustomRecipient = (id: string) => {
+    setComposeCustomRecipients(prev => prev.filter(c => c.id !== id));
+  };
+
   const toggleChannel = (ch: Channel) => {
     setComposeChannels(prev =>
       prev.includes(ch) ? prev.filter(c => c !== ch) : [...prev, ch]
@@ -388,18 +461,38 @@ export default function Announcements() {
   };
 
   const [sendSuccess, setSendSuccess] = useState(false);
+  const isCustomAudience = composeAudience === 'Custom';
+  const customRecipientIds = composeCustomRecipients.map(c => c.id);
+  const canSend =
+    !!composeSubject.trim() &&
+    !!composeBody.trim() &&
+    composeChannels.length > 0 &&
+    (!isCustomAudience || customRecipientIds.length > 0);
+
   const handleSend = async () => {
-    const payload = {
+    if (!canSend) return;
+    const payload: Record<string, unknown> = {
       subject: composeSubject,
       channels: composeChannels,
-      audience: composeAudience,
+      audience: isCustomAudience ? 'custom' : composeAudience,
       body: composeBody,
       scheduled: composeSchedule,
       scheduledDate: composeSchedule ? `${composeDate} ${composeTime}` : null,
     };
+    if (isCustomAudience) {
+      payload.customRecipientIds = customRecipientIds;
+    }
     await createAnnouncement(payload);
     setSendSuccess(true);
-    setTimeout(() => { setSendSuccess(false); setActiveTab('all'); setComposeSubject(''); setComposeBody(''); setComposeChannels([]); }, 2000);
+    setTimeout(() => {
+      setSendSuccess(false);
+      setActiveTab('all');
+      setComposeSubject('');
+      setComposeBody('');
+      setComposeChannels([]);
+      setComposeCustomRecipients([]);
+      setCustomerQuery('');
+    }, 2000);
   };
 
   // Filtered announcements
@@ -647,6 +740,138 @@ export default function Announcements() {
                 <option value="Waitlist">Waitlist</option>
                 <option value="Custom">Custom</option>
               </select>
+
+              {isCustomAudience && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ position: 'relative' }}>
+                    <Search size={16} style={styles.searchIcon} />
+                    <input
+                      style={styles.searchInput}
+                      placeholder="Search customers by name, email, phone, or company..."
+                      value={customerQuery}
+                      onChange={e => {
+                        setCustomerQuery(e.target.value);
+                        setCustomerPickerOpen(true);
+                      }}
+                      onFocus={() => setCustomerPickerOpen(true)}
+                    />
+                    {customerPickerOpen && customerQuery.trim().length >= 2 && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 'calc(100% + 4px)',
+                          left: 0,
+                          right: 0,
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid #CCCCCC',
+                          borderRadius: '6px',
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+                          maxHeight: '260px',
+                          overflowY: 'auto',
+                          zIndex: 10,
+                        }}
+                      >
+                        {customerSearchLoading && (
+                          <div style={{ padding: '12px', fontSize: '13px', color: '#64748B' }}>
+                            Searching…
+                          </div>
+                        )}
+                        {!customerSearchLoading && customerSearchError && (
+                          <div style={{ padding: '12px', fontSize: '13px', color: '#B71C1C' }}>
+                            {customerSearchError}
+                          </div>
+                        )}
+                        {!customerSearchLoading && !customerSearchError && customerResults.length === 0 && (
+                          <div style={{ padding: '12px', fontSize: '13px', color: '#64748B' }}>
+                            No customers found.
+                          </div>
+                        )}
+                        {!customerSearchLoading && !customerSearchError && customerResults.map(c => {
+                          const already = composeCustomRecipients.some(s => s.id === c.id);
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              disabled={already}
+                              onClick={() => addCustomRecipient(c)}
+                              style={{
+                                display: 'block',
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '10px 12px',
+                                background: 'none',
+                                border: 'none',
+                                borderBottom: '1px solid #F1F5F9',
+                                cursor: already ? 'not-allowed' : 'pointer',
+                                opacity: already ? 0.5 : 1,
+                                color: '#0A2342',
+                                fontSize: '14px',
+                              }}
+                            >
+                              <div style={{ fontWeight: 600 }}>{customerLabel(c)}</div>
+                              {customerSecondary(c) && (
+                                <div style={{ fontSize: '12px', color: '#64748B' }}>
+                                  {customerSecondary(c)}{already ? ' · already added' : ''}
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {composeCustomRecipients.length === 0 ? (
+                      <div style={{ fontSize: '13px', color: '#94A3B8' }}>
+                        No customers selected yet. Search above to add recipients.
+                      </div>
+                    ) : (
+                      composeCustomRecipients.map(c => (
+                        <span
+                          key={c.id}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            padding: '4px 8px 4px 10px',
+                            backgroundColor: '#E0F7FA',
+                            color: '#0A2342',
+                            borderRadius: '9999px',
+                            fontSize: '13px',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {customerLabel(c)}
+                          <button
+                            type="button"
+                            onClick={() => removeCustomRecipient(c.id)}
+                            aria-label={`Remove ${customerLabel(c)}`}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: '18px',
+                              height: '18px',
+                              border: 'none',
+                              background: 'rgba(10,35,66,0.1)',
+                              color: '#0A2342',
+                              borderRadius: '9999px',
+                              cursor: 'pointer',
+                              padding: 0,
+                            }}
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#64748B' }}>
+                    {composeCustomRecipients.length} selected
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -700,10 +925,23 @@ export default function Announcements() {
             </div>
 
             <div>
-              <button style={styles.sendBtn} onClick={handleSend} disabled={createLoading}>
+              <button
+                style={{
+                  ...styles.sendBtn,
+                  opacity: !canSend || createLoading ? 0.5 : 1,
+                  cursor: !canSend || createLoading ? 'not-allowed' : 'pointer',
+                }}
+                onClick={handleSend}
+                disabled={!canSend || createLoading}
+              >
                 {composeSchedule ? <Clock size={18} /> : <Send size={18} />}
                 {createLoading ? 'Sending...' : composeSchedule ? 'Schedule' : 'Send'}
               </button>
+              {isCustomAudience && customRecipientIds.length === 0 && (
+                <div style={{ marginTop: '8px', fontSize: '13px', color: '#B45309' }}>
+                  Select at least one customer to send a custom announcement.
+                </div>
+              )}
             </div>
           </div>
 
@@ -719,6 +957,7 @@ export default function Announcements() {
                     : 'No channels selected'}
                   {' \u00B7 '}
                   {composeAudience}
+                  {isCustomAudience && ` (${customRecipientIds.length} selected)`}
                   {composeSchedule && composeDate
                     ? ` \u00B7 Scheduled: ${composeDate}${composeTime ? ' ' + composeTime : ''}`
                     : ' \u00B7 Send immediately'}
@@ -987,7 +1226,7 @@ export default function Announcements() {
                       const sc = AUTO_STATUS_COLORS[l.status];
                       return (
                         <tr key={l.id}>
-                          <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: '"JetBrains Mono", monospace' }}>{l.date}</td>
+                          <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{l.date}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg, fontWeight: 600 }}>{l.recipient}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg, fontSize: '12px' }}>{l.email}</td>
                           <td style={{ ...styles.td, backgroundColor: rowBg }}>{l.template}</td>
@@ -1090,14 +1329,14 @@ export default function Announcements() {
                     </div>
                     <div>
                       <label style={styles.formLabel}>HTML Body</label>
-                      <textarea style={{ ...styles.formInput, minHeight: '280px', fontFamily: '"JetBrains Mono", monospace', fontSize: '13px', resize: 'vertical' as const }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
+                      <textarea style={{ ...styles.formInput, minHeight: '280px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '13px', resize: 'vertical' as const }} defaultValue={`<h2>{{subject}}</h2>\n<p>Hi {{customerName}},</p>\n<p>Your template content here...</p>`} />
                     </div>
                   </div>
                   <div style={{ background: '#F8FAFC', borderRadius: '8px', padding: '16px', border: '1px solid #E2E8F0' }}>
                     <div style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342', marginBottom: '8px' }}>Available Variables</div>
                     <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '8px' }}>Click to copy</div>
                     {editingAutoTemplate.variables.map(v => (
-                      <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '6px 10px', fontSize: '12px', fontFamily: '"JetBrains Mono", monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }}>
+                      <button key={v} style={{ display: 'block', width: '100%', textAlign: 'left' as const, padding: '6px 10px', fontSize: '12px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#0A2342', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px', cursor: 'pointer', marginBottom: '4px' }}>
                         {`{{${v}}}`}
                       </button>
                     ))}

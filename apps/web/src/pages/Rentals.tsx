@@ -421,7 +421,7 @@ function AvailabilityGrid({ products, onViewReservation, availabilityData }: { p
             {selectedSlotData.reservationId && (
               <div style={{ marginBottom: '8px' }}>
                 <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>Reservation</div>
-                <div style={{ fontSize: '14px', color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{selectedSlotData.reservationId}</div>
+                <div style={{ fontSize: '14px', color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{selectedSlotData.reservationId}</div>
               </div>
             )}
             {selectedSlotData.notes && (
@@ -479,7 +479,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '32px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '13px', color: '#2E4A6B', marginTop: '2px' },
   tabs: { display: 'flex', gap: '0', borderBottom: '2px solid #E2E8F0', marginBottom: '24px' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer', color: '#64748B', borderBottom: '2px solid transparent', marginBottom: '-2px', transition: 'all 0.15s' },
@@ -495,7 +495,7 @@ const st: Record<string, React.CSSProperties> = {
   th: { textAlign: 'left' as const, padding: '12px 16px', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF' },
   td: { padding: '12px 16px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
   badge: { display: 'inline-block', padding: '2px 10px', fontSize: '12px', fontWeight: 600, borderRadius: '9999px' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '14px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '14px' },
   overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10, 35, 66, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
   modal: { background: '#FFFFFF', borderRadius: '8px', width: '560px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.12)' },
   modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px 32px 16px', borderBottom: '1px solid #E2E8F0' },
@@ -678,7 +678,7 @@ function ReservationDetail({ res, onClose }: { res: Reservation; onClose: () => 
       </div>
       <div style={st.detailSection}>
         <div style={st.detailLabel}>Total</div>
-        <div style={{ ...st.detailValue, fontSize: '22px', fontWeight: 700, fontFamily: '"JetBrains Mono", monospace' }}>${res.total.toFixed(2)}</div>
+        <div style={{ ...st.detailValue, fontSize: '22px', fontWeight: 700, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>${res.total.toFixed(2)}</div>
         {res.notes && (
           <>
             <div style={st.detailLabel}>Notes</div>
@@ -1326,12 +1326,12 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                           <div style={{ fontSize: '12px', color: '#94A3B8' }}>Calculating…</div>
                         )}
                         {!quotesLoadingPids.has(p.id) && productQuotes[p.id] && (
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: sel ? '#0A2342' : '#374151', fontFamily: '"JetBrains Mono", monospace' }}>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: sel ? '#0A2342' : '#374151', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                             {fmtCents(productQuotes[p.id].totalCents)}
                           </div>
                         )}
                         {!quotesLoadingPids.has(p.id) && !productQuotes[p.id] && (
-                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748B', fontFamily: '"JetBrains Mono", monospace' }}>{rateLabel(p)}</div>
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748B', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{rateLabel(p)}</div>
                         )}
                       </div>
                     );
@@ -1503,7 +1503,7 @@ function NewReservationModal({ products, onClose, onCreated }: NewReservationMod
                     )}
                     <div style={{ borderTop: '1.5px solid #E2E8F0', paddingTop: '10px', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ fontSize: '13px', fontWeight: 700, color: '#0A2342' }}>Total</span>
-                      <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmtCents(quote.totalCents)}</span>
+                      <span style={{ fontSize: '22px', fontWeight: 800, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmtCents(quote.totalCents)}</span>
                     </div>
                   </div>
                 );
@@ -1769,9 +1769,9 @@ function TimeSlotsTab() {
               ) : slots.map((s, idx) => (
                 <tr key={s.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
                   <td style={{ ...tdS, fontWeight: 600 }}>{s.name}</td>
-                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.startTime}</td>
-                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.endTime}</td>
-                  <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{s.sortOrder}</td>
+                  <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{s.startTime}</td>
+                  <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{s.endTime}</td>
+                  <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{s.sortOrder}</td>
                   <td style={tdS}>
                     <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: s.active ? '#DEF7EC' : '#F3F4F6', color: s.active ? '#03543F' : '#64748B', cursor: 'pointer' }} onClick={() => handleToggle(s)}>
                       {s.active ? 'Active' : 'Inactive'}
@@ -1927,7 +1927,7 @@ function UnitsTab({ products }: { products: RentalProduct[] }) {
                 return (
                   <tr key={u.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
                     <td style={{ ...tdS, fontWeight: 600 }}>{u.name}</td>
-                    <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace', color: '#64748B' }}>{u.serialNumber ?? '—'}</td>
+                    <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', color: '#64748B' }}>{u.serialNumber ?? '—'}</td>
                     <td style={tdS}><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: sc.bg, color: sc.color }}>{u.status}</span></td>
                     <td style={{ ...tdS, color: '#64748B' }}>{u.notes ?? '—'}</td>
                     <td style={tdS}>
@@ -1983,8 +1983,8 @@ function DurationsTab() {
             {durations.map((d, idx) => (
               <tr key={d.id} style={{ backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4' }}>
                 <td style={{ ...tdS, fontWeight: 600 }}>{d.name}</td>
-                <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace' }}>{d.minutes} min</td>
-                <td style={{ ...tdS, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>${d.price.toFixed(2)}</td>
+                <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{d.minutes} min</td>
+                <td style={{ ...tdS, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>${d.price.toFixed(2)}</td>
                 <td style={tdS}>{d.location}</td>
                 <td style={tdS}>{d.availDays.length === 7 ? 'Every day' : d.availDays.join(', ')}</td>
                 <td style={tdS}><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '9999px', fontSize: '11px', fontWeight: 600, backgroundColor: d.unlockRule === 'always' ? '#DEF7EC' : '#E0F7FF', color: d.unlockRule === 'always' ? '#03543F' : '#0A2342' }}>{unlockLabel(d)}</span></td>

@@ -216,7 +216,7 @@ const st: Record<string, React.CSSProperties> = {
     borderRadius: '9999px',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '14px',
   },
   /* Dock Map */
@@ -266,7 +266,7 @@ const st: Record<string, React.CSSProperties> = {
   slipSize: {
     fontSize: '12px',
     color: '#64748B',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   slipOccupant: {
     fontSize: '12px',

@@ -176,7 +176,7 @@ export default function InvoiceDetail() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: NAVY, margin: 0, fontFamily: 'JetBrains Mono, monospace' }}>
+          <h1 style={{ fontSize: 26, fontWeight: 700, color: NAVY, margin: 0, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
             {data.invoiceNumber}
           </h1>
           <div style={{ fontSize: 13, color: '#64748B', marginTop: 6 }}>
@@ -228,10 +228,10 @@ export default function InvoiceDetail() {
               <tr key={li.id}>
                 <td style={{ padding: '12px 0', fontSize: 13, color: NAVY }}>{li.description}</td>
                 <td style={{ padding: '12px 0', textAlign: 'right', fontSize: 13, color: NAVY }}>{li.quantity}</td>
-                <td style={{ padding: '12px 0', textAlign: 'right', fontSize: 13, color: NAVY, fontFamily: 'JetBrains Mono, monospace' }}>
+                <td style={{ padding: '12px 0', textAlign: 'right', fontSize: 13, color: NAVY, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                   {formatCents(li.unitPriceCents)}
                 </td>
-                <td style={{ padding: '12px 0', textAlign: 'right', fontSize: 13, fontWeight: 600, color: NAVY, fontFamily: 'JetBrains Mono, monospace' }}>
+                <td style={{ padding: '12px 0', textAlign: 'right', fontSize: 13, fontWeight: 600, color: NAVY, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                   {formatCents(li.extendedCents)}
                 </td>
               </tr>
@@ -241,15 +241,15 @@ export default function InvoiceDetail() {
         <div style={{ borderTop: '1px solid #E2E8F0', marginTop: 12, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#64748B' }}>
             <span>Subtotal</span>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatCents(data.subtotalCents)}</span>
+            <span style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{formatCents(data.subtotalCents)}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#64748B' }}>
             <span>Tax</span>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatCents(data.taxCents)}</span>
+            <span style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{formatCents(data.taxCents)}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, fontWeight: 700, color: NAVY, marginTop: 8 }}>
             <span>Total</span>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatCents(data.totalCents)}</span>
+            <span style={{ fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{formatCents(data.totalCents)}</span>
           </div>
         </div>
       </div>
@@ -274,7 +274,7 @@ export default function InvoiceDetail() {
                 <div style={{ color: '#64748B', fontSize: 12 }}>{formatDate(p.postedDate)}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ color: NAVY, fontFamily: 'JetBrains Mono, monospace' }}>
+                <div style={{ color: NAVY, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                   {formatCents(p.amountCents)}
                 </div>
                 <div
@@ -297,7 +297,7 @@ export default function InvoiceDetail() {
           <div style={{ fontSize: 12, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Balance due
           </div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: data.balanceCents > 0 ? '#DC2626' : '#0D9F6E', fontFamily: 'JetBrains Mono, monospace' }}>
+          <div style={{ fontSize: 24, fontWeight: 700, color: data.balanceCents > 0 ? '#DC2626' : '#0D9F6E', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
             {formatCents(data.balanceCents)}
           </div>
         </div>

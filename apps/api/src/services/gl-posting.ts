@@ -108,7 +108,7 @@ interface GlLine {
  * Post a balanced set of GL entries within a transaction.
  * Returns the journalId that ties the entries together.
  */
-async function postEntries(
+export async function postEntries(
   tenantId: string,
   lines: GlLine[],
   sourceType: string,
@@ -168,11 +168,139 @@ const ACCOUNT_NUMBER_TO_SUBTYPE: Record<string, string> = {
   "1200": "AccountsReceivable",
 };
 
+// "System" posting accounts the GL service hard-references by number. These
+// are the bare minimum every tenant needs to make a contract / payment /
+// security-deposit cycle hit a balanced journal. The seed in
+// `tenant-provisioning.ts::seedChartOfAccounts` creates them on signup, but
+// older tenants (and any provisioning path that skipped the seed) can be
+// missing one or more — which used to surface as an unhandled
+// `GL account NNNN not found` 500 mid-transaction. We now auto-create the
+// missing tenant-wide row on first reference using the canonical definition
+// below, so the journal posts cleanly the first time and every subsequent
+// time the operator hits the same code path.
+//
+// Numbers / names match `DEFAULT_GL_ACCOUNTS` in tenant-provisioning so the
+// healed row looks exactly like a freshly-seeded one. (`2300` was historically
+// mislabeled "Tips Payable" in the seed despite being the number gl-posting
+// has always used for security-deposit liability postings; the seed was
+// corrected and existing rows are renamed by
+// `scripts/backfill-system-gl-accounts.ts`. Auto-heal now creates new rows
+// with the correct name out of the gate.)
+type GlAccountType = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
+const SYSTEM_ACCOUNT_DEFINITIONS: Record<
+  string,
+  { name: string; type: GlAccountType }
+> = {
+  "1000": { name: "Cash / Operating Bank", type: "ASSET" },
+  "1010": { name: "Stripe Clearing", type: "ASSET" },
+  // ACH settlements clear through their own ledger so finance can
+  // reconcile against the bank's ACH batch totals independently of card
+  // payouts. POS Z-out posts ACH net here (Task #320).
+  "1015": { name: "ACH Clearing", type: "ASSET" },
+  // Holds the value of physical checks and "other" non-cash tenders that
+  // a cashier collected but the marina hasn't yet deposited at the bank.
+  // POS Z-out debits this account for declared check + other (Task #320);
+  // the bank-deposit journal credits it and debits Cash.
+  "1020": { name: "Undeposited Funds", type: "ASSET" },
+  "1200": { name: "Accounts Receivable", type: "ASSET" },
+  "2300": { name: "Security Deposits Held", type: "LIABILITY" },
+  // 5900 Cash Over/Short — POS Z-out variance dump (Task #320). Auto-heal
+  // covers tenants whose chart of accounts predates the migration.
+  "5900": { name: "Cash Over/Short", type: "EXPENSE" },
+};
+
+/**
+ * Typed error thrown when a system GL account cannot be resolved (and
+ * cannot be safely auto-created — e.g. on a QBO-connected location where
+ * auto-creating a tenant-wide row would route the journal to the wrong
+ * realm). Carries `statusCode` / `code` so the Express error handler
+ * surfaces a clean 4xx instead of an unhandled 500.
+ */
+function unconfiguredGlAccountError(
+  accountNumber: string,
+  tenantId: string,
+  locationId: string | null | undefined,
+  context: string,
+  reason:
+    | "QBO_LOCATION_MISSING_ROW"
+    | "AMBIGUOUS_TENANT_ROW"
+    | "UNKNOWN_ACCOUNT",
+): Error {
+  const friendly = SYSTEM_ACCOUNT_DEFINITIONS[accountNumber]?.name ?? "GL account";
+  const message =
+    reason === "QBO_LOCATION_MISSING_ROW"
+      ? `UNCONFIGURED_GL_ACCOUNT: location ${locationId} is QBO-connected but has no ${accountNumber} (${friendly}) account in its chart of accounts (${context}). Open Settings → Chart of Accounts and import or pin ${accountNumber} for this location before posting.`
+      : reason === "AMBIGUOUS_TENANT_ROW"
+        ? `UNCONFIGURED_GL_ACCOUNT: multiple ${accountNumber} (${friendly}) rows exist for tenant ${tenantId} but none scoped to this context (${context}); pin one in Settings → Chart of Accounts.`
+        : `UNCONFIGURED_GL_ACCOUNT: GL account ${accountNumber} (${friendly}) is not configured for tenant ${tenantId} (${context}). Open Settings → Chart of Accounts and add the ${friendly} account before posting.`;
+  const err = new Error(message) as Error & { statusCode: number; code: string };
+  err.statusCode = 400;
+  err.code = "UNCONFIGURED_GL_ACCOUNT";
+  return err;
+}
+
+/**
+ * Auto-create the tenant-wide row for a known system account when it's
+ * missing. Idempotent: re-checks for an existing row first (so two
+ * concurrent callers don't both create duplicates), then inserts using the
+ * canonical seed definition. Always writes against the base `prisma` client
+ * (never the caller's `tx`) so the row survives a transaction rollback —
+ * a chart-of-accounts row is benign on its own and we'd rather have it
+ * present for the operator's next attempt than tie its lifetime to a
+ * journal that may legitimately fail downstream.
+ */
+async function ensureSystemAccountRow(
+  tenantId: string,
+  accountNumber: string,
+): Promise<string | null> {
+  const def = SYSTEM_ACCOUNT_DEFINITIONS[accountNumber];
+  if (!def) return null;
+  // Re-check on the base client to catch a row created by a sibling request
+  // between the original lookup and now.
+  const existing = await prisma.glAccount.findFirst({
+    where: { tenantId, locationId: null, accountNumber },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  try {
+    const created = await prisma.glAccount.create({
+      data: {
+        tenantId,
+        accountNumber,
+        name: def.name,
+        type: def.type,
+      },
+      select: { id: true },
+    });
+    console.warn(
+      `[gl-posting] auto-healed missing system GL account ${accountNumber} ` +
+      `(${def.name}) for tenant ${tenantId}`,
+    );
+    return created.id;
+  } catch (err) {
+    // On any race / constraint failure, fall back to a re-read so the
+    // caller still gets an id when the row was created by a concurrent
+    // request between our findFirst and our create.
+    const after = await prisma.glAccount.findFirst({
+      where: { tenantId, locationId: null, accountNumber },
+      select: { id: true },
+    });
+    if (after) return after.id;
+    console.error(
+      `[gl-posting] failed to auto-heal system GL account ${accountNumber} ` +
+      `for tenant ${tenantId}:`,
+      err,
+    );
+    return null;
+  }
+}
+
 async function getAccountByNumber(
   tenantId: string,
   accountNumber: string,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
   locationId?: string | null,
+  context?: string,
 ): Promise<string> {
   const db = tx ?? prisma;
   // After per-location chart of accounts, the same account number can exist
@@ -236,7 +364,25 @@ async function getAccountByNumber(
       if (anyMatches.length === 1) return anyMatches[0].id;
     }
   }
-  throw new Error(`GL account ${accountNumber} not found for tenant ${tenantId}`);
+  // Last-resort auto-heal for the four "system" accounts the GL service
+  // hard-references by number. Older tenants and tenants whose
+  // chart-of-accounts seed was skipped or partially edited can be missing
+  // one of these — without auto-heal a security-deposit release / payment /
+  // contract-create blew up mid-transaction with a generic 500. Auto-heal
+  // is restricted to the tenant-wide row (locationId=null) so we never
+  // synthesize a row inside a QBO-connected location's chart and route a
+  // journal at the wrong realm.
+  if (SYSTEM_ACCOUNT_DEFINITIONS[accountNumber]) {
+    const healedId = await ensureSystemAccountRow(tenantId, accountNumber);
+    if (healedId) return healedId;
+  }
+  throw unconfiguredGlAccountError(
+    accountNumber,
+    tenantId,
+    locationId ?? null,
+    context ?? `account=${accountNumber}`,
+    "UNKNOWN_ACCOUNT",
+  );
 }
 
 // Well-known account numbers (convention).
@@ -260,6 +406,9 @@ const ACCOUNTS = {
   BANK: "1010",
   DEFERRED_REVENUE_FALLBACK: "2100",
   SECURITY_DEPOSITS_HELD: "2300",
+  // POS Z-out variance posting account (Task #320). Debits when the
+  // counted drawer is short, credits when it's over.
+  CASH_OVER_SHORT: "5900",
 } as const;
 
 /**
@@ -290,13 +439,17 @@ async function resolveLocationScopedAccountByNumber(
       select: { id: true },
     });
     if (!locScoped) {
-      throw new Error(
-        `UNCONFIGURED_GL_MAPPING: location ${locationId} is QBO-connected but has no ${accountNumber} account in its chart of accounts (${context}). Import or configure ${accountNumber} for this location before posting.`,
+      throw unconfiguredGlAccountError(
+        accountNumber,
+        tenantId,
+        locationId,
+        context,
+        "QBO_LOCATION_MISSING_ROW",
       );
     }
     return locScoped.id;
   }
-  return getAccountByNumber(tenantId, accountNumber, tx, locationId ?? null);
+  return getAccountByNumber(tenantId, accountNumber, tx, locationId ?? null, context);
 }
 
 /** Resolve the deferred-revenue liability account for a tenant.

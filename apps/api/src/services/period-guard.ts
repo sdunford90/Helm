@@ -25,11 +25,11 @@ export async function assertPeriodOpen(
 ): Promise<void> {
   if (!locationId) return; // no location = no period check
 
-  const db = tx ?? prisma;
+  const db: Prisma.TransactionClient = tx ?? (prisma as unknown as Prisma.TransactionClient);
 
   let lockedPeriod: { id: string; periodStart: Date } | null = null;
   try {
-    lockedPeriod = await (db as typeof prisma).accountingPeriod.findFirst({
+    lockedPeriod = await db.accountingPeriod.findFirst({
       where: {
         tenantId,
         locationId,

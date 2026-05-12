@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useModules } from '../context/ModulesContext';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 
 /* ─── Types ─── */
 type AccountType = 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE';
@@ -51,7 +52,7 @@ const subTypeOptions: Record<AccountType, string[]> = {
 };
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 
 const s: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },
@@ -469,7 +470,7 @@ export default function ChartOfAccounts() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title} className="helm-page-title">Chart of Accounts</h1>
+      <h1 style={s.title} className="helm-page-title">Billing</h1>
       <p style={s.subtitle}>
         Define your GL accounts and link each one to a QuickBooks account.
         Then assign revenue accounts to products in{' '}
@@ -478,6 +479,7 @@ export default function ChartOfAccounts() {
         </Link>
       </p>
       <hr style={s.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       {notification && (
         <div style={{

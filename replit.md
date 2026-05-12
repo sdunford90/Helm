@@ -65,6 +65,10 @@ To set up and run the application:
 *   **Tenant-aware middleware**: Centralized logic (`apps/api/src/middleware/tenant.ts`) scopes API requests to the correct marina tenant, excluding platform-wide admin routes.
 *   **Lease-based idempotency for scheduled tasks**: Critical for ensuring "at-most-once" execution of jobs like card expiry reminders, even with concurrent workers or restarts.
 *   **Per-tenant/per-location email sender**: Customer-facing mail resolves its FROM via `apps/api/src/lib/email-sender.ts` (location override → tenant override → `noreply@gethelm.com`); `sendEmail()` throws `EmailSendError` on failure and records the last failure on `Tenant.lastEmailFailure*`, surfaced in Settings → Email.
+*   **POS Charge to A/R**: Per-location opt-in (`Location.posChargeToARAllowed`); when on, POS button "Charge to A/R" creates a real `Invoice` (status ISSUED, 30-day terms) for the attached customer and links it via `PosTransaction.invoiceId`. Legacy `CHARGE_TO_ACCOUNT` payload still accepted but normalized.
+*   **Security Deposits Held = account 2300**: GL account `2300` is the canonical Security Deposits Held liability (`gl-posting.ts::ACCOUNTS.SECURITY_DEPOSITS_HELD`). The historical seed mislabeled it "Tips Payable" while creating an empty `2200 Security Deposits Held` row that nothing posted to. The seed and auto-heal definition now both name 2300 "Security Deposits Held"; `scripts/backfill-system-gl-accounts.ts` renames pre-existing 2300 rows in place (preserving entry history) and prunes empty 2200 rows. Run that script after deploy to clean up legacy tenants.
+*   **Rental products are non-inventory**: `RentalProductGlMapping` only carries a per-location `revenueGlAccountId`. There are no COGS or Inventory Asset slots — rentals don't deplete stock or post inventory movements. The `20260511000000_drop_rental_product_inventory_gl_slots` migration drops the legacy `cogsGlAccountId` / `inventoryAssetGlAccountId` columns; resolver, settings API (save, gap detection, delete safeguard), audit labels, and Settings → Products UI are all revenue-only.
+*   **POS saved-card off-session charge**: Per-saved-PM opt-in via Stripe `metadata.usableInPos="true"` (toggleable on CustomerDetail and the Portal). When a customer is attached at the POS, opted-in cards appear in a picker; selecting one sends `savedPaymentMethodId` and the server creates/confirms a PaymentIntent off-session immediately (writes a `PosPayment` audit row before the `PosTransaction.create` so the existing PI proof gate accepts it).
 
 ## Product
 
@@ -95,6 +99,7 @@ _Populate as you build_
 *   **Platform Admin bypass**: `requirePlatformAdmin()` middleware skips Clerk auth in non-production environments for development bypass.
 *   **QBO Integration**: QBO-connected locations require specific GL account mappings; legacy fallbacks are suppressed.
 *   **Production Seeding**: When `NODE_ENV=production`, `pnpm db:seed:prod` requires `HELM_PROD_SEED_CONFIRM=yes` for non-empty databases.
+*   **Helmet CSP allow-list**: `apps/api/src/index.ts` configures helmet with an explicit CSP that whitelists Clerk (`*.clerk.accounts.dev`, `*.clerk.com`), Stripe (`js.stripe.com`, `*.stripe.com`), Cloudflare Turnstile, and Google Fonts. Default helmet CSP is too strict and blocks Clerk script load → blank SPA in prod.
 
 ## Pointers
 

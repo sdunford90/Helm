@@ -87,7 +87,18 @@ export default function SyncHealthPanel() {
   const handleRetry = async (syncId: string) => {
     setRetrying(syncId);
     try {
-      await api.post(`/api/accounting/sync-health/retry/${syncId}`);
+      // syncId is composed server-side as `${entityType}:${entityId}` (see
+      // /api/accounting/sync-health response). The retry route expects those
+      // pieces in the JSON body, NOT in the URL path — posting them as a
+      // path segment 404s with no matching route.
+      const sepIdx = syncId.indexOf(':');
+      const entityType = sepIdx >= 0 ? syncId.slice(0, sepIdx) : syncId;
+      const entityId = sepIdx >= 0 ? syncId.slice(sepIdx + 1) : '';
+      await api.post('/api/accounting/sync-health/retry', {
+        entityType,
+        entityId,
+        locationId: currentLocationId ?? undefined,
+      });
       await load();
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : 'Retry failed');

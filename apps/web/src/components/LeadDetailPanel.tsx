@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
   X,
@@ -14,6 +15,7 @@ import {
   Clock,
   Edit2,
   Check,
+  CheckCircle2,
 } from 'lucide-react';
 import ConversionWizard from './ConversionWizard';
 
@@ -199,6 +201,11 @@ interface LeadDetailPanelProps {
   onClose: () => void;
   onStageChange: (stage: string) => void;
   onSave?: (lead: Lead) => void;
+  /** Fired after the Convert wizard creates a customer; parent should refresh
+   *  lists and may navigate or surface a confirmation. */
+  onConverted?: (result: {
+    customer: { id: string; firstName: string; lastName: string };
+  }) => void;
   /** When set on a new-lead create flow, the Source field is locked to this enum value. */
   lockSource?: string | null;
 }
@@ -355,7 +362,7 @@ const s: Record<string, React.CSSProperties> = {
     outline: 'none',
     width: '100%',
     boxSizing: 'border-box' as const,
-    fontFamily: 'Inter, system-ui, sans-serif',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   fieldSelect: {
     fontSize: '14px',
@@ -402,7 +409,7 @@ const s: Record<string, React.CSSProperties> = {
     border: '1px solid #CCC',
     borderRadius: '6px',
     resize: 'vertical' as const,
-    fontFamily: 'Inter, system-ui, sans-serif',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     outline: 'none',
     boxSizing: 'border-box' as const,
   },
@@ -478,10 +485,10 @@ function getActivityIcon(type: string) {
 
 /* ── Component ─────────────────────────────────────────── */
 
-export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, lockSource }: LeadDetailPanelProps) {
+export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, onConverted, lockSource }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
-  const { data: apiActivity } = useApi<AuditLogResponse>(
+  const { data: apiActivity, execute: refetchActivity } = useApi<AuditLogResponse>(
     'get',
     lead.id
       ? `/api/audit-log?recordType=Lead&recordId=${lead.id}`
@@ -493,6 +500,13 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
     setActivities(entries.map(mapAuditEntryToActivity));
   }, [apiActivity]);
   const [showConversion, setShowConversion] = useState(false);
+  /** Set after the Convert wizard succeeds so the panel can render an
+   *  inline "converted" banner with a link to the new customer. */
+  const [convertedCustomer, setConvertedCustomer] = useState<{
+    id: string;
+    firstName: string;
+    lastName: string;
+  } | null>(null);
   const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
   const [editData, setEditData] = useState<Lead>({ ...lead });
 
@@ -552,7 +566,7 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
                 <span style={{ ...s.badge, backgroundColor: stageColor.bg, color: stageColor.text }}>
                   {isEditing ? editData.stage : lead.stage}
                 </span>
-                {!isEditing && lead.stage === 'Won' && (
+                {!isEditing && lead.stage === 'Won' && !convertedCustomer && (
                   <button style={s.convertBtn} onClick={() => setShowConversion(true)}>
                     <ArrowRightCircle size={14} />
                     Convert to Customer
@@ -586,6 +600,44 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
 
           {/* Body */}
           <div style={s.body}>
+            {/* Converted-state banner — shown after the wizard succeeds. */}
+            {convertedCustomer && (
+              <div
+                style={{
+                  margin: '16px 24px 0',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  backgroundColor: '#F0FDF4',
+                  border: '1px solid #BBF7D0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  fontSize: '14px',
+                  color: '#0A2342',
+                }}
+              >
+                <CheckCircle2 size={18} style={{ color: '#16A34A', flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>
+                  Lead converted to customer{' '}
+                  <strong>
+                    {`${convertedCustomer.firstName} ${convertedCustomer.lastName}`.trim() || 'profile'}
+                  </strong>.
+                </span>
+                <Link
+                  to={`/customers/${convertedCustomer.id}`}
+                  style={{
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    color: '#1B5E20',
+                    textDecoration: 'underline',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Open profile
+                </Link>
+              </div>
+            )}
+
             {/* Contact Information */}
             <div style={s.section}>
               <div style={s.sectionTitle}>
@@ -945,7 +997,14 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave, 
         <ConversionWizard
           lead={lead}
           onClose={() => setShowConversion(false)}
-          onConvert={() => { setShowConversion(false); onClose(); }}
+          onConvert={(result) => {
+            setShowConversion(false);
+            setConvertedCustomer(result.customer);
+            // Re-fetch the audit log so the new "Lead converted to customer"
+            // entry shows up in the activity timeline without closing the panel.
+            void refetchActivity();
+            onConverted?.(result);
+          }}
         />
       )}
     </>

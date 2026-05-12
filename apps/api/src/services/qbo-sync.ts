@@ -666,7 +666,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
           where: { id: productId, tenantId },
           select: {
             id: true, name: true, sku: true, priceCents: true,
-            costCents: true, qoh: true,
+            costCents: true, qoh: true, trackInventory: true,
             productCategory: {
               select: {
                 glMappings: {
@@ -697,6 +697,7 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
             priceCents: product.priceCents,
             costCents: (product as any).costCents ?? 0,
             qoh: (product as any).qoh,
+            trackInventory: (product as any).trackInventory ?? false,
             incomeGlAccountId,
             inventoryAssetGlAccountId,
             cogsGlAccountId,
@@ -725,35 +726,102 @@ export async function syncInvoice(invoiceId: string, tenantId: string): Promise<
     }
   }
 
-  const lineItems = rawLineItems.map((item: any, idx: number) => {
-    // The Prisma column is `extendedCents` (qty * unitPrice - discount + tax),
-    // NOT `totalCents` — reading the wrong field produced NaN -> null on the
-    // QBO payload and triggered "Required parameter Line.Amount is missing".
-    // Fall back to a computed value if extendedCents is somehow null/0.
-    const lineAmountCents =
-      typeof item.extendedCents === "number" && item.extendedCents > 0
-        ? item.extendedCents
-        : Math.round(
-            (Number(item.unitPriceCents) || 0) * (Number(item.quantity) || 1) -
-              (Number(item.discountCents) || 0) +
-              (Number(item.taxCents) || 0),
-          );
-    return {
-    LineNum: idx + 1,
-    Amount: lineAmountCents / 100,
-    DetailType: "SalesItemLineDetail",
-    Description: item.description || "",
-    SalesItemLineDetail: {
-      Qty: item.quantity || 1,
-      UnitPrice: item.unitPriceCents / 100,
-      // Prefer the resolved QBO Item ID from preflight (Task 18), fall back
-      // to any legacy qboItemId already on the line item object.
-      ...(item._resolvedQboItemId || item.qboItemId
-        ? { ItemRef: { value: item._resolvedQboItemId ?? item.qboItemId } }
-        : {}),
-    },
-    };
+  // QBO validates `Line.Amount === SalesItemLineDetail.UnitPrice * Qty` to the
+  // cent on every SalesItemLineDetail line and rejects the entire invoice when
+  // it doesn't tie. Sending the post-discount/post-tax `extendedCents` as
+  // Amount while sending the pre-discount `unitPriceCents` as UnitPrice
+  // violates that invariant the moment any line carries a discount or
+  // line-level tax — the same failure mode that broke POS receipts (Task #309).
+  //
+  // Fix: send the *pre-discount, pre-tax* line subtotal as `Amount`, and a
+  // `UnitPrice` that satisfies the equality exactly. Discounts are surfaced as
+  // a single receipt-level `DiscountLineDetail`, and per-line tax is
+  // aggregated into one `Sales Tax` line so the QBO invoice's `TotalAmt` still
+  // ties to `Invoice.totalCents`.
+  let totalLineDiscountCents = 0;
+  let totalLineTaxCents = 0;
+  let totalLineSubtotalCents = 0;
+  const lineItems: Record<string, unknown>[] = [];
+  rawLineItems.forEach((item: any, idx: number) => {
+    const quantity = Math.max(1, Number(item.quantity) || 1);
+    const unitPriceCents = Number(item.unitPriceCents) || 0;
+    const lineSubtotalCents = unitPriceCents * quantity;
+    const amount = lineSubtotalCents / 100;
+    const unitPrice = unitPriceCents / 100;
+
+    // Detect float-precision drift between (UnitPrice * Qty) and Amount —
+    // e.g. 1.43 * 7 = 10.010000000000002 in IEEE-754. When QBO would round
+    // the product differently than our integer subtotal, collapse to a
+    // single-unit line so the equality holds exactly.
+    const productMatchesCents =
+      Math.round(unitPrice * quantity * 100) === lineSubtotalCents;
+
+    const detail: Record<string, unknown> = productMatchesCents
+      ? { Qty: quantity, UnitPrice: unitPrice }
+      : { Qty: 1, UnitPrice: amount };
+    if (item._resolvedQboItemId || item.qboItemId) {
+      detail.ItemRef = { value: item._resolvedQboItemId ?? item.qboItemId };
+    }
+
+    lineItems.push({
+      LineNum: lineItems.length + 1,
+      Amount: amount,
+      DetailType: "SalesItemLineDetail",
+      Description: item.description || `Line ${idx + 1}`,
+      SalesItemLineDetail: detail,
+    });
+
+    totalLineSubtotalCents += lineSubtotalCents;
+    totalLineDiscountCents += Number(item.discountCents) || 0;
+    totalLineTaxCents += Number(item.taxCents) || 0;
   });
+
+  // Aggregate per-line discounts into a single receipt-level discount line so
+  // the per-line UnitPrice * Qty equality holds while the invoice total still
+  // ties to Invoice.totalCents.
+  if (totalLineDiscountCents > 0) {
+    lineItems.push({
+      LineNum: lineItems.length + 1,
+      Amount: totalLineDiscountCents / 100,
+      DetailType: "DiscountLineDetail",
+      Description: "Invoice discount",
+      DiscountLineDetail: {
+        PercentBased: false,
+      },
+    });
+  }
+
+  // Surface tax as a separate sales-tax line. Per-line `taxCents` was
+  // previously folded into `extendedCents` and is now intentionally excluded
+  // from item lines so we don't double-count. Legacy invoices may carry tax
+  // only on the header (`Invoice.taxCents`) without per-line `taxCents`; fall
+  // back to the header value so those still tie out to `Invoice.totalCents`.
+  const headerTaxCents = Number((invoice as any).taxCents) || 0;
+  const taxCentsForQbo = totalLineTaxCents > 0 ? totalLineTaxCents : headerTaxCents;
+  if (taxCentsForQbo > 0) {
+    lineItems.push({
+      Amount: taxCentsForQbo / 100,
+      DetailType: "SalesItemLineDetail",
+      Description: "Sales Tax",
+      SalesItemLineDetail: {
+        Qty: 1,
+        UnitPrice: taxCentsForQbo / 100,
+      },
+    });
+  }
+
+  // Defense in depth: assert the computed invoice total ties out to
+  // Invoice.totalCents to the cent before we send. If it doesn't, throw a
+  // clear internal error rather than letting QBO reject the payload.
+  const computedTotalCents =
+    totalLineSubtotalCents - totalLineDiscountCents + taxCentsForQbo;
+  const expectedTotalCents = Number((invoice as any).totalCents) || 0;
+  if (expectedTotalCents > 0 && computedTotalCents !== expectedTotalCents) {
+    throw new Error(
+      `[qbo-sync] Invoice total mismatch for ${invoiceId}: ` +
+        `computed=${computedTotalCents} expected=${expectedTotalCents}`,
+    );
+  }
 
   const qboInvoiceData: Record<string, unknown> = {
     CustomerRef: { value: (invoice.customer as any).qboCustomerId },
@@ -1542,7 +1610,15 @@ export interface InventoryItemSyncInput {
   priceCents: number;
   costCents: number;
   qoh?: number;
+  // When true → sync as QBO `Type: "Inventory"` (requires Income, Inventory
+  // Asset, and COGS accounts, plus QtyOnHand/InvStartDate). When false → sync
+  // as `Type: "Service"` (only requires Income; the asset/COGS plumbing is
+  // skipped entirely so dockage add-ons / fee-style products don't get
+  // rejected with QBO error 6430).
+  trackInventory: boolean;
   // Local GlAccount IDs — translated to QBO account IDs at push time.
+  // For service items only `incomeGlAccountId` is required; the inventory
+  // asset / COGS slots are ignored.
   incomeGlAccountId: string | null;
   inventoryAssetGlAccountId: string | null;
   cogsGlAccountId: string | null;
@@ -1680,30 +1756,17 @@ async function writeSyncRefFailure(
   const errSlice = errorMessage.slice(0, 1000);
   const where = { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId } };
 
-  // Atomic-increment path: try to update an existing row using Prisma's
-  // `increment` operator so concurrent failure writes don't undercount via a
-  // read-modify-write race. If the row doesn't exist yet, fall back to create.
-  try {
-    const incremented = await (prisma as any).qboInventorySyncRef.update({
-      where,
-      data: {
-        qboType,
-        locationId: locationId ?? null,
-        lastError: errSlice,
-        lastErrorAt: now,
-        retryCount: { increment: 1 },
-      },
-      select: { retryCount: true },
-    });
-    const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(incremented.retryCount));
-    await (prisma as any).qboInventorySyncRef.update({
-      where,
-      data: { nextRetryAt },
-    });
-  } catch (err: any) {
-    // P2025 = "Record to update not found" — first failure for this ref.
-    if (err?.code === 'P2025') {
-      const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(1));
+  // Probe-first to avoid Prisma's noisy `prisma:error` log on the expected
+  // first-failure case (P2025 from update-of-missing-row). The tiny TOCTOU
+  // race with a concurrent create is handled by catching P2002 below.
+  const existing = await (prisma as any).qboInventorySyncRef.findUnique({
+    where,
+    select: { id: true },
+  });
+
+  if (!existing) {
+    const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(1));
+    try {
       await (prisma as any).qboInventorySyncRef.create({
         data: {
           tenantId,
@@ -1718,10 +1781,34 @@ async function writeSyncRefFailure(
           nextRetryAt,
         },
       });
-    } else {
-      throw err;
+      return;
+    } catch (err: any) {
+      // P2002 = unique constraint — a concurrent failure already created the
+      // row. Fall through to the increment path.
+      if (err?.code !== 'P2002') throw err;
     }
   }
+
+  // Atomic-increment path. Use Prisma's `increment` operator so concurrent
+  // failure writes don't undercount via a read-modify-write race. The second
+  // update (setting nextRetryAt) is intentionally outside any P2025 catch so
+  // a missing row here can never silently trigger a duplicate `create`.
+  const incremented = await (prisma as any).qboInventorySyncRef.update({
+    where,
+    data: {
+      qboType,
+      locationId: locationId ?? null,
+      lastError: errSlice,
+      lastErrorAt: now,
+      retryCount: { increment: 1 },
+    },
+    select: { retryCount: true },
+  });
+  const nextRetryAt = new Date(now.getTime() + computeRetryBackoffMs(incremented.retryCount));
+  await (prisma as any).qboInventorySyncRef.update({
+    where,
+    data: { nextRetryAt },
+  });
 }
 
 // Translate a local GlAccount.id to its QBO account id (qboAccountId column).
@@ -1763,33 +1850,103 @@ export async function syncInventoryItem(
   const sourceType = "product";
 
   try {
-    const incomeAcctRef = await resolveQboAccountId(tenantId, input.incomeGlAccountId, "Income");
-    const assetAcctRef = await resolveQboAccountId(tenantId, input.inventoryAssetGlAccountId, "Inventory Asset");
-    const cogsAcctRef = await resolveQboAccountId(tenantId, input.cogsGlAccountId, "Cost of Goods Sold");
+    const desiredType = input.trackInventory ? "Inventory" : "Service";
+    const incomePurpose = input.trackInventory ? "Income" : `Income (Service item "${input.name}")`;
 
-    const existingRef = await readSyncRef(tenantId, sourceType, input.productId);
+    const incomeAcctRef = await resolveQboAccountId(tenantId, input.incomeGlAccountId, incomePurpose);
+    let assetAcctRef: string | null = null;
+    let cogsAcctRef: string | null = null;
+    if (input.trackInventory) {
+      assetAcctRef = await resolveQboAccountId(tenantId, input.inventoryAssetGlAccountId, "Inventory Asset");
+      cogsAcctRef = await resolveQboAccountId(tenantId, input.cogsGlAccountId, "Cost of Goods Sold");
+    }
+
+    let existingRef = await readSyncRef(tenantId, sourceType, input.productId);
+
+    // Detect tracked↔non-tracked flips by reading the existing QBO Item's
+    // Type. QBO does not allow `Type` changes on Item updates, so when the
+    // local product flips between tracked/untracked we must abandon the old
+    // QBO Item and create a fresh one of the correct type.
+    let cachedSyncToken: string | undefined;
+    if (existingRef?.qboId) {
+      const existingQboId = existingRef.qboId;
+      try {
+        const existingItem = await qboRequest(ctx, "GET", `item/${existingQboId}?minorversion=73`);
+        const existingType = existingItem?.Item?.Type as string | undefined;
+        cachedSyncToken = existingItem?.Item?.SyncToken as string | undefined;
+        if (existingType && existingType !== desiredType) {
+          await auditLog(tenantId, "QBO_INVENTORY_ITEM_TYPE_FLIP", {
+            productId: input.productId,
+            previousQboItemId: existingRef.qboId,
+            previousType: existingType,
+            newType: desiredType,
+            reason: "trackInventory flipped — QBO does not allow Item Type changes; creating a new Item",
+            locationId: ctx.locationId ?? null,
+          });
+          await (prisma as any).qboInventorySyncRef.update({
+            where: { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId: input.productId } },
+            data: { qboId: null },
+          });
+          existingRef = null;
+          cachedSyncToken = undefined;
+        }
+      } catch (lookupErr) {
+        // Only treat "definitely gone from QBO" responses as stale — i.e. an
+        // HTTP 404, or QBO's specific "Object Not Found" error code 610.
+        // Transient failures (5xx, network errors, 401 between refreshes,
+        // etc.) must NOT invalidate the ref or we'd create duplicate Items
+        // in QBO every time the upstream hiccups.
+        const msg = lookupErr instanceof Error ? lookupErr.message : String(lookupErr);
+        const isMissing =
+          /QBO API error 404\b/.test(msg) ||
+          /"code":\s*"?610"?/.test(msg) ||
+          /Object Not Found/i.test(msg);
+        if (!isMissing) {
+          // Re-throw so writeSyncRefFailure / the outer catch records the
+          // failure and the next retry will try again with the same ref.
+          throw lookupErr;
+        }
+        console.warn(
+          `[qbo-sync] Existing QBO Item ${existingQboId} for product ${input.productId} no longer exists in QBO; creating a new one: ${msg}`,
+        );
+        await (prisma as any).qboInventorySyncRef.update({
+          where: { tenantId_sourceType_sourceId: { tenantId, sourceType, sourceId: input.productId } },
+          data: { qboId: null },
+        });
+        existingRef = null;
+        cachedSyncToken = undefined;
+      }
+    }
 
     const qboPayload: Record<string, unknown> = {
       Name: input.name.slice(0, 100),
       Sku: input.sku ?? undefined,
       Description: input.description ?? undefined,
-      Type: "Inventory",
-      TrackQtyOnHand: true,
-      QtyOnHand: input.qoh ?? 0,
-      InvStartDate: new Date().toISOString().split("T")[0],
+      Type: desiredType,
       UnitPrice: input.priceCents / 100,
-      PurchaseCost: input.costCents / 100,
       IncomeAccountRef: { value: incomeAcctRef },
-      AssetAccountRef: { value: assetAcctRef },
-      ExpenseAccountRef: { value: cogsAcctRef },
     };
+
+    if (input.trackInventory) {
+      qboPayload.TrackQtyOnHand = true;
+      qboPayload.QtyOnHand = input.qoh ?? 0;
+      qboPayload.InvStartDate = new Date().toISOString().split("T")[0];
+      qboPayload.PurchaseCost = input.costCents / 100;
+      qboPayload.AssetAccountRef = { value: assetAcctRef };
+      qboPayload.ExpenseAccountRef = { value: cogsAcctRef };
+    }
 
     let result: any;
     if (existingRef?.qboId) {
-      // Update — fetch SyncToken first (QBO requires it on every update).
-      const existing = await qboRequest(ctx, "GET", `item/${existingRef.qboId}?minorversion=73`);
+      // Update — QBO requires SyncToken on every update. Reuse the token
+      // fetched during the type-flip probe above when available.
+      let syncToken = cachedSyncToken;
+      if (!syncToken) {
+        const existing = await qboRequest(ctx, "GET", `item/${existingRef.qboId}?minorversion=73`);
+        syncToken = existing.Item.SyncToken;
+      }
       qboPayload.Id = existingRef.qboId;
-      qboPayload.SyncToken = existing.Item.SyncToken;
+      qboPayload.SyncToken = syncToken;
       qboPayload.sparse = true;
       // Don't reset QtyOnHand on updates — let receiving Bills / adjustments drive it.
       delete qboPayload.QtyOnHand;
@@ -3320,35 +3477,103 @@ export async function syncPosTicketAsReceipt(
     depositAccountQboId = locationPinned.undepositedFunds.qboAccountId;
   }
 
-  // Build SalesReceipt line items
-  const lines: Record<string, unknown>[] = ((tx as any).lineItems as any[]).map(
-    (li: any, idx: number) => {
-      const qboItemId = li.product?.qboItemId as string | null;
-      return {
-        LineNum: idx + 1,
-        Amount: li.extendedCents / 100,
-        DetailType: "SalesItemLineDetail",
-        Description: li.product?.name ?? `Line ${idx + 1}`,
-        SalesItemLineDetail: {
-          Qty: li.quantity,
-          UnitPrice: li.unitPriceCents / 100,
-          ...(qboItemId ? { ItemRef: { value: qboItemId } } : {}),
-        },
-      };
-    },
-  );
+  // Build SalesReceipt line items.
+  //
+  // QBO validates `Line.Amount === SalesItemLineDetail.UnitPrice * Qty` to the
+  // cent on every SalesItemLineDetail line and rejects the entire receipt when
+  // it doesn't tie. Sending the post-discount/post-tax `extendedCents` as
+  // Amount while sending the pre-discount `unitPriceCents` as UnitPrice
+  // violates that invariant the moment any POS line carries a discount or
+  // line-level tax — which is what was happening in production
+  // ("Amount calculation incorrect... Supplied value: 4.29").
+  //
+  // Fix: send the *pre-discount, pre-tax* line subtotal as `Amount`, and a
+  // `UnitPrice` that satisfies the equality exactly. Discounts are surfaced as
+  // separate `DiscountLineDetail` lines so the receipt's `TotalAmt` still
+  // matches the POS ticket total. Per-line tax is already aggregated into the
+  // single `tx.taxCents` total below, so removing it from item lines does not
+  // double-count.
+  let totalDiscountCents = 0;
+  const lines: Record<string, unknown>[] = [];
+  ((tx as any).lineItems as any[]).forEach((li: any, idx: number) => {
+    const qboItemId = li.product?.qboItemId as string | null;
+    const quantity = Math.max(1, Number(li.quantity) || 1);
+    const unitPriceCents = Number(li.unitPriceCents) || 0;
+    const lineSubtotalCents = unitPriceCents * quantity;
+    const amount = lineSubtotalCents / 100;
+    const unitPrice = unitPriceCents / 100;
 
-  // Include tax as a separate line when non-zero (QBO handles tax lines explicitly)
-  if ((tx as any).taxCents > 0) {
+    // Detect float-precision drift between (UnitPrice * Qty) and Amount —
+    // e.g. 1.43 * 7 = 10.010000000000002 in IEEE-754. When QBO would round
+    // the product differently than our integer subtotal, collapse to a
+    // single-unit line so the equality holds exactly.
+    const productMatchesCents =
+      Math.round(unitPrice * quantity * 100) === lineSubtotalCents;
+
+    const detail: Record<string, unknown> = productMatchesCents
+      ? { Qty: quantity, UnitPrice: unitPrice }
+      : { Qty: 1, UnitPrice: amount };
+    if (qboItemId) detail.ItemRef = { value: qboItemId };
+
     lines.push({
-      Amount: (tx as any).taxCents / 100,
+      LineNum: lines.length + 1,
+      Amount: amount,
+      DetailType: "SalesItemLineDetail",
+      Description: li.product?.name ?? `Line ${idx + 1}`,
+      SalesItemLineDetail: detail,
+    });
+
+    const discountCents = Number(li.discountCents) || 0;
+    if (discountCents > 0) totalDiscountCents += discountCents;
+  });
+
+  // Represent line-level discounts as a single receipt-level
+  // DiscountLineDetail so per-line UnitPrice * Qty equality is preserved
+  // while the receipt total still ties to the POS ticket.
+  if (totalDiscountCents > 0) {
+    lines.push({
+      LineNum: lines.length + 1,
+      Amount: totalDiscountCents / 100,
+      DetailType: "DiscountLineDetail",
+      Description: "POS discount",
+      DiscountLineDetail: {
+        PercentBased: false,
+      },
+    });
+  }
+
+  // Include tax as a separate line when non-zero. The transaction-level
+  // `tx.taxCents` is the canonical sum of tax for the ticket; per-line
+  // `taxCents` was previously folded into `extendedCents` and is now
+  // intentionally excluded from item lines so we don't double-count.
+  const taxCents = Number((tx as any).taxCents) || 0;
+  if (taxCents > 0) {
+    lines.push({
+      Amount: taxCents / 100,
       DetailType: "SalesItemLineDetail",
       Description: "Sales Tax",
       SalesItemLineDetail: {
         Qty: 1,
-        UnitPrice: (tx as any).taxCents / 100,
+        UnitPrice: taxCents / 100,
       },
     });
+  }
+
+  // Defense in depth: assert the receipt total ties out to the POS ticket
+  // total to the cent before we send. If it doesn't, throw a clear internal
+  // error rather than letting QBO reject the payload — this surfaces any
+  // future drift early instead of as an opaque QBO validation message.
+  const itemSumCents = ((tx as any).lineItems as any[]).reduce(
+    (acc: number, li: any) => acc + (Number(li.unitPriceCents) || 0) * (Number(li.quantity) || 1),
+    0,
+  );
+  const computedTotalCents = itemSumCents - totalDiscountCents + taxCents;
+  const expectedTotalCents = Number((tx as any).totalCents) || 0;
+  if (computedTotalCents !== expectedTotalCents) {
+    throw new Error(
+      `[qbo-sync] POS receipt total mismatch for ${posTicketId}: ` +
+        `computed=${computedTotalCents} expected=${expectedTotalCents}`,
+    );
   }
 
   const receiptData: Record<string, unknown> = {

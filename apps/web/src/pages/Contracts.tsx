@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { FileText, Search, Plus, X, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool, Shield, AlertCircle, CheckCircle, XCircle, Link2 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
+import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
 import { formatDateOnlyISO, todayDateOnlyISO } from '@helm/shared-types';
 import ESignatureFlow from '../components/ESignatureFlow';
+import RatePlanPicker from '../components/RatePlanPicker';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -33,6 +35,16 @@ interface Contract {
   glRevenueAccount?: string;
   glCogsAccount?: string;
   signatureStatus: SignatureStatus;
+  // Linked rate plan for the table badge.
+  // `dockageRateId` may be set while `planActive` is false if the
+  // operator deactivated the plan after the contract was signed.
+  dockageRateId?: string | null;
+  planLabel?: string | null;
+  planActive?: boolean;
+  // Slip metadata for the detail-modal rate-plan
+  // picker to filter eligible plans (same location + slipType).
+  slipLocationId?: string | null;
+  slipType?: string | null;
 }
 
 const GL_REVENUE_ACCOUNTS = [
@@ -192,7 +204,7 @@ const st: Record<string, React.CSSProperties> = {
     borderRadius: '9999px',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '14px',
   },
   emptyState: {
@@ -323,7 +335,22 @@ const st: Record<string, React.CSSProperties> = {
 
 interface ApiBoat { id: string; name: string; }
 interface ApiCustomer { id: string; firstName: string; lastName: string; email: string | null; boats: ApiBoat[]; }
-interface ApiSlip { id: string; slipNumber: string; dockId: string; status: string; }
+interface ApiSlip { id: string; slipNumber: string; dockId: string; status: string; locationId?: string | null; slipType?: string | null; }
+interface ApiDockageRate {
+  id: string;
+  locationId: string;
+  name?: string | null;
+  slipType: string;
+  billingCadence?: 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+  monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  electricityMode?: string | null;
+  active: boolean;
+}
 interface ApiContract {
   id: string;
   status: string;
@@ -335,9 +362,14 @@ interface ApiContract {
   securityDepositCents: number | null;
   esignEnvelopeId: string | null;
   signedAt: string | null;
-  slip: { id: string; slipNumber: string; dockId: string };
+  dockageRateId?: string | null;
+  slip: { id: string; slipNumber: string; dockId: string; locationId?: string | null; slipType?: string | null };
   customer: { id: string; firstName: string; lastName: string; email?: string | null };
   boat: { id: string; name: string } | null;
+  // Linked rate plan, hydrated by the list/get endpoint.
+  // `null` means the contract was created before the link existed
+  // (or the plan was deleted) — UI shows an "Unlinked" badge.
+  dockageRate?: { id: string; name?: string | null; slipType: string; monthlyRateCents: number; active: boolean } | null;
 }
 
 const API_STATUS_MAP: Record<string, ContractStatus> = {
@@ -376,6 +408,13 @@ function mapApiContract(c: ApiContract): Contract {
     securityDeposit: (c.securityDepositCents ?? 0) / 100,
     autoRenew: c.autoRenew,
     signatureStatus,
+    dockageRateId: c.dockageRateId ?? c.dockageRate?.id ?? null,
+    planLabel: c.dockageRate
+      ? `${c.dockageRate.name ? `${c.dockageRate.name} · ` : ''}${c.dockageRate.slipType} · $${(c.dockageRate.monthlyRateCents / 100).toFixed(0)}/mo`
+      : null,
+    planActive: c.dockageRate ? c.dockageRate.active : undefined,
+    slipLocationId: c.slip.locationId ?? null,
+    slipType: c.slip.slipType ?? null,
   };
 }
 
@@ -391,6 +430,9 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const [rate, setRate] = useState('');
   const [deposit, setDeposit] = useState('');
   const [autoRenew, setAutoRenew] = useState(false);
+  // Rate plan picker — empty = no plan linked
+  // (legacy behavior — billing falls back to (location, slipType)).
+  const [dockageRateId, setDockageRateId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -400,11 +442,71 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const { data: slipsResp, loading: loadingSlips } = useApi<{ data: ApiSlip[] }>(
     'get', '/api/slips?take=200', { immediate: true },
   );
+  // Pull all active rate plans for the tenant; we filter client-side
+  // by the selected slip's location + slipType so the picker only ever
+  // shows valid options. Server still re-validates on POST.
+  const { data: ratesResp } = useApi<{ data: ApiDockageRate[] }>(
+    'get', '/api/settings/catalog/dockage-rates', { immediate: true },
+  );
 
   const customers = customersResp?.data ?? [];
   const slips = slipsResp?.data ?? [];
   const selectedCustomer = customers.find((c) => c.id === customerId);
   const availableBoats = selectedCustomer?.boats ?? [];
+  const selectedSlip = slips.find((s) => s.id === slipId);
+  const allRates = ratesResp?.data ?? [];
+  const eligibleRates = allRates.filter((r) => {
+    // Always keep the currently-selected plan in the list, even if a
+    // later slip pick would otherwise filter it out — otherwise the
+    // picker visually clears while the id is still in form state.
+    if (r.id === dockageRateId) return true;
+    if (!r.active) return false;
+    // Slip-based filtering only kicks in once a slip is selected; before
+    // that, show all active plans (still respecting effective dates) so
+    // operators can search the catalog before committing to a slip.
+    if (selectedSlip) {
+      if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
+      if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    }
+    // Filter by effective dates against the contract start (if entered);
+    // when no startDate yet, compare against today so operators see only
+    // currently-effective plans. Server re-validates on POST.
+    const probe = startDate || new Date().toISOString().slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
+    return true;
+  });
+  const selectedPlan = allRates.find((r) => r.id === dockageRateId) ?? null;
+  const selectedPlanMismatch = !!(
+    selectedPlan && selectedSlip && (
+      (selectedSlip.locationId && selectedPlan.locationId !== selectedSlip.locationId) ||
+      (selectedSlip.slipType && selectedPlan.slipType !== selectedSlip.slipType)
+    )
+  );
+
+  // Plan cadence is authoritative: picking a plan overwrites both the
+  // rate and the billing cycle to match the plan, mirroring server
+  // behavior. This prevents a stale "Monthly" form value from locking
+  // in a monthly amount on a quarterly/annual/seasonal plan.
+  const CADENCE_TO_LABEL: Record<string, string> = {
+    MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+  };
+  const handlePlanChange = (val: string) => {
+    setDockageRateId(val);
+    if (val) {
+      const plan = eligibleRates.find((r) => r.id === val);
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(CADENCE_TO_LABEL[cadence] ?? 'Monthly');
+      }
+    }
+  };
 
   const handleCustomerChange = (val: string) => {
     setCustomerId(val);
@@ -429,6 +531,7 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
         rateCents: Math.round(parseFloat(rate) * 100),
         securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
         autoRenew,
+        dockageRateId: dockageRateId || undefined,
       });
       onClose();
     } catch {
@@ -496,12 +599,33 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
               <input style={st.input} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <div style={st.field}>
+              <label style={st.label}>Rate Plan</label>
+              <RatePlanPicker
+                value={dockageRateId}
+                plans={eligibleRates}
+                onChange={(id) => handlePlanChange(id)}
+                placeholder={slipId ? 'Search rate plans…' : 'Search all active rate plans…'}
+                inputStyle={st.input}
+                title="Drives GL account + tax class on invoices"
+              />
+              {slipId && eligibleRates.filter((r) => r.id !== dockageRateId).length === 0 && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  No active rate plan matches this slip — billing will use the legacy lookup.
+                </span>
+              )}
+              {selectedPlanMismatch && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  Selected plan doesn't match the chosen slip's location/type — pick a different plan or change the slip.
+                </span>
+              )}
+            </div>
+            <div style={st.field}>
               <label style={st.label}>Rate ($/period) *</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+              <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" placeholder="0.00" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={st.field}>
               <label style={st.label}>Security Deposit</label>
-              <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" placeholder="0.00" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+              <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" placeholder="0.00" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
             </div>
           </div>
           <div style={{ marginTop: '8px' }}>
@@ -591,7 +715,56 @@ function ContractDetailModal({
   const [billingItemId, setBillingItemId] = useState(contract.billingItemId ?? '');
   const [glRevenueAccount, setGlRevenueAccount] = useState(contract.glRevenueAccount ?? '4100');
   const [glCogsAccount, setGlCogsAccount] = useState(contract.glCogsAccount ?? '5500');
+  // Rate-plan link state for the edit/re-link flow.
+  // Empty string = "Unlinked" (legacy fallback). Saving this calls
+  // PUT /api/contracts/:id with `dockageRateId`; the API defaults
+  // rateCents/electricityMode from the plan if we omit them, but we
+  // also auto-fill the local rate field below so the operator can
+  // see the new locked rate before saving.
+  const [dockageRateId, setDockageRateId] = useState(contract.dockageRateId ?? '');
   const [saving, setSaving] = useState(false);
+
+  // Active rate plans (filtered client-side to slip location/type).
+  // filter to plans matching the contract's slip (location + slipType)
+  // so the picker only shows valid options. Server re-validates on PUT.
+  const { data: ratesResp } = useApi<{ data: ApiDockageRate[] }>(
+    'get', '/api/settings/catalog/dockage-rates', { immediate: true },
+  );
+  const eligibleRates = (ratesResp?.data ?? []).filter((r) => {
+    if (!r.active) return false;
+    if (contract.slipLocationId && r.locationId !== contract.slipLocationId) return false;
+    if (contract.slipType && r.slipType !== contract.slipType) return false;
+    // Same effective-date filter as the new-contract picker, anchored
+    // to the contract's start date so re-linking on a long-running
+    // contract still surfaces plans that were valid when it began.
+    const probe = (contract.start || new Date().toISOString()).slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
+    return true;
+  });
+
+  // Plan cadence is authoritative on re-link too: pick the plan's
+  // cadence-aligned rate AND align the contract billing cycle to the
+  // plan's cadence. Mirrors server behavior in PUT /api/contracts/:id.
+  const CADENCE_TO_LABEL_EDIT: Record<string, string> = {
+    MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+  };
+  const handlePlanPick = (val: string) => {
+    setDockageRateId(val);
+    if (val) {
+      const plan = eligibleRates.find((r) => r.id === val);
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(CADENCE_TO_LABEL_EDIT[cadence] ?? 'Monthly');
+      }
+    }
+  };
 
   /* ── Transfer state ── */
   const [newSlip, setNewSlip] = useState('');
@@ -798,6 +971,11 @@ function ContractDetailModal({
 
   const handleSave = () => {
     setSaving(true);
+    // Persist the rate-plan link alongside the rate.
+    // pass `dockageRateId: null` (not undefined) when the operator
+    // explicitly cleared the picker so the API SetNull's the FK and
+    // the table re-renders with the "Unlinked" badge.
+    const planChanged = (contract.dockageRateId ?? '') !== dockageRateId;
     onUpdate(contract.id, {
       rate: parseFloat(rate) || contract.rate,
       billingCycle,
@@ -808,6 +986,20 @@ function ContractDetailModal({
       billingItemId: billingItemId || undefined,
       glRevenueAccount,
       glCogsAccount,
+      ...(planChanged ? { dockageRateId: dockageRateId || null } : {}),
+      // Re-derive the table badge label/active flag locally so the row
+      // updates without waiting for a refetch.
+      ...(planChanged
+        ? {
+            planLabel: dockageRateId
+              ? (() => {
+                  const p = eligibleRates.find((r) => r.id === dockageRateId);
+                  return p ? `${p.name ? `${p.name} · ` : ''}${p.slipType} · $${(p.monthlyRateCents / 100).toFixed(0)}/mo` : null;
+                })()
+              : null,
+            planActive: dockageRateId ? true : undefined,
+          }
+        : {}),
     });
     setSaving(false);
     setMode('view');
@@ -874,10 +1066,39 @@ function ContractDetailModal({
             <div style={infoRow}><span style={infoLabel}>Customer</span><span style={infoValue}>{contract.customer}</span></div>
             <div style={infoRow}><span style={infoLabel}>Boat</span><span style={infoValue}>{contract.boatName}</span></div>
             <div style={infoRow}><span style={infoLabel}>Billing Cycle</span><span style={infoValue}>{contract.billingCycle}</span></div>
-            <div style={infoRow}><span style={infoLabel}>Rate</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace', fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{fmt(contract.rate)}/{contract.billingCycle === 'Monthly' ? 'mo' : contract.billingCycle === 'Annual' ? 'yr' : 'period'}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Rate</span><span style={{ ...infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>{fmt(contract.rate)}/{contract.billingCycle === 'Monthly' ? 'mo' : contract.billingCycle === 'Annual' ? 'yr' : 'period'}</span></div>
             <div style={infoRow}><span style={infoLabel}>Start Date</span><span style={infoValue}>{contract.start}</span></div>
             <div style={infoRow}><span style={infoLabel}>End Date</span><span style={infoValue}>{contract.end}</span></div>
-            <div style={{ ...infoRow, borderBottom: 'none' }}><span style={infoLabel}>Security Deposit</span><span style={{ ...infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{fmt(contract.securityDeposit)}</span></div>
+            <div style={infoRow}><span style={infoLabel}>Security Deposit</span><span style={{ ...infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt(contract.securityDeposit)}</span></div>
+            {/* surface the linked rate plan so operators can
+                see at a glance which plan drives GL/tax for this
+                contract. The list table also shows this, but the
+                detail view is where most folks will go to investigate
+                a billing surprise. */}
+            <div style={{ ...infoRow, borderBottom: 'none' }}>
+              <span style={infoLabel}>Rate Plan</span>
+              <span style={infoValue}>
+                {contract.planLabel ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    {contract.planLabel}
+                    {contract.planActive === false && (
+                      <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E', fontSize: '11px' }}>Inactive</span>
+                    )}
+                  </span>
+                ) : (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E', fontSize: '11px' }} title="No rate plan linked — billing falls back to (location, slip type) lookup">Unlinked</span>
+                    <button
+                      style={{ background: 'none', border: 'none', color: '#0369A1', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px', padding: 0 }}
+                      onClick={() => setMode('edit')}
+                      title="Link this contract to a rate plan"
+                    >
+                      <Link2 size={12} /> Link Plan
+                    </button>
+                  </span>
+                )}
+              </span>
+            </div>
           </div>
         )}
 
@@ -909,11 +1130,11 @@ function ContractDetailModal({
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>Rate ($/period)</label>
-                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+                  <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>Security Deposit</label>
-                  <input style={{ ...st.input, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+                  <input style={{ ...st.input, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
                 </div>
                 <div style={st.field}>
                   <label style={st.label}>End Date</label>
@@ -924,6 +1145,45 @@ function ContractDetailModal({
                     {autoRenew ? <ToggleRight size={24} style={{ color: '#00D4FF' }} /> : <ToggleLeft size={24} style={{ color: '#CCC' }} />}
                     <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Auto-Renew</span>
                   </div>
+                </div>
+              </div>
+              {/* rate-plan picker in the contract edit
+                  modal. Switching plans here is the canonical re-link
+                  flow; we auto-fill the rate field above on selection
+                  so the operator can confirm or override before save.
+                  Server re-validates on PUT and defaults rateCents
+                  from the plan when the field is omitted. */}
+              <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid #E2E8F0' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#0A2342', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '14px' }}>Rate Plan Link</div>
+                <div style={st.field}>
+                  <label style={st.label}>Linked Rate Plan</label>
+                  <select
+                    style={st.formSelect}
+                    value={dockageRateId}
+                    onChange={(e) => handlePlanPick(e.target.value)}
+                    title="Drives GL account + tax class on recurring invoices"
+                  >
+                    <option value="">— Unlinked (legacy fallback) —</option>
+                    {/* Always include the currently linked plan in the
+                        options even if it's now inactive / out-of-list,
+                        so the dropdown reflects reality and operators
+                        can see what they're replacing. */}
+                    {contract.dockageRateId && !eligibleRates.find((r) => r.id === contract.dockageRateId) && (
+                      <option value={contract.dockageRateId}>
+                        {contract.planLabel ?? 'Currently linked plan'} (inactive)
+                      </option>
+                    )}
+                    {eligibleRates.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name ? `${r.name} · ` : ''}{r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
+                      </option>
+                    ))}
+                  </select>
+                  {!dockageRateId && (
+                    <span style={{ fontSize: '12px', color: '#B45309', marginTop: '4px' }}>
+                      Unlinked contracts fall back to a (location, slip type) lookup at billing time. Link a plan for deterministic GL.
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid #E2E8F0' }}>
@@ -1179,9 +1439,9 @@ function ContractDetailModal({
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                         <div>
                           <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>Deposit</div>
-                          <div style={{ fontSize: '12px', color: '#94A3B8', fontFamily: '"JetBrains Mono", monospace', marginTop: '2px' }}>{d.id.slice(0, 8)}…</div>
+                          <div style={{ fontSize: '12px', color: '#94A3B8', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', marginTop: '2px' }}>{d.id.slice(0, 8)}…</div>
                         </div>
-                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                           ${(d.amountCents / 100).toFixed(2)}
                         </div>
                       </div>
@@ -1272,8 +1532,8 @@ export default function Contracts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentLocationId]);
   const createContract = useApi<ApiContract>('post', '/api/contracts');
-  const updateContractApi = useApi<ApiContract>('put', '/api/contracts/update');
   const transferContractApi = useApi<ApiContract>('post', '/api/contracts/transfer');
+  const { getToken: getUpdateToken } = useAuth();
 
   const apiContracts: Contract[] = (apiResp?.data ?? []).map(mapApiContract);
   const contracts = localContracts.length > 0 ? localContracts : apiContracts;
@@ -1282,9 +1542,31 @@ export default function Contracts() {
     const updated = contracts.map((c) => c.id === id ? { ...c, ...changes } : c);
     setLocalContracts(updated);
     if (viewingContract?.id === id) setViewingContract({ ...viewingContract, ...changes });
-    // useApi.execute resolves (never rejects) and reports failures via
-    // reportApiError, so no .catch wrapper is needed here.
-    void updateContractApi.execute({ body: { id, ...changes } });
+
+    // Termination is performed by POST /:id/terminate (which the dialog
+    // already called); calling PUT /:id afterwards just to mirror the
+    // status would be a no-op and could re-validate on a row that's
+    // already terminated. Skip it.
+    if (changes.status === 'Terminated' && Object.keys(changes).length === 1) {
+      return;
+    }
+
+    // PUT against the canonical /api/contracts/:id endpoint. The previous
+    // call site used a useApi bound to '/api/contracts/update', which
+    // matched no route and was caught by /:id with id="update", returning
+    // 404 "Contract not found". Build the path per-call instead.
+    void (async () => {
+      try {
+        const token = await getUpdateToken();
+        await api.put(`/api/contracts/${id}`, changes, token);
+      } catch (err) {
+        reportApiError({
+          endpoint: `PUT /api/contracts/${id}`,
+          status: err instanceof ApiClientError ? err.status : undefined,
+          error: err,
+        });
+      }
+    })();
   };
 
   const handleTransfer = (contractId: string, newSlip: string, effectiveDate: string, notes: string) => {
@@ -1479,6 +1761,7 @@ export default function Contracts() {
                 <th style={st.th}>Boat</th>
                 <th style={st.th}>Slip</th>
                 <th style={st.th}>Rate</th>
+                <th style={st.th}>Plan</th>
                 <th style={st.th}>Billing</th>
                 <th style={st.th}>Start</th>
                 <th style={st.th}>End</th>
@@ -1508,6 +1791,34 @@ export default function Contracts() {
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}><span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Ship size={14} color="#2E4A6B" />{c.boatName}</span></td>
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, fontWeight: 600 }}>{c.slip}</td>
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, ...st.mono }}>{fmt(c.rate)}</td>
+                    <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>
+                      {c.planLabel ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#0A2342' }}>
+                          {c.planLabel}
+                          {c.planActive === false && (
+                            <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E', fontSize: '10px' }}>Inactive</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ ...st.badge, backgroundColor: '#FEF3C7', color: '#92400E', fontSize: '10px' }} title="No rate plan linked — billing falls back to (location, slip type) lookup">
+                            Unlinked
+                          </span>
+                          {/* one-click link action — opens
+                              the detail modal where the rate-plan
+                              picker lives. We don't open straight to
+                              edit mode here so the operator can review
+                              the contract first. */}
+                          <button
+                            style={{ background: 'none', border: 'none', color: '#0369A1', cursor: 'pointer', fontWeight: 600, fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px', padding: 0 }}
+                            onClick={() => setViewingContract(c)}
+                            title="Link this contract to a rate plan"
+                          >
+                            <Link2 size={11} /> Link
+                          </button>
+                        </span>
+                      )}
+                    </td>
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg }}>{c.billingCycle}</td>
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, color: '#64748B' }}>{c.start}</td>
                     <td style={{ ...st.td, backgroundColor: isSelected ? '#EFF6FF' : rowBg, color: '#64748B' }}>{c.end}</td>

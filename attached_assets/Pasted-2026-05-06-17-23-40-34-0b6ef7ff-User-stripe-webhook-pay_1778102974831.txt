@@ -1,0 +1,80 @@
+2026-05-06 17:23:40.34
+0b6ef7ff
+User
+[stripe-webhook] payment_intent.succeeded: no Payment row for pi_3TUCusBX93w3UPrF033EKJq4
+2026-05-06 17:27:19.23
+0b6ef7ff
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 17:27:19.29
+0b6ef7ff
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 17:27:21.14
+0b6ef7ff
+User
+url: 'https://sandbox-quickbooks.api.intuit.com/v3/company/9341455756620860/customer?minorversion=73',
+2026-05-06 17:27:21.14
+0b6ef7ff
+User
+[qbo-sync] API error {
+2026-05-06 17:27:21.14
+0b6ef7ff
+User
+}
+2026-05-06 17:27:21.14
+0b6ef7ff
+User
+errorBody: '{"Fault":{"Error":[{"Message":"Duplicate Name Exists Error","Detail":"The name supplied already exists. : null","code":"6240"}],"type":"ValidationFault"},"time":"2026-05-06T14:27:20.108-07:00"}'
+2026-05-06 17:27:21.14
+0b6ef7ff
+User
+status: 400,
+2026-05-06 17:27:21.84
+0b6ef7ff
+User
+[qbo-sync] Bound local customer f2c5f7ba-dc9c-42f0-88e4-a8d98718dc05 to existing QBO customer 85 (Lisa Bayfront) via duplicate-name recovery
+2026-05-06 17:27:22.88
+0b6ef7ff
+User
+[qbo-sync] Using per-location QBO credentials for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c, locationId=14a95116-456f-472f-a621-d7772a4b3f69
+2026-05-06 17:27:23.34
+0b6ef7ff
+User
+[qbo-sync] API error {
+2026-05-06 17:27:23.34
+0b6ef7ff
+User
+url: 'https://sandbox-quickbooks.api.intuit.com/v3/company/9341455756620860/item?minorversion=73',
+2026-05-06 17:27:23.34
+0b6ef7ff
+User
+errorBody: `{"Fault":{"Error":[{"Message":"Invalid account type used","Detail":"Invalid account type: For an inventory product, the inventory asset account must have Account Type: 'Other Current Asset' and Detail Type: 'Inventory.'","code":"6430","element":""}],"type":"ValidationFault"},"time":"2026-05-06T14:27:23.165-07:00"}`
+2026-05-06 17:27:23.34
+0b6ef7ff
+User
+status: 400,
+2026-05-06 17:27:23.34
+0b6ef7ff
+User
+}
+2026-05-06 17:27:24.18
+0b6ef7ff
+User
+prisma:error
+2026-05-06 17:27:24.18
+0b6ef7ff
+User
+Invalid `prisma.qboInventorySyncRef.update()` invocation:
+2026-05-06 17:27:24.18
+0b6ef7ff
+User
+An operation failed because it depends on one or more records that were required but not found. No record was found for an update.
+2026-05-06 17:27:24.30
+0b6ef7ff
+User
+[qbo-sync] syncInvoice preflight: could not sync QB Item for product 17b53574-58c1-44d3-9719-d5e63b3154d4: QBO API error 400: {"Fault":{"Error":[{"Message":"Invalid account type used","Detail":"Invalid account type: For an inventory product, the inventory asset account must have Account Type: 'Other Current Asset' and Detail Type: 'Inventory.'","code":"6430","element":""}],"type":"ValidationFault"},"time":"2026-05-06T14:27:23.165-07:00"}
+2026-05-06 17:27:25.74
+0b6ef7ff
+User
+[qbo-sync] Synced invoice a8cc19fd-32f2-462f-b9ff-3b9e4944b7a0 for tenant 43a97d55-0b27-46b4-bb15-b34ee5ed798c

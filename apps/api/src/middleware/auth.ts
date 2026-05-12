@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { requireAuth, getAuth } from "@clerk/express";
+import { getAuth } from "@clerk/express";
 import type { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
@@ -171,6 +171,15 @@ function isDevBypassEnabled(): boolean {
 // Optional: fail-closed at boot when prod config looks incomplete.
 // Called once from index.ts.
 export function assertAuthConfigOrExit(): void {
+  // Boot-time visibility into which auth mode this process actually loaded.
+  // Without this we can't tell from the outside whether the dev bypass is
+  // active in a given deployment — the bypass takes effect inside clerkAuth()
+  // per request and is otherwise invisible.
+  console.log(
+    `[auth] mode=${
+      isDevBypassEnabled() ? "DEV_BYPASS" : "CLERK"
+    } NODE_ENV=${process.env.NODE_ENV ?? "(unset)"} ENABLE_AUTH_DEV_BYPASS=${process.env.ENABLE_AUTH_DEV_BYPASS ?? "(unset)"}`,
+  );
   if (process.env.NODE_ENV !== "production") return;
   const missing: string[] = [];
   if (!process.env.CLERK_SECRET_KEY) missing.push("CLERK_SECRET_KEY");
@@ -238,7 +247,13 @@ export function clerkAuth(): RequestHandler[] {
   }
 
   return [
-    requireAuth(),
+    // NOTE: we intentionally do NOT use Clerk's `requireAuth()` here. That
+    // middleware issues a 302 redirect on unauthenticated requests, which
+    // breaks XHR/fetch callers — the browser silently follows the redirect
+    // to `/`, the SPA's index.html comes back, and the frontend's
+    // `await res.json()` blows up with "Unexpected token '<'". Instead we
+    // call `getAuth()` ourselves and respond with a clean JSON 401 the
+    // SPA can detect and route to the sign-in page on its own.
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const auth = getAuth(req);
@@ -344,7 +359,13 @@ export function requirePlatformAdmin(): RequestHandler[] {
 
 
   return [
-    requireAuth(),
+    // NOTE: we intentionally do NOT use Clerk's `requireAuth()` here. That
+    // middleware issues a 302 redirect on unauthenticated requests, which
+    // breaks XHR/fetch callers — the browser silently follows the redirect
+    // to `/`, the SPA's index.html comes back, and the frontend's
+    // `await res.json()` blows up with "Unexpected token '<'". Instead we
+    // call `getAuth()` ourselves and respond with a clean JSON 401 the
+    // SPA can detect and route to the sign-in page on its own.
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const auth = getAuth(req);

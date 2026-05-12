@@ -407,7 +407,7 @@ export default function ESignatureFlow({
                 <div style={st.sectionTitle}>Contract Summary</div>
                 <div style={st.infoRow}>
                   <span style={st.infoLabel}>Contract</span>
-                  <span style={{ ...st.infoValue, fontFamily: '"JetBrains Mono", monospace' }}>{contractNumber}</span>
+                  <span style={{ ...st.infoValue, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{contractNumber}</span>
                 </div>
                 <div style={st.infoRow}>
                   <span style={st.infoLabel}>Customer</span>
@@ -499,7 +499,7 @@ export default function ESignatureFlow({
                 <strong style={{ color: '#0A2342' }}>{signerEmail}</strong>
               </p>
               {requestId && (
-                <p style={{ fontSize: '12px', color: '#94A3B8', fontFamily: '"JetBrains Mono", monospace', margin: '8px 0 0 0' }}>
+                <p style={{ fontSize: '12px', color: '#94A3B8', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', margin: '8px 0 0 0' }}>
                   Request ID: {requestId}
                 </p>
               )}

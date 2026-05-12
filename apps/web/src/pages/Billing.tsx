@@ -13,7 +13,8 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
-import { formatCents, formatDate } from '../lib/format';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
+import { formatCents, formatDateOnly } from '../lib/format';
 import { useModules } from '../context/ModulesContext';
 
 /* ─── Types ─── */
@@ -95,7 +96,7 @@ function statusBadge(status: InvoiceStatus): React.CSSProperties {
 }
 
 /* ─── Styles ─── */
-const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
+const mono: React.CSSProperties = { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' };
 const styles: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },
   title: { fontSize: '36px', fontWeight: 700, color: '#0A2342', letterSpacing: '-0.02em', margin: 0 },
@@ -168,6 +169,7 @@ export default function Billing() {
     <div style={styles.page}>
       <h1 style={styles.title} className="helm-page-title">Billing</h1>
       <hr style={styles.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
       {/* Summary Cards */}
@@ -239,8 +241,8 @@ export default function Billing() {
               >
                 <td style={{ ...styles.td, ...mono, fontWeight: 600, fontSize: '13px' }}><Link to={'/billing/invoices/' + inv.id} style={{ color: '#00D4FF', fontWeight: 600, textDecoration: 'none' }}>{inv.number}</Link></td>
                 <td style={styles.td}>{inv.customer}</td>
-                <td style={styles.td}>{formatDate(inv.issued)}</td>
-                <td style={styles.td}>{formatDate(inv.due)}</td>
+                <td style={styles.td}>{formatDateOnly(inv.issued)}</td>
+                <td style={styles.td}>{formatDateOnly(inv.due)}</td>
                 <td style={styles.td}><span style={statusBadge(inv.status)}>{inv.status}</span></td>
                 <td style={styles.tdRight}>{formatCents(inv.subtotal)}</td>
                 <td style={styles.tdRight}>{formatCents(inv.tax)}</td>

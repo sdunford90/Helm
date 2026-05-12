@@ -14,6 +14,8 @@ import { isCardExpired } from '../components/PaymentModal';
 import EmbeddedSetupForm from '../components/EmbeddedSetupForm';
 import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
+import { useModules } from '../context/ModulesContext';
+import RatePlanPicker from '../components/RatePlanPicker';
 import { api, ApiClientError } from '../lib/api';
 import { reportApiError } from '../lib/apiError';
 import { cacheThumbUrls, getCachedThumbUrl, invalidateThumbUrl } from '../lib/thumbUrlCache';
@@ -180,14 +182,30 @@ type ComplianceStatus = 'ALL_GOOD' | 'ATTENTION_REQUIRED' | 'NON_COMPLIANT';
 type InsuranceStatus = 'VALID' | 'EXPIRED' | 'MISSING';
 type RegistrationStatus = 'VALID' | 'EXPIRED' | 'MISSING';
 
+// Mirrors the columns the API actually returns from /api/boats and
+// /api/insurance/customer/:id. The legacy interface here named columns
+// (`provider`, `coverageType`, `coverageCents`) that don't exist on
+// `insurance_records`, so every row rendered as blank. Coverage details
+// live inside `coverageJson` (see apps/api/src/routes/insurance.ts) —
+// `coverageType` is a sibling string and the displayed coverage amount
+// reads from `limits.generalAggregate`.
 interface ApiInsuranceRecord {
   id: string;
-  policyNumber: string;
-  provider: string;
-  coverageType: string;
-  coverageCents: number;
+  insurer: string | null;
+  policyNumber: string | null;
+  startDate: string | null;
   expiryDate: string | null;
-  status: string;
+  documentUrl: string | null;
+  status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | string;
+  coverageJson: {
+    coverageType?: string | null;
+    limits?: {
+      generalAggregate?: number | null;
+      bodilyInjury?: number | null;
+      propertyDamage?: number | null;
+      medicalPayments?: number | null;
+    } | null;
+  } | null;
 }
 
 interface ApiBoatCompliance {
@@ -305,6 +323,10 @@ interface ApiSavedPaymentMethod {
   expYear: number | null;
   expiry: string | null;
   isDefault: boolean;
+  // Per-card opt-in for the POS counter (Stripe metadata.usableInPos).
+  // Always false for bank accounts — ACH can't be charged off-session at
+  // the front desk.
+  usableInPos?: boolean;
 }
 
 interface ApiPaymentMethodsResponse {
@@ -382,7 +404,9 @@ function mapApiInvoice(inv: ApiInvoice): Invoice {
     balance,
     status: isPastDue ? 'Overdue' : rawStatus === 'ISSUED' ? 'Open' : rawStatus === 'PAID' ? 'Paid' : rawStatus,
     isPastDue,
-    date: new Date(inv.issuedDate).toISOString().slice(0, 10),
+    date: typeof inv.issuedDate === 'string'
+      ? inv.issuedDate.slice(0, 10)
+      : new Date(inv.issuedDate).toISOString().slice(0, 10),
     dueDate: dueDate ? dueDate.toISOString().slice(0, 10) : null,
   };
 }
@@ -392,17 +416,25 @@ function mapApiInsurance(ins: ApiInsuranceRecord, boatId: string, boatName: stri
   const now = new Date();
   const daysUntilExpiry = expiryDate ? Math.floor((expiryDate.getTime() - now.getTime()) / 86400000) : null;
   let status: InsuranceRecord['status'] = 'Current';
-  if (!expiryDate || expiryDate < now) status = 'Expired';
+  if (ins.status === 'PENDING_REVIEW') status = 'Pending Review';
+  else if (ins.status === 'REJECTED') status = 'Rejected';
+  else if (!expiryDate || expiryDate < now || ins.status === 'EXPIRED') status = 'Expired';
   else if (daysUntilExpiry !== null && daysUntilExpiry <= 60) status = 'Expiring Soon';
+  const coverageAmount =
+    typeof ins.coverageJson?.limits?.generalAggregate === 'number'
+      ? ins.coverageJson.limits.generalAggregate
+      : null;
   return {
     id: ins.id,
     boatId,
     boatName,
-    provider: ins.provider,
-    policyNumber: ins.policyNumber,
-    type: ins.coverageType,
-    coverage: ins.coverageCents / 100,
-    expiry: expiryDate ? expiryDate.toISOString().slice(0, 10) : '—',
+    provider: ins.insurer ?? '',
+    policyNumber: ins.policyNumber ?? '',
+    type: ins.coverageJson?.coverageType ?? '',
+    coverage: coverageAmount,
+    startDate: ins.startDate ? ins.startDate.slice(0, 10) : null,
+    expiry: expiryDate ? expiryDate.toISOString().slice(0, 10) : null,
+    documentUrl: ins.documentUrl ?? null,
     status,
   };
 }
@@ -454,15 +486,19 @@ interface InsuranceRecord {
   provider: string;
   policyNumber: string;
   type: string;
-  coverage: number;
-  expiry: string;
-  status: 'Current' | 'Expiring Soon' | 'Expired';
+  coverage: number | null;
+  startDate: string | null;
+  expiry: string | null;
+  documentUrl: string | null;
+  status: 'Current' | 'Expiring Soon' | 'Expired' | 'Pending Review' | 'Rejected';
 }
 
 const insuranceStatusColors: Record<string, { bg: string; color: string }> = {
   Current: { bg: '#E8F5E9', color: '#1B5E20' },
   'Expiring Soon': { bg: '#FFF3CD', color: '#856404' },
   Expired: { bg: '#FDECEA', color: '#B71C1C' },
+  'Pending Review': { bg: '#E0F2FE', color: '#075985' },
+  Rejected: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
 
@@ -660,7 +696,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '24px',
     fontWeight: 700,
     color: '#0A2342',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   statLabel: {
     fontSize: '12px',
@@ -678,7 +714,7 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: '9999px',
   },
   mono: {
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
     fontSize: '14px',
   },
   tableWrap: {
@@ -1318,25 +1354,128 @@ function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Pa
   );
 }
 
-function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () => void }) {
-  const [slip, setSlip] = useState('');
+interface BoatModalSlip { id: string; slipNumber: string; status: string; locationId?: string | null; slipType?: string | null; }
+interface BoatModalRatePlan {
+  id: string;
+  locationId: string;
+  name?: string | null;
+  slipType: string;
+  billingCadence?: 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+  monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  active: boolean;
+}
+
+const BOAT_MODAL_CYCLE_TO_API: Record<string, string> = {
+  Monthly: 'MONTHLY', Quarterly: 'QUARTERLY', 'Semi-Annual': 'SEMI_ANNUAL', Annual: 'ANNUAL', Seasonal: 'MONTHLY',
+};
+const BOAT_MODAL_CADENCE_TO_LABEL: Record<string, string> = {
+  MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+};
+
+function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { boat: Boat; customerId: string; onClose: () => void; onCreated?: () => void }) {
+  const { currentLocationId } = useModules();
+  const [slipId, setSlipId] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [rate, setRate] = useState('');
   const [deposit, setDeposit] = useState('');
   const [autoRenew, setAutoRenew] = useState(false);
+  const [dockageRateId, setDockageRateId] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const createContract = useApi('post', '/api/contracts');
 
+  const { data: slipsResp, loading: loadingSlips } = useApi<{ data: BoatModalSlip[] }>(
+    'get', '/api/slips?take=200', { immediate: true },
+  );
+  const { data: ratesResp } = useApi<{ data: BoatModalRatePlan[] }>(
+    'get', '/api/settings/catalog/dockage-rates', { immediate: true },
+  );
+
+  // Scope slip dropdown to the current location (when one is picked) so the
+  // rate plan filter actually has something matchable. Fall back to all
+  // tenant slips when "All locations" is active.
+  const allSlips = slipsResp?.data ?? [];
+  const slips = currentLocationId
+    ? allSlips.filter((s) => s.locationId === currentLocationId)
+    : allSlips;
+  const selectedSlip = slips.find((s) => s.id === slipId);
+
+  const allRates = ratesResp?.data ?? [];
+  const eligibleRates = allRates.filter((r) => {
+    // Always keep the currently-selected plan in the list, even if a
+    // later slip pick would otherwise filter it out — otherwise the
+    // picker visually clears while the id is still in form state.
+    if (r.id === dockageRateId) return true;
+    if (!r.active) return false;
+    if (selectedSlip) {
+      if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
+      if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    } else if (currentLocationId) {
+      if (r.locationId !== currentLocationId) return false;
+    }
+    const probe = startDate || new Date().toISOString().slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
+    return true;
+  });
+  const selectedPlan = allRates.find((r) => r.id === dockageRateId) ?? null;
+  const selectedPlanMismatch = !!(
+    selectedPlan && selectedSlip && (
+      (selectedSlip.locationId && selectedPlan.locationId !== selectedSlip.locationId) ||
+      (selectedSlip.slipType && selectedPlan.slipType !== selectedSlip.slipType)
+    )
+  );
+
+  const handlePlanChange = (val: string) => {
+    setDockageRateId(val);
+    if (val) {
+      const plan = eligibleRates.find((r) => r.id === val);
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(BOAT_MODAL_CADENCE_TO_LABEL[cadence] ?? 'Monthly');
+      }
+    }
+  };
+
   const handleSave = async () => {
-    if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
+    if (!slipId || !startDate || !rate) { setErr('Please fill in Slip, Start Date, and Rate.'); return; }
     setErr('');
     setSaving(true);
-    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } });
-    setSaving(false);
-    onClose();
+    try {
+      await createContract.execute({
+        body: {
+          customerId,
+          slipId,
+          boatId: boat.id,
+          billingCycle: BOAT_MODAL_CYCLE_TO_API[billingCycle] ?? 'MONTHLY',
+          startDate,
+          endDate: endDate || undefined,
+          rateCents: Math.round(parseFloat(rate) * 100),
+          securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
+          autoRenew,
+          dockageRateId: dockageRateId || undefined,
+        },
+      });
+      onCreated?.();
+      onClose();
+    } catch {
+      setErr('Failed to create contract. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1354,19 +1493,17 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
           <div style={mTwoCol}>
             <div style={mField}>
               <label style={mLabel}>Slip *</label>
-              <select style={mSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
-                <option value="">Select slip...</option>
-                <option value="A-01">A-01</option>
-                <option value="A-02">A-02</option>
-                <option value="A-03">A-03 (Vacant)</option>
-                <option value="A-04">A-04 (Reserved)</option>
-                <option value="B-01">B-01</option>
-                <option value="B-02">B-02 (Maintenance)</option>
-                <option value="B-03">B-03 (Vacant)</option>
-                <option value="C-01">C-01</option>
-                <option value="C-02">C-02 (Vacant)</option>
-                <option value="C-03">C-03 (Vacant)</option>
+              <select style={mSelect} value={slipId} onChange={(e) => setSlipId(e.target.value)} disabled={loadingSlips}>
+                <option value="">{loadingSlips ? 'Loading…' : 'Select slip...'}</option>
+                {slips.map((s) => (
+                  <option key={s.id} value={s.id}>{s.slipNumber} ({s.status})</option>
+                ))}
               </select>
+              {!loadingSlips && slips.length === 0 && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  No slips found{currentLocationId ? ' for this location' : ''}.
+                </span>
+              )}
             </div>
             <div style={mField}>
               <label style={mLabel}>Billing Cycle</label>
@@ -1383,16 +1520,37 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
               <input style={mInput} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div style={mField}>
-              <label style={mLabel}>End Date *</label>
+              <label style={mLabel}>End Date</label>
               <input style={mInput} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </div>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Rate Plan</label>
+              <RatePlanPicker
+                value={dockageRateId}
+                plans={eligibleRates}
+                onChange={(id) => handlePlanChange(id)}
+                placeholder={slipId ? 'Search rate plans…' : 'Search active rate plans…'}
+                inputStyle={mInput}
+                title="Drives GL account + tax class on invoices"
+              />
+              {slipId && eligibleRates.filter((r) => r.id !== dockageRateId).length === 0 && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  No active rate plan matches this slip — billing will use the legacy lookup.
+                </span>
+              )}
+              {selectedPlanMismatch && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  Selected plan doesn't match the chosen slip's location/type — pick a different plan or change the slip.
+                </span>
+              )}
             </div>
             <div style={mField}>
               <label style={mLabel}>Rate ($/period) *</label>
-              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
+              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
             </div>
             <div style={mField}>
               <label style={mLabel}>Security Deposit</label>
-              <input style={{ ...mInput, fontFamily: '"JetBrains Mono", monospace' }} type="number" step="0.01" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
+              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none', marginTop: '4px' }} onClick={() => setAutoRenew(!autoRenew)}>
@@ -1403,6 +1561,285 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
         <div style={mFoot}>
           <button style={mCancelBtn} onClick={onClose}>Cancel</button>
           <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Creating…' : 'Create Contract'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Insurance Add/Edit Modal ──────────────────────────── */
+
+// Allowed file types for insurance certificates. Mirrors the `insurance`
+// upload policy in apps/api/src/lib/file-validation.ts so the
+// preview-stage rejection here matches what the server will enforce.
+const INSURANCE_ALLOWED_EXT = ['.pdf', '.png', '.jpg', '.jpeg'] as const;
+const INSURANCE_ALLOWED_MIME = ['application/pdf', 'image/png', 'image/jpeg'] as const;
+const INSURANCE_MAX_BYTES = 15 * 1024 * 1024;
+const INSURANCE_ACCEPT_ATTR = [
+  ...INSURANCE_ALLOWED_EXT,
+  ...INSURANCE_ALLOWED_MIME,
+].join(',');
+
+function preValidateInsuranceFile(
+  file: File,
+): { ok: true } | { ok: false; message: string } {
+  const ext = getFileExtension(file.name);
+  if (!ext || !INSURANCE_ALLOWED_EXT.includes(ext as (typeof INSURANCE_ALLOWED_EXT)[number])) {
+    return { ok: false, message: `${ext || 'Files without an extension'} can't be uploaded. Please choose a PDF, PNG, or JPG.` };
+  }
+  if (
+    file.type &&
+    !INSURANCE_ALLOWED_MIME.includes(file.type.toLowerCase() as (typeof INSURANCE_ALLOWED_MIME)[number])
+  ) {
+    return { ok: false, message: `Files of type "${file.type}" can't be uploaded. Please choose a PDF, PNG, or JPG.` };
+  }
+  if (file.size > INSURANCE_MAX_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    return { ok: false, message: `That file is ${mb} MB. Insurance documents must be 15 MB or smaller.` };
+  }
+  if (file.size === 0) {
+    return { ok: false, message: 'That file is empty. Please choose a different file.' };
+  }
+  return { ok: true };
+}
+
+interface InsuranceModalProps {
+  customerId: string;
+  mode: 'add' | 'edit';
+  boatId: string;
+  boatName: string;
+  initial?: InsuranceRecord;
+  getToken: () => Promise<string | null>;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}
+
+function InsuranceModal({
+  customerId,
+  mode,
+  boatId,
+  boatName,
+  initial,
+  getToken,
+  onClose,
+  onSaved,
+}: InsuranceModalProps) {
+  const [insurer, setInsurer] = useState(initial?.provider ?? '');
+  const [policyNumber, setPolicyNumber] = useState(initial?.policyNumber ?? '');
+  const [coverageType, setCoverageType] = useState(initial?.type ?? '');
+  const [coverageAmount, setCoverageAmount] = useState(
+    initial?.coverage != null ? String(initial.coverage) : '',
+  );
+  const [startDate, setStartDate] = useState(initial?.startDate ?? '');
+  const [expiryDate, setExpiryDate] = useState(initial?.expiry ?? '');
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    setErr(null);
+    if (!insurer.trim() && !policyNumber.trim()) {
+      setErr('Enter at least an insurer name or policy number.');
+      return;
+    }
+    let validatedFile: File | null = null;
+    if (file) {
+      const pre = preValidateInsuranceFile(file);
+      if (!pre.ok) {
+        setErr(pre.message);
+        return;
+      }
+      validatedFile = file;
+    }
+    const coverageNum = coverageAmount.trim() === '' ? null : Number.parseFloat(coverageAmount);
+    if (coverageAmount.trim() !== '' && (!Number.isFinite(coverageNum) || (coverageNum as number) < 0)) {
+      setErr('Coverage amount must be a positive number.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const token = await getToken();
+
+      // Upload the document first so we have a URL to attach to the
+      // record. We re-use the existing `insurance` presign category and
+      // its server-side magic-byte verification.
+      let documentUrl: string | null | undefined;
+      if (validatedFile) {
+        const contentType = validatedFile.type || 'application/octet-stream';
+        const presign = await api.post<{ url: string; key: string }>(
+          '/api/storage/presign-upload',
+          { category: 'insurance', filename: validatedFile.name, contentType },
+          token,
+        );
+        let put: Response;
+        try {
+          put = await fetch(presign.url, {
+            method: 'PUT',
+            body: validatedFile,
+            headers: { 'Content-Type': contentType },
+          });
+        } catch (netErr) {
+          throw new ApiClientError(
+            UPLOAD_ERROR_MESSAGES.STORAGE_NETWORK_BLOCKED,
+            0,
+            'STORAGE_NETWORK_BLOCKED',
+          );
+        }
+        if (!put.ok) {
+          throw new ApiClientError(
+            `Upload to storage failed (status ${put.status})`,
+            put.status,
+            'STORAGE_PUT_FAILED',
+          );
+        }
+        try {
+          await api.post(
+            '/api/storage/verify-upload',
+            { key: presign.key, contentType },
+            token,
+          );
+        } catch (verifyErr) {
+          await api.delete(`/api/storage/${presign.key}`, token).catch(() => undefined);
+          throw verifyErr;
+        }
+        // Persist the durable storage key — presigned download URLs
+        // expire after ~1 hour. We resolve a fresh presigned URL on
+        // demand when the operator clicks the "View document" link.
+        documentUrl = presign.key;
+      }
+
+      const body: Record<string, unknown> = {
+        insurer: insurer.trim() || null,
+        policyNumber: policyNumber.trim() || null,
+        coverageType: coverageType.trim() || null,
+        coverageAmount: coverageNum,
+        startDate: startDate || null,
+        expiryDate: expiryDate || null,
+      };
+      if (documentUrl !== undefined) body.documentUrl = documentUrl;
+
+      try {
+        if (mode === 'add') {
+          body.customerId = customerId;
+          body.boatId = boatId;
+          await api.post('/api/insurance/manual', body, token);
+        } else if (initial) {
+          await api.put(`/api/insurance/${initial.id}`, body, token);
+        }
+      } catch (writeErr) {
+        // Best-effort cleanup so a freshly uploaded object isn't
+        // orphaned in storage when the DB write that would have
+        // referenced it fails.
+        if (typeof documentUrl === 'string' && documentUrl.length > 0) {
+          await api.delete(`/api/storage/${documentUrl}`, token).catch(() => undefined);
+        }
+        throw writeErr;
+      }
+
+      await onSaved();
+      onClose();
+    } catch (e) {
+      const msg = describeUploadError(e);
+      setErr(msg.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const boxStyle: React.CSSProperties = { ...modalBox, width: '560px', maxHeight: '90vh', overflowY: 'auto' };
+  return (
+    <div style={modalOverlay} onClick={saving ? undefined : onClose}>
+      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={mHead}>
+          <div>
+            <h2 style={mTitle}>{mode === 'add' ? 'Add Insurance' : 'Edit Insurance'}</h2>
+            <div style={{ fontSize: '13px', color: '#64748B', marginTop: '2px' }}>Vessel: {boatName}</div>
+          </div>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose} disabled={saving}><X size={20} /></button>
+        </div>
+        <div style={mBody}>
+          {err && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
+          <div style={mTwoCol}>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Insurer</label>
+              <input style={mInput} value={insurer} onChange={(e) => setInsurer(e.target.value)} placeholder="e.g. Progressive Marine" />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Policy #</label>
+              <input style={mInput} value={policyNumber} onChange={(e) => setPolicyNumber(e.target.value)} placeholder="e.g. POL-12345" />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Coverage Type</label>
+              <input style={mInput} value={coverageType} onChange={(e) => setCoverageType(e.target.value)} placeholder="e.g. Liability" />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Coverage Amount ($)</label>
+              <input
+                style={{ ...mInput, fontVariantNumeric: 'tabular-nums' }}
+                type="number"
+                step="1"
+                min="0"
+                value={coverageAmount}
+                onChange={(e) => setCoverageAmount(e.target.value)}
+                placeholder="e.g. 300000"
+              />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Start Date</label>
+              <input style={mInput} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </div>
+            <div style={mField}>
+              <label style={mLabel}>Expiry Date</label>
+              <input style={mInput} type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+            </div>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>
+                {mode === 'edit' && initial?.documentUrl ? 'Replace Policy Document (optional)' : 'Policy Document (optional)'}
+              </label>
+              <input
+                type="file"
+                accept={INSURANCE_ACCEPT_ATTR}
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                style={{ fontSize: 13 }}
+              />
+              <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
+                Allowed: PDF, PNG, JPG — up to 15 MB.
+                {mode === 'edit' && initial?.documentUrl && (
+                  <> &middot; <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const t = await getToken();
+                        const ref = initial.documentUrl!;
+                        // Already a fully-qualified URL? Just open it.
+                        if (/^https?:\/\//i.test(ref)) {
+                          window.open(ref, '_blank', 'noopener,noreferrer');
+                          return;
+                        }
+                        const dl = await api.get<{ url: string }>(`/api/storage/presign-download/${ref}`, t);
+                        window.open(dl.url, '_blank', 'noopener,noreferrer');
+                      } catch (e) {
+                        const m = e instanceof Error ? e.message : 'Could not open document';
+                        setErr(m);
+                      }
+                    }}
+                    style={{ background: 'none', border: 'none', padding: 0, color: '#0A2342', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}
+                  >View current document</button></>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={mFoot}>
+          <button style={mCancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button
+            style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }}
+            onClick={() => void handleSave()}
+            disabled={saving}
+          >
+            {saving ? 'Saving…' : mode === 'add' ? 'Add Insurance' : 'Save Changes'}
+          </button>
         </div>
       </div>
     </div>
@@ -1425,6 +1862,13 @@ export default function CustomerDetailPage() {
   const [editingBoat, setEditingBoat] = useState<Boat | null>(null);
   const [showAddBoat, setShowAddBoat] = useState(false);
   const [newContractBoat, setNewContractBoat] = useState<Boat | null>(null);
+  // Insurance add/edit modal state. `mode` is either a brand new policy
+  // attached to a specific boat, or editing an existing record.
+  const [insuranceModal, setInsuranceModal] = useState<
+    | { mode: 'add'; boatId: string; boatName: string }
+    | { mode: 'edit'; record: InsuranceRecord }
+    | null
+  >(null);
 
   // API calls
   const { getToken } = useAuth();
@@ -1673,6 +2117,26 @@ export default function CustomerDetailPage() {
     }
     await refetchBoats();
   };
+
+  // Delete an insurance record after confirmation. Refreshes the boat list
+  // so the row vanishes and the boat-header summary recomputes.
+  const handleDeleteInsurance = async (record: InsuranceRecord) => {
+    if (!window.confirm(
+      `Delete insurance policy${record.policyNumber ? ` ${record.policyNumber}` : ''}? This cannot be undone.`,
+    )) {
+      return;
+    }
+    try {
+      const token = await getToken();
+      await api.delete(`/api/insurance/${record.id}`, token);
+      toast.success('Insurance deleted', 'The policy was removed.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not delete insurance';
+      toast.error('Delete failed', msg);
+    }
+    await refetchBoats();
+  };
+
   const badgeStyle = statusBadgeColors[c.status];
 
   const tabs: { key: Tab; label: string }[] = [
@@ -1943,32 +2407,57 @@ export default function CustomerDetailPage() {
             </div>
             {/* Insurance Section */}
             <div style={{ padding: '20px 24px' }}>
-              <div style={{ ...s.cardTitle, marginBottom: '12px' }}><Shield size={14} /> Insurance Policies</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <div style={{ ...s.cardTitle, marginBottom: 0 }}><Shield size={14} /> Insurance Policies</div>
+                <button
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, color: '#FFFFFF', background: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                  onClick={() => setInsuranceModal({ mode: 'add', boatId: b.id, boatName: b.name })}
+                >
+                  <Plus size={12} /> Add insurance
+                </button>
+              </div>
               {boatInsurance.length > 0 ? (
                 <table style={s.table}>
                   <thead>
                     <tr>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Policy #</th>
-                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Provider</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Insurer</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Type</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Coverage</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Expiry</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Status</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px', textAlign: 'right' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {boatInsurance.map((ins, idx) => {
                       const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
-                      const isc = insuranceStatusColors[ins.status];
+                      const isc = insuranceStatusColors[ins.status] ?? { bg: '#F2F4F6', color: '#64748B' };
                       return (
                         <tr key={ins.id}>
-                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontSize: '13px' }}>{ins.policyNumber}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.provider}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.type}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(ins.coverage)}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{ins.expiry}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontSize: '13px' }}>{ins.policyNumber || '—'}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.provider || '—'}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.type || '—'}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>
+                            {ins.coverage != null ? fmt(ins.coverage) : '—'}
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{ins.expiry ?? '—'}</td>
                           <td style={{ ...s.td, backgroundColor: rowBg }}>
                             <span style={{ ...s.badge, backgroundColor: isc.bg, color: isc.color }}>{ins.status}</span>
+                          </td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <button
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 10px', marginRight: '6px', fontSize: '12px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '4px', cursor: 'pointer' }}
+                              onClick={() => setInsuranceModal({ mode: 'edit', record: ins })}
+                            >
+                              <Edit size={11} /> Edit
+                            </button>
+                            <button
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 10px', fontSize: '12px', fontWeight: 600, color: '#B71C1C', background: '#FFFFFF', border: '1px solid #FCA5A5', borderRadius: '4px', cursor: 'pointer' }}
+                              onClick={() => void handleDeleteInsurance(ins)}
+                            >
+                              <Trash2 size={11} /> Delete
+                            </button>
                           </td>
                         </tr>
                       );
@@ -2077,6 +2566,20 @@ export default function CustomerDetailPage() {
       await refetchPaymentMethods();
     } catch (err) {
       setPmError(err instanceof Error ? err.message : 'Could not set as default');
+    } finally {
+      setPmActionId(null);
+    }
+  }
+
+  async function toggleUsableInPos(pmId: string, next: boolean) {
+    setPmError(null);
+    setPmActionId(pmId);
+    try {
+      const token = await getToken();
+      await api.patch(`/api/customers/${id}/payment-methods/${pmId}`, { usableInPos: next }, token);
+      await refetchPaymentMethods();
+    } catch (err) {
+      setPmError(err instanceof Error ? err.message : 'Could not update POS-usable flag');
     } finally {
       setPmActionId(null);
     }
@@ -2899,6 +3402,26 @@ export default function CustomerDetailPage() {
                         </div>
                       )}
                     </div>
+                    {m.kind === 'card' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => toggleUsableInPos(m.id, !m.usableInPos)}
+                        title={m.usableInPos ? 'Remove POS pre-authorization for this card' : 'Allow this card to be charged at the POS counter'}
+                        style={{
+                          padding: '6px 12px',
+                          border: `1px solid ${m.usableInPos ? '#15803D' : '#CBD5E1'}`,
+                          borderRadius: '6px',
+                          backgroundColor: m.usableInPos ? '#F0FDF4' : '#FFFFFF',
+                          color: m.usableInPos ? '#15803D' : '#64748B',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: busy ? 'wait' : 'pointer',
+                        }}
+                      >
+                        {m.usableInPos ? 'POS-usable ✓' : 'Allow at POS'}
+                      </button>
+                    )}
                     {!m.isDefault && (
                       <button
                         type="button"
@@ -3364,7 +3887,7 @@ export default function CustomerDetailPage() {
                 color: '#856404',
                 fontSize: '13px',
                 padding: '4px 14px',
-                fontFamily: '"JetBrains Mono", monospace',
+                fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
               }}
             >
               {fmt(outstandingBalance)} outstanding
@@ -3499,10 +4022,33 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {newContractBoat && (
+      {newContractBoat && id && (
         <NewContractFromBoatModal
           boat={newContractBoat}
+          customerId={id}
           onClose={() => setNewContractBoat(null)}
+          onCreated={() => { void refetchCustomer(); void refetchBoats(); }}
+        />
+      )}
+
+      {insuranceModal && id && (
+        <InsuranceModal
+          customerId={id}
+          mode={insuranceModal.mode}
+          boatId={insuranceModal.mode === 'add' ? insuranceModal.boatId : insuranceModal.record.boatId}
+          boatName={insuranceModal.mode === 'add' ? insuranceModal.boatName : insuranceModal.record.boatName}
+          initial={insuranceModal.mode === 'edit' ? insuranceModal.record : undefined}
+          getToken={getToken}
+          onClose={() => setInsuranceModal(null)}
+          onSaved={async () => {
+            await refetchBoats();
+            toast.success(
+              insuranceModal.mode === 'add' ? 'Insurance added' : 'Insurance updated',
+              insuranceModal.mode === 'add'
+                ? 'The new policy was saved to this vessel.'
+                : 'Your changes were saved.',
+            );
+          }}
         />
       )}
 

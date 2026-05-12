@@ -154,7 +154,7 @@ export default function ThankYou() {
             </button>
           </div>
           {status.paymentIntentId && (
-            <p style={{ marginTop: 24, fontSize: 12, color: '#94A3B8', fontFamily: 'JetBrains Mono, monospace' }}>
+            <p style={{ marginTop: 24, fontSize: 12, color: '#94A3B8', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
               Ref: {status.paymentIntentId}
             </p>
           )}

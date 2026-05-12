@@ -22,6 +22,19 @@ export function isTaxExempt(taxClass: string | null | undefined): boolean {
   return !!taxClass && TAX_EXEMPT_LABELS.has(taxClass.trim().toLowerCase());
 }
 
+// Sentinel labels the form / legacy data have written into Product.taxClass
+// to mean "no override — inherit from the category". Empty strings, pure
+// whitespace, and the literal "Standard" the inventory modal pre-fills for
+// legacy rows all need to flow through to the category default rather than
+// being treated as a real per-product tax category. Match case-insensitively
+// so "standard" and "  STANDARD  " are caught too — the test fixtures and a
+// handful of legacy rows write the lowercase form.
+const NO_OVERRIDE_LABELS = new Set(["", "standard"]);
+function isNoOverride(taxClass: string | null | undefined): boolean {
+  if (taxClass == null) return true;
+  return NO_OVERRIDE_LABELS.has(taxClass.trim().toLowerCase());
+}
+
 /**
  * Synchronous resolver for an already-loaded product. Centralizes the
  * per-product → category → "general" precedence rule and the two
@@ -42,12 +55,17 @@ export function resolveProductTaxCategory(product: {
   if (product.productCategory && !product.productCategory.taxable) {
     return { taxCategory: null, taxable: false };
   }
-  const taxCategory =
-    (product.taxClass && product.taxClass !== "Standard"
-      ? product.taxClass
-      : null) ??
-    product.productCategory?.defaultTaxCategory ??
-    DEFAULT_TAX_CATEGORY;
+  // Per-product taxClass wins only when it's a real value — null, empty
+  // string, whitespace, and the "Standard" / "standard" sentinels mean
+  // "use the category default".  Use `||` (not `??`) so an empty-string
+  // defaultTaxCategory on the category also falls through to "general"
+  // rather than being passed as `""` and then dropped by POS's
+  // `taxableLines` filter (which short-circuits on a falsy taxCategory).
+  const override = isNoOverride(product.taxClass)
+    ? null
+    : product.taxClass!.trim();
+  const categoryDefault = product.productCategory?.defaultTaxCategory?.trim();
+  const taxCategory = override || categoryDefault || DEFAULT_TAX_CATEGORY;
   return { taxCategory, taxable: true };
 }
 

@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { requireAccountingSetup } from "../middleware/accounting-gate.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
@@ -189,10 +194,26 @@ async function resolveLineItemTaxInfo(
   });
 }
 
+// Parse a calendar date from the client into a stable timestamp that renders
+// as the same day in any reasonable timezone. Date-only strings ("YYYY-MM-DD")
+// are anchored to noon UTC so a viewer in UTC-12..UTC+11 still sees the picked
+// day. Already-Date inputs and ISO datetimes pass through unchanged.
+const CalendarDateSchema = z.preprocess((v) => {
+  if (typeof v === "string") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+    if (m) {
+      return new Date(
+        Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0),
+      );
+    }
+  }
+  return v;
+}, z.coerce.date());
+
 const CreateInvoiceSchema = z.object({
   customerId: z.string().uuid(),
-  issuedDate: z.coerce.date(),
-  dueDate: z.coerce.date(),
+  issuedDate: CalendarDateSchema,
+  dueDate: CalendarDateSchema,
   // Optional explicit location for the invoice. When supplied, it
   // overrides the implicit derivation from CONTRACT line items, which
   // means non-contract invoices (ad-hoc service charges, retail, etc.)
@@ -203,8 +224,8 @@ const CreateInvoiceSchema = z.object({
 });
 
 const UpdateInvoiceSchema = z.object({
-  issuedDate: z.coerce.date().optional(),
-  dueDate: z.coerce.date().optional(),
+  issuedDate: CalendarDateSchema.optional(),
+  dueDate: CalendarDateSchema.optional(),
   lineItems: z.array(LineItemSchema).min(1).optional(),
 });
 
@@ -223,6 +244,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET / — List invoices ──────────────────────────────────────────────────
 
@@ -233,7 +255,11 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListInvoicesQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope invoices to active location.
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.customerId) where.customerId = query.customerId;
@@ -293,7 +319,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           customer: { select: { firstName: true, lastName: true, email: true, addressJson: true } },
           lineItems: true,
@@ -310,7 +340,15 @@ router.get(
       const tenantName = tenant?.name ?? "Marina";
 
       const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-      const formatDate = (d: Date | null) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
+      const formatDate = (d: Date | null) =>
+        d
+          ? new Date(d).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              timeZone: "UTC",
+            })
+          : "—";
 
       const lineItemRows = invoice.lineItems.map((li) => `
         <tr>
@@ -396,7 +434,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           customer: {
             select: {
@@ -418,10 +460,22 @@ router.get(
             select: {
               id: true,
               amountCents: true,
+              refundedCents: true,
               method: true,
               status: true,
               postedDate: true,
               stripePaymentId: true,
+              refunds: {
+                select: {
+                  id: true,
+                  amountCents: true,
+                  reason: true,
+                  userName: true,
+                  createdAt: true,
+                  isFullRefund: true,
+                },
+                orderBy: { createdAt: "asc" },
+              },
             },
           },
         },
@@ -463,9 +517,22 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateInvoiceSchema.parse(req.body);
 
-      // Verify customer exists
+      // Task #339: invoices belong to the marina the picker is on. Require
+      // an active location so we never silently create a tenant-wide row.
+      // CreateInvoiceSchema already accepts an explicit locationId override
+      // for the contract-billing job which knows the slip's marina.
+      const invoiceLocationId = requireActiveLocation(
+        req,
+        (data as { locationId?: string | null }).locationId ?? null,
+      );
+
+      // Verify customer exists AND is reachable from the active location.
       const customer = await prisma.customer.findFirst({
-        where: { id: data.customerId, tenantId },
+        where: {
+          id: data.customerId,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         select: { id: true },
       });
       if (!customer) {
@@ -480,7 +547,10 @@ router.post(
       const lineTaxInfo = await resolveLineItemTaxInfo(tenantId, data.lineItems);
 
       // Resolve location for tax: caller-supplied → first CONTRACT line's
-      // slip location → null (engine returns zero tax).
+      // slip location → the active picker location (Task #339). With the
+      // picker enforcement, this should now always resolve to a real id;
+      // the contract-derived branch still wins because it's the more
+      // specific source for slip-bound billing.
       let locationId: string | null = data.locationId ?? null;
       if (!locationId) {
         const contractLineItem = data.lineItems.find(
@@ -494,6 +564,10 @@ router.post(
           locationId = contract?.slip?.locationId ?? null;
         }
       }
+      // Final fallback: the active picker location. Guarantees the
+      // persisted invoice carries a non-null scope so it shows up in
+      // the right marina's lists/reports.
+      if (!locationId) locationId = invoiceLocationId;
 
       const taxResult = await calculateTax({
         tenantId,
@@ -612,7 +686,7 @@ router.put(
       const data = UpdateInvoiceSchema.parse(req.body);
 
       const existing = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: { lineItems: true },
       });
 
@@ -742,7 +816,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: { lineItems: true },
       });
 
@@ -849,7 +923,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           payments: { where: { status: "COMPLETED" } },
         },
@@ -925,7 +999,7 @@ router.post(
       const tenantId = req.tenantId!;
 
       const invoice = await prisma.invoice.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           customer: {
             select: {
@@ -962,7 +1036,7 @@ router.post(
       const customerName = `${invoice.customer.firstName} ${invoice.customer.lastName}`.trim();
       const amountFormatted = `$${(invoice.totalCents / 100).toFixed(2)}`;
       const dueDateFormatted = new Date(invoice.dueDate).toLocaleDateString("en-US", {
-        month: "long", day: "numeric", year: "numeric",
+        month: "long", day: "numeric", year: "numeric", timeZone: "UTC",
       });
       const portalUrl = `${process.env.APP_URL || "https://app.gethelm.com"}/portal/invoices/${invoice.id}`;
       await queues.email.add("send-invoice", {

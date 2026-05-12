@@ -11,9 +11,11 @@ import {
   Download, Globe, Webhook, Edit2,
   MapPin, Save, XCircle, ChevronDown, ToggleRight,
   Lock, Shield, Users, Landmark, Percent, Copy, Info, Tag, Wifi, Package, Mail,
+  ScrollText,
 } from 'lucide-react';
 import { useModules } from '../context/ModulesContext';
 import CategoriesSettings from '../components/CategoriesSettings';
+import AuditLog from './AuditLog';
 
 /* ── OAuth Popup utility ────────────────────────────────── */
 
@@ -212,7 +214,7 @@ const st: Record<string, React.CSSProperties> = {
   th: { textAlign: 'left' as const, padding: '12px 16px', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF' },
   td: { padding: '12px 16px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
   badge: { display: 'inline-block', padding: '2px 10px', fontSize: '12px', fontWeight: 600, borderRadius: '9999px' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '14px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '14px' },
   colorSwatch: { width: '40px', height: '40px', borderRadius: '8px', border: '2px solid #E2E8F0', cursor: 'pointer' },
   integrationCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', marginBottom: '16px' },
   integrationInfo: { display: 'flex', alignItems: 'center', gap: '16px' },
@@ -280,8 +282,8 @@ export default function Settings() {
   const { applyBranding } = useBranding();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email';
-  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email'];
+  type SettingsTab = 'profile' | 'branding' | 'billing' | 'team' | 'roles' | 'advanced' | 'modules' | 'locations' | 'tax' | 'categories' | 'terminal' | 'email' | 'audit';
+  const VALID_TABS: SettingsTab[] = ['profile', 'branding', 'billing', 'team', 'roles', 'advanced', 'modules', 'locations', 'tax', 'categories', 'terminal', 'email', 'audit'];
   const tabFromUrl = searchParams.get('tab');
   // Integrations is now managed per-Location, and the Catalog editor lives at
   // /settings/products. Old deep-links are normalized by the effect below.
@@ -632,7 +634,7 @@ export default function Settings() {
   interface LocationDetail {
     id: string; name: string; address: string; city: string; state: string; zip: string; phone: string;
     timezone: string; active: boolean; transientEnabled: boolean; rentalsEnabled: boolean;
-    autoExecuteRenewals: boolean; posAchEnabled: boolean; logoUrl: string;
+    autoExecuteRenewals: boolean; posAchEnabled: boolean; posChargeToARAllowed: boolean; logoUrl: string;
     qboConnected: boolean; qboRealmId: string | null; qboConnectedAt: string | null;
     stripeConnected: boolean; stripeAccountId: string | null; stripeOnboardingComplete: boolean;
     // Per-location email sender override (Task #273). When any of these
@@ -1320,6 +1322,7 @@ export default function Settings() {
     { key: 'modules', label: 'Modules', icon: ToggleRight },
     { key: 'email', label: 'Email', icon: Mail },
     { key: 'advanced', label: 'Advanced', icon: SettingsIcon },
+    { key: 'audit', label: 'Audit Log', icon: ScrollText },
   ];
 
   return (
@@ -1577,6 +1580,10 @@ export default function Settings() {
                     <label style={st.checkbox} title="Show the ACH (bank transfer) button in the POS counter for this location. Off by default — most marinas don't want ACH at the front desk.">
                       <input type="checkbox" checked={!!locationForm.posAchEnabled} onChange={(e) => handleLocationFormChange('posAchEnabled', e.target.checked)} />
                       Show ACH on POS
+                    </label>
+                    <label style={st.checkbox} title="Allow cashiers to settle a POS sale by creating a real A/R invoice for the attached customer (replaces the legacy 'Charge to Slip' button). Off by default.">
+                      <input type="checkbox" checked={!!locationForm.posChargeToARAllowed} onChange={(e) => handleLocationFormChange('posChargeToARAllowed', e.target.checked)} />
+                      Allow Charge to A/R on POS
                     </label>
                   </div>
 
@@ -2754,6 +2761,8 @@ export default function Settings() {
       )}
 
       {tab === 'categories' && <CategoriesSettings />}
+
+      {tab === 'audit' && <AuditLog />}
 
       {tab === 'terminal' && (
         <>

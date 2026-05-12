@@ -35,22 +35,27 @@ type PurchaseOrderRow = Awaited<ReturnType<typeof prisma.purchaseOrder.findFirst
 type AdjustmentRow = Awaited<ReturnType<typeof prisma.inventoryAdjustment.findFirstOrThrow>>;
 
 async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
-  if (!product.trackInventory) return product;
   try {
     if (!product.locationId) {
-      // QBO inventory items live in a per-location chart; without a
-      // location we cannot pick the correct (category, location) mapping.
-      // Surface this in the canonical wording so the UI deep-link works.
+      // QBO items live in a per-location chart; without a location we cannot
+      // pick the correct (category, location) mapping. Surface this in the
+      // canonical wording so the UI deep-link works.
       throw new Error(
         `MISSING_GL_MAPPING: Product "${product.name}" has no locationId set. ` +
         `Assign the product to a location before syncing to QuickBooks.`,
       );
     }
+    // Service-style (non-tracked) products only need a revenue (Income)
+    // mapping in QBO — they sync as Type:"Service" and skip the asset/COGS
+    // plumbing entirely.
+    const requiredSlots = product.trackInventory
+      ? (["revenue", "cogs", "inventoryAsset"] as const)
+      : (["revenue"] as const);
     const resolved = await resolveProductGlAccountsStrict(
       product.tenantId,
       product.id,
       product.locationId,
-      ["revenue", "cogs", "inventoryAsset"],
+      requiredSlots,
     );
     const result = await syncInventoryItem(
       {
@@ -61,6 +66,7 @@ async function tryPushProductToQbo(product: ProductRow): Promise<ProductRow> {
         priceCents: product.priceCents,
         costCents: product.costCents ?? 0,
         qoh: product.qoh,
+        trackInventory: product.trackInventory,
         incomeGlAccountId: resolved.revenueGlAccountId,
         inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
         cogsGlAccountId: resolved.cogsGlAccountId,
@@ -485,6 +491,48 @@ function shapeProductWithEffective(
   };
 }
 
+// POST /products/clear-tax-overrides
+// Bulk-clear per-product taxClass overrides so every product inherits its
+// category's defaultTaxCategory. This is the recommended workflow: tax
+// belongs on the ProductCategory, and per-product values exist only as
+// rare exceptions. Optional locationId scopes the reset to one marina;
+// without it we touch every product in the tenant.
+router.post(
+  "/products/clear-tax-overrides",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = getTenantId(req);
+      const body = z
+        .object({ locationId: z.string().uuid().optional().nullable() })
+        .parse(req.body ?? {});
+      // Validate locationId ownership when provided so a caller can't
+      // affect another tenant's data by passing a foreign id.
+      if (body.locationId) {
+        const owned = await prisma.location.findFirst({
+          where: { id: body.locationId, tenantId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return res
+            .status(400)
+            .json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+        }
+      }
+      const result = await prisma.product.updateMany({
+        where: {
+          tenantId,
+          ...(body.locationId ? { locationId: body.locationId } : {}),
+          taxClass: { not: null },
+        },
+        data: { taxClass: null },
+      });
+      res.json({ cleared: result.count });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /products
 router.get("/products", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -514,18 +562,15 @@ router.get("/products", async (req: Request, res: Response, next: NextFunction) 
         { barcode: { contains: query.search } },
       ];
     }
-    // Single-location mode: include products tied to this location AND
-    // tenant-wide products (locationId IS NULL) so anything not yet
-    // assigned to a specific marina is still visible.
+    // Single-location mode: only return products that belong to THIS
+    // location. We used to also include tenant-wide products
+    // (locationId IS NULL) here, but that leaked legacy unassigned
+    // products into every marina's inventory list. The
+    // 20260512000000_backfill_product_location migration assigns every
+    // remaining null-location product to each tenant's primary
+    // location so the strict filter is safe (Task #340).
     if (query.locationId) {
-      const locFilter = [
-        { locationId: query.locationId },
-        { locationId: null },
-      ];
-      where.AND = [
-        ...(Array.isArray(where.AND) ? where.AND : []),
-        { OR: locFilter },
-      ];
+      where.locationId = query.locationId;
     }
 
     // Low-stock filter is applied in JS because reorderPoint comparison is
@@ -587,8 +632,7 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = getTenantId(req);
     const body = CreateProductSchema.parse(req.body);
-    // Validate the supplied category belongs to this tenant; pull its tax
-    // defaults so a blank taxClass inherits from the category at write time.
+    // Validate the supplied category belongs to this tenant.
     const category = await prisma.productCategory.findFirst({
       where: { id: body.productCategoryId, tenantId },
       select: { defaultTaxCategory: true, taxable: true },
@@ -599,12 +643,20 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         code: "PRODUCT_CATEGORY_NOT_FOUND",
       });
     }
-    let resolvedTaxClass: string | null = body.taxClass ?? null;
-    if (resolvedTaxClass == null) {
-      resolvedTaxClass = !category.taxable
-        ? "Tax Exempt"
-        : category.defaultTaxCategory ?? null;
-    }
+    // taxClass is a per-product OVERRIDE of the category's default. When the
+    // caller doesn't send one we persist NULL — the resolver in
+    // product-defaults.ts inherits from the category at read time. Copying
+    // category.defaultTaxCategory into the column at write time is a footgun:
+    // the value goes stale the moment the category is edited, and stale
+    // overrides can shadow the (now-correct) category default at POS / on
+    // invoices.  Empty strings and the legacy "Standard" sentinel are treated
+    // as "no override" so they don't poison new rows either.
+    const trimmed = body.taxClass?.trim() ?? "";
+    const isExplicitOverride =
+      trimmed.length > 0 && trimmed.toLowerCase() !== "standard";
+    const resolvedTaxClass: string | null = isExplicitOverride
+      ? body.taxClass!
+      : null;
     let product = await prisma.product.create({
       data: {
         tenantId,
@@ -623,10 +675,11 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
         active: true,
       } satisfies Prisma.ProductUncheckedCreateInput,
     });
-    // Best-effort QBO sync — local create always succeeds even if QBO is offline
-    if (product.trackInventory) {
-      product = await tryPushProductToQbo(product);
-    }
+    // Best-effort QBO sync — local create always succeeds even if QBO is
+    // offline. Both inventory-tracked (Type:"Inventory") and non-tracked
+    // (Type:"Service") products are pushed so invoice lines can attach an
+    // ItemRef instead of falling back to a bare AccountRef.
+    product = await tryPushProductToQbo(product);
     res.status(201).json(shapeProduct(product));
   } catch (err) {
     next(err);
@@ -636,7 +689,10 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
 // GET /products/:id
 router.get("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const product = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     const [productAdjustments, productPOs] = await Promise.all([
@@ -666,18 +722,37 @@ router.get("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // PUT /products/:id
 router.put("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
     const body = UpdateProductSchema.parse(req.body);
-    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    // Scope by tenantId — without this any authenticated user could
+    // mutate another tenant's product simply by guessing its UUID.
+    const existing = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!existing) return res.status(404).json({ error: "Product not found" });
+    // If a locationId is being assigned, validate it belongs to this
+    // tenant too. Otherwise we'd let an operator point a product at a
+    // foreign marina by sliding the id into the body.
+    if (body.locationId) {
+      const owned = await prisma.location.findFirst({
+        where: { id: body.locationId, tenantId },
+        select: { id: true },
+      });
+      if (!owned) {
+        return res.status(400).json({ error: "Location not found", code: "LOCATION_NOT_FOUND" });
+      }
+    }
 
     // When the caller is moving the product to a new category, validate it
-    // belongs to this tenant. The taxClass back-fills from the new category
-    // when the caller didn't explicitly set one.
-    let categoryForTaxBackfill: { defaultTaxCategory: string | null; taxable: boolean } | null = null;
+    // belongs to this tenant. We no longer back-fill the new category's
+    // defaultTaxCategory into Product.taxClass — that copy goes stale the
+    // moment the category is edited and shadows the correct category default
+    // at POS / on invoices. The resolver in product-defaults.ts looks up the
+    // category at read time instead.
     if (body.productCategoryId !== undefined && body.productCategoryId !== existing.productCategoryId) {
       const cat = await prisma.productCategory.findFirst({
         where: { id: body.productCategoryId, tenantId: existing.tenantId },
-        select: { defaultTaxCategory: true, taxable: true },
+        select: { id: true },
       });
       if (!cat) {
         return res.status(400).json({
@@ -685,7 +760,6 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
           code: "PRODUCT_CATEGORY_NOT_FOUND",
         });
       }
-      categoryForTaxBackfill = cat;
     }
 
     const data: Prisma.ProductUncheckedUpdateInput = {};
@@ -700,27 +774,25 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     if (body.trackInventory !== undefined) data.trackInventory = body.trackInventory;
     if (body.locationId !== undefined) data.locationId = body.locationId;
 
-    // taxClass: explicit body value wins; otherwise, on a category change,
-    // back-fill from the new category's defaultTaxCategory / taxable flag.
+    // taxClass is a per-product OVERRIDE of the category default. Empty
+    // strings and the legacy "Standard" sentinel are normalized to NULL so
+    // a save-without-touching the override field doesn't poison the row
+    // with a value that shadows the category at POS. The Tax Exempt
+    // sentinel and any other explicit category label still win.
     if (body.taxClass !== undefined) {
-      data.taxClass = body.taxClass;
-    } else if (categoryForTaxBackfill) {
-      const newTaxClass = !categoryForTaxBackfill.taxable
-        ? "Tax Exempt"
-        : categoryForTaxBackfill.defaultTaxCategory ?? null;
-      if (newTaxClass !== existing.taxClass) {
-        data.taxClass = newTaxClass;
-      }
+      const trimmed = body.taxClass?.trim() ?? "";
+      const isExplicitOverride =
+        trimmed.length > 0 && trimmed.toLowerCase() !== "standard";
+      data.taxClass = isExplicitOverride ? body.taxClass : null;
     }
 
     let product = await prisma.product.update({
       where: { id: existing.id },
       data,
     });
-    // Re-sync to QBO so price/cost/account changes propagate
-    if (product.trackInventory) {
-      product = await tryPushProductToQbo(product);
-    }
+    // Re-sync to QBO so price/cost/account changes propagate. Service items
+    // (trackInventory=false) are pushed too — see create handler comment.
+    product = await tryPushProductToQbo(product);
     res.json(shapeProduct(product));
   } catch (err) {
     next(err);
@@ -730,13 +802,11 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
 // POST /products/:id/qbo-sync — manually trigger a push to QBO
 router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const product = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!product) return res.status(404).json({ error: "Product not found" });
-    if (!product.trackInventory) {
-      return res
-        .status(400)
-        .json({ error: "Product does not track inventory — only inventory items sync to QBO" });
-    }
     try {
       if (!product.locationId) {
         throw new Error(
@@ -744,11 +814,14 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           `Assign the product to a location before syncing to QuickBooks.`,
         );
       }
+      const requiredSlots = product.trackInventory
+        ? (["revenue", "cogs", "inventoryAsset"] as const)
+        : (["revenue"] as const);
       const resolved = await resolveProductGlAccountsStrict(
         product.tenantId,
         product.id,
         product.locationId,
-        ["revenue", "cogs", "inventoryAsset"],
+        requiredSlots,
       );
       const result = await syncInventoryItem(
         {
@@ -759,6 +832,7 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
           priceCents: product.priceCents,
           costCents: product.costCents ?? 0,
           qoh: product.qoh,
+          trackInventory: product.trackInventory,
           incomeGlAccountId: resolved.revenueGlAccountId,
           inventoryAssetGlAccountId: resolved.inventoryAssetGlAccountId,
           cogsGlAccountId: resolved.cogsGlAccountId,
@@ -795,7 +869,10 @@ router.post("/products/:id/qbo-sync", async (req: Request, res: Response, next: 
 // DELETE /products/:id (soft delete)
 router.delete("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await prisma.product.findFirst({ where: { id: req.params.id } });
+    const tenantId = getTenantId(req);
+    const existing = await prisma.product.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
     if (!existing) return res.status(404).json({ error: "Product not found" });
 
     await prisma.product.update({
@@ -1897,11 +1974,6 @@ export async function retryFailedQboInventorySyncs(
       if (!product) {
         result.skipped++;
         recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer exists locally" });
-        continue;
-      }
-      if (!product.trackInventory) {
-        result.skipped++;
-        recordDetail({ sourceType: ref.sourceType, sourceId: ref.sourceId, qboType: ref.qboType, status: "skipped", error: "Product no longer tracks inventory" });
         continue;
       }
       result.attempted++;

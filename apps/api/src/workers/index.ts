@@ -1,5 +1,19 @@
-import { Worker } from "bullmq";
+import { Worker, type WorkerOptions } from "bullmq";
 import { redisConnection, queues } from "../lib/queue.js";
+
+// Shared worker tuning — drastically slows BullMQ's Redis polling so we
+// don't blow through Upstash's daily request quota. BullMQ defaults
+// (drainDelay=5s, stalledInterval=30s) issue ~6 polling commands per
+// worker per minute even when idle. With 7 workers × multi-instance
+// autoscale that adds up to >500k Redis cmds/day with zero user
+// activity. Bumping drainDelay to 60s and stalledInterval to 5min
+// reduces idle Redis traffic ~10×. Trade-off: jobs may sit up to 60s
+// before being picked up by an idle worker (was ~5s) — fine for our
+// async work (emails, QBO sync, scheduled reports).
+const WORKER_TUNING: Pick<WorkerOptions, "drainDelay" | "stalledInterval"> = {
+  drainDelay: 60,
+  stalledInterval: 300_000,
+};
 import {
   sendEmail,
   invoiceEmailHtml,
@@ -89,7 +103,7 @@ const emailWorker = new Worker(
       console.log(`[email-worker] Sent ${type} email to ${to} (${messageId})`);
     }
   },
-  { connection: redisConnection, concurrency: 10 },
+  { connection: redisConnection, concurrency: 10, ...WORKER_TUNING },
 );
 
 emailWorker.on("failed", (job, err) => {
@@ -109,7 +123,7 @@ const smsWorker = new Worker(
       console.log(`[sms-worker] Sent SMS to ${to} (${sid})`);
     }
   },
-  { connection: redisConnection, concurrency: 5 },
+  { connection: redisConnection, concurrency: 5, ...WORKER_TUNING },
 );
 
 smsWorker.on("failed", (job, err) => {
@@ -239,7 +253,7 @@ const automationWorker = new Worker(
 
     console.log(`[automation-worker] Processed ${type} for customer ${customerId}`);
   },
-  { connection: redisConnection, concurrency: 5 },
+  { connection: redisConnection, concurrency: 5, ...WORKER_TUNING },
 );
 
 automationWorker.on("failed", (job, err) => {
@@ -368,7 +382,7 @@ const qboSyncWorker = new Worker(
   // (HTTP 429 ThrottleExceeded). Each invoice sync now makes multiple QBO
   // calls (customer create + duplicate-name query + invoice create), so
   // serialising prevents bursts from exceeding the realm's QPS budget.
-  { connection: redisConnection, concurrency: 1 },
+  { connection: redisConnection, concurrency: 1, ...WORKER_TUNING },
 );
 
 qboSyncWorker.on("failed", (job, err) => {
@@ -446,7 +460,7 @@ const billingWorker = new Worker(
         console.warn(`[billing-worker] Unknown job name: ${job.name}`);
     }
   },
-  { connection: redisConnection, concurrency: 1 },
+  { connection: redisConnection, concurrency: 1, ...WORKER_TUNING },
 );
 
 billingWorker.on("failed", (job, err) => {
@@ -486,7 +500,7 @@ const deferredRevenueWorker = new Worker(
       console.log(`[deferred-revenue] Recognition complete — ${total} entries across ${tenants.length} tenants`);
     }
   },
-  { connection: redisConnection, concurrency: 1 },
+  { connection: redisConnection, concurrency: 1, ...WORKER_TUNING },
 );
 
 deferredRevenueWorker.on("failed", (job, err) => {
@@ -585,7 +599,7 @@ const reportSchedulerWorker = new Worker(
       data: { lastRun: now, nextRun },
     });
   },
-  { connection: redisConnection, concurrency: 3 },
+  { connection: redisConnection, concurrency: 3, ...WORKER_TUNING },
 );
 
 reportSchedulerWorker.on("failed", (job, err) => {

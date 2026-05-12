@@ -91,10 +91,13 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveCogsGlAccountId).toBe('gl-cogs-cat');
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBe('gl-inv-cat');
 
-    // Confirm the where clause includes the location-OR-null filter.
+    // Confirm the where clause filters strictly by the requested location.
+    // Task #340: tenant-wide (locationId IS NULL) products are NO LONGER
+    // unioned in here — that used to leak legacy unassigned products into
+    // every marina's inventory list.
     const findManyCall = mockPrisma.product.findMany.mock.calls[0][0];
-    expect(JSON.stringify(findManyCall.where)).toContain('"locationId":"loc-1"');
-    expect(JSON.stringify(findManyCall.where)).toContain('"locationId":null');
+    expect(findManyCall.where.locationId).toBe('loc-1');
+    expect(JSON.stringify(findManyCall.where)).not.toContain('"locationId":null');
 
     // Confirm the per-location category resolver scoped its lookup correctly.
     expect(mockPrisma.productCategoryGlMapping.findMany).toHaveBeenCalledWith(
@@ -126,6 +129,43 @@ describe('GET /api/inventory/products', () => {
     expect(res.body.data[0].effectiveRevenueGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveCogsGlAccountId).toBeNull();
     expect(res.body.data[0].effectiveInventoryAssetGlAccountId).toBeNull();
+  });
+
+  it('does not leak products from other locations or tenant-wide products (Task #340)', async () => {
+    // Regression: in single-location mode the route used to OR in
+    // `locationId IS NULL` — which leaked every legacy tenant-wide
+    // product into every marina, AND would happily return another
+    // location's products if the underlying query had been built loosely.
+    // We exercise the where-clause shape directly here so a future
+    // refactor can't reintroduce the leak even if the mock returns rows.
+    mockPrisma.product.findMany.mockImplementation(async ({ where }: any) => {
+      // Simulate Prisma honoring the strict where: only loc-1 matches.
+      const all = [
+        buildProduct({ id: 'prod-loc-A', locationId: 'loc-1' }),
+        buildProduct({ id: 'prod-loc-B', locationId: 'loc-2' }),
+        buildProduct({ id: 'prod-tenant-wide', locationId: null }),
+      ];
+      return all.filter((p) => p.locationId === where.locationId);
+    });
+    mockPrisma.product.count.mockResolvedValue(1);
+    mockPrisma.productCategoryGlMapping.findMany.mockResolvedValue([]);
+    mockPrisma.location.findUnique.mockResolvedValue({
+      qboAccessToken: null,
+      qboRealmId: null,
+    } as any);
+
+    const res = await request(app).get('/api/inventory/products?locationId=loc-1');
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((p: any) => p.id);
+    expect(ids).toEqual(['prod-loc-A']);
+    expect(ids).not.toContain('prod-loc-B');
+    expect(ids).not.toContain('prod-tenant-wide');
+
+    const findManyCall = mockPrisma.product.findMany.mock.calls[0][0];
+    expect(findManyCall.where.locationId).toBe('loc-1');
+    // Defensive: no OR clause that smuggles in null-location rows.
+    expect(JSON.stringify(findManyCall.where)).not.toContain('"locationId":null');
   });
 
   it('returns 404 when locationId belongs to another tenant', async () => {
@@ -160,6 +200,84 @@ describe('POST /api/inventory/products', () => {
 
     expect(res.status).toBe(400);
     expect(mockPrisma.product.create).not.toHaveBeenCalled();
+  });
+
+  // Regression for task #295: the create endpoint used to backfill
+  // `category.defaultTaxCategory` into `Product.taxClass`, which then went
+  // stale the moment the category was edited. The new contract: the
+  // override column stays NULL when no explicit override is sent (or when
+  // the legacy "Standard" / empty-string sentinels are sent), and the
+  // resolver inherits from the category at read time.
+  it.each([
+    [undefined],
+    [null],
+    [''],
+    ['  '],
+    ['Standard'],
+    ['standard'],
+    ['  STANDARD  '],
+  ])('persists Product.taxClass=null when the create payload sends %j (no real override)', async (taxClass) => {
+    mockPrisma.productCategory.findFirst.mockResolvedValue({
+      defaultTaxCategory: 'food',
+      taxable: true,
+    } as any);
+    mockPrisma.product.create.mockImplementation(async ({ data }: any) => ({
+      ...buildProduct(),
+      ...data,
+    }));
+    // tryPushProductToQbo (called from POST /products) writes the QBO-sync
+    // error back via product.update; without a mock it returns undefined and
+    // shapeProduct crashes. The QBO push itself fails (no locationId on the
+    // fixture) but the route still 201s with the persisted row.
+    mockPrisma.product.update.mockImplementation(async ({ where, data }: any) => ({
+      ...buildProduct({ id: where.id }),
+      ...data,
+    }));
+
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X-NULL',
+        name: 'Bait',
+        costCents: 100,
+        priceCents: 200,
+        productCategoryId: '00000000-0000-0000-0000-000000000001',
+        ...(taxClass === undefined ? {} : { taxClass }),
+      });
+
+    expect(res.status).toBe(201);
+    const createArgs = mockPrisma.product.create.mock.calls[0][0] as any;
+    expect(createArgs.data.taxClass).toBeNull();
+  });
+
+  it('persists a real per-product override verbatim on create', async () => {
+    mockPrisma.productCategory.findFirst.mockResolvedValue({
+      defaultTaxCategory: 'food',
+      taxable: true,
+    } as any);
+    mockPrisma.product.create.mockImplementation(async ({ data }: any) => ({
+      ...buildProduct(),
+      ...data,
+    }));
+    mockPrisma.product.update.mockImplementation(async ({ where, data }: any) => ({
+      ...buildProduct({ id: where.id }),
+      ...data,
+    }));
+
+    const res = await request(app)
+      .post('/api/inventory/products')
+      .send({
+        sku: 'X-OV',
+        name: 'Champagne',
+        costCents: 100,
+        priceCents: 200,
+        productCategoryId: '00000000-0000-0000-0000-000000000001',
+        taxClass: 'luxury',
+      });
+
+    expect(res.status).toBe(201);
+    const createArgs = mockPrisma.product.create.mock.calls[0][0] as any;
+    expect(createArgs.data.taxClass).toBe('luxury');
   });
 
   it('rejects a create when the supplied productCategoryId is foreign to the tenant', async () => {

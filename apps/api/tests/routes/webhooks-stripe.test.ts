@@ -251,6 +251,7 @@ describe('POST /api/webhooks/stripe/connect — payment_intent.succeeded for Loc
   function buildPaymentIntentSucceeded(
     connectedAccountId: string,
     paymentIntentId: string,
+    metadata: Record<string, string> = {},
   ): Record<string, unknown> {
     return {
       id: 'evt_pi_succeeded',
@@ -262,6 +263,7 @@ describe('POST /api/webhooks/stripe/connect — payment_intent.succeeded for Loc
           object: 'payment_intent',
           amount: 5000,
           currency: 'usd',
+          metadata,
         },
       },
       created: Math.floor(Date.now() / 1000),
@@ -311,6 +313,96 @@ describe('POST /api/webhooks/stripe/connect — payment_intent.succeeded for Loc
         }),
       }),
     );
+  });
+
+  it('resolves the Payment row deterministically via metadata.paymentId before falling back to stripePaymentId', async () => {
+    const connectedAccountId = 'acct_loc_meta';
+    const fakeEvent = buildPaymentIntentSucceeded(connectedAccountId, 'pi_meta_001', {
+      paymentId: 'pay-meta-42',
+    });
+    mockConstructEvent.mockReturnValue(fakeEvent);
+
+    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue(null) as any;
+    (mockPrisma as any).location.findFirst.mockResolvedValue({
+      id: 'loc-pi-meta',
+      tenantId: 'tenant-pi-meta',
+    });
+
+    // First findFirst call (metadata path) returns the row; fallback would
+    // return null. The handler must not invoke the fallback at all.
+    mockPrisma.payment.findFirst
+      .mockResolvedValueOnce({
+        id: 'pay-meta-42',
+        tenantId: 'tenant-pi-meta',
+        amountCents: 5000,
+        method: 'CARD',
+        status: 'PENDING',
+        stripePaymentId: null,
+        invoice: { id: 'inv-meta', balanceCents: 5000, status: 'OPEN' },
+      } as any)
+      .mockResolvedValue(null);
+    mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 } as any);
+
+    await request(app)
+      .post('/api/webhooks/stripe/connect')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_pi_succeeded' }));
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Exactly one Payment lookup: the metadata-keyed one. No fallback,
+    // no retry sleep loop.
+    expect(mockPrisma.payment.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.payment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'pay-meta-42' }),
+      }),
+    );
+    // Backfill stripePaymentId on rows located via metadata.
+    expect(mockPrisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay-meta-42', stripePaymentId: null },
+        data: { stripePaymentId: 'pi_meta_001' },
+      }),
+    );
+  });
+
+  it('falls back to stripePaymentId without retrying when metadata.paymentId is absent', async () => {
+    const connectedAccountId = 'acct_loc_legacy';
+    const fakeEvent = buildPaymentIntentSucceeded(connectedAccountId, 'pi_legacy_001');
+    mockConstructEvent.mockReturnValue(fakeEvent);
+
+    mockPrisma.tenant.findFirst = vi.fn().mockResolvedValue(null) as any;
+    (mockPrisma as any).location.findFirst.mockResolvedValue({
+      id: 'loc-legacy',
+      tenantId: 'tenant-legacy',
+    });
+
+    // Always return null — no Payment row exists. The handler must call
+    // findFirst exactly once (no metadata path) and NOT enter a retry
+    // sleep loop. With the old behavior this would be 5 calls
+    // (1 + 4 retries).
+    mockPrisma.payment.findFirst.mockResolvedValue(null);
+
+    const start = Date.now();
+    await request(app)
+      .post('/api/webhooks/stripe/connect')
+      .set('stripe-signature', 'sig_test')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ id: 'evt_pi_succeeded' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    const elapsed = Date.now() - start;
+
+    expect(mockPrisma.payment.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.payment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ stripePaymentId: 'pi_legacy_001' }),
+      }),
+    );
+    // The previous retry loop slept ~1.95s in aggregate. Anything well
+    // under 500ms confirms the loop is gone.
+    expect(elapsed).toBeLessThan(500);
   });
 });
 

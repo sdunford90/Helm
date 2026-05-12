@@ -2,6 +2,10 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import crypto from "node:crypto";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "../lib/email.js";
 import {
@@ -13,6 +17,7 @@ import {
   postSecurityDeposit,
   releaseSecurityDeposit,
 } from "../services/gl-posting.js";
+import { isLocationQboConnected } from "../services/gl-account-resolver.js";
 
 const router: Router = Router();
 
@@ -84,7 +89,9 @@ const CreateContractSchema = z.object({
   endDate: dateOnlySchema.optional().nullable(),
   billingCycle: BillingCycleEnum.optional(),
   billingAnchor: z.number().int().min(1).max(28).optional().nullable(),
-  rateCents: z.number().int().positive(),
+  // Optional when a dockageRateId is supplied (defaulted from plan).
+  // The refine() below enforces that one of the two is present.
+  rateCents: z.number().int().positive().optional(),
   electricityMode: z.enum(["FLAT_FEE", "METERED"]).optional().nullable(),
   autoRenew: z.boolean().optional(),
   status: ContractStatusEnum.optional(),
@@ -92,6 +99,12 @@ const CreateContractSchema = z.object({
   earlyTerminationType: TerminationTypeEnum.optional().nullable(),
   earlyTerminationValue: z.number().optional().nullable(),
   qboItemId: z.string().optional().nullable(),
+  // Optional rate-plan FK. Server validates tenant + location +
+  // slipType and defaults rate / electricityMode from the plan.
+  dockageRateId: z.string().uuid().optional().nullable(),
+}).refine((d) => d.rateCents != null || d.dockageRateId != null, {
+  message: "Either rateCents or dockageRateId must be provided",
+  path: ["rateCents"],
 });
 
 const UpdateContractSchema = z.object({
@@ -107,6 +120,8 @@ const UpdateContractSchema = z.object({
   earlyTerminationType: TerminationTypeEnum.optional().nullable(),
   earlyTerminationValue: z.number().optional().nullable(),
   qboItemId: z.string().optional().nullable(),
+  // allow re-linking (or clearing) the rate plan via PUT.
+  dockageRateId: z.string().uuid().optional().nullable(),
 });
 
 const ListContractsQuerySchema = z.object({
@@ -404,6 +419,7 @@ router.post(
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET /expiring — Contracts expiring within N days ───────────────────────
 // Registered before /:id so Express doesn't treat "expiring" as a UUID param.
@@ -426,6 +442,7 @@ router.get(
 
       const where = {
         tenantId,
+        ...scopedWhere(req, { includeNull: true }),
         status: { in: ["ACTIVE", "EXPIRING"] as ("ACTIVE" | "EXPIRING")[] },
         endDate: { gte: now, lte: cutoff },
       };
@@ -479,7 +496,11 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListContractsQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope to active location.
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.customerId) where.customerId = query.customerId;
@@ -500,11 +521,20 @@ router.get(
           skip: query.skip,
           take: query.take,
           include: {
-            slip: { select: { id: true, slipNumber: true, dockId: true } },
+            // locationId/slipType feed the detail-modal plan picker.
+            slip: { select: { id: true, slipNumber: true, dockId: true, locationId: true, slipType: true } },
             customer: {
               select: { id: true, firstName: true, lastName: true },
             },
             boat: { select: { id: true, name: true } },
+            // Plan label + active flag for the list "Unlinked" badge.
+            dockageRate: {
+              select: {
+                id: true, name: true, slipType: true,
+                monthlyRateCents: true, billingCadence: true,
+                effectiveFrom: true, effectiveTo: true, active: true,
+              },
+            },
           },
         }),
         prisma.slipContract.count({ where }),
@@ -533,7 +563,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           slip: true,
           customer: {
@@ -547,6 +581,21 @@ router.get(
           },
           boat: true,
           securityDeposits: true,
+          // include the linked rate plan so the detail
+          // modal can show plan name / unlinked badge.
+          dockageRate: {
+            select: {
+              id: true,
+              name: true,
+              slipType: true,
+              billingCadence: true,
+              monthlyRateCents: true,
+              effectiveFrom: true,
+              effectiveTo: true,
+              active: true,
+              taxClass: true,
+            },
+          },
         },
       });
 
@@ -598,13 +647,130 @@ router.post(
       const tenantId = req.tenantId!;
       const data = CreateContractSchema.parse(req.body);
 
-      // Verify slip exists and is available
+      // Verify slip exists, is available, and belongs to a location the
+      // caller can see (Task #339). Scope on the slip's locationId so a
+      // user with picker on Marina A can't create a contract against a
+      // slip in Marina B by guessing the slip id.
       const slip = await prisma.slip.findFirst({
-        where: { id: data.slipId, tenantId },
+        where: { id: data.slipId, tenantId, ...scopedWhere(req) },
       });
       if (!slip) {
         throw appError("Slip not found", 404, "SLIP_NOT_FOUND");
       }
+
+      // Validate the optional rate-plan link and capture the plan for
+      // defaulting rateCents / electricityMode below. Tenant + slip
+      // location must agree; slipType only when both sides have one
+      // (older slips have no slipType).
+      let linkedPlanForDefaults: {
+        monthlyRateCents: number;
+        electricityMode: "FLAT_FEE" | "METERED";
+        billingCycle: "MONTHLY" | "QUARTERLY" | "ANNUAL" | null;
+      } | null = null;
+      if (data.dockageRateId) {
+        const plan = await prisma.dockageRate.findFirst({
+          where: { id: data.dockageRateId, tenantId },
+          select: {
+            id: true,
+            locationId: true,
+            slipType: true,
+            active: true,
+            monthlyRateCents: true,
+            quarterlyRateCents: true,
+            annualRateCents: true,
+            seasonalRateCents: true,
+            billingCadence: true,
+            effectiveFrom: true,
+            effectiveTo: true,
+            electricityMode: true,
+          },
+        });
+        if (!plan) {
+          throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        // Reject contracts whose start date falls outside the plan's
+        // effective window — operators should pick a different plan
+        // (or extend this one) rather than locking in the wrong rate.
+        if (plan.effectiveFrom && data.startDate < plan.effectiveFrom) {
+          throw appError(
+            `Rate plan is not yet effective on ${data.startDate.toISOString().slice(0, 10)} (starts ${plan.effectiveFrom.toISOString().slice(0, 10)})`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        if (plan.effectiveTo && data.startDate > plan.effectiveTo) {
+          throw appError(
+            `Rate plan ended on ${plan.effectiveTo.toISOString().slice(0, 10)}; pick a current plan`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        if (slip.locationId && plan.locationId !== slip.locationId) {
+          throw appError(
+            "Rate plan belongs to a different location than the slip",
+            400,
+            "DOCKAGE_RATE_LOCATION_MISMATCH",
+          );
+        }
+        if (slip.slipType && plan.slipType && plan.slipType !== slip.slipType) {
+          throw appError(
+            `Rate plan is for slip type "${plan.slipType}" but slip is "${slip.slipType}"`,
+            400,
+            "DOCKAGE_RATE_SLIP_TYPE_MISMATCH",
+          );
+        }
+        if (!plan.active) {
+          throw appError(
+            "Rate plan is inactive",
+            400,
+            "DOCKAGE_RATE_INACTIVE",
+          );
+        }
+        // Plan cadence is authoritative for the rate slot — picking
+        // off the contract's billingCycle would mean a quarterly plan
+        // accidentally linked to a monthly contract locks in the
+        // monthly rate. SEASONAL falls back to monthly when no
+        // seasonalRateCents is set.
+        const cadenceRate =
+          plan.billingCadence === "QUARTERLY" && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : plan.billingCadence === "ANNUAL" && plan.annualRateCents != null ? plan.annualRateCents
+          : plan.billingCadence === "SEASONAL" && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        // Align contract.billingCycle with plan cadence so the
+        // contract's own enum doesn't disagree with the plan in
+        // reports/UI. SEASONAL has no contract-side equivalent, so we
+        // leave the contract cycle alone (billing engine reads plan
+        // cadence directly for SEASONAL).
+        const alignedCycle =
+          plan.billingCadence === "QUARTERLY" ? "QUARTERLY"
+          : plan.billingCadence === "ANNUAL" ? "ANNUAL"
+          : plan.billingCadence === "MONTHLY" ? "MONTHLY"
+          : null;
+        linkedPlanForDefaults = {
+          monthlyRateCents: cadenceRate,
+          electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+          billingCycle: alignedCycle,
+        };
+      }
+
+      // When a plan is linked, plan cadence is authoritative — the
+      // plan's cadence-aligned rate is persisted on the contract
+      // regardless of any caller-supplied rateCents that might disagree
+      // (a UI bug or stale form value can otherwise lock in a monthly
+      // amount on a quarterly plan, causing real revenue errors).
+      // For unlinked contracts, caller-supplied rateCents is required.
+      const resolvedRateCents =
+        linkedPlanForDefaults?.monthlyRateCents ?? data.rateCents;
+      if (resolvedRateCents == null) {
+        // Belt-and-braces: refine() should have rejected this already.
+        throw appError(
+          "rateCents is required when no dockageRateId is provided",
+          400,
+          "RATE_REQUIRED",
+        );
+      }
+      const resolvedElectricityMode =
+        data.electricityMode ?? linkedPlanForDefaults?.electricityMode ?? null;
       if (slip.status === "OCCUPIED") {
         // Check for active contracts on this slip
         const activeContract = await prisma.slipContract.findFirst({
@@ -624,19 +790,28 @@ router.post(
         }
       }
 
-      // Verify customer exists
+      // Verify customer exists and is visible from the active location.
       const customer = await prisma.customer.findFirst({
-        where: { id: data.customerId, tenantId },
+        where: {
+          id: data.customerId,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         select: { id: true },
       });
       if (!customer) {
         throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
       }
 
-      // Verify boat exists and belongs to customer (if provided)
+      // Verify boat exists and belongs to customer (if provided).
       if (data.boatId) {
         const boat = await prisma.boat.findFirst({
-          where: { id: data.boatId, tenantId, customerId: data.customerId },
+          where: {
+            id: data.boatId,
+            tenantId,
+            customerId: data.customerId,
+            ...scopedWhere(req, { includeNull: true }),
+          },
           select: { id: true },
         });
         if (!boat) {
@@ -651,11 +826,17 @@ router.post(
       const startDate = data.startDate;
       const endDate = data.endDate ?? null;
 
+      // Plan cadence wins over caller-supplied cycle when linking, so
+      // proration + the persisted contract.billingCycle stay aligned
+      // with the plan even if the form sent a stale/wrong cycle.
+      const resolvedBillingCycle =
+        linkedPlanForDefaults?.billingCycle ?? data.billingCycle ?? "MONTHLY";
+
       // Calculate proration if mid-month start
       const proration = calculateProration(
-        data.rateCents,
+        resolvedRateCents,
         startDate,
-        data.billingCycle ?? "MONTHLY",
+        resolvedBillingCycle,
       );
 
       // Set billing anchor to start day if not specified
@@ -667,6 +848,14 @@ router.post(
           data: {
             tenantId,
             ...data,
+            // Task #339: a contract always lives at the slip's marina,
+            // so derive locationId from the slip rather than the picker.
+            locationId: slip.locationId,
+            // Plan-defaulted overrides (post-spread so they replace
+            // undefined from input; explicit caller values won earlier).
+            rateCents: resolvedRateCents,
+            electricityMode: resolvedElectricityMode,
+            billingCycle: resolvedBillingCycle,
             startDate,
             endDate,
             billingAnchor,
@@ -730,7 +919,8 @@ router.post(
           changedFieldsJson: {
             slipId: data.slipId,
             customerId: data.customerId,
-            rateCents: data.rateCents,
+            dockageRateId: data.dockageRateId ?? null,
+            rateCents: resolvedRateCents,
             proration:
               proration.proratedDays > 0
                 ? {
@@ -770,13 +960,119 @@ router.put(
       const data = UpdateContractSchema.parse(req.body);
 
       const existing = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
+        include: { slip: { select: { locationId: true, slipType: true } } },
       });
       if (!existing) {
         throw appError("Contract not found", 404, "NOT_FOUND");
       }
 
+      // Re-validate the link on update and capture the plan for
+      // defaulting rate / electricity when the caller is just re-linking.
+      // Mirrors the POST flow: validates effective window + picks the
+      // cadence-aligned rate so a re-link to a quarterly/annual/seasonal
+      // plan defaults to the right slot, not the monthly rate.
+      let linkedPlanForDefaults: {
+        rateCents: number;
+        electricityMode: "FLAT_FEE" | "METERED";
+        billingCycle: "MONTHLY" | "QUARTERLY" | "ANNUAL" | null;
+      } | null = null;
+      if (data.dockageRateId) {
+        const plan = await prisma.dockageRate.findFirst({
+          where: { id: data.dockageRateId, tenantId },
+          select: {
+            id: true,
+            locationId: true,
+            slipType: true,
+            active: true,
+            monthlyRateCents: true,
+            quarterlyRateCents: true,
+            annualRateCents: true,
+            seasonalRateCents: true,
+            billingCadence: true,
+            effectiveFrom: true,
+            effectiveTo: true,
+            electricityMode: true,
+          },
+        });
+        if (!plan) {
+          throw appError("Rate plan not found", 404, "DOCKAGE_RATE_NOT_FOUND");
+        }
+        // Effective-window check — startDate isn't editable on PUT,
+        // so anchor on the existing contract's start.
+        const probeStart = existing.startDate;
+        if (plan.effectiveFrom && probeStart < plan.effectiveFrom) {
+          throw appError(
+            `Rate plan is not yet effective on ${probeStart.toISOString().slice(0, 10)} (starts ${plan.effectiveFrom.toISOString().slice(0, 10)})`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        if (plan.effectiveTo && probeStart > plan.effectiveTo) {
+          throw appError(
+            `Rate plan ended on ${plan.effectiveTo.toISOString().slice(0, 10)}; pick a current plan`,
+            400,
+            "DOCKAGE_RATE_NOT_EFFECTIVE",
+          );
+        }
+        const slipLoc = existing.slip?.locationId;
+        const slipType = existing.slip?.slipType;
+        if (slipLoc && plan.locationId !== slipLoc) {
+          throw appError(
+            "Rate plan belongs to a different location than the slip",
+            400,
+            "DOCKAGE_RATE_LOCATION_MISMATCH",
+          );
+        }
+        if (slipType && plan.slipType && plan.slipType !== slipType) {
+          throw appError(
+            `Rate plan is for slip type "${plan.slipType}" but slip is "${slipType}"`,
+            400,
+            "DOCKAGE_RATE_SLIP_TYPE_MISMATCH",
+          );
+        }
+        if (!plan.active) {
+          throw appError("Rate plan is inactive", 400, "DOCKAGE_RATE_INACTIVE");
+        }
+        // Plan cadence is authoritative — picking off the contract's
+        // billingCycle would mean a quarterly plan accidentally linked
+        // to a monthly contract locks in the monthly rate.
+        const cadenceRate =
+          plan.billingCadence === "QUARTERLY" && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : plan.billingCadence === "ANNUAL" && plan.annualRateCents != null ? plan.annualRateCents
+          : plan.billingCadence === "SEASONAL" && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        // Align contract billingCycle with the plan's cadence so the
+        // contract enum doesn't drift out of sync with the linked plan.
+        const alignedCycle =
+          plan.billingCadence === "QUARTERLY" ? "QUARTERLY"
+          : plan.billingCadence === "ANNUAL" ? "ANNUAL"
+          : plan.billingCadence === "MONTHLY" ? "MONTHLY"
+          : null;
+        linkedPlanForDefaults = {
+          rateCents: cadenceRate,
+          electricityMode: plan.electricityMode as "FLAT_FEE" | "METERED",
+          billingCycle: alignedCycle,
+        };
+      }
+
       const persistData: Record<string, unknown> = { ...data };
+
+      // Re-link flow: plan cadence is authoritative — when the caller
+      // links to a plan, persist the plan's cadence-aligned rate and
+      // billingCycle even if the caller passed disagreeing values
+      // (prevents the UI from locking in a monthly amount on a
+      // quarterly plan due to a stale form field). Electricity mode
+      // still defers to caller intent if explicitly passed.
+      if (linkedPlanForDefaults) {
+        persistData.rateCents = linkedPlanForDefaults.rateCents;
+        if (data.electricityMode == null) {
+          persistData.electricityMode = linkedPlanForDefaults.electricityMode;
+        }
+        if (linkedPlanForDefaults.billingCycle) {
+          persistData.billingCycle = linkedPlanForDefaults.billingCycle;
+        }
+      }
 
       const updated = await prisma.slipContract.update({
         where: { id: req.params.id },
@@ -842,7 +1138,7 @@ router.post(
       } = TerminateContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           slip: { select: { id: true } },
           securityDeposits: { where: { status: "HELD" } },
@@ -988,6 +1284,77 @@ router.post(
           penaltyCents = Math.round(
             contract.rateCents * contract.earlyTerminationValue,
           );
+        }
+      }
+
+      // Pre-flight: every held deposit's release will post a reversing
+      // journal that needs the SECURITY_DEPOSITS_HELD account (2300) — and,
+      // for "apply to invoice", A/R (1200) — at the deposit's frozen
+      // location. If the chart of accounts on that location is missing
+      // either, the GL helpers throw a plain Error mid-transaction which
+      // surfaces as a generic 500. Validate up-front per location so we
+      // can return a clear, actionable 400 instead.
+      // Bucket deposits by their frozen release location so we can compute
+      // each location's account requirements independently — a refund-only
+      // location must NOT be blocked because some other location's deposit
+      // is being applied to an invoice.
+      const depositsByLocation = new Map<string, typeof contract.securityDeposits>();
+      for (const d of contract.securityDeposits) {
+        if (!d.locationId) continue;
+        const list = depositsByLocation.get(d.locationId) ?? [];
+        list.push(d);
+        depositsByLocation.set(d.locationId, list);
+      }
+      for (const [locId, deposits] of depositsByLocation) {
+        const locNeedsAr = deposits.some((d) => {
+          const inst = instructionByDeposit.get(d.id);
+          const target = inst
+            ? inst.action === "APPLY_TO_INVOICE"
+              ? inst.invoiceId
+              : null
+            : (d.appliedToInvoiceId ?? null);
+          return Boolean(target);
+        });
+        const required: Array<{ number: string; label: string; subType?: string }> = [
+          { number: "2300", label: "Security Deposits Held" },
+        ];
+        if (locNeedsAr) {
+          required.push({
+            number: "1200",
+            label: "Accounts Receivable",
+            // `getAccountByNumber` falls back to subType match for QBO-imported
+            // charts where account numbers are "QBO-NN" rather than "1200".
+            // Mirror that here so we don't false-positive on those tenants.
+            subType: "AccountsReceivable",
+          });
+        }
+        // Match resolution rules used by gl-posting helpers: when QBO is
+        // connected, only this location's chart counts (no tenant-wide /
+        // cross-realm fallback); otherwise location-scoped OR tenant-wide.
+        const qboConnected = await isLocationQboConnected(locId);
+        for (const acct of required) {
+          const exists = await prisma.glAccount.findFirst({
+            where: {
+              tenantId,
+              ...(qboConnected
+                ? { locationId: locId }
+                : { OR: [{ locationId: locId }, { locationId: null }] }),
+              OR: [
+                { accountNumber: acct.number },
+                ...(acct.subType && !qboConnected
+                  ? [{ subType: acct.subType }]
+                  : []),
+              ],
+            },
+            select: { id: true },
+          });
+          if (!exists) {
+            throw appError(
+              `Cannot release security deposit: GL account ${acct.number} (${acct.label}) is not configured for this location's chart of accounts. Open Settings → Accounting and add the ${acct.label} account before terminating this contract.`,
+              400,
+              "DEPOSIT_GL_UNCONFIGURED",
+            );
+          }
         }
       }
 
@@ -1189,6 +1556,27 @@ router.post(
         message: "Contract terminated successfully",
       });
     } catch (err) {
+      // Translate the well-known GL-account-missing errors thrown from
+      // gl-posting helpers (plain `Error` instances) into a clear 400 so
+      // the operator sees an actionable message instead of "Internal
+      // server error". The pre-flight check above catches the common
+      // tenant-wide-or-location-scoped case, but the QBO-connected
+      // branch in `resolveLocationScopedAccountByNumber` enforces a
+      // stricter location-only rule that can still throw mid-tx.
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg.startsWith("UNCONFIGURED_GL_ACCOUNT:") ||
+        msg.startsWith("UNCONFIGURED_GL_MAPPING:") ||
+        /^GL account .* not found for tenant /.test(msg)
+      ) {
+        return next(
+          appError(
+            `Cannot release security deposit: ${msg.replace(/^UNCONFIGURED_GL_(?:ACCOUNT|MAPPING):\s*/, "")}. Open Settings → Accounting and configure the missing account before terminating this contract.`,
+            400,
+            "DEPOSIT_GL_UNCONFIGURED",
+          ),
+        );
+      }
       next(err);
     }
   },
@@ -1205,7 +1593,7 @@ router.post(
         RenewContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
       });
 
       if (!contract) {
@@ -1300,7 +1688,7 @@ router.post(
         SendForSignatureSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
           customer: {
             select: { id: true, firstName: true, lastName: true, email: true },
@@ -1648,7 +2036,7 @@ router.get(
       const tenantId = req.tenantId!;
 
       const contract = await prisma.slipContract.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: {
           id: true,
           esignEnvelopeId: true,

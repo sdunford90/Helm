@@ -1,6 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
+import {
+  locationContext,
+  scopedWhere,
+  requireActiveLocation,
+} from "../middleware/location-context.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 import { getStripeAccountForCustomer } from "../lib/stripe-account.js";
@@ -61,6 +66,8 @@ const CustomerEmergencyContactSchema = z
   .nullable();
 
 const CreateCustomerSchema = z.object({
+  // Optional: server stamps from req.locationId when omitted (Task #339).
+  locationId: z.string().uuid().optional().nullable(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email().optional().nullable(),
@@ -104,7 +111,7 @@ const ListCustomersQuerySchema = z.object({
   taxExempt: z.coerce.boolean().optional(),
   achBlocked: z.coerce.boolean().optional(),
   skip: z.coerce.number().int().min(0).default(0),
-  take: z.coerce.number().int().positive().max(100).default(25),
+  take: z.coerce.number().int().positive().max(500).default(25),
   sortBy: z
     .enum(["createdAt", "updatedAt", "firstName", "lastName", "company"])
     .default("lastName"),
@@ -198,6 +205,7 @@ async function ensureStripeCustomer(
 // ─── Authenticated routes ───────────────────────────────────────────────────
 
 router.use(...clerkAuth());
+router.use(locationContext());
 
 // ─── GET / — List customers ─────────────────────────────────────────────────
 
@@ -208,7 +216,13 @@ router.get(
       const tenantId = req.tenantId!;
       const query = ListCustomersQuerySchema.parse(req.query);
 
-      const where: Record<string, unknown> = { tenantId };
+      const where: Record<string, unknown> = {
+        tenantId,
+        // Task #339: scope to the active location. includeNull keeps any
+        // legacy customer rows visible (the migration backfills most, but
+        // the column stays nullable for now).
+        ...scopedWhere(req, { includeNull: true }),
+      };
 
       if (query.status) where.status = query.status;
       if (query.taxExempt !== undefined) where.taxExempt = query.taxExempt;
@@ -290,7 +304,11 @@ router.get(
       const tenantId = req.tenantId!;
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
         include: {
           boats: {
             include: {
@@ -400,11 +418,16 @@ router.post(
     try {
       const tenantId = req.tenantId!;
       const data = CreateCustomerSchema.parse(req.body);
+      const locationId = requireActiveLocation(req, data.locationId ?? null);
 
       const customer = await prisma.customer.create({
+        // Pre-existing `as any`: zod's `.nullable()` on addressJson doesn't
+        // line up with Prisma's `InputJsonValue | NullableJsonNullValueInput`.
+        // Not introduced by Task #339 — preserved here unchanged.
         data: {
           tenantId,
           ...data,
+          locationId,
         } as any,
       });
 
@@ -436,7 +459,11 @@ router.put(
       const data = UpdateCustomerSchema.parse(req.body);
 
       const existing = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
       });
       if (!existing) {
         throw appError("Customer not found", 404, "NOT_FOUND");
@@ -444,6 +471,7 @@ router.put(
 
       const updated = await prisma.customer.update({
         where: { id: req.params.id },
+        // Pre-existing addressJson nullable mismatch — see create handler.
         data: data as any,
       });
 
@@ -485,7 +513,11 @@ router.delete(
       const tenantId = req.tenantId!;
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: {
+          id: req.params.id,
+          tenantId,
+          ...scopedWhere(req, { includeNull: true }),
+        },
       });
       if (!customer) {
         throw appError("Customer not found", 404, "NOT_FOUND");
@@ -524,7 +556,7 @@ router.get(
       const { skip, take } = TimelineQuerySchema.parse(req.query);
 
       const customer = await prisma.customer.findFirst({
-        where: { id: req.params.id, tenantId },
+        where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         select: { id: true },
       });
       if (!customer) {
@@ -1523,6 +1555,10 @@ router.get(
               ? `${String(pm.card.exp_month).padStart(2, "0")}/${String(pm.card.exp_year).slice(-2)}`
               : null,
           isDefault: pm.id === defaultMethodId,
+          // Per-PM "usable in POS" opt-in stored in Stripe metadata. Cards
+          // only — bank accounts can't be charged off-session at the POS
+          // counter, so the toggle is hidden for ACH PMs.
+          usableInPos: pm.metadata?.usableInPos === "true",
         })),
         ...bankList.data.map((pm) => ({
           id: pm.id,
@@ -1534,6 +1570,7 @@ router.get(
           expYear: null,
           expiry: null,
           isDefault: pm.id === defaultMethodId,
+          usableInPos: false,
         })),
       ];
 
@@ -1733,6 +1770,91 @@ router.post(
         locationId: account.locationId,
         locationName: account.locationName,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /api/customers/:id/payment-methods/:pmId
+// Toggles the per-saved-card "usable in POS" flag (Stripe metadata).
+// Cards only — bank accounts can't be charged off-session at the POS counter.
+router.patch(
+  "/:id/payment-methods/:pmId",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const customerId = req.params.id;
+      const pmId = req.params.pmId;
+      const { usableInPos } = req.body as { usableInPos?: boolean };
+      if (typeof usableInPos !== "boolean") {
+        throw appError("usableInPos (boolean) is required", 400, "VALIDATION");
+      }
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: customerId, tenantId },
+        select: { id: true, stripeCustomerId: true },
+      });
+      if (!customer) throw appError("Customer not found", 404, "NOT_FOUND");
+      if (!customer.stripeCustomerId) {
+        throw appError(
+          "Customer has no saved payment methods",
+          400,
+          "NO_STRIPE_CUSTOMER",
+        );
+      }
+
+      const account = await getStripeAccountForCustomer(customerId, tenantId);
+      if (!account.stripeAccountId || !account.locationConnected) {
+        res.status(400).json({
+          error: account.locationName
+            ? `Stripe is not set up for ${account.locationName}.`
+            : "Stripe is not set up for this location.",
+          code: "STRIPE_NOT_CONFIGURED",
+        });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: account.stripeAccountId };
+
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
+      if (pm.customer !== customer.stripeCustomerId) {
+        res.status(403).json({
+          error: "Payment method does not belong to this customer",
+          code: "FORBIDDEN",
+        });
+        return;
+      }
+      if (pm.type !== "card") {
+        throw appError(
+          "Only saved cards can be marked usable in POS",
+          400,
+          "PM_NOT_CARD",
+        );
+      }
+
+      // Stripe metadata merge semantics: passing keys overrides them and
+      // leaves other keys untouched. Empty string clears a key.
+      await stripe.paymentMethods.update(
+        pmId,
+        { metadata: { usableInPos: usableInPos ? "true" : "" } },
+        stripeOpts,
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId: req.userId,
+          userName: req.userRecord?.email,
+          recordType: "Customer",
+          recordId: customerId,
+          action: "PAYMENT_METHOD_USABLE_IN_POS_SET",
+          changedFieldsJson: { paymentMethodId: pmId, usableInPos },
+        },
+      });
+
+      res.json({ success: true, usableInPos });
     } catch (err) {
       next(err);
     }

@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
+import { useNavigate } from 'react-router-dom';
+import { useToast } from '../components/Toast';
 import {
   UserPlus,
   Search,
@@ -348,6 +350,8 @@ const s: Record<string, React.CSSProperties> = {
 
 export default function Leads() {
   const { getToken } = useAuth();
+  const navigate = useNavigate();
+  const toast = useToast();
   const [view, setView] = useState<'kanban' | 'table'>('kanban');
   const [stageFilter, setStageFilter] = useState<string>('All');
   const [sourceFilter, setSourceFilter] = useState<'All' | SourceEnum>('All');
@@ -841,6 +845,21 @@ export default function Leads() {
               const msg = err instanceof Error ? err.message : 'Unknown error';
               window.alert(`Could not save lead: ${msg}`);
             }
+          }}
+          onConverted={(result) => {
+            const fullName = `${result.customer.firstName} ${result.customer.lastName}`.trim();
+            toast.addToast({
+              type: 'success',
+              title: 'Lead converted',
+              message: `${fullName || 'Customer'} is now a customer.`,
+              duration: 8000,
+              action: {
+                label: 'Open profile',
+                onClick: () => navigate(`/customers/${result.customer.id}`),
+              },
+            });
+            void refetchLeads();
+            refetchStats();
           }}
           onStageChange={async (newStage) => {
             const stage = newStage as Stage;

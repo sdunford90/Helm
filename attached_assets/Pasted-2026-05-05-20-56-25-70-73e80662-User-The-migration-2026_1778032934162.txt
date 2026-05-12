@@ -1,0 +1,85 @@
+2026-05-05 20:56:25.70
+73e80662
+User
+The migration `20260506000000_email_sender_settings` is already recorded as applied in the database.
+2026-05-05 20:56:25.70
+73e80662
+User
+Error: P3008
+
+2026-05-05 20:56:25.74
+73e80662
+User
+undefined
+2026-05-05 20:56:25.74
+73e80662
+User
+/home/runner/workspace/apps/api:
+2026-05-05 20:56:25.74
+73e80662
+User
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: prisma migrate resolve --applied 20260506000000_email_sender_settings
+2026-05-05 20:56:27.77
+73e80662
+User
+For more information, see: https://pris.ly/prisma-config
+2026-05-05 20:56:27.77
+73e80662
+User
+warn The configuration property `package.json#prisma` is deprecated and will be removed in Prisma 7. Please migrate to a Prisma config file (e.g., `prisma.config.ts`).
+2026-05-05 20:56:27.89
+73e80662
+User
+Prisma schema loaded from prisma/schema.prisma
+2026-05-05 20:56:27.91
+73e80662
+User
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-damp-grass-an9hu5hr.c-6.us-east-1.aws.neon.tech"
+2026-05-05 20:56:28.25
+73e80662
+User
+52 migrations found in prisma/migrations
+2026-05-05 20:56:28.67
+73e80662
+User
+No pending migrations to apply.
+2026-05-05 20:56:29.45
+73e80662
+User
+> node dist/index.js
+2026-05-05 20:56:29.45
+73e80662
+User
+> @helm/api@0.1.0 start /home/runner/workspace/apps/api
+2026-05-05 20:56:35.53
+73e80662
+User
+[helm-workers] All workers started
+2026-05-05 20:56:35.54
+73e80662
+User
+[helm-api] serving SPA from /home/runner/workspace/apps/web/dist
+2026-05-05 20:56:35.54
+73e80662
+User
+[qbo-inventory-retry] scheduled — next sweep at 2026-05-06T02:00:00.000Z, then every 15min
+2026-05-05 20:56:35.56
+73e80662
+User
+[helm-api] listening on port 5000
+2026-05-05 20:56:35.66
+73e80662
+User
+[redis] connected to Upstash
+2026-05-05 20:56:36.03
+73e80662
+User
+[helm-workers] Repeatable cron jobs scheduled
+2026-05-05 21:00:02.87
+818863a2
+User
+[billing-worker] Inventory reconciliation complete for all tenants
+2026-05-05 21:01:44.12
+818863a2
+System
+system: received signal terminated

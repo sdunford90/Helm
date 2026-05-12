@@ -92,8 +92,7 @@ waitForPort = 3003
 [deployment]
 deploymentTarget = "autoscale"
 build = ["sh", "-c", "pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build && pnpm --filter @helm/api build && pnpm --filter @helm/web build"]
-publicDir = "apps/web/dist"
-run = ["sh", "-c", "pnpm --filter @helm/api exec prisma migrate resolve --applied 20260503160000_pos_customer_and_discounts || true ; pnpm --filter @helm/api exec prisma migrate resolve --applied 20260506000000_email_sender_settings || true ; pnpm --filter @helm/api exec prisma migrate deploy && pnpm --filter @helm/api start"]
+run = ["sh", "-c", "pnpm --filter @helm/api exec prisma migrate resolve --applied 20260506200000_payment_idempotency_key || true ; pnpm --filter @helm/api exec prisma migrate deploy && pnpm --filter @helm/api start"]
 
 [userenv]
 
@@ -107,10 +106,9 @@ VITE_STRIPE_PUBLISHABLE_KEY = "pk_test_51RkXn8PbfhYJ53J8endmtUnWoydeeU78i3Gb5Kah
 PUPPETEER_EXECUTABLE_PATH = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
 
 [userenv.development]
-ENABLE_AUTH_DEV_BYPASS = "true"
-NODE_ENV = "development"
 VITE_ENABLE_AUTH_DEV_BYPASS = "true"
 QBO_REDIRECT_URI = "https://92c279c8-1036-4e43-940c-5e8c174d6713-00-gp3i4v467s4h.spock.replit.dev/api/qbo/callback"
+ENABLE_AUTH_DEV_BYPASS = "true"
 
 [userenv.production]
 QBO_REDIRECT_URI = "https://app.tracktheturn.com/api/qbo/callback"
@@ -120,6 +118,8 @@ HELM_PLATFORM_ADMIN_LAST_NAME = "Dunford"
 HELM_PLATFORM_ADMIN_CLERK_ID = "user_3CrlF1gin3W2m9tk5hjaeotnUmj"
 PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION = "Yes"
 HELM_DEMO_TENANT_CUSTOM_DOMAIN = "app.tracktheturn.com"
+NODE_ENV = "production"
+PORT = "5000"
 
 [postMerge]
 path = "scripts/post-merge.sh"

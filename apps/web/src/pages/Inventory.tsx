@@ -23,6 +23,9 @@ interface Product {
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string; qoh: number;
   reorderPoint: number;
+  // Marina the product belongs to. NULL = legacy tenant-wide product
+  // that needs to be backfilled via the inline "Assign here" action.
+  locationId: string | null;
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -68,6 +71,7 @@ interface ApiProduct {
   productCategoryId: string | null;
   costCents: number; priceCents: number; taxClass: string | null; qoh: number;
   reorderPoint: number;
+  locationId?: string | null;
   effectiveRevenueGlAccountId?: string | null;
   effectiveCogsGlAccountId?: string | null;
   effectiveInventoryAssetGlAccountId?: string | null;
@@ -110,6 +114,7 @@ function toProduct(p: ApiProduct): Product {
     productCategoryId: p.productCategoryId ?? null,
     costCents: p.costCents, priceCents: p.priceCents,
     taxClass: p.taxClass ?? 'Standard', qoh: p.qoh, reorderPoint: p.reorderPoint,
+    locationId: p.locationId ?? null,
     effectiveRevenueGlAccountId: p.effectiveRevenueGlAccountId ?? null,
     effectiveCogsGlAccountId: p.effectiveCogsGlAccountId ?? null,
     effectiveInventoryAssetGlAccountId: p.effectiveInventoryAssetGlAccountId ?? null,
@@ -189,7 +194,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '28px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '12px', color: '#2E4A6B', marginTop: '2px' },
   tabs: { display: 'flex', borderBottom: '2px solid #E2E8F0', marginBottom: '24px' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer', color: '#64748B', borderBottom: '2px solid transparent', marginBottom: '-2px' },
@@ -205,7 +210,7 @@ const st: Record<string, React.CSSProperties> = {
   table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '13px' },
   th: { textAlign: 'left' as const, padding: '10px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF', whiteSpace: 'nowrap' as const },
   td: { padding: '10px 12px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '13px' },
   badge: { display: 'inline-block', padding: '2px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '9999px' },
   overlay: { position: 'fixed' as const, inset: 0, backgroundColor: 'rgba(10,35,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
   modal: { background: '#FFFFFF', borderRadius: '8px', width: '520px', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' },
@@ -352,18 +357,43 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
           </div>
 
           {/* Tax + accounting summary — GL accounts are now category- and
-              location-driven; per-product GL inputs were retired. */}
+              location-driven; per-product GL inputs were retired.
+              Tax category lives on the ProductCategory by default; the
+              per-product override is hidden under an "Advanced" disclosure
+              to keep staff from accidentally overriding the category and
+              causing tax-calc drift. The disclosure auto-opens when a
+              product already has an override set so it stays visible. */}
           <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '16px', marginTop: '8px' }}>
-            <div style={st.field}>
-              <label style={st.label}>Tax Category</label>
-              <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
-                <option value="">— Use category default —</option>
-                {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
-                <option value="Tax Exempt">Tax Exempt</option>
-              </select>
-            </div>
-            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', display: 'grid', gap: '6px' }}>
               <div><strong>Tax (effective):</strong> {effectiveTaxLabel}</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>
+                Tax category is inherited from the product&apos;s category. To
+                change it for a whole group of products, edit the category
+                in Settings → Categories. Use the override below only for
+                exceptions.
+              </div>
+            </div>
+            <details
+              style={{ marginTop: '12px', fontSize: '13px' }}
+              open={!!form.taxClass}
+            >
+              <summary style={{ cursor: 'pointer', color: '#475569', fontWeight: 500, userSelect: 'none' }}>
+                Advanced: override category default
+              </summary>
+              <div style={{ ...st.field, marginTop: '8px' }}>
+                <label style={st.label}>Tax Category (override)</label>
+                <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
+                  <option value="">— Use category default —</option>
+                  {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                  <option value="Tax Exempt">Tax Exempt</option>
+                </select>
+                <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
+                  Setting an override hides this product from the category&apos;s
+                  tax setting. Leave blank to inherit.
+                </div>
+              </div>
+            </details>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
               <div style={{ fontSize: '12px', color: '#64748B' }}>
                 Revenue, COGS and inventory asset accounts are configured per
                 location on the product&apos;s category.{' '}
@@ -399,6 +429,10 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
                 qoh: parseInt(form.qoh || '0'),
                 reorderPoint: parseInt(form.reorderPoint || '0'),
                 trackInventory: true, active: true,
+                // Preserve existing locationId on edit; new products get
+                // null here and have currentLocationId attached server-side
+                // by handleSaveProduct's create payload.
+                locationId: product?.locationId ?? null,
                 qboItemId: product?.qboItemId ?? null,
                 qboItemSyncedAt: product?.qboItemSyncedAt ?? null,
                 qboItemSyncError: product?.qboItemSyncError ?? null,
@@ -876,6 +910,16 @@ export default function Inventory() {
         // GL inputs were dropped with the category-only GL migration.
         taxClass: p.taxClass || null,
         reorderPoint: p.reorderPoint, trackInventory: p.trackInventory,
+        // New products auto-bind to the marina the operator is currently
+        // viewing in the top-right location switcher. Without this every
+        // new SKU lands as a tenant-wide row (locationId NULL) and breaks
+        // QBO inventory sync, which needs a location to pick the correct
+        // chart of accounts. Edits (PUT path below) intentionally do NOT
+        // overwrite an existing locationId — use the inline "Assign to
+        // here" action on the row to relocate.
+        ...(p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)
+          ? {}
+          : { locationId: currentLocationId }),
       };
       if (p.id && !p.id.startsWith('inv-prod-') && !p.id.match(/^\d+$/)) {
         const res = await fetch(`/api/inventory/products/${p.id}`, {
@@ -912,6 +956,73 @@ export default function Inventory() {
       toast.success('Removed', 'Product removed from inventory.');
     } catch {
       toast.error('Error', 'Failed to remove product.');
+    }
+  };
+
+  // One-click backfill for legacy products with locationId = NULL. Without
+  // a location these rows leak into every marina's product table AND fail
+  // QBO sync (the chart-of-accounts resolver needs a location). Visible
+  // only when the operator is in single-location mode so it's unambiguous
+  // which marina the product is being assigned to.
+  const handleAssignProductLocation = async (p: Product) => {
+    if (!currentLocationId) return;
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/inventory/products/${p.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId: currentLocationId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `Assign failed (HTTP ${res.status})`);
+      }
+      const updated = await res.json();
+      setProducts((prev) => prev.map((x) => x.id === p.id ? toProduct(updated as ApiProduct) : x));
+      toast.success('Assigned', `${p.name} is now linked to this marina.`);
+    } catch (err) {
+      toast.error('Assign failed', err instanceof Error ? err.message : 'Network error');
+    }
+  };
+
+  // Bulk-clear per-product Tax Category overrides so every product inherits
+  // its category's defaultTaxCategory. Confirms before firing because it
+  // touches every product in the active scope. Scoped to the current
+  // location when one is selected; otherwise all tenant products.
+  const handleClearTaxOverrides = async () => {
+    const scope = currentLocationId ? 'this marina' : 'every location';
+    if (!window.confirm(
+      `Clear the per-product Tax Category override on every product in ${scope}? ` +
+      `Products will then inherit tax from their category. ` +
+      `(You can re-set overrides later on individual products.)`,
+    )) return;
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/inventory/products/clear-tax-overrides', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId: currentLocationId ?? null }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      toast.success('Tax overrides cleared', `${body.cleared} product(s) now inherit from category.`);
+      // Reflect locally so the inventory grid + edit modals show the
+      // category default immediately, no reload needed.
+      setProducts((prev) => prev.map((x) =>
+        (!currentLocationId || x.locationId === currentLocationId)
+          // Empty string mirrors what the form treats as "inherit from
+          // category"; the underlying DB column is now NULL.
+          ? { ...x, taxClass: '' }
+          : x,
+      ));
+    } catch (err) {
+      toast.error('Clear failed', err instanceof Error ? err.message : 'Network error');
     }
   };
 
@@ -983,6 +1094,11 @@ export default function Inventory() {
           <select style={st.select} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>{categories.map((c) => <option key={c}>{c}</option>)}</select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#0A2342', cursor: 'pointer' }}><input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} /> Low Stock Only</label>
           <button style={st.outlineBtn} onClick={() => toast.success('Print Labels', 'Sending ' + filteredProducts.length + ' labels to printer...')}><Printer size={14} /> Print Labels</button>
+          <button
+            style={st.outlineBtn}
+            onClick={handleClearTaxOverrides}
+            title="Clear per-product Tax Category overrides so products inherit from their category"
+          >Clear Tax Overrides</button>
           <button style={st.addBtn} onClick={() => { setEditingProduct(null); setModal('addProduct'); }}><Plus size={16} /> Add Product</button>
         </div>
         <div style={st.tableWrap} className="helm-table-wrap">
@@ -1046,6 +1162,15 @@ export default function Inventory() {
                       )}
                     </td>
                     <td style={st.td}>
+                      {currentLocationId && p.locationId == null && (
+                        <button
+                          style={{ background: '#FFF7E6', border: '1px solid #F59E0B', color: '#856404', cursor: 'pointer', marginRight: '6px', fontSize: '11px', padding: '2px 6px', borderRadius: '4px' }}
+                          onClick={() => handleAssignProductLocation(p)}
+                          title="This product isn't tied to any marina yet — click to bind it to the current location"
+                        >
+                          Assign here
+                        </button>
+                      )}
                       {p.trackInventory && (
                         <button style={{ background: 'none', border: 'none', color: '#2CA01C', cursor: 'pointer', marginRight: '6px' }} onClick={() => handleQboSyncProduct(p)} title="Sync to QuickBooks"><Cloud size={14} /></button>
                       )}

@@ -18,10 +18,13 @@ import ChartOfAccounts from './pages/ChartOfAccounts';
 import Disputes from './pages/Disputes';
 import Rentals from './pages/Rentals';
 import POS from './pages/POS';
+import ZReports from './pages/ZReports';
+import ZReportDetail from './pages/ZReportDetail';
+import XReport from './pages/XReport';
 import DockWalks from './pages/DockWalks';
 import DockWalkRunner from './pages/DockWalkRunner';
-import Reports from './pages/Reports';
 import Announcements from './pages/Announcements';
+import EmailAutomation from './pages/EmailAutomation';
 import Settings from './pages/Settings';
 import SettingsBilling from './pages/SettingsBilling';
 import SettingsTaxRates from './pages/SettingsTaxRates';
@@ -35,10 +38,11 @@ import Onboarding from './pages/Onboarding';
 import Transient from './pages/Transient';
 import Ramp from './pages/Ramp';
 import Concierge from './pages/Concierge';
-import AuditLog from './pages/AuditLog';
 import Fuel from './pages/Fuel';
 import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
+import Insights from './pages/Insights';
+import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
 import PurchaseOrderDetail from './pages/PurchaseOrderDetail';
@@ -72,24 +76,37 @@ function AppRoutes() {
         <Route path="/billing/ar-aging" element={<ARaging />} />
         <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
         <Route path="/billing/disputes" element={<Disputes />} />
+        <Route path="/billing/deferred-revenue" element={<BillingDeferredRevenue />} />
+        <Route path="/billing/rent-roll" element={<RentRoll />} />
         <Route
           path="/rentals"
           element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}
         />
         <Route path="/pos" element={<POS />} />
+        <Route path="/pos/z-reports" element={<ZReports />} />
+        <Route path="/pos/z-reports/:id" element={<ZReportDetail />} />
+        <Route path="/pos/x-report/:shiftId" element={<XReport />} />
         <Route path="/fuel" element={<Fuel />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/purchase-orders" element={<PurchaseOrders />} />
         <Route path="/purchase-orders/:id" element={<PurchaseOrderDetail />} />
-        <Route path="/rent-roll" element={<RentRoll />} />
+        <Route path="/rent-roll" element={<Navigate to="/billing/rent-roll" replace />} />
         <Route path="/dock-walks" element={<DockWalks />} />
-        <Route path="/reports" element={<Reports />} />
+        <Route path="/reports" element={<Navigate to="/insights" replace />} />
+        <Route path="/insights" element={<Insights />} />
+        <Route path="/insights/operations" element={<Insights />} />
+        <Route path="/insights/financial" element={<Insights />} />
+        <Route path="/insights/customers" element={<Insights />} />
+        <Route path="/insights/communications" element={<Insights />} />
+        <Route path="/insights/compliance" element={<Insights />} />
+        <Route path="/insights/scheduled" element={<Insights />} />
+        <Route path="/insights/custom-builder" element={<Insights />} />
         <Route path="/announcements" element={<Announcements />} />
         <Route path="/transient" element={<Transient />} />
         <Route path="/ramp" element={<Ramp />} />
         <Route path="/concierge" element={<Concierge />} />
-        <Route path="/audit-log" element={<AuditLog />} />
-        <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
+        <Route path="/audit-log" element={<Navigate to="/settings?tab=audit" replace />} />
+        <Route path="/email-automation" element={<EmailAutomation />} />
         <Route path="/portfolio" element={<PortfolioDashboard />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/settings/billing" element={<SettingsBilling />} />
@@ -97,8 +114,13 @@ function AppRoutes() {
         <Route path="/settings/products" element={<SettingsProducts />} />
         <Route path="/settings/pos-discounts" element={<SettingsPosDiscounts />} />
         <Route path="/settings/quickbooks" element={<QuickBooksSetup />} />
-        <Route path="/settings/accounting" element={<AccountingHub />} />
+        <Route path="/settings/accounting" element={<Navigate to="/accounting/setup" replace />} />
         <Route path="/accounting" element={<AccountingOverview />} />
+        <Route path="/accounting/setup" element={<AccountingHub />} />
+        <Route path="/accounting/periods" element={<AccountingHub />} />
+        <Route path="/accounting/sync-health" element={<AccountingHub />} />
+        <Route path="/accounting/reconciliation" element={<AccountingHub />} />
+        <Route path="/accounting/change-log" element={<AccountingHub />} />
         <Route path="/reports/sales-tax" element={<ReportsSalesTax />} />
       </Route>
     </Routes>

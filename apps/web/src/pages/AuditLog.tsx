@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import {
   ScrollText, Search, Download, Filter, Eye, User,
@@ -14,6 +15,8 @@ interface AuditEntry {
   userName: string;
   recordType: string;
   recordId: string;
+  recordLabel?: string;
+  recordHref?: string;
   action: 'CREATE' | 'UPDATE' | 'DELETE' | 'STATUS_CHANGE';
   description: string;
   changedFields?: string;
@@ -26,6 +29,8 @@ interface ApiAuditEntry {
   userName: string | null;
   recordType: string;
   recordId: string;
+  recordLabel?: string | null;
+  recordHref?: string | null;
   action: string;
   changedFieldsJson: unknown;
   ipAddress: string | null;
@@ -51,11 +56,88 @@ function mapApiEntry(e: ApiAuditEntry): AuditEntry {
     userName: e.userName ?? 'System',
     recordType: e.recordType,
     recordId: e.recordId,
+    recordLabel: e.recordLabel ?? undefined,
+    recordHref: e.recordHref ?? undefined,
     action: e.action as AuditEntry['action'],
     description: `${verb} ${e.recordType} ${shortId}`,
     changedFields: e.changedFieldsJson ? JSON.stringify(e.changedFieldsJson, null, 2) : undefined,
     ipAddress: e.ipAddress ?? '',
   };
+}
+
+function shortenId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+/** Render the record reference: a Link when href is present, plain text otherwise.
+ *  Shows the human-readable label with the short ID as secondary text when available. */
+function RecordRef({
+  entry,
+  onNavigate,
+  size = 'normal',
+}: {
+  entry: AuditEntry;
+  onNavigate?: () => void;
+  size?: 'normal' | 'large';
+}) {
+  const shortId = shortenId(entry.recordId);
+  const labelStyle: React.CSSProperties = {
+    color: '#0A2342',
+    fontWeight: 500,
+    fontSize: size === 'large' ? '15px' : '14px',
+  };
+  const linkStyle: React.CSSProperties = {
+    ...labelStyle,
+    color: '#0A2342',
+    textDecoration: 'underline',
+    textDecorationColor: '#00D4FF',
+    textUnderlineOffset: '2px',
+    cursor: 'pointer',
+  };
+  const subStyle: React.CSSProperties = {
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
+    fontSize: '12px',
+    color: '#64748B',
+    marginLeft: '6px',
+  };
+
+  if (entry.recordLabel && entry.recordHref) {
+    return (
+      <span>
+        <Link
+          to={entry.recordHref}
+          style={linkStyle}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onNavigate?.();
+          }}
+        >
+          {entry.recordLabel}
+        </Link>
+        <span style={subStyle}>{shortId}</span>
+      </span>
+    );
+  }
+  if (entry.recordLabel) {
+    return (
+      <span>
+        <span style={labelStyle}>{entry.recordLabel}</span>
+        <span style={subStyle}>{shortId}</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{
+        ...subStyle,
+        marginLeft: 0,
+        color: '#0A2342',
+        fontSize: size === 'large' ? '14px' : '13px',
+      }}
+    >
+      {shortId}
+    </span>
+  );
 }
 
 const RECORD_TYPES = ['All', 'Customer', 'Invoice', 'Payment', 'Contract', 'Lead', 'Slip', 'DockWalk', 'DockWalkItem', 'PosTransaction', 'Reservation', 'Announcement', 'GlEntry', 'InsuranceRecord'];
@@ -99,7 +181,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '24px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '13px', color: '#2E4A6B', marginTop: '2px' },
   filterBar: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' as const },
   searchWrap: { position: 'relative' as const, flex: 1, minWidth: '200px' },
@@ -112,7 +194,7 @@ const st: Record<string, React.CSSProperties> = {
   th: { textAlign: 'left' as const, padding: '12px 16px', fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF' },
   td: { padding: '12px 16px', color: '#0A2342', borderBottom: '1px solid #E2E8F0' },
   badge: { display: 'inline-block', padding: '2px 10px', fontSize: '12px', fontWeight: 600, borderRadius: '9999px' },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '13px' },
   pagination: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px', borderTop: '1px solid #E2E8F0', background: '#F8FAFC' },
   pageBtn: { display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', fontSize: '13px', fontWeight: 600, border: '1px solid #CCC', borderRadius: '4px', background: '#FFFFFF', cursor: 'pointer', color: '#0A2342' },
   detailPanel: { position: 'fixed' as const, top: 0, right: 0, width: '440px', height: '100vh', background: '#FFFFFF', boxShadow: '-4px 0 12px rgba(0,0,0,0.1)', zIndex: 1000, overflow: 'auto' },
@@ -242,7 +324,9 @@ export default function AuditLog() {
                     <span style={{ ...st.badge, backgroundColor: ac.bg, color: ac.color }}>{e.action}</span>
                   </td>
                   <td style={{ ...st.td, backgroundColor: rowBg }}>{e.recordType}</td>
-                  <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{e.recordId}</td>
+                  <td style={{ ...st.td, backgroundColor: rowBg }}>
+                    <RecordRef entry={e} />
+                  </td>
                   <td style={{ ...st.td, backgroundColor: rowBg, maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.description}</td>
                   <td style={{ ...st.td, backgroundColor: rowBg }}>
                     <button style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer' }} onClick={(ev) => { ev.stopPropagation(); setSelectedEntry(e); }}>
@@ -283,8 +367,10 @@ export default function AuditLog() {
           <div style={st.detailSection}>
             <div style={st.detailLabel}>Record Type</div>
             <div style={st.detailValue}>{selectedEntry.recordType}</div>
-            <div style={st.detailLabel}>Record ID</div>
-            <div style={{ ...st.detailValue, ...st.mono }}>{selectedEntry.recordId}</div>
+            <div style={st.detailLabel}>Record</div>
+            <div style={st.detailValue}>
+              <RecordRef entry={selectedEntry} size="large" onNavigate={() => setSelectedEntry(null)} />
+            </div>
           </div>
           <div style={st.detailSection}>
             <div style={st.detailLabel}>Description</div>

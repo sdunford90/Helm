@@ -5,6 +5,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import { AlertTriangle, CheckCircle, XCircle, Clock, ChevronRight, RefreshCw } from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import SubNav, { ACCOUNTING_SUBNAV } from '../components/SubNav';
 
 // Color scheme: #0A2342 navy, #E2E8F0 border, #64748B muted, #F8FAFC bg
 // #10B981 green, #F59E0B amber, #EF4444 red
@@ -21,6 +22,7 @@ interface LocationAccountingStatus {
   openAlertCount: number;
   openPeriod: { periodStart: string; periodEnd: string } | null;
   mtdRevenueCents: number;
+  missingSystemAccounts?: Array<{ number: string; label: string }>;
 }
 
 interface OverviewData {
@@ -103,6 +105,42 @@ function QboBadge({ loc }: { loc: LocationAccountingStatus }) {
   return <span style={{ ...stl.badge, background: '#F1F5F9', color: '#64748B' }}>Not connected</span>;
 }
 
+function MissingAccountsBadge({
+  loc,
+  onFix,
+}: {
+  loc: LocationAccountingStatus;
+  onFix: () => void;
+}) {
+  const missing = loc.missingSystemAccounts ?? [];
+  if (missing.length === 0) {
+    return (
+      <span style={{ ...stl.badge, background: '#D1FAE5', color: '#065F46' }}>
+        <CheckCircle size={12} /> Complete
+      </span>
+    );
+  }
+  const tip = `Missing system accounts on ${
+    loc.qboConnected ? "this location's QuickBooks chart" : 'this chart of accounts'
+  }: ${missing.map((m) => `${m.number} ${m.label}`).join(', ')}. Postings that need them (e.g. terminating a contract with a held security deposit) will fail until they're added.`;
+  return (
+    <button
+      type="button"
+      onClick={onFix}
+      title={tip}
+      style={{
+        ...stl.badge,
+        background: '#FEE2E2',
+        color: '#991B1B',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+    >
+      <AlertTriangle size={12} /> Missing {missing.length} system account{missing.length === 1 ? '' : 's'}
+    </button>
+  );
+}
+
 function SyncHealthBadge({ count }: { count: number }) {
   if (count === 0) {
     return (
@@ -173,8 +211,20 @@ export default function AccountingOverview() {
     <div style={stl.page}>
       {/* Header */}
       <div style={stl.header}>
-        <h1 style={stl.title}>Accounting Overview</h1>
+        <h1 style={stl.title}>Accounting</h1>
         <p style={stl.subtitle}>Cross-location accounting health and setup status</p>
+      </div>
+
+      <SubNav items={ACCOUNTING_SUBNAV} />
+
+      {/* Action: jump to setup wizard for the active location */}
+      <div style={{ marginBottom: '20px' }}>
+        <button
+          style={{ ...stl.viewBtn, fontSize: '13px' }}
+          onClick={() => navigate('/accounting/setup')}
+        >
+          Open Setup Wizard <ChevronRight size={13} />
+        </button>
       </div>
 
       {/* Error */}
@@ -247,6 +297,7 @@ export default function AccountingOverview() {
                 <th style={stl.th}>Location</th>
                 <th style={stl.th}>Setup Status</th>
                 <th style={stl.th}>QB Connection</th>
+                <th style={stl.th}>Chart of Accounts</th>
                 <th style={stl.th}>Sync Health</th>
                 <th style={stl.th}>Open Issues</th>
                 <th style={stl.th}>Action</th>
@@ -265,6 +316,7 @@ export default function AccountingOverview() {
                   </td>
                   <td style={stl.td}><SetupStatusBadge loc={loc} /></td>
                   <td style={stl.td}><QboBadge loc={loc} /></td>
+                  <td style={stl.td}><MissingAccountsBadge loc={loc} onFix={() => navigate('/billing/chart-of-accounts')} /></td>
                   <td style={stl.td}><SyncHealthBadge count={loc.failedSyncCount} /></td>
                   <td style={stl.td}>
                     {loc.openAlertCount > 0 ? (

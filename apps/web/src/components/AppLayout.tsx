@@ -23,7 +23,6 @@ import {
   Bed,
   Waves,
   Bell as ConciergeBell,
-  ScrollText,
   Fuel,
   MapPin,
   ChevronDown,
@@ -33,6 +32,11 @@ import {
   User,
   LogOut,
   Landmark,
+  Mail,
+  Activity,
+  ShieldCheck,
+  Calendar,
+  Wrench,
 } from 'lucide-react';
 
 /* ── User Preferences ──────────────────────────────────── */
@@ -158,54 +162,76 @@ function UserPrefsPanel({ onClose, userEmail, userName }: { onClose: () => void;
 
 const NAV_SECTIONS = [
   {
-    label: 'Overview',
+    label: 'Home',
     items: [
       { path: '/', label: 'Dashboard', icon: LayoutDashboard },
     ],
   },
   {
-    label: 'Marina Operations',
+    label: 'Marina',
     items: [
       { path: '/slips', label: 'Slips', icon: Anchor },
       { path: '/boats', label: 'Boats', icon: Ship },
+      { path: '/customers', label: 'Customers', icon: Users },
       { path: '/contracts', label: 'Contracts', icon: FileText },
+      { path: '/billing', label: 'Billing', icon: DollarSign },
+    ],
+  },
+  {
+    label: 'Daily Ops',
+    items: [
       { path: '/dock-walks', label: 'Dock Walks', icon: ClipboardCheck },
       { path: '/transient', label: 'Transient', icon: Bed },
       { path: '/ramp', label: 'Launch Ramp', icon: Waves },
+      { path: '/rentals', label: 'Rentals', icon: Ship },
       { path: '/concierge', label: 'Concierge', icon: ConciergeBell },
     ],
   },
   {
-    label: 'Revenue',
+    label: 'Point of Sale',
     items: [
-      { path: '/billing', label: 'Billing', icon: DollarSign },
-      { path: '/rentals', label: 'Rentals', icon: Ship },
       { path: '/pos', label: 'POS', icon: ShoppingCart },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
-      { path: '/inventory', label: 'Inventory', icon: Package },
-      { path: '/purchase-orders', label: 'Purchase Orders', icon: ClipboardList },
     ],
   },
   {
-    label: 'CRM',
+    label: 'Back Office',
+    items: [
+      { path: '/accounting', label: 'Accounting', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
+      { path: '/purchase-orders', label: 'Purchase Orders', icon: ClipboardList },
+      { path: '/inventory', label: 'Inventory', icon: Package },
+    ],
+  },
+  {
+    label: 'Pipeline',
     items: [
       { path: '/leads', label: 'Leads', icon: UserPlus },
       { path: '/waitlist', label: 'Waitlist', icon: List },
-      { path: '/customers', label: 'Customers', icon: Users },
     ],
   },
   {
-    label: 'Admin',
+    label: 'Communications',
     items: [
-      { path: '/reports', label: 'Reports', icon: BarChart3 },
       { path: '/announcements', label: 'Announcements', icon: Megaphone },
-      { path: '/audit-log', label: 'Audit Log', icon: ScrollText },
-      { path: '/accounting', label: 'Accounting Overview', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
-      { path: '/settings/accounting', label: 'Accounting Hub', icon: Landmark, requireRoles: ['TENANT_ADMIN', 'MARINA_OWNER', 'ACCOUNTING', 'PLATFORM_ADMIN'] },
-      { path: '/settings', label: 'Settings', icon: Settings },
+      { path: '/email-automation', label: 'Email Automation', icon: Mail },
+    ],
+  },
+  {
+    label: 'Insights',
+    items: [
+      { path: '/insights', label: 'Overview', icon: BarChart3, exact: true },
+      { path: '/insights/operations', label: 'Operations', icon: Activity },
+      { path: '/insights/financial', label: 'Financial', icon: DollarSign },
+      { path: '/insights/customers', label: 'Customers & CRM', icon: Users },
+      { path: '/insights/communications', label: 'Communications', icon: Megaphone },
+      { path: '/insights/compliance', label: 'Compliance & Audit', icon: ShieldCheck },
+      { path: '/insights/scheduled', label: 'Scheduled & Saved', icon: Calendar },
+      { path: '/insights/custom-builder', label: 'Custom Builder', icon: Wrench },
     ],
   },
 ];
+
+const FOOTER_NAV_ITEM = { path: '/settings', label: 'Settings', icon: Settings };
 
 const styles = {
   container: {
@@ -317,6 +343,11 @@ const styles = {
 };
 
 function getPageTitle(pathname: string): string {
+  // Prefix routes — keep context consistent across all sub-pages of a section.
+  if (pathname.startsWith('/insights')) return 'Insights';
+  if (pathname.startsWith('/accounting')) return 'Accounting';
+  if (pathname.startsWith('/billing')) return 'Billing';
+  if (pathname.startsWith('/settings')) return 'Settings';
   const map: Record<string, string> = {
     '/': 'Dashboard',
     '/leads': 'Leads',
@@ -325,11 +356,24 @@ function getPageTitle(pathname: string): string {
     '/slips': 'Slips',
     '/contracts': 'Contracts',
     '/billing': 'Billing',
+    '/billing/ar-aging': 'Billing',
+    '/billing/disputes': 'Billing',
+    '/billing/chart-of-accounts': 'Billing',
+    '/billing/deferred-revenue': 'Billing',
+    '/billing/rent-roll': 'Billing',
     '/rentals': 'Rentals',
     '/pos': 'POS',
+    '/pos/z-reports': 'Z-Reports',
     '/dock-walks': 'Dock Walks',
-    '/reports': 'Reports',
+    '/reports': 'Insights',
+    '/insights': 'Insights',
     '/announcements': 'Announcements',
+    '/accounting': 'Accounting',
+    '/accounting/setup': 'Accounting',
+    '/accounting/periods': 'Accounting',
+    '/accounting/sync-health': 'Accounting',
+    '/accounting/reconciliation': 'Accounting',
+    '/accounting/change-log': 'Accounting',
     '/settings': 'Settings',
   };
   return map[pathname] || 'Helm';
@@ -396,41 +440,73 @@ export default function AppLayout() {
       `}</style>
       <nav style={styles.sidebar} className="helm-sidebar">
         <div style={styles.logo}>HELM</div>
-        {NAV_SECTIONS.map((section) => {
-          const visibleItems = section.items.filter((item) => {
-            if (item.path === '/rentals' && !modules.rentals) return false;
-            if (item.path === '/transient' && !modules.transient) return false;
-            if (item.path === '/ramp' && !modules.ramp) return false;
-            if (item.path === '/concierge' && !modules.concierge) return false;
-            // Role-gated items: check against current user's role
-            const reqRoles = (item as { requireRoles?: string[] }).requireRoles;
-            if (reqRoles && currentUser?.role && !reqRoles.includes(currentUser.role)) return false;
-            return true;
-          });
-          if (visibleItems.length === 0) return null;
-          return (
-            <div key={section.label}>
-              <div style={styles.sectionLabel}>{section.label}</div>
-              {visibleItems.map((item) => {
-                const isActive = location.pathname === item.path;
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    onClick={closeSidebar}
-                    style={{
-                      ...styles.navItem,
-                      ...(isActive ? styles.navItemActive : {}),
-                    }}
-                  >
-                    <item.icon size={20} />
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </div>
-          );
-        })}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {NAV_SECTIONS.map((section) => {
+            const visibleItems = section.items.filter((item) => {
+              if (item.path === '/rentals' && !modules.rentals) return false;
+              if (item.path === '/transient' && !modules.transient) return false;
+              if (item.path === '/ramp' && !modules.ramp) return false;
+              if (item.path === '/concierge' && !modules.concierge) return false;
+              // Role-gated items: check against current user's role
+              const reqRoles = (item as { requireRoles?: string[] }).requireRoles;
+              if (reqRoles && currentUser?.role && !reqRoles.includes(currentUser.role)) return false;
+              return true;
+            });
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={section.label}>
+                <div style={styles.sectionLabel}>{section.label}</div>
+                {visibleItems.map((item) => {
+                  // Highlight when the current pathname is the item itself or a
+                  // descendant route (e.g. /billing/ar-aging keeps Billing lit).
+                  // Items marked `exact` only light on an exact match — used for
+                  // Insights Overview so it doesn't stay lit on subsections.
+                  const exact = (item as { exact?: boolean }).exact === true;
+                  const isActive = exact
+                    ? location.pathname === item.path
+                    : location.pathname === item.path ||
+                      (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
+                  return (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      onClick={closeSidebar}
+                      style={{
+                        ...styles.navItem,
+                        ...(isActive ? styles.navItemActive : {}),
+                      }}
+                    >
+                      <item.icon size={20} />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>
+          {(() => {
+            const item = FOOTER_NAV_ITEM;
+            const isActive =
+              location.pathname === item.path ||
+              location.pathname.startsWith(item.path + '/');
+            return (
+              <Link
+                to={item.path}
+                onClick={closeSidebar}
+                style={{
+                  ...styles.navItem,
+                  paddingTop: '14px',
+                  ...(isActive ? styles.navItemActive : {}),
+                }}
+              >
+                <item.icon size={20} />
+                {item.label}
+              </Link>
+            );
+          })()}
+        </div>
       </nav>
 
       <div style={styles.main} className="helm-main">
@@ -491,29 +567,35 @@ export default function AppLayout() {
                   <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
                     Switch Location
                   </div>
-                  <button
-                    key="__all__"
-                    onClick={() => { setCurrentLocationId(null); setLocationDropdownOpen(false); }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      width: '100%',
-                      padding: '10px 12px',
-                      fontSize: '14px',
-                      color: '#0A2342',
-                      background: currentLocationId === null ? '#F0FAFF' : '#FFFFFF',
-                      border: 'none',
-                      borderBottom: '1px solid #F2F4F6',
-                      cursor: 'pointer',
-                      textAlign: 'left' as const,
-                      fontWeight: currentLocationId === null ? 600 : 400,
-                    }}
-                  >
-                    <MapPin size={14} style={{ color: currentLocationId === null ? 'var(--brand-secondary)' : '#94A3B8' }} />
-                    All locations
-                    {currentLocationId === null && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
-                  </button>
+                  {/* Task #339: only show "All locations" when the user has
+                      more than one location to switch between. Single-location
+                      users (or single-location tenants) get a normal picker
+                      with one entry — no all-locations cross-marina view. */}
+                  {locations.length > 1 && (
+                    <button
+                      key="__all__"
+                      onClick={() => { setCurrentLocationId(null); setLocationDropdownOpen(false); }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '10px 12px',
+                        fontSize: '14px',
+                        color: '#0A2342',
+                        background: currentLocationId === null ? '#F0FAFF' : '#FFFFFF',
+                        border: 'none',
+                        borderBottom: '1px solid #F2F4F6',
+                        cursor: 'pointer',
+                        textAlign: 'left' as const,
+                        fontWeight: currentLocationId === null ? 600 : 400,
+                      }}
+                    >
+                      <MapPin size={14} style={{ color: currentLocationId === null ? 'var(--brand-secondary)' : '#94A3B8' }} />
+                      All locations
+                      {currentLocationId === null && <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--brand-secondary)', fontWeight: 600 }}>Current</span>}
+                    </button>
+                  )}
                   {locations.map((loc) => (
                     <button
                       key={loc.id}

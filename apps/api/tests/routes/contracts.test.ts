@@ -982,3 +982,235 @@ describe('POST /api/contracts (security deposit GL — end to end)', () => {
     expect(credit?.accountId).toBe(CHART['2300']);
   });
 });
+
+// ─── Task #274 — DockageRate link on SlipContract ─────────────────
+//
+// These tests pin the API contract for the new `dockageRateId` field
+// on POST /api/contracts. The validation has to be tighter than just
+// "FK exists" because mismatched (tenant, location, slipType) would
+// silently route a contract's GL/tax through another marina's plan.
+describe('POST /api/contracts — dockageRateId link (Task #274)', () => {
+  const SLIP_ID = '00000000-1111-0000-0000-000000000201';
+  const CUST_ID = '00000000-2222-0000-0000-000000000202';
+  const LOC_ID = '00000000-3333-0000-0000-000000000203';
+  const RATE_ID = '00000000-4444-0000-0000-000000000204';
+
+  function setupHappyTx(contract: any, slip: any, customer: any) {
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { create: vi.fn().mockResolvedValue(contract) },
+        slip: { update: vi.fn().mockResolvedValue(slip) },
+        securityDeposit: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+  }
+
+  it('accepts a matching active rate plan and persists dockageRateId', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({ slipId: SLIP_ID, customerId: CUST_ID });
+    setupHappyTx(contract, slip, customer);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      id: RATE_ID,
+      locationId: LOC_ID,
+      slipType: 'STANDARD',
+      active: true,
+      monthlyRateCents: 150000,
+      electricityMode: null,
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(201);
+    // The rate-plan lookup must scope by tenant — never just by id.
+    expect(mockPrisma.dockageRate.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: RATE_ID, tenantId: 'test-tenant-id' }) }),
+    );
+  });
+
+  it('rejects a rate plan whose location differs from the slip', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    setupHappyTx(buildContract({ slipId: SLIP_ID, customerId: CUST_ID }), slip, customer);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      id: RATE_ID,
+      locationId: 'other-loc',
+      slipType: 'STANDARD',
+      active: true,
+      monthlyRateCents: 150000,
+      electricityMode: null,
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DOCKAGE_RATE_LOCATION_MISMATCH');
+  });
+
+  it('rejects a rate plan whose slipType differs from the slip', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    setupHappyTx(buildContract({ slipId: SLIP_ID, customerId: CUST_ID }), slip, customer);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      id: RATE_ID,
+      locationId: LOC_ID,
+      slipType: 'COVERED',
+      active: true,
+      monthlyRateCents: 200000,
+      electricityMode: null,
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DOCKAGE_RATE_SLIP_TYPE_MISMATCH');
+  });
+
+  it('rejects an inactive rate plan', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    setupHappyTx(buildContract({ slipId: SLIP_ID, customerId: CUST_ID }), slip, customer);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      id: RATE_ID,
+      locationId: LOC_ID,
+      slipType: 'STANDARD',
+      active: false,
+      monthlyRateCents: 150000,
+      electricityMode: null,
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DOCKAGE_RATE_INACTIVE');
+  });
+
+  it('returns 404 when the rate plan does not exist for this tenant', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    setupHappyTx(buildContract({ slipId: SLIP_ID, customerId: CUST_ID }), slip, customer);
+    mockPrisma.dockageRate.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('DOCKAGE_RATE_NOT_FOUND');
+  });
+
+  it('defaults rateCents and electricityMode from the linked plan when caller omits them', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    const created = buildContract({ slipId: SLIP_ID, customerId: CUST_ID });
+    const createSpy = vi.fn().mockResolvedValue(created);
+    mockPrisma.slip.findFirst.mockResolvedValue(slip);
+    mockPrisma.customer.findFirst.mockResolvedValue(customer);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn({
+      slipContract: { create: createSpy },
+      slip: { update: vi.fn().mockResolvedValue(slip) },
+      securityDeposit: { create: vi.fn() },
+    }));
+    mockPrisma.auditLog.create.mockResolvedValue({});
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      id: RATE_ID,
+      locationId: LOC_ID,
+      slipType: 'STANDARD',
+      active: true,
+      monthlyRateCents: 175000,
+      electricityMode: 'METERED',
+    });
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        dockageRateId: RATE_ID,
+      });
+
+    expect(res.status).toBe(201);
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        rateCents: 175000,
+        electricityMode: 'METERED',
+        dockageRateId: RATE_ID,
+      }),
+    }));
+  });
+
+  it('rejects when neither rateCents nor dockageRateId is provided', async () => {
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+      });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('still creates the contract when dockageRateId is omitted (legacy path)', async () => {
+    const slip = buildSlip({ id: SLIP_ID, status: 'VACANT', locationId: LOC_ID, slipType: 'STANDARD' });
+    const customer = buildCustomer({ id: CUST_ID });
+    const contract = buildContract({ slipId: SLIP_ID, customerId: CUST_ID });
+    setupHappyTx(contract, slip, customer);
+
+    const res = await request(app)
+      .post('/api/contracts')
+      .send({
+        slipId: SLIP_ID,
+        customerId: CUST_ID,
+        startDate: '2026-05-01',
+        rateCents: 150000,
+      });
+
+    expect(res.status).toBe(201);
+    // No plan validation should have happened.
+    expect(mockPrisma.dockageRate.findFirst).not.toHaveBeenCalled();
+  });
+});

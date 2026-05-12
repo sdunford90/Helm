@@ -537,6 +537,9 @@ router.get(
             : null,
           isDefault: pm.id === defaultMethodId,
           kind: "card" as const,
+          // Per-PM "usable in POS" opt-in (Stripe metadata). Lets the customer
+          // pre-authorize the marina to charge this card at the POS counter.
+          usableInPos: pm.metadata?.usableInPos === "true",
         })),
         ...bankList.data.map((pm) => ({
           id: pm.id,
@@ -548,6 +551,7 @@ router.get(
           expiry: null,
           isDefault: pm.id === defaultMethodId,
           kind: "bank" as const,
+          usableInPos: false,
         })),
       ];
 
@@ -721,6 +725,63 @@ router.delete(
 );
 
 // ---------------------------------------------------------------------------
+// PATCH /api/portal/payment-methods/:id/usable-in-pos
+// Customer-facing toggle: opt this saved card in/out of being charged at the
+// marina's POS counter. Cards only.
+router.patch(
+  "/payment-methods/:id/usable-in-pos",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const customerId = req.portalCustomerId!;
+      const tenantId = req.tenantId!;
+      const pmId = req.params.id;
+      const { usableInPos } = req.body as { usableInPos?: boolean };
+      if (typeof usableInPos !== "boolean") {
+        res.status(400).json({ error: "usableInPos (boolean) is required", code: "VALIDATION" });
+        return;
+      }
+
+      const customer = await prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { stripeCustomerId: true },
+      });
+      if (!customer?.stripeCustomerId) {
+        res.status(400).json({ error: "No saved payment methods", code: "NO_STRIPE_CUSTOMER" });
+        return;
+      }
+
+      const stripeAccountId = await getTenantStripeAccount(tenantId);
+      if (!stripeAccountId) {
+        res.status(400).json({ error: "Stripe not configured", code: "STRIPE_NOT_CONFIGURED" });
+        return;
+      }
+
+      const stripe = requireStripe();
+      const stripeOpts = { stripeAccount: stripeAccountId };
+
+      const pm = await stripe.paymentMethods.retrieve(pmId, {}, stripeOpts);
+      if (pm.customer !== customer.stripeCustomerId) {
+        res.status(403).json({ error: "Payment method does not belong to this customer", code: "FORBIDDEN" });
+        return;
+      }
+      if (pm.type !== "card") {
+        res.status(400).json({ error: "Only cards can be marked usable in POS", code: "PM_NOT_CARD" });
+        return;
+      }
+
+      await stripe.paymentMethods.update(
+        pmId,
+        { metadata: { usableInPos: usableInPos ? "true" : "" } },
+        stripeOpts,
+      );
+
+      res.json({ success: true, usableInPos });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // PUT /api/portal/payment-methods/:id/default — set default payment method
 //
 // Optional query param: ?invoiceId=<id>

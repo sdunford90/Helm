@@ -144,7 +144,7 @@ const s: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' },
   statCard: { backgroundColor: '#FFFFFF', border: '1px solid #CCC', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
   statLabel: { fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' as const, letterSpacing: '0.03em', marginBottom: '4px' },
-  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '24px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   tabs: { display: 'flex', gap: '0px', marginBottom: '24px', borderBottom: '2px solid #E2E8F0' },
   tab: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#64748B', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid transparent', marginBottom: '-2px' },
   tabActive: { padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#0A2342', cursor: 'pointer', border: 'none', backgroundColor: 'transparent', borderBottom: '2px solid #00D4FF', marginBottom: '-2px' },
@@ -517,14 +517,14 @@ export default function Transient() {
                         <Ship size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
                         {b.boatName} ({b.boatLength} ft)
                       </td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{b.slip}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{b.slip}</td>
                       <td style={s.td}>{b.checkIn}</td>
                       <td style={s.td}>
                         {b.checkOut}
                         {isOverstay && <AlertTriangle size={14} style={{ marginLeft: '6px', color: '#B71C1C', verticalAlign: 'middle' }} />}
                       </td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(b.nightlyRate)}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(b.nightlyRate)}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
                       <td style={s.td}>
                         <span style={{ ...s.badge, backgroundColor: STATUS_COLORS[b.status].bg, color: STATUS_COLORS[b.status].text }}>
                           {b.status}
@@ -605,15 +605,15 @@ export default function Transient() {
                   const isOverstay = b.status === 'Overstay';
                   return (
                     <tr key={b.id} style={isOverstay ? s.overstayRow : idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{b.bookingNumber}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{b.bookingNumber}</td>
                       <td style={{ ...s.td, fontWeight: 600 }}>{b.guestName}</td>
                       <td style={s.td}>{b.boatName} ({b.boatLength} ft)</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{b.slip}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{b.slip}</td>
                       <td style={s.td}>{b.checkIn}</td>
                       <td style={s.td}>{b.checkOut}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', textAlign: 'center' }}>{n}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(b.nightlyRate)}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{n}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt$(b.nightlyRate)}</td>
+                      <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
                       <td style={s.td}>
                         <span style={{ ...s.badge, backgroundColor: STATUS_COLORS[b.status].bg, color: STATUS_COLORS[b.status].text }}>
                           {b.status}
@@ -883,7 +883,7 @@ export default function Transient() {
               {nbRate && nbCheckIn && nbCheckOut && (
                 <div style={{ backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: '6px', padding: '12px 16px', marginTop: '12px' }}>
                   <div style={{ fontSize: '12px', fontWeight: 600, color: '#0369A1', marginBottom: '4px' }}>Estimated Total</div>
-                  <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>
+                  <div style={{ fontSize: '20px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
                     {fmt$(parseFloat(nbRate) * Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000)))}
                   </div>
                   <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>

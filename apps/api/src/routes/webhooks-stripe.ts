@@ -380,11 +380,42 @@ async function handlePaymentIntentSucceeded(
 ): Promise<void> {
   const pi = event.data.object as Stripe.PaymentIntent;
 
-  // Match by Stripe PaymentIntent id (stored on Payment.stripePaymentId).
-  const payment = await prisma.payment.findFirst({
-    where: { stripePaymentId: pi.id, ...(tenantId ? { tenantId } : {}) },
-    include: { invoice: { select: { id: true, balanceCents: true, status: true, locationId: true } } },
-  });
+  // The manual record-payment route (POST /api/payments) pre-writes a
+  // PENDING Payment stub BEFORE creating the PaymentIntent and stamps the
+  // local Payment id on `metadata.paymentId`. Looking up by that id is
+  // race-free: the row is committed before Stripe is called, so it's
+  // already visible by the time this webhook fires. Fall back to
+  // `stripePaymentId` for callers that don't stamp paymentId metadata
+  // (e.g. /api/checkout/charge-card-on-file, which writes the row
+  // synchronously after Stripe responds and keys it on the PI id directly).
+  const paymentInclude = {
+    invoice: {
+      select: { id: true, balanceCents: true, status: true, locationId: true },
+    },
+  };
+
+  const metadataPaymentId =
+    (pi.metadata as Record<string, string> | undefined)?.paymentId ?? null;
+
+  let payment = metadataPaymentId
+    ? await prisma.payment.findFirst({
+        where: {
+          id: metadataPaymentId,
+          ...(tenantId ? { tenantId } : {}),
+        },
+        include: paymentInclude,
+      })
+    : null;
+
+  if (!payment) {
+    payment = await prisma.payment.findFirst({
+      where: {
+        stripePaymentId: pi.id,
+        ...(tenantId ? { tenantId } : {}),
+      },
+      include: paymentInclude,
+    });
+  }
 
   if (!payment) {
     console.warn(
@@ -393,15 +424,32 @@ async function handlePaymentIntentSucceeded(
     return;
   }
 
+  // Backfill stripePaymentId on rows located via metadata.paymentId so
+  // subsequent webhooks (or refunds) that key off stripePaymentId can find
+  // the row directly. Race-safe: only sets when currently null.
+  if (!payment.stripePaymentId) {
+    await prisma.payment.updateMany({
+      where: { id: payment.id, stripePaymentId: null },
+      data: { stripePaymentId: pi.id },
+    });
+  }
+
   // If we already marked it COMPLETED synchronously (card path), there's
   // nothing to do. ACH enters PENDING and is promoted to COMPLETED here.
   if (payment.status === "COMPLETED") return;
 
-  await prisma.$transaction(async (tx) => {
-    await tx.payment.update({
-      where: { id: payment.id },
+  // Race-safe promotion: the synchronous record-payment route can win the
+  // race in another process between when we read PENDING above and when
+  // this transaction starts. Use a conditional updateMany guarded on
+  // status=PENDING and only run side effects (GL post + invoice
+  // decrement) when WE were the writer that flipped it. Otherwise the
+  // synchronous handler already did them and a re-run would double-post.
+  const promotedHere = await prisma.$transaction(async (tx) => {
+    const promoted = await tx.payment.updateMany({
+      where: { id: payment.id, status: "PENDING" },
       data: { status: "COMPLETED" },
     });
+    if (promoted.count === 0) return false;
 
     await postPayment(
       {
@@ -432,7 +480,12 @@ async function handlePaymentIntentSucceeded(
         },
       });
     }
+    return true;
   });
+
+  // Skip the audit log when we didn't actually promote — the synchronous
+  // path that did has its own audit entry.
+  if (!promotedHere) return;
 
   // Audit so per-location reconciliation can match payments back to the
   // connected account that produced them.

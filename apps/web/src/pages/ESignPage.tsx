@@ -355,7 +355,7 @@ export default function ESignPage() {
           <div style={{ background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0', padding: '16px 20px', marginBottom: '28px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '14px' }}>
               <div><span style={{ color: '#64748B' }}>Slip </span><strong style={{ color: '#0A2342' }}>{c.slip.slipNumber}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Rate </span><strong style={{ color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>{fmt(c.rateCents)}/{CYCLE_LABEL[c.billingCycle] ?? c.billingCycle}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Rate </span><strong style={{ color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>{fmt(c.rateCents)}/{CYCLE_LABEL[c.billingCycle] ?? c.billingCycle}</strong></div>
               <div><span style={{ color: '#64748B' }}>Start </span><strong style={{ color: '#0A2342' }}>{formatDateOnlyDisplay(c.startDate)}</strong></div>
               {c.endDate && <div><span style={{ color: '#64748B' }}>End </span><strong style={{ color: '#0A2342' }}>{formatDateOnlyDisplay(c.endDate)}</strong></div>}
             </div>

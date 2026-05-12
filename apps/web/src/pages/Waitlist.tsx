@@ -12,7 +12,9 @@ import {
   Mail,
   Phone,
 } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { api } from '../lib/api';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -26,15 +28,78 @@ interface WaitlistEntry {
   lastName: string;
   email: string;
   phone: string;
-  slipType: SlipType;
-  boatLength: number;
+  slipType: SlipType | string;
+  boatLength: number | null;
   desiredDate: string;
   status: WaitlistStatus;
   dateAdded: string;
   notes: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+// Shape returned by GET /api/waitlist — entries are joined to either a
+// customer or a lead, status is uppercase enum, and the page uses Pascal-case
+// labels for display. We map to the flat shape above before rendering.
+type ApiStatus = 'WAITING' | 'NOTIFIED' | 'HOLD' | 'ACCEPTED' | 'EXPIRED' | 'REMOVED';
+interface ApiPerson { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }
+interface ApiWaitlistRow {
+  id: string;
+  queuePosition: number;
+  slipType: string | null;
+  boatLength: number | null;
+  desiredDate: string | null;
+  status: ApiStatus;
+  createdAt: string;
+  customer: ApiPerson | null;
+  lead: ApiPerson | null;
+}
+interface ApiWaitlistResponse {
+  data: ApiWaitlistRow[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+
+const STATUS_API_TO_LABEL: Record<ApiStatus, WaitlistStatus | null> = {
+  WAITING: 'Waiting',
+  NOTIFIED: 'Notified',
+  HOLD: 'Hold',
+  ACCEPTED: 'Accepted',
+  EXPIRED: 'Expired',
+  REMOVED: null, // hidden from the list
+};
+
+const STATUS_LABEL_TO_API: Record<WaitlistStatus, ApiStatus> = {
+  Waiting: 'WAITING',
+  Notified: 'NOTIFIED',
+  Hold: 'HOLD',
+  Accepted: 'ACCEPTED',
+  Expired: 'EXPIRED',
+};
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString();
+}
+
+function mapApiRow(row: ApiWaitlistRow): WaitlistEntry | null {
+  const label = STATUS_API_TO_LABEL[row.status];
+  if (!label) return null;
+  const person = row.customer ?? row.lead;
+  return {
+    id: row.id,
+    position: row.queuePosition,
+    firstName: person?.firstName ?? '',
+    lastName: person?.lastName ?? '',
+    email: person?.email ?? '',
+    phone: person?.phone ?? '',
+    slipType: row.slipType ?? '',
+    boatLength: row.boatLength,
+    desiredDate: fmtDate(row.desiredDate),
+    status: label,
+    dateAdded: fmtDate(row.createdAt),
+    notes: '',
+  };
+}
 
 const SLIP_TYPES: SlipType[] = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STATUSES: WaitlistStatus[] = ['Waiting', 'Notified', 'Hold', 'Accepted', 'Expired'];
@@ -149,7 +214,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '24px',
     fontWeight: 700,
     color: '#0A2342',
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   table: {
     width: '100%',
@@ -195,7 +260,7 @@ const s: Record<string, React.CSSProperties> = {
     color: '#FFFFFF',
     fontSize: '13px',
     fontWeight: 700,
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   actionBtn: {
     padding: '5px 10px',
@@ -303,7 +368,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '14px',
     color: '#0A2342',
     fontWeight: 500,
-    fontFamily: '"JetBrains Mono", monospace',
+    fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums',
   },
   notesBox: {
     marginTop: '20px',
@@ -356,15 +421,18 @@ export default function Waitlist() {
   const [newBoatLength, setNewBoatLength] = useState('');
 
   // API calls
-  const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/api/waitlist', { immediate: true });
-  const addToWaitlistApi = useApi<WaitlistEntry>('post', '/api/waitlist');
+  const { data: apiResponse, loading, error, execute: refetchWaitlist } = useApi<ApiWaitlistResponse>('get', '/api/waitlist?limit=100', { immediate: true });
+  const addToWaitlistApi = useApi<ApiWaitlistRow>('post', '/api/waitlist');
   const addLeadApi = useApi<{ id: string }>('post', '/api/leads');
 
   useEffect(() => {
-    if (apiEntries) {
-      setEntries(apiEntries);
+    if (apiResponse?.data) {
+      const mapped = apiResponse.data
+        .map(mapApiRow)
+        .filter((e): e is WaitlistEntry => e !== null);
+      setEntries(mapped);
     }
-  }, [apiEntries]);
+  }, [apiResponse]);
 
   const filtered = entries.filter((e) => {
     if (slipFilter !== 'All' && e.slipType !== slipFilter) return false;
@@ -380,19 +448,43 @@ export default function Waitlist() {
   const countByStatus = (status: WaitlistStatus) =>
     entries.filter((e) => e.status === status).length;
 
+  const { getToken } = useAuth();
+
+  const updateStatus = async (id: string, label: WaitlistStatus) => {
+    const prev = entries;
+    setEntries(entries.map((e) => e.id === id ? { ...e, status: label } : e));
+    try {
+      const token = await getToken();
+      await api.put(`/api/waitlist/${id}`, { status: STATUS_LABEL_TO_API[label] }, token);
+      await refetchWaitlist();
+    } catch {
+      setEntries(prev);
+    }
+  };
+
   const handleNotify = (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation();
-    setEntries(entries.map((e) => e.id === id ? { ...e, status: 'Notified' as WaitlistStatus } : e));
+    void updateStatus(id, 'Notified');
   };
 
   const handleAccept = (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation();
-    setEntries(entries.map((e) => e.id === id ? { ...e, status: 'Accepted' as WaitlistStatus } : e));
+    void updateStatus(id, 'Accepted');
   };
 
   const handleRemove = (id: string, ev: React.MouseEvent) => {
     ev.stopPropagation();
+    const prev = entries;
     setEntries(entries.filter((e) => e.id !== id));
+    void (async () => {
+      try {
+        const token = await getToken();
+        await api.delete(`/api/waitlist/${id}`, token);
+        await refetchWaitlist();
+      } catch {
+        setEntries(prev);
+      }
+    })();
   };
 
   const handleAddSubmit = async () => {
@@ -525,8 +617,8 @@ export default function Waitlist() {
                   {entry.firstName} {entry.lastName}
                 </td>
                 <td style={s.td}>{entry.slipType}</td>
-                <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>
-                  {entry.boatLength} ft
+                <td style={{ ...s.td, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
+                  {entry.boatLength != null ? `${entry.boatLength} ft` : '—'}
                 </td>
                 <td style={s.td}>{entry.desiredDate}</td>
                 <td style={s.td}>
@@ -665,7 +757,7 @@ export default function Waitlist() {
                   <span style={s.fieldLabel}>Boat Length</span>
                   <span style={s.fieldValueMono}>
                     <Ship size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.boatLength} ft
+                    {selectedEntry.boatLength != null ? `${selectedEntry.boatLength} ft` : '—'}
                   </span>
                 </div>
                 <div style={s.field}>

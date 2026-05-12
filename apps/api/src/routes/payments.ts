@@ -289,155 +289,341 @@ router.post(
       }
 
       // Process payment via Stripe for card/ACH
+      const isStripeMethod = data.method === "CARD" || data.method === "ACH";
       let stripePaymentId: string | null = null;
 
-      if (data.method === "CARD" || data.method === "ACH") {
-        const tenant = await prisma.tenant.findUnique({
-          where: { id: tenantId },
-          select: {
-            stripeAccountId: true,
-            applicationFeePctBps: true,
-            applicationFeeFixedCents: true,
-          },
-        });
+      // Stripe idempotency key. Bucketed by hour so a retried request
+      // collapses onto a single PaymentIntent + single Payment row, but
+      // legitimately distinct repeat payments (same invoice + same amount,
+      // taken minutes/hours/days apart) get distinct rows.
+      const hourBucket = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+      const stripeIdempotencyKey = `pay-${data.invoiceId ?? data.customerId}-${data.amountCents}-${hourBucket}`;
 
-        if (!tenant?.stripeAccountId) {
-          throw appError(
-            "Stripe is not configured for this marina",
-            400,
-            "STRIPE_NOT_CONFIGURED",
-          );
-        }
+      // Pre-write a PENDING Payment stub BEFORE calling Stripe so the
+      // payment_intent.succeeded webhook (which can arrive in <1s) always
+      // finds a row to promote. Without this, the webhook logs
+      // "no Payment row for pi_..." and silently drops, leaving the invoice
+      // unpaid and unposted to the GL.
+      //
+      // Idempotency: keyed on (tenantId, idempotencyKey) via a unique index
+      // (see Payment model). A retried request hits the same key, lands on
+      // the same row, and reuses its id. payment.id itself stays a random
+      // uuid so we never collide against historical rows.
+      let paymentId = uuid();
+      let stubCreated = false;
+      let preStripeFailure = true;
 
-        if (!customer.stripeCustomerId) {
-          throw appError(
-            "Customer does not have a Stripe account. Register a payment method first.",
-            400,
-            "NO_STRIPE_CUSTOMER",
-          );
-        }
-
-        const applicationFee = calculateApplicationFee(
-          data.amountCents,
-          tenant.applicationFeePctBps,
-          tenant.applicationFeeFixedCents,
-        );
-
-        const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
-          amount: data.amountCents,
-          currency: "usd",
-          customer: customer.stripeCustomerId,
-          confirm: true,
-          off_session: true,
-          application_fee_amount: applicationFee,
-          metadata: {
-            tenantId,
-            customerId: data.customerId,
-            invoiceId: data.invoiceId ?? "",
-          },
-        };
-
-        if (data.stripePaymentMethodId) {
-          paymentIntentParams.payment_method = data.stripePaymentMethodId;
-        }
-
-        if (data.method === "ACH") {
-          paymentIntentParams.payment_method_types = ["us_bank_account"];
-        } else {
-          paymentIntentParams.automatic_payment_methods = {
-            enabled: true,
-            allow_redirects: "never",
-          };
-        }
-
-        const paymentIntent = await requireStripe().paymentIntents.create(
-          paymentIntentParams,
-          {
-            stripeAccount: tenant.stripeAccountId,
-            // idempotency on the invoice+amount pair guards retries.
-            idempotencyKey: `pay-${data.invoiceId ?? data.customerId}-${data.amountCents}`,
-          },
-        );
-
-        stripePaymentId = paymentIntent.id;
-
-        // For ACH, payment may be pending initially
-        if (
-          paymentIntent.status !== "succeeded" &&
-          paymentIntent.status !== "processing"
-        ) {
-          throw appError(
-            `Payment failed: ${paymentIntent.status}`,
-            400,
-            "PAYMENT_FAILED",
-          );
+      if (isStripeMethod) {
+        try {
+          const stub = await prisma.payment.create({
+            data: {
+              id: paymentId,
+              tenantId,
+              customerId: data.customerId,
+              invoiceId: data.invoiceId ?? null,
+              amountCents: data.amountCents,
+              method: data.method,
+              stripePaymentId: null,
+              postedDate: new Date(),
+              status: "PENDING",
+              idempotencyKey: stripeIdempotencyKey,
+            },
+          });
+          paymentId = stub.id;
+          stubCreated = true;
+        } catch (createErr) {
+          // Unique-violation on (tenantId, idempotencyKey) → a previous
+          // attempt of this exact request already created a stub. Reuse it
+          // so we don't orphan duplicates. Any other error bubbles up.
+          const code = (createErr as { code?: string })?.code;
+          if (code === "P2002") {
+            const existing = await prisma.payment.findFirst({
+              where: { tenantId, idempotencyKey: stripeIdempotencyKey },
+              select: { id: true, status: true, stripePaymentId: true },
+            });
+            if (!existing) throw createErr;
+            paymentId = existing.id;
+            // Treat as already-stubbed: if the prior attempt completed,
+            // there's nothing for us to do — return early.
+            if (existing.status === "COMPLETED") {
+              const completed = await prisma.payment.findUniqueOrThrow({
+                where: { id: existing.id },
+                include: {
+                  customer: {
+                    select: { id: true, firstName: true, lastName: true },
+                  },
+                  invoice: {
+                    select: {
+                      id: true,
+                      invoiceNumber: true,
+                      totalCents: true,
+                      balanceCents: true,
+                    },
+                  },
+                },
+              });
+              res.status(200).json(completed);
+              return;
+            }
+          } else {
+            throw createErr;
+          }
         }
       }
 
-      // Record the payment and post GL
-      const paymentId = uuid();
+      try {
+        if (isStripeMethod) {
+          const tenant = await prisma.tenant.findUnique({
+            where: { id: tenantId },
+            select: {
+              stripeAccountId: true,
+              applicationFeePctBps: true,
+              applicationFeeFixedCents: true,
+            },
+          });
+
+          if (!tenant?.stripeAccountId) {
+            throw appError(
+              "Stripe is not configured for this marina",
+              400,
+              "STRIPE_NOT_CONFIGURED",
+            );
+          }
+
+          if (!customer.stripeCustomerId) {
+            throw appError(
+              "Customer does not have a Stripe account. Register a payment method first.",
+              400,
+              "NO_STRIPE_CUSTOMER",
+            );
+          }
+
+          const applicationFee = calculateApplicationFee(
+            data.amountCents,
+            tenant.applicationFeePctBps,
+            tenant.applicationFeeFixedCents,
+          );
+
+          const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
+            amount: data.amountCents,
+            currency: "usd",
+            customer: customer.stripeCustomerId,
+            confirm: true,
+            off_session: true,
+            application_fee_amount: applicationFee,
+            metadata: {
+              tenantId,
+              customerId: data.customerId,
+              invoiceId: data.invoiceId ?? "",
+              paymentId,
+            },
+          };
+
+          if (data.stripePaymentMethodId) {
+            paymentIntentParams.payment_method = data.stripePaymentMethodId;
+          }
+
+          if (data.method === "ACH") {
+            paymentIntentParams.payment_method_types = ["us_bank_account"];
+          } else {
+            paymentIntentParams.automatic_payment_methods = {
+              enabled: true,
+              allow_redirects: "never",
+            };
+          }
+
+          // From this point on, Stripe owns the charge — failures must NOT
+          // delete the stub or the webhook will lose its only reconciliation
+          // row.
+          preStripeFailure = false;
+
+          const paymentIntent = await requireStripe().paymentIntents.create(
+            paymentIntentParams,
+            {
+              stripeAccount: tenant.stripeAccountId,
+              idempotencyKey: stripeIdempotencyKey,
+            },
+          );
+
+          stripePaymentId = paymentIntent.id;
+
+          // Attach the PaymentIntent id to the stub so the webhook (which
+          // also falls back to a stripePaymentId lookup) can correlate.
+          await prisma.payment.update({
+            where: { id: paymentId },
+            data: { stripePaymentId },
+          });
+
+          // For ACH, payment may be pending initially
+          if (
+            paymentIntent.status !== "succeeded" &&
+            paymentIntent.status !== "processing"
+          ) {
+            throw appError(
+              `Payment failed: ${paymentIntent.status}`,
+              400,
+              "PAYMENT_FAILED",
+            );
+          }
+        }
+      } catch (stripeErr) {
+        // Only clean up when we never made it to the Stripe call (config
+        // / validation errors). Once Stripe was invoked we must keep the
+        // stub so the webhook can reconcile — even if Stripe returned an
+        // error response, a PaymentIntent may exist on the connected
+        // account that will fire a later webhook.
+        if (stubCreated && preStripeFailure) {
+          await prisma.payment
+            .deleteMany({
+              where: {
+                id: paymentId,
+                status: "PENDING",
+                stripePaymentId: null,
+              },
+            })
+            .catch(() => {
+              // Swallow cleanup errors; the original Stripe error is what
+              // the caller needs to see.
+            });
+        }
+        throw stripeErr;
+      }
+
       const paymentStatus =
         data.method === "ACH" ? "PENDING" : "COMPLETED";
 
       const payment = await prisma.$transaction(async (tx) => {
-        const pay = await tx.payment.create({
-          data: {
-            id: paymentId,
-            tenantId,
-            customerId: data.customerId,
-            invoiceId: data.invoiceId ?? null,
-            amountCents: data.amountCents,
-            method: data.method,
-            stripePaymentId,
-            postedDate: new Date(),
-            status: paymentStatus,
-          },
-          include: {
-            customer: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-            invoice: {
-              select: {
-                id: true,
-                invoiceNumber: true,
-                totalCents: true,
-                balanceCents: true,
+        let pay;
+
+        if (isStripeMethod) {
+          // Promote the pre-written stub. Use a conditional updateMany so
+          // we no-op cleanly if the webhook beat us to it (status already
+          // COMPLETED) — that's the only way we can be sure not to double-
+          // post GL or double-decrement the invoice balance.
+          if (paymentStatus === "COMPLETED") {
+            const promoted = await tx.payment.updateMany({
+              where: { id: paymentId, status: "PENDING" },
+              data: { status: "COMPLETED" },
+            });
+            const completedHere = promoted.count > 0;
+
+            if (completedHere) {
+              await postPayment(
+                {
+                  id: paymentId,
+                  tenantId,
+                  amountCents: data.amountCents,
+                  method: data.method,
+                  // Per-location chart of accounts: thread the invoice's
+                  // location so A/R and bank lookups land on this marina's
+                  // own rows instead of any tenant-wide / cross-location
+                  // duplicate that shares the same account number.
+                  locationId: invoice?.locationId ?? null,
+                },
+                tx,
+              );
+
+              if (invoice) {
+                const newBalance = invoice.balanceCents - data.amountCents;
+                const newStatus = (newBalance <= 0 ? "PAID" : invoice.status) as
+                  | "PAID"
+                  | "DRAFT"
+                  | "ISSUED"
+                  | "PAST_DUE"
+                  | "VOID"
+                  | "COLLECTIONS";
+
+                await tx.invoice.update({
+                  where: { id: invoice.id },
+                  data: {
+                    balanceCents: Math.max(0, newBalance),
+                    status: newStatus,
+                  },
+                });
+              }
+            }
+          }
+          // ACH: leave PENDING. The webhook posts GL + decrements the
+          // invoice balance when the bank settles. (Previously this branch
+          // decremented the balance synchronously AND let the webhook
+          // decrement it again — a double-decrement bug for ACH.)
+
+          pay = await tx.payment.findUniqueOrThrow({
+            where: { id: paymentId },
+            include: {
+              customer: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+              invoice: {
+                select: {
+                  id: true,
+                  invoiceNumber: true,
+                  totalCents: true,
+                  balanceCents: true,
+                },
               },
             },
-          },
-        });
-
-        // Post GL entry: debit Cash/Bank, credit A/R
-        // For ACH, GL posting happens when payment settles (webhook)
-        if (paymentStatus === "COMPLETED") {
-          await postPayment(
-            {
+          });
+        } else {
+          // Cash / charge-to-slip / gift card: no Stripe, no race window.
+          pay = await tx.payment.create({
+            data: {
               id: paymentId,
               tenantId,
+              customerId: data.customerId,
+              invoiceId: data.invoiceId ?? null,
               amountCents: data.amountCents,
               method: data.method,
-              // Per-location chart of accounts: thread the invoice's
-              // location so A/R and bank lookups land on this marina's
-              // own rows instead of any tenant-wide / cross-location
-              // duplicate that shares the same account number.
-              locationId: invoice?.locationId ?? null,
+              stripePaymentId: null,
+              postedDate: new Date(),
+              status: paymentStatus,
             },
-            tx,
-          );
-        }
-
-        // Update invoice balance if applicable
-        if (invoice) {
-          const newBalance = invoice.balanceCents - data.amountCents;
-          const newStatus = (newBalance <= 0 ? "PAID" : invoice.status) as "PAID" | "DRAFT" | "ISSUED" | "PAST_DUE" | "VOID" | "COLLECTIONS";
-
-          await tx.invoice.update({
-            where: { id: invoice.id },
-            data: {
-              balanceCents: Math.max(0, newBalance),
-              status: newStatus,
+            include: {
+              customer: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+              invoice: {
+                select: {
+                  id: true,
+                  invoiceNumber: true,
+                  totalCents: true,
+                  balanceCents: true,
+                },
+              },
             },
           });
+
+          if (paymentStatus === "COMPLETED") {
+            await postPayment(
+              {
+                id: paymentId,
+                tenantId,
+                amountCents: data.amountCents,
+                method: data.method,
+                locationId: invoice?.locationId ?? null,
+              },
+              tx,
+            );
+
+            if (invoice) {
+              const newBalance = invoice.balanceCents - data.amountCents;
+              const newStatus = (newBalance <= 0 ? "PAID" : invoice.status) as
+                | "PAID"
+                | "DRAFT"
+                | "ISSUED"
+                | "PAST_DUE"
+                | "VOID"
+                | "COLLECTIONS";
+
+              await tx.invoice.update({
+                where: { id: invoice.id },
+                data: {
+                  balanceCents: Math.max(0, newBalance),
+                  status: newStatus,
+                },
+              });
+            }
+          }
         }
 
         return pay;

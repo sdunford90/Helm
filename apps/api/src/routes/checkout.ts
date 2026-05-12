@@ -2,9 +2,15 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import type Stripe from "stripe";
 
+import { v4 as uuid } from "uuid";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requireStripe, calculateApplicationFee } from "../lib/stripe.js";
+import { postPayment } from "../services/gl-posting.js";
+import {
+  createConnectionToken,
+  capturePayment as captureTerminalPayment,
+} from "../services/stripe-terminal.js";
 
 const router: Router = Router();
 
@@ -187,6 +193,12 @@ router.post(
         clientSecret: session.client_secret,
         sessionId: session.id,
         url: session.url, // populated only in hosted mode
+        // The connected account the session lives on. The frontend MUST
+        // initialize Stripe.js with `{ stripeAccount: stripeAccountId }`
+        // (via getStripeForAccount) or the client-side init fails with
+        // "No such payment_page" — Stripe scopes session lookups to the
+        // account that minted them.
+        stripeAccountId,
       });
     } catch (err) {
       next(err);
@@ -333,10 +345,81 @@ router.post(
         `[charge-card-on-file] OK pi=${intent.id} status=${intent.status} took=${Date.now() - startedAt}ms`,
       );
 
-      // The PaymentIntent webhook (payment_intent.succeeded) will promote the
-      // Payment row to COMPLETED and post GL. Here we just surface the
-      // immediate status so the UI can show "Charged" or "Authentication
-      // required".
+      // Persist a Payment row keyed on intent.id BEFORE the webhook can race
+      // us. Without this, payment_intent.succeeded arrives ~1-2s later, fails
+      // its `findFirst({ stripePaymentId })` lookup, and the invoice is never
+      // marked PAID nor GL-posted (silent revenue leak).
+      //
+      // For an immediately-succeeded card charge we record COMPLETED + post GL
+      // synchronously — same pattern as POST /api/payments. The webhook then
+      // sees status=COMPLETED and no-ops (handler short-circuits on line ~398).
+      // For requires_action / processing we leave the row PENDING; the webhook
+      // promotes it once the customer completes 3DS or the bank settles.
+      // Idempotency guard: a duplicate submit (double-click, retried network
+      // request) hits Stripe's idempotency key and gets the SAME PaymentIntent
+      // back — but the DB write below is not naturally idempotent without a
+      // unique index on stripePaymentId. Check first, then skip the write +
+      // GL post if a row already exists for this intent. The webhook also
+      // honours this row, so we never double-post GL or duplicate Payments.
+      const existing = await prisma.payment.findFirst({
+        where: { tenantId, stripePaymentId: intent.id },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        if (intent.status === "succeeded") {
+          const paymentId = uuid();
+          await prisma.$transaction(async (tx) => {
+            await tx.payment.create({
+              data: {
+                id: paymentId,
+                tenantId,
+                customerId: invoice.customer.id,
+                invoiceId: invoice.id,
+                amountCents: chargeAmountCents,
+                method: "CARD",
+                stripePaymentId: intent.id,
+                postedDate: new Date(),
+                status: "COMPLETED",
+              },
+            });
+            await postPayment(
+              {
+                id: paymentId,
+                tenantId,
+                amountCents: chargeAmountCents,
+                method: "CARD",
+                locationId: invoice.locationId ?? null,
+              },
+              tx,
+            );
+            const newBalance = Math.max(0, invoice.balanceCents - chargeAmountCents);
+            await tx.invoice.update({
+              where: { id: invoice.id },
+              data: {
+                balanceCents: newBalance,
+                status: newBalance === 0 ? "PAID" : invoice.status,
+              },
+            });
+          });
+        } else {
+          // Pending (3DS / processing). Insert a stub the webhook can promote.
+          await prisma.payment.create({
+            data: {
+              id: uuid(),
+              tenantId,
+              customerId: invoice.customer.id,
+              invoiceId: invoice.id,
+              amountCents: chargeAmountCents,
+              method: "CARD",
+              stripePaymentId: intent.id,
+              postedDate: new Date(),
+              status: "PENDING",
+            },
+          });
+        }
+      }
+
       res.json({
         paymentIntentId: intent.id,
         status: intent.status,
@@ -357,6 +440,53 @@ router.post(
         `[charge-card-on-file] FAIL code=${e?.code ?? "<none>"} decline=${e?.decline_code ?? "<none>"} pi=${e?.payment_intent?.id ?? "<none>"} pi_status=${e?.payment_intent?.status ?? "<none>"} msg=${e?.message ?? "<none>"} took=${Date.now() - startedAt}ms`,
       );
       if (e?.code === "authentication_required") {
+        // The customer will complete 3DS in the UI and Stripe will fire
+        // payment_intent.succeeded. Without a PENDING row keyed on this
+        // intent.id the webhook silently drops — same revenue-leak class
+        // as the original missing-row bug. Insert a stub now (idempotent
+        // via findFirst guard) so the webhook can promote it later.
+        const piId = e.payment_intent?.id;
+        if (piId) {
+          try {
+            const ctxInvoiceId = (req.body as { invoiceId?: string })?.invoiceId;
+            const ctx = ctxInvoiceId
+              ? await prisma.invoice.findFirst({
+                  where: { id: ctxInvoiceId, tenantId: req.tenantId! },
+                  select: { id: true, customerId: true },
+                })
+              : null;
+            const already = await prisma.payment.findFirst({
+              where: { tenantId: req.tenantId!, stripePaymentId: piId },
+              select: { id: true },
+            });
+            if (!already && ctx) {
+              const parsed = CardOnFileSchema.safeParse(req.body);
+              const amt = parsed.success && parsed.data.amountCents
+                ? parsed.data.amountCents
+                : 0;
+              if (amt > 0) {
+                await prisma.payment.create({
+                  data: {
+                    id: uuid(),
+                    tenantId: req.tenantId!,
+                    customerId: ctx.customerId,
+                    invoiceId: ctx.id,
+                    amountCents: amt,
+                    method: "CARD",
+                    stripePaymentId: piId,
+                    postedDate: new Date(),
+                    status: "PENDING",
+                  },
+                });
+              }
+            }
+          } catch (stubErr) {
+            console.error(
+              `[charge-card-on-file] failed to write 3DS PENDING stub for ${piId}:`,
+              stubErr,
+            );
+          }
+        }
         res.status(402).json({
           error: "Card requires authentication",
           code: "AUTHENTICATION_REQUIRED",
@@ -365,6 +495,361 @@ router.post(
         });
         return;
       }
+      next(err);
+    }
+  },
+);
+
+// Invoice-scoped staff card flow (Terminal + keyed CNP). Mirrors the POS
+// card path but ties the PaymentIntent to an invoice so finalize records a
+// Payment row, posts GL, and decrements the balance.
+
+async function resolveInvoiceStripeAccount(
+  tenantId: string,
+  invoiceId: string,
+): Promise<
+  | { ok: true; stripeAccountId: string; invoice: { id: string; balanceCents: number; status: string; customerId: string; locationId: string | null } }
+  | { ok: false; status: number; body: { error: string; code: string } }
+> {
+  const [tenant, invoice] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        stripeAccountId: true,
+        applicationFeePctBps: true,
+        applicationFeeFixedCents: true,
+      },
+    }),
+    prisma.invoice.findFirst({
+      where: { id: invoiceId, tenantId },
+      select: {
+        id: true,
+        balanceCents: true,
+        status: true,
+        customerId: true,
+        locationId: true,
+        location: { select: { stripeAccountId: true, stripeOnboardingComplete: true } },
+      },
+    }),
+  ]);
+  if (!invoice) {
+    return { ok: false, status: 404, body: { error: "Invoice not found", code: "NOT_FOUND" } };
+  }
+  let stripeAccountId: string | null = null;
+  if (invoice.location?.stripeAccountId) {
+    if (!invoice.location.stripeOnboardingComplete) {
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          error: "Stripe payments are not yet configured for this location.",
+          code: "LOCATION_STRIPE_NOT_CONFIGURED",
+        },
+      };
+    }
+    stripeAccountId = invoice.location.stripeAccountId;
+  } else if (invoice.locationId) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: "Stripe payments are not yet configured for this location.",
+        code: "LOCATION_STRIPE_NOT_CONFIGURED",
+      },
+    };
+  } else {
+    stripeAccountId = tenant?.stripeAccountId ?? null;
+  }
+  if (!stripeAccountId) {
+    return {
+      ok: false,
+      status: 400,
+      body: { error: "Stripe is not connected for this marina", code: "STRIPE_NOT_CONFIGURED" },
+    };
+  }
+  return {
+    ok: true,
+    stripeAccountId,
+    invoice: {
+      id: invoice.id,
+      balanceCents: invoice.balanceCents,
+      status: invoice.status,
+      customerId: invoice.customerId,
+      locationId: invoice.locationId,
+    },
+  };
+}
+
+// GET /api/checkout/invoice-card/account?invoiceId=<uuid>
+router.get(
+  "/invoice-card/account",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const invoiceId = typeof req.query.invoiceId === "string" ? req.query.invoiceId : undefined;
+      if (!invoiceId) {
+        res.status(400).json({ error: "invoiceId required", code: "BAD_REQUEST" });
+        return;
+      }
+      const resolved = await resolveInvoiceStripeAccount(tenantId, invoiceId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+      res.json({ stripeAccountId: resolved.stripeAccountId });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/checkout/invoice-card/connection-token
+const ConnectionTokenSchema = z.object({ invoiceId: z.string().uuid() });
+router.post(
+  "/invoice-card/connection-token",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { invoiceId } = ConnectionTokenSchema.parse(req.body);
+      const resolved = await resolveInvoiceStripeAccount(tenantId, invoiceId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+      const secret = await createConnectionToken(resolved.stripeAccountId);
+      res.json({ secret });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/checkout/invoice-card/intent
+const InvoiceCardIntentSchema = z.object({
+  invoiceId: z.string().uuid(),
+  amountCents: z.number().int().positive(),
+  mode: z.enum(["cnp", "terminal"]),
+}).strict();
+
+router.post(
+  "/invoice-card/intent",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { invoiceId, amountCents, mode } = InvoiceCardIntentSchema.parse(req.body);
+      const resolved = await resolveInvoiceStripeAccount(tenantId, invoiceId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+      const { invoice, stripeAccountId } = resolved;
+      if (invoice.balanceCents <= 0) {
+        res.status(400).json({ error: "Invoice has no outstanding balance", code: "NO_BALANCE" });
+        return;
+      }
+      if (amountCents > invoice.balanceCents) {
+        res.status(400).json({
+          error: "Amount exceeds invoice balance due",
+          code: "AMOUNT_EXCEEDS_BALANCE",
+        });
+        return;
+      }
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { applicationFeePctBps: true, applicationFeeFixedCents: true },
+      });
+      const applicationFee = calculateApplicationFee(
+        amountCents,
+        tenant?.applicationFeePctBps ?? 0,
+        tenant?.applicationFeeFixedCents ?? 0,
+      );
+
+      const params: Stripe.PaymentIntentCreateParams = {
+        amount: amountCents,
+        currency: "usd",
+        application_fee_amount: applicationFee,
+        description: `Invoice payment (${mode})`,
+        metadata: {
+          tenantId,
+          invoiceId: invoice.id,
+          customerId: invoice.customerId,
+          source: mode === "terminal" ? "invoice-terminal" : "invoice-cnp",
+        },
+      };
+      if (mode === "terminal") {
+        params.payment_method_types = ["card_present"];
+        params.capture_method = "manual";
+      } else {
+        params.payment_method_types = ["card"];
+      }
+
+      const intent = await requireStripe().paymentIntents.create(params, {
+        stripeAccount: stripeAccountId,
+        // Bind idempotency to invoice + amount + mode so retries collapse but
+        // a corrected total or a rail switch produces a fresh PI.
+        idempotencyKey: `invoice-card-${mode}-${invoice.id}-${invoice.balanceCents}-${amountCents}`,
+      });
+
+      res.json({
+        paymentIntentId: intent.id,
+        clientSecret: intent.client_secret,
+        stripeAccountId,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/checkout/invoice-card/finalize
+const InvoiceCardFinalizeSchema = z.object({
+  invoiceId: z.string().uuid(),
+  paymentIntentId: z.string().min(1),
+  amountCents: z.number().int().positive(),
+}).strict();
+
+router.post(
+  "/invoice-card/finalize",
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const tenantId = req.tenantId!;
+      const { invoiceId, paymentIntentId, amountCents } = InvoiceCardFinalizeSchema.parse(req.body);
+      const resolved = await resolveInvoiceStripeAccount(tenantId, invoiceId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+      const { invoice, stripeAccountId } = resolved;
+
+      // Idempotent for the SAME invoice; hard 409 if the PI was already
+      // applied to a DIFFERENT invoice (one Stripe charge ↔ one A/R doc).
+      const existing = await prisma.payment.findFirst({
+        where: { tenantId, stripePaymentId: paymentIntentId },
+        select: { id: true, status: true, invoiceId: true },
+      });
+      if (existing) {
+        if (existing.invoiceId && existing.invoiceId !== invoice.id) {
+          res.status(409).json({
+            error: "PAYMENT_INTENT_ALREADY_APPLIED",
+            code: "PAYMENT_INTENT_ALREADY_APPLIED",
+          });
+          return;
+        }
+        res.json({ paymentId: existing.id, status: existing.status, already: true });
+        return;
+      }
+
+      let intent = await requireStripe().paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { stripeAccount: stripeAccountId },
+      );
+
+      // Ownership check — the PI's metadata (stamped by /invoice-card/intent)
+      // must match this invoice/tenant/customer, and source must be one of
+      // the invoice-card values. Otherwise a PI from another channel could
+      // be replayed here to mark this invoice paid.
+      const md = (intent.metadata ?? {}) as Record<string, string>;
+      if (md.tenantId !== tenantId || md.invoiceId !== invoice.id) {
+        res.status(403).json({
+          error: "PAYMENT_INTENT_MISMATCH",
+          code: "PAYMENT_INTENT_MISMATCH",
+        });
+        return;
+      }
+      if (md.customerId && md.customerId !== invoice.customerId) {
+        res.status(403).json({
+          error: "PAYMENT_INTENT_MISMATCH",
+          code: "PAYMENT_INTENT_MISMATCH",
+        });
+        return;
+      }
+      if (md.source !== "invoice-cnp" && md.source !== "invoice-terminal") {
+        res.status(403).json({
+          error: "PAYMENT_INTENT_WRONG_SOURCE",
+          code: "PAYMENT_INTENT_WRONG_SOURCE",
+        });
+        return;
+      }
+      const pmTypes = (intent.payment_method_types ?? []) as string[];
+      const expectedRail = md.source === "invoice-terminal" ? "card_present" : "card";
+      if (!pmTypes.includes(expectedRail)) {
+        res.status(403).json({
+          error: "PAYMENT_INTENT_WRONG_RAIL",
+          code: "PAYMENT_INTENT_WRONG_RAIL",
+        });
+        return;
+      }
+
+      // Terminal flow leaves the PI in `requires_capture` after processPayment.
+      // Capture server-side so the final amount is the source of truth.
+      if (intent.status === "requires_capture") {
+        await captureTerminalPayment(paymentIntentId, stripeAccountId);
+        intent = await requireStripe().paymentIntents.retrieve(
+          paymentIntentId,
+          {},
+          { stripeAccount: stripeAccountId },
+        );
+      }
+
+      if (intent.status !== "succeeded") {
+        res.status(400).json({ error: "PAYMENT_NOT_SUCCEEDED", status: intent.status });
+        return;
+      }
+      if (intent.amount !== amountCents) {
+        res.status(400).json({
+          error: "AMOUNT_MISMATCH",
+          expectedAmountCents: amountCents,
+          stripeAmountCents: intent.amount,
+        });
+        return;
+      }
+      if (amountCents > invoice.balanceCents) {
+        res.status(400).json({
+          error: "Amount exceeds invoice balance due",
+          code: "AMOUNT_EXCEEDS_BALANCE",
+        });
+        return;
+      }
+
+      const paymentId = uuid();
+      await prisma.$transaction(async (tx) => {
+        await tx.payment.create({
+          data: {
+            id: paymentId,
+            tenantId,
+            customerId: invoice.customerId,
+            invoiceId: invoice.id,
+            amountCents,
+            method: "CARD",
+            stripePaymentId: paymentIntentId,
+            postedDate: new Date(),
+            status: "COMPLETED",
+          },
+        });
+        await postPayment(
+          {
+            id: paymentId,
+            tenantId,
+            amountCents,
+            method: "CARD",
+            locationId: invoice.locationId,
+          },
+          tx,
+        );
+        const newBalance = Math.max(0, invoice.balanceCents - amountCents);
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            balanceCents: newBalance,
+            status: newBalance === 0 ? "PAID" : (invoice.status as never),
+          },
+        });
+      });
+
+      res.json({ paymentId, status: "COMPLETED" });
+    } catch (err) {
       next(err);
     }
   },

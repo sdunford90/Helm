@@ -348,9 +348,10 @@ export async function resolveRentalProductGlAccounts(
   rentalProductId: string,
   locationId: string | null,
 ): Promise<ResolvedProductGl> {
-  // The legacy tenant-wide `RentalProduct.glAccountId` column was retired
-  // in favor of the per-location `RentalProductGlMapping` table, so the
-  // only resolution source is the per-location override.
+  // Rental products are non-inventory: the marina retains the asset and
+  // lends it out, so there is no COGS or inventory-asset posting. Only a
+  // per-location revenue mapping is configurable; the other slots in
+  // ResolvedProductGl are always null for rentals.
   const product = await prisma.rentalProduct.findFirst({
     where: { id: rentalProductId, tenantId },
     select: { id: true },
@@ -363,29 +364,22 @@ export async function resolveRentalProductGlAccounts(
       source: "unmapped",
     };
   }
-  let pOver: {
-    revenueGlAccountId: string | null;
-    cogsGlAccountId: string | null;
-    inventoryAssetGlAccountId: string | null;
-  } | null = null;
+  let pOver: { revenueGlAccountId: string | null } | null = null;
   if (locationId) {
     pOver = await prisma.rentalProductGlMapping.findFirst({
       where: { tenantId, rentalProductId, locationId },
-      select: {
-        revenueGlAccountId: true,
-        cogsGlAccountId: true,
-        inventoryAssetGlAccountId: true,
-      },
+      select: { revenueGlAccountId: true },
     });
   }
   const revenueGlAccountId = pick(pOver?.revenueGlAccountId);
-  const cogsGlAccountId = pick(pOver?.cogsGlAccountId);
-  const inventoryAssetGlAccountId = pick(pOver?.inventoryAssetGlAccountId);
   const source: ResolvedProductGl["source"] =
-    pOver && (pOver.revenueGlAccountId || pOver.cogsGlAccountId || pOver.inventoryAssetGlAccountId)
-      ? "product_override"
-      : "unmapped";
-  return { revenueGlAccountId, cogsGlAccountId, inventoryAssetGlAccountId, source };
+    pOver && pOver.revenueGlAccountId ? "product_override" : "unmapped";
+  return {
+    revenueGlAccountId,
+    cogsGlAccountId: null,
+    inventoryAssetGlAccountId: null,
+    source,
+  };
 }
 
 export async function resolveDockageRateGlAccount(

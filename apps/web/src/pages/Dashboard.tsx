@@ -248,6 +248,19 @@ const Dashboard: React.FC = () => {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
+  // Date-only fields (invoice issue date) come from the API as either
+  // "YYYY-MM-DD" or a noon-UTC timestamp. Render via UTC components so the
+  // displayed day matches the picked calendar day in any timezone.
+  const fmtDateOnly = (value: string) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+    if (m) {
+      const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    }
+    const d = new Date(value);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  };
+
   // --- KPI values derived from API ---
   const occupancyRate = occupancyData?.summary
     ? `${Math.round(parseFloat(occupancyData.summary.occupancyRate))}%`
@@ -354,7 +367,7 @@ const Dashboard: React.FC = () => {
   };
   const invoiceRows = (invoicesData?.data ?? []).map((inv: any) => ({
     id: inv.id,
-    date: fmtDate(inv.issuedDate || inv.createdAt),
+    date: inv.issuedDate ? fmtDateOnly(inv.issuedDate) : fmtDate(inv.createdAt),
     desc: inv.invoiceNumber ? `Invoice ${inv.invoiceNumber}` : 'Invoice',
     customer: inv.customer ? `${inv.customer.firstName} ${inv.customer.lastName}`.trim() : '—',
     amount: fmtDollars(inv.totalCents ?? 0),

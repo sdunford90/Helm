@@ -5,6 +5,7 @@ import {
   Anchor, Users, ShieldCheck, Clock, ChevronDown,
   ChevronUp, AlertTriangle, RefreshCw,
 } from 'lucide-react';
+import SubNav, { BILLING_SUBNAV } from '../components/SubNav';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -40,7 +41,7 @@ const st: Record<string, React.CSSProperties> = {
   statsRow: { display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '16px', marginBottom: '28px' },
   statCard: { background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   statLabel: { fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', marginBottom: '4px' },
-  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' },
+  statValue: { fontSize: '22px', fontWeight: 700, color: '#0A2342', fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' },
   statSub: { fontSize: '12px', color: '#2E4A6B', marginTop: '2px' },
   filterBar: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' as const },
   searchWrap: { position: 'relative' as const, flex: 1, minWidth: '200px' },
@@ -52,7 +53,7 @@ const st: Record<string, React.CSSProperties> = {
   table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '13px', minWidth: '1400px' },
   th: { textAlign: 'left' as const, padding: '10px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#FFFFFF', backgroundColor: '#0A2342', borderBottom: '2px solid #00D4FF', whiteSpace: 'nowrap' as const },
   td: { padding: '10px 12px', color: '#0A2342', borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap' as const },
-  mono: { fontFamily: '"JetBrains Mono", monospace', fontSize: '13px' },
+  mono: { fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums', fontSize: '13px' },
   badge: { display: 'inline-block', padding: '2px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '9999px' },
   footerRow: { fontWeight: 700, backgroundColor: '#F1F5F9' },
   expandBtn: { background: 'none', border: 'none', cursor: 'pointer', color: '#00D4FF', padding: '2px' },
@@ -99,8 +100,9 @@ export default function RentRoll() {
 
   return (
     <div style={st.page}>
-      <h1 style={st.title} className="helm-page-title">Rent Roll</h1>
+      <h1 style={st.title} className="helm-page-title">Billing</h1>
       <hr style={st.divider} />
+      <SubNav items={BILLING_SUBNAV} />
 
       <div style={st.statsRow} className="helm-stats-grid">
         <div style={{ ...st.statCard, borderTop: '3px solid #00D4FF' }}>

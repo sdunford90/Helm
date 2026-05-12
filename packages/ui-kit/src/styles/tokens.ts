@@ -22,7 +22,7 @@ export const tokens = {
     fontFamily: {
       primary: 'Inter, system-ui, sans-serif',
       display: '"DM Serif Display", serif',
-      mono: '"JetBrains Mono", monospace',
+      mono: 'Inter, system-ui, sans-serif',
     },
     fontSize: {
       display: '56px',

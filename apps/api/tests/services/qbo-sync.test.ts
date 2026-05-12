@@ -198,6 +198,7 @@ describe('syncInventoryItem — GL account validation', () => {
           sku: 'ICE-10',
           priceCents: 500,
           costCents: 200,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-1',
           cogsGlAccountId: 'gl-2',
@@ -206,8 +207,10 @@ describe('syncInventoryItem — GL account validation', () => {
       ),
     ).rejects.toThrow(/Missing GL account for Income/);
 
-    // Failure should still be persisted to the sync ref so the UI can surface it
-    expect((mockPrisma as any).qboInventorySyncRef.update).toHaveBeenCalled();
+    // Failure should still be persisted to the sync ref so the UI can surface
+    // it. With the probe-first refactor, the very first failure for a ref
+    // creates the row instead of updating it.
+    expect((mockPrisma as any).qboInventorySyncRef.create).toHaveBeenCalled();
   });
 
   it('throws when the GL account exists but has not been mapped to QBO', async () => {
@@ -226,6 +229,7 @@ describe('syncInventoryItem — GL account validation', () => {
           sku: 'WAX-1',
           priceCents: 1500,
           costCents: 600,
+          trackInventory: true,
           incomeGlAccountId: 'gl-income',
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -233,6 +237,174 @@ describe('syncInventoryItem — GL account validation', () => {
         'tenant-1',
       ),
     ).rejects.toThrow(/not linked to a QuickBooks account/);
+  });
+
+  it('does not invalidate the existing sync ref on a transient lookup failure', async () => {
+    // Existing ref points at a QBO Item; the GET fails with a 5xx (transient).
+    // We must NOT null out qboId — otherwise the next attempt would create a
+    // duplicate Item in QBO every time QBO has a hiccup.
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ qboId: 'qbo-item-existing', qboType: 'Item' });
+    const refUpdate = vi.fn().mockResolvedValue({ retryCount: 1 });
+    (mockPrisma as any).qboInventorySyncRef.update = refUpdate;
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Fault":{"Error":[{"Message":"ServiceUnavailable","code":"500"}]}}', {
+        status: 503,
+      }) as any,
+    );
+
+    try {
+      await expect(
+        syncInventoryItem(
+          {
+            productId: 'svc-prod-transient',
+            name: 'Dockage Add-on',
+            sku: 'ADD-2',
+            priceCents: 1000,
+            costCents: 0,
+            trackInventory: false,
+            incomeGlAccountId: 'gl-income',
+            inventoryAssetGlAccountId: null,
+            cogsGlAccountId: null,
+          },
+          'tenant-1',
+        ),
+      ).rejects.toThrow();
+
+      // The stale-ref invalidation update (data: { qboId: null }) must NOT
+      // have been issued. Only the failure-bookkeeping updates may run.
+      const invalidationCalls = refUpdate.mock.calls.filter(
+        ([args]: any) => args?.data?.qboId === null,
+      );
+      expect(invalidationCalls).toHaveLength(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('invalidates the sync ref and creates a new Item when QBO returns 404 (item deleted upstream)', async () => {
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ qboId: 'qbo-item-gone', qboType: 'Item' });
+    const refUpdate = vi.fn().mockResolvedValue({ retryCount: 1 });
+    (mockPrisma as any).qboInventorySyncRef.update = refUpdate;
+    (mockPrisma as any).qboInventorySyncRef.upsert = vi.fn().mockResolvedValue({});
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    // First call (GET item/qbo-item-gone) → 404; second call (POST item) → 200 create.
+    const fetchSpy = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('{"Fault":{"Error":[{"Message":"Object Not Found","code":"610"}]}}', {
+          status: 404,
+        }) as any,
+      )
+      .mockResolvedValueOnce(
+        new Response('{"Item":{"Id":"qbo-item-new"}}', { status: 200 }) as any,
+      );
+
+    try {
+      await syncInventoryItem(
+        {
+          productId: 'svc-prod-recreated',
+          name: 'Dockage Add-on',
+          sku: 'ADD-3',
+          priceCents: 1000,
+          costCents: 0,
+          trackInventory: false,
+          incomeGlAccountId: 'gl-income',
+          inventoryAssetGlAccountId: null,
+          cogsGlAccountId: null,
+        },
+        'tenant-1',
+      );
+
+      // Stale ref WAS invalidated.
+      const invalidationCalls = refUpdate.mock.calls.filter(
+        ([args]: any) => args?.data?.qboId === null,
+      );
+      expect(invalidationCalls).toHaveLength(1);
+      // A POST to item endpoint occurred (the new-item create).
+      const postCalls = fetchSpy.mock.calls.filter(([, init]: any) => init?.method === 'POST');
+      expect(postCalls.length).toBeGreaterThan(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('non-tracked products only require an Income mapping (no Inventory Asset / COGS)', async () => {
+    // No Inventory Asset / COGS provided — would reject for an inventory item
+    // but should pass GL validation for a service item.
+    mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue({
+      id: 'gl-income',
+      qboAccountId: 'qbo-acct-1',
+      name: 'Service Revenue',
+      accountNumber: '4000',
+    });
+    // Mock a connected tenant so qboRequest can resolve credentials.
+    mockPrisma.tenant.findUnique = vi.fn().mockResolvedValue({
+      qboAccessToken: 'access-token',
+      qboRefreshToken: 'refresh-token',
+      qboRealmId: 'realm-1',
+      qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    // Stub the QBO HTTP call so we can inspect the payload without a real
+    // round-trip. We only care that GL validation succeeds and that the
+    // payload sent to QBO uses Type:"Service".
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Item":{"Id":"qbo-item-1"}}', { status: 200 }) as any,
+    );
+
+    try {
+      await syncInventoryItem(
+        {
+          productId: 'svc-prod-1',
+          name: 'Dockage Add-on',
+          sku: 'ADD-1',
+          priceCents: 1000,
+          costCents: 0,
+          trackInventory: false,
+          incomeGlAccountId: 'gl-income',
+          inventoryAssetGlAccountId: null,
+          cogsGlAccountId: null,
+        },
+        'tenant-1',
+      );
+
+      // The QBO POST body should reflect a Service item.
+      const calls = fetchSpy.mock.calls.filter(([, init]: any) => init?.method === 'POST');
+      expect(calls.length).toBeGreaterThan(0);
+      const lastBody = JSON.parse((calls[calls.length - 1][1] as any).body as string);
+      expect(lastBody.Type).toBe('Service');
+      expect(lastBody.AssetAccountRef).toBeUndefined();
+      expect(lastBody.ExpenseAccountRef).toBeUndefined();
+      expect(lastBody.TrackQtyOnHand).toBeUndefined();
+      expect(lastBody.IncomeAccountRef).toEqual({ value: 'qbo-acct-1' });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 
@@ -394,7 +566,8 @@ describe('createQboRefundReceipt — partial refund → QBO RefundReceipt', () =
     // surface it.
     const upsertCalls = ((mockPrisma as any).qboInventorySyncRef.upsert as any).mock.calls;
     const updateCalls = ((mockPrisma as any).qboInventorySyncRef.update as any).mock.calls;
-    expect(upsertCalls.length + updateCalls.length).toBeGreaterThan(0);
+    const createCalls = ((mockPrisma as any).qboInventorySyncRef.create as any).mock.calls;
+    expect(upsertCalls.length + updateCalls.length + createCalls.length).toBeGreaterThan(0);
   });
 
   it('rejects non-positive refund amounts before touching prisma or QBO', async () => {
@@ -851,7 +1024,11 @@ describe('findTenantsWithDueFailedInventorySyncs — drives the background sweep
 
 describe('writeSyncRefFailure backoff bookkeeping', () => {
   it('atomically increments retryCount and stamps nextRetryAt with exponential backoff on each failure', async () => {
-    // Existing row: first update() call returns the post-increment retryCount (3).
+    // Probe-first: findUnique returns an existing row, then update() is
+    // called twice (increment then nextRetryAt stamp).
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi
+      .fn()
+      .mockResolvedValue({ id: 'ref-1' });
     const update = vi.fn()
       .mockResolvedValueOnce({ retryCount: 3 })
       .mockResolvedValueOnce({});
@@ -869,6 +1046,7 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
           sku: 'T-99',
           priceCents: 100,
           costCents: 50,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -896,9 +1074,13 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     expect((mockPrisma as any).qboInventorySyncRef.create).not.toHaveBeenCalled();
   });
 
-  it('falls back to create with retryCount=1 when the ref does not yet exist (P2025)', async () => {
-    const notFound = Object.assign(new Error('Record to update not found'), { code: 'P2025' });
-    (mockPrisma as any).qboInventorySyncRef.update = vi.fn().mockRejectedValue(notFound);
+  it('creates the ref with retryCount=1 on the very first failure (no scary P2025 log)', async () => {
+    // Probe-first: findUnique returns null → we go straight to create without
+    // ever issuing an update-of-missing-row that Prisma would log at error
+    // level.
+    (mockPrisma as any).qboInventorySyncRef.findUnique = vi.fn().mockResolvedValue(null);
+    const update = vi.fn();
+    (mockPrisma as any).qboInventorySyncRef.update = update;
     const create = vi.fn().mockResolvedValue({});
     (mockPrisma as any).qboInventorySyncRef.create = create;
     mockPrisma.glAccount.findFirst = vi.fn().mockResolvedValue(null);
@@ -913,6 +1095,7 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
           sku: 'N-1',
           priceCents: 100,
           costCents: 50,
+          trackInventory: true,
           incomeGlAccountId: null,
           inventoryAssetGlAccountId: 'gl-asset',
           cogsGlAccountId: 'gl-cogs',
@@ -922,6 +1105,8 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     ).rejects.toThrow();
     const after = Date.now();
 
+    // No update call should ever occur on the first-failure path.
+    expect(update).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
     const args = create.mock.calls[0][0];
     expect(args.data.retryCount).toBe(1);
@@ -929,5 +1114,405 @@ describe('writeSyncRefFailure backoff bookkeeping', () => {
     const expectedDelay = 15 * 60 * 1000; // 15m for first retry
     expect(nextRetryAt.getTime()).toBeGreaterThanOrEqual(before + expectedDelay - 10);
     expect(nextRetryAt.getTime()).toBeLessThanOrEqual(after + expectedDelay + 10);
+  });
+});
+
+// ===========================================================================
+// syncPosTicketAsReceipt — QBO line `Amount === UnitPrice * Qty` invariant
+// ===========================================================================
+//
+// Production POS receipts were failing with:
+//   "Amount calculation incorrect in the request. Amount is not equal to
+//    UnitPrice * Qty. Supplied value: 4.29"
+// because the builder sent post-discount/post-tax `extendedCents` as Amount
+// while sending the pre-discount `unitPriceCents` as UnitPrice. These tests
+// pin down that every SalesItemLineDetail line we send to QBO satisfies the
+// equality to the cent for the production failure shapes.
+describe('syncPosTicketAsReceipt — Amount === UnitPrice * Qty invariant', () => {
+  const tenantId = 'tenant-pos-1';
+  const locationId = 'loc-pos-1';
+
+  beforeEach(() => {
+    (mockPrisma as any).location = {
+      findUnique: vi.fn().mockResolvedValue({
+        id: locationId,
+        qboRealmId: 'realm-pos',
+        qboAccessToken: 'access-token',
+        qboRefreshToken: 'refresh-token',
+        qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        // For getLocationPostingAccounts — only undeposited funds is needed
+        // for non-cash sales.
+        arGlAccount: null,
+        undepositedFundsGlAccount: { id: 'gl-uf', accountNumber: '1199', name: 'Undeposited Funds', qboAccountId: 'qbo-uf' },
+        deferredRevenueGlAccount: null,
+        defaultRevenueGlAccount: null,
+        salesTaxGlAccount: null,
+        earlyTerminationGlAccount: null,
+        achReturnFeeGlAccount: null,
+        bankGlAccount: null,
+      }),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn(),
+    };
+  });
+
+  // Helper — builds a synthetic POS transaction matching the failing shape and
+  // captures the JSON payload sent to QBO so we can assert on every line.
+  async function runReceiptSync(tx: any): Promise<any> {
+    (mockPrisma as any).posTransaction = {
+      ...((mockPrisma as any).posTransaction ?? {}),
+      findFirst: vi.fn().mockResolvedValue(tx),
+    };
+
+    const captured: any[] = [];
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(
+      async (_url: any, init: any) => {
+        if (init?.method === 'POST' && init?.body) {
+          captured.push(JSON.parse(init.body as string));
+        }
+        return new Response('{"SalesReceipt":{"Id":"sr-1"}}', { status: 200 }) as any;
+      },
+    );
+
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await mod.syncPosTicketAsReceipt(tx.id, tenantId);
+      // The salesreceipt payload is the last POST body.
+      return captured[captured.length - 1];
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('reproduces the production "$4.29" failure: every line satisfies Amount === UnitPrice * Qty when discounts and line tax are present', async () => {
+    // Production case: qty 3 @ $1.43 with a $0.50 discount and $0.30 line tax.
+    // Old builder: Amount=extendedCents/100=(429-50+30)/100=4.09 but
+    // UnitPrice*Qty = 1.43*3 = 4.29 → QBO rejects "Supplied value: 4.29".
+    const tx = {
+      id: 'tx-prod-failure',
+      tenantId,
+      taxCents: 30,
+      totalCents: 429 - 50 + 30, // 409
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        {
+          id: 'li-1',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 50,
+          taxCents: 30,
+          extendedCents: 429 - 50 + 30, // 409 — the post-discount, post-tax value
+          product: { id: 'p-1', name: 'Bag of Ice', qboItemId: 'qbo-item-1' },
+        },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    expect(payload).toBeDefined();
+    expect(payload.Line).toBeDefined();
+
+    // Every SalesItemLineDetail line must satisfy QBO's invariant exactly.
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+
+    // The item line carries the *pre-discount* subtotal as Amount.
+    const itemLine = payload.Line.find((l: any) => l.SalesItemLineDetail?.ItemRef?.value === 'qbo-item-1');
+    expect(itemLine).toBeDefined();
+    expect(itemLine.Amount).toBe(4.29);
+    expect(itemLine.SalesItemLineDetail.Qty).toBe(3);
+    expect(itemLine.SalesItemLineDetail.UnitPrice).toBe(1.43);
+
+    // Discount surfaced as a separate DiscountLineDetail line.
+    const discountLine = payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLine).toBeDefined();
+    expect(discountLine.Amount).toBe(0.5);
+
+    // Single sales-tax line, value drawn from tx.taxCents (no double-count).
+    const taxLines = payload.Line.filter((l: any) => l.Description === 'Sales Tax');
+    expect(taxLines).toHaveLength(1);
+    expect(taxLines[0].Amount).toBe(0.3);
+
+    // Receipt total ties out to the POS ticket total.
+    expect(payload.TotalAmt).toBe(4.09);
+  });
+
+  it('handles mixed lines (qty 3 @ $1.43, qty 7 @ $0.99) with no discounts or tax', async () => {
+    const tx = {
+      id: 'tx-mixed',
+      tenantId,
+      taxCents: 0,
+      totalCents: 143 * 3 + 99 * 7, // 429 + 693 = 1122
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-a', quantity: 3, unitPriceCents: 143, discountCents: 0, taxCents: 0, extendedCents: 429, product: { id: 'p-a', name: 'A', qboItemId: 'qbo-a' } },
+        { id: 'li-b', quantity: 7, unitPriceCents: 99,  discountCents: 0, taxCents: 0, extendedCents: 693, product: { id: 'p-b', name: 'B', qboItemId: 'qbo-b' } },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+    expect(payload.TotalAmt).toBe(11.22);
+    expect(payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail')).toBeUndefined();
+  });
+
+  it('aggregates multiple per-line discounts into a single receipt-level DiscountLineDetail', async () => {
+    const tx = {
+      id: 'tx-multi-disc',
+      tenantId,
+      taxCents: 0,
+      totalCents: (200 * 2 - 25) + (500 * 1 - 75), // 375 + 425 = 800
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-1', quantity: 2, unitPriceCents: 200, discountCents: 25, taxCents: 0, extendedCents: 375, product: { id: 'p-1', name: 'X', qboItemId: 'qbo-x' } },
+        { id: 'li-2', quantity: 1, unitPriceCents: 500, discountCents: 75, taxCents: 0, extendedCents: 425, product: { id: 'p-2', name: 'Y', qboItemId: 'qbo-y' } },
+      ],
+    };
+
+    const payload = await runReceiptSync(tx);
+    const discountLines = payload.Line.filter((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLines).toHaveLength(1);
+    expect(discountLines[0].Amount).toBe(1.0); // (25 + 75) / 100
+    expect(payload.TotalAmt).toBe(8.0);
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+  });
+
+  it('throws when computed total drifts from PosTransaction.totalCents (defense in depth)', async () => {
+    const tx = {
+      id: 'tx-drift',
+      tenantId,
+      taxCents: 0,
+      totalCents: 9999, // intentionally wrong vs lines (429)
+      createdAt: new Date('2026-04-15T12:00:00Z'),
+      status: 'CARD',
+      shift: { locationId },
+      customer: null,
+      lineItems: [
+        { id: 'li-1', quantity: 3, unitPriceCents: 143, discountCents: 0, taxCents: 0, extendedCents: 429, product: { id: 'p-1', name: 'X', qboItemId: 'qbo-x' } },
+      ],
+    };
+
+    (mockPrisma as any).posTransaction = {
+      ...((mockPrisma as any).posTransaction ?? {}),
+      findFirst: vi.fn().mockResolvedValue(tx),
+    };
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"SalesReceipt":{"Id":"sr-1"}}', { status: 200 }) as any,
+    );
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await expect(mod.syncPosTicketAsReceipt(tx.id, tenantId)).rejects.toThrow(/total mismatch/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+// ===========================================================================
+// syncInvoice — QBO line `Amount === UnitPrice * Qty` invariant (Task #312)
+// ===========================================================================
+//
+// The customer-invoice → QBO Invoice line builder previously used the same
+// pattern that broke POS receipts in Task #309: it sent post-discount/post-tax
+// `extendedCents` as `Line.Amount` while sending the pre-discount
+// `unitPriceCents` as `UnitPrice`. The moment a customer invoice line carries
+// a discount (or per-line tax that doesn't divide cleanly), QBO rejects the
+// whole invoice with "Amount is not equal to UnitPrice * Qty". These tests
+// pin the invoice builder to the same invariant.
+describe('syncInvoice — Amount === UnitPrice * Qty invariant (discounts/tax)', () => {
+  const tenantId = 'tenant-inv-1';
+  const locationId = 'loc-inv-1';
+
+  beforeEach(() => {
+    (mockPrisma as any).location = {
+      findUnique: vi.fn().mockResolvedValue({
+        id: locationId,
+        qboRealmId: 'realm-inv',
+        qboAccessToken: 'access-token',
+        qboRefreshToken: 'refresh-token',
+        qboTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        arGlAccount: null,
+        undepositedFundsGlAccount: null,
+        deferredRevenueGlAccount: null,
+        defaultRevenueGlAccount: null,
+        salesTaxGlAccount: null,
+        earlyTerminationGlAccount: null,
+        achReturnFeeGlAccount: null,
+      }),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn(),
+    };
+    mockPrisma.invoice.update = vi.fn().mockResolvedValue({}) as any;
+    (mockPrisma as any).qboInventorySyncRef = {
+      ...((mockPrisma as any).qboInventorySyncRef ?? {}),
+      findMany: vi.fn().mockResolvedValue([]),
+    };
+  });
+
+  async function runInvoiceSync(invoice: any): Promise<any> {
+    mockPrisma.invoice.findFirst = vi.fn().mockResolvedValue(invoice) as any;
+
+    const captured: any[] = [];
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(
+      async (_url: any, init: any) => {
+        if (init?.method === 'POST' && init?.body) {
+          captured.push(JSON.parse(init.body as string));
+        }
+        return new Response('{"Invoice":{"Id":"inv-qbo-1"}}', { status: 200 }) as any;
+      },
+    );
+
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await mod.syncInvoice(invoice.id, tenantId);
+      return captured[captured.length - 1];
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('reproduces the discounted-invoice failure: every SalesItemLineDetail line satisfies Amount === UnitPrice * Qty', async () => {
+    // Same shape as the POS production failure: qty 3 @ $1.43 with $0.50
+    // discount and $0.30 line tax. Pre-fix: Amount=extendedCents/100=4.09 but
+    // UnitPrice*Qty=4.29 → QBO rejects.
+    const invoice = {
+      id: 'inv-disc-1',
+      tenantId,
+      locationId,
+      qboInvoiceId: null,
+      invoiceNumber: 'INV-1001',
+      memo: null,
+      dueDate: new Date('2026-05-15T00:00:00Z'),
+      issuedDate: new Date('2026-04-15T00:00:00Z'),
+      subtotalCents: 429,
+      taxCents: 30,
+      totalCents: 429 - 50 + 30, // 409
+      customer: {
+        id: 'cust-1',
+        firstName: 'Jane',
+        lastName: 'Smith',
+        email: 'jane@test.com',
+        qboCustomerId: 'qbo-cust-1',
+      },
+      lineItems: [
+        {
+          id: 'li-1',
+          description: 'Slip rental',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 50,
+          taxCents: 30,
+          extendedCents: 429 - 50 + 30,
+          sourceType: null,
+          sourceId: null,
+          qboItemId: 'qbo-item-1',
+        },
+      ],
+    };
+
+    const payload = await runInvoiceSync(invoice);
+    expect(payload).toBeDefined();
+    expect(payload.Line).toBeDefined();
+
+    for (const line of payload.Line) {
+      if (line.DetailType !== 'SalesItemLineDetail') continue;
+      const qty = line.SalesItemLineDetail.Qty;
+      const unitPrice = line.SalesItemLineDetail.UnitPrice;
+      expect(Math.round(line.Amount * 100)).toBe(Math.round(unitPrice * qty * 100));
+    }
+
+    const itemLine = payload.Line.find(
+      (l: any) => l.SalesItemLineDetail?.ItemRef?.value === 'qbo-item-1',
+    );
+    expect(itemLine).toBeDefined();
+    expect(itemLine.Amount).toBe(4.29);
+    expect(itemLine.SalesItemLineDetail.Qty).toBe(3);
+    expect(itemLine.SalesItemLineDetail.UnitPrice).toBe(1.43);
+
+    const discountLine = payload.Line.find((l: any) => l.DetailType === 'DiscountLineDetail');
+    expect(discountLine).toBeDefined();
+    expect(discountLine.Amount).toBe(0.5);
+
+    const taxLines = payload.Line.filter((l: any) => l.Description === 'Sales Tax');
+    expect(taxLines).toHaveLength(1);
+    expect(taxLines[0].Amount).toBe(0.3);
+
+    // Sum of QBO line amounts (item subtotals + tax - discount) ties to
+    // Invoice.totalCents — i.e. QBO will compute the same TotalAmt.
+    const sumCents = payload.Line.reduce((acc: number, l: any) => {
+      if (l.DetailType === 'DiscountLineDetail') return acc - Math.round(l.Amount * 100);
+      return acc + Math.round(l.Amount * 100);
+    }, 0);
+    expect(sumCents).toBe(invoice.totalCents);
+  });
+
+  it('throws when computed invoice total drifts from Invoice.totalCents (defense in depth)', async () => {
+    const invoice = {
+      id: 'inv-drift',
+      tenantId,
+      locationId,
+      qboInvoiceId: null,
+      invoiceNumber: 'INV-9999',
+      memo: null,
+      dueDate: null,
+      issuedDate: null,
+      subtotalCents: 429,
+      taxCents: 0,
+      totalCents: 9999, // intentionally wrong
+      customer: {
+        id: 'cust-2',
+        firstName: 'A',
+        lastName: 'B',
+        email: 'a@b.com',
+        qboCustomerId: 'qbo-cust-2',
+      },
+      lineItems: [
+        {
+          id: 'li-1',
+          description: 'Item',
+          quantity: 3,
+          unitPriceCents: 143,
+          discountCents: 0,
+          taxCents: 0,
+          extendedCents: 429,
+          sourceType: null,
+          sourceId: null,
+          qboItemId: null,
+        },
+      ],
+    };
+
+    mockPrisma.invoice.findFirst = vi.fn().mockResolvedValue(invoice) as any;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('{"Invoice":{"Id":"x"}}', { status: 200 }) as any,
+    );
+    try {
+      const mod = await import('../../src/services/qbo-sync.js');
+      await expect(mod.syncInvoice(invoice.id, tenantId)).rejects.toThrow(/total mismatch/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
