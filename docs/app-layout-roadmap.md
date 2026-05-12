@@ -26,33 +26,57 @@ The original roadmap envisioned six phases (web sidebar reorder → settings she
 | Portal sidebar regrouped into HOME / MY MARINA / BILLING / SERVICES / COMMUNICATIONS with an Account footer (Profile / Notifications / Security / Help); Messages promoted into nav | This branch (`30b0508`) |
 | Admin sidebar regrouped into HOME / TENANTS / REVENUE / OPERATIONS with a Configuration footer (Platform Settings, My Profile) | This branch (`30b0508`) |
 | Account stub pages for portal (4) + admin `/me` page that reads from Clerk + `useAdminMe` | This branch (`30b0508`) |
+| **Settings clean redesign (S1)** — five sections (Marina / Team / Pricing & Payments / Catalog / Integrations), 19 leaves, two-level nav, 18 legacy URLs redirect, bare `/settings` lands on `/settings/marina/profile` | This branch (`a9f9386`) |
+| Portal sidebar adds **My Slip** + **Documents** under My Marina | This branch (`e0f5749`) |
 
 ### Reporting & Insights
 | Item | Where it shipped |
 |---|---|
 | Insights surface broken into 8 per-section pages — Overview (KPIs + section index), Operations, Financial, Customers & CRM, Communications, Compliance & Audit, Scheduled & Saved, Custom Builder | This branch (`669e6e6`) |
-| Each section page lists a real report inventory with status badges (Live / Phase 5a / 5b / 5c) instead of a single "Coming soon" stub | This branch (`669e6e6`) |
+| Each section page lists a real report inventory with status badges (Live / Phase 5a / 5b / 5c) | This branch (`669e6e6`) |
 | `/insights/financial/sales-tax` mounts the existing Sales Tax report; old `/reports/sales-tax` redirects | This branch (`669e6e6`) |
 | Deferred Revenue page replaced with a live schedule table (totals, recognition %, per-schedule progress bars) backed by `/api/reports/deferred-revenue` | This branch (`1b8c41e`) |
-| **Universal Report Builder — catalog foundation**: `apps/api/src/services/report-catalog.ts` parses `prisma/schema.prisma` and emits a JSON catalog (112 models, every field with type/kind/optional/list/id/unique/default flags). Sensitive fields (secrets, signatures, raw webhook payloads, Stripe/Clerk IDs) flagged. Served at `GET /api/insights/catalog`. Frontend renders a two-pane catalog browser. | This branch (`c38eabb`) |
-| **Universal Report Builder — MVP engine + UI**: `apps/api/src/services/report-engine.ts` translates a `ReportSpec` to a Prisma query with hard guardrails (tenant scope, sensitive-field allowlist, limit clamp, limit+1 has-more trick). Filter ops: eq / ne / lt / lte / gt / gte / in / notIn / contains / startsWith / endsWith / isNull / isNotNull / between. `POST /api/insights/run`. Custom Builder UI has a Build tab with field checkboxes, type-aware filter ops, Run button, result table, and warning banners for ignored fields/filters. | This branch (`e27d816`) |
-| `ReportSpec` / `ReportFilter` / `ReportRunResult` types live in `@helm/shared-types`; Group-by + aggregates typed but rejected by the MVP engine | This branch (`e27d816`) |
+| **Universal Report Builder — catalog foundation**: `report-catalog.ts` parses `prisma/schema.prisma` and emits a JSON catalog (112 models). Sensitive fields flagged. Served at `GET /api/insights/catalog`. Two-pane catalog browser UI. | This branch (`c38eabb`) |
+| **Universal Report Builder — MVP engine + UI**: `report-engine.ts` with hard guardrails (tenant scope, sensitive-field allowlist, limit clamp, limit+1 has-more). 13 filter ops. `POST /api/insights/run`. Custom Builder UI with field checkboxes, type-aware filter ops, Run button, result table. | This branch (`e27d816`) |
+| **R9 — Run log**: every `/run` call writes an `InsightsRunLog` row (specHash, model, rowCount, runtime, warnings, error). `GET /api/insights/runs` for the audit feed. | This branch (`e2cfed8`) |
+| **R1 — Saved views (backend)**: `SavedReportView` table + full CRUD endpoints under `/api/insights/views`, scoped to `(tenantId, userId)`. | This branch (`e2cfed8`) |
+| **R10 — Sensitive-field opt-in**: catalog `sensitive` flag expanded (Stripe / QBO IDs, DL, DOB, emergency contact). Engine gains `allowSensitive` option; route grants it only to TENANT_ADMIN / MARINA_OWNER. `ENGINE_BLOCKED_FIELDS` stays absolute. | This branch (`e2cfed8`) |
+| **R4 — Aggregates + group-by**: engine routes to `prisma.<model>.groupBy` when spec has `groupBy` or `aggregates`. count / sum / avg / min / max. Flatten nested response into uniform rows. | This branch (`63e6b5c`) |
+| **R3 — Relation traversal**: dotted field paths like `customer.firstName` and `customer.location.name`. Catalog graph walk, JOIN depth capped at 4, sensitive-segment refusal, nested rows flattened to dotted keys. | This branch (`8e62db9`) |
+| **R2 — CSV export**: `POST /api/insights/run.csv` returns RFC-4180 CSV; Export CSV button on the Build tab. | This branch (`8e62db9`) |
+| **R8 — Trial Balance**: page at `/insights/financial/trial-balance` backed by existing `/api/reports/gl-summary`. Grouped table (Asset / Liability / Equity / Revenue / Expense), totals row, debits=credits balance check. | This branch (`8e62db9`) |
+| **Builder UI for R1 + R4**: Save view + Saved views dropdown + delete; Group-by chips + Aggregates rows with type-aware fields; Fields list dims when grouped. | This branch (`8e62db9`) |
+| `ReportSpec` / `ReportFilter` / `ReportRunResult` / `ReportAggregate` types in `@helm/shared-types` | This branch (`e27d816`, `e2cfed8`) |
+| **W3 — Card-expiry forecast**: `/api/reports/card-expiry-forecast` + page at `/insights/customers/card-expiry`. Per-month buckets, click-to-call/email contact list. | This branch (`22999cd`) |
 
 ### Cross-app primitives
 | Item | Where it shipped |
 |---|---|
-| `SubNav` + `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` / `SETTINGS_SUBNAV` moved to `@helm/ui-kit`; all 15 web callsites import from the package; `react-router-dom` is a peer dep | This branch (`64f8be7`) |
-| `InsightsShell` + `ReportCard` + `ReportGrid` primitives under `apps/web/src/pages/insights/` (will graduate to ui-kit once portal/admin need them) | This branch (`669e6e6`) |
+| `SubNav` + `BILLING_SUBNAV` / `ACCOUNTING_SUBNAV` / `INSIGHTS_SUBNAV` / `SETTINGS_SUBNAV` / `SETTINGS_SECTIONS` in `@helm/ui-kit`; web imports from package | This branch (`64f8be7`, `a9f9386`) |
+| `InsightsShell` + `ReportCard` + `ReportGrid` primitives | This branch (`669e6e6`) |
+| `SettingsLayout` — two-level nav (section strip + leaf strip + Outlet) for the new Settings IA | This branch (`a9f9386`) |
 
 ### Platform admin
 | Item | Where it shipped |
 |---|---|
-| Webhooks console at `/webhooks` (Operations group). Three KPI cards for Stripe Payments / Stripe Connect / QBO delivery rates with color-coded success ratios. Tab switcher between QBO failures and Stripe payment failures with a recent-failures table. Auto-refresh every 30s. Backed by existing `/api/admin/health/system` and `/api/admin/health/system/failures`. | This branch (`819e904`) |
+| Webhooks console at `/webhooks` (Operations group). Three KPI cards for Stripe Payments / Stripe Connect / QBO delivery rates with color-coded success ratios. Tab switcher between QBO failures and Stripe payment failures with a recent-failures table. Auto-refresh every 30s. | This branch (`819e904`) |
+| **A1 — Webhook retry**: per-row Retry button on FAILED QBO deliveries; `POST /api/admin/webhooks/qbo/:id/retry` reuses `processDelivery()`. | This branch (`22999cd`) |
+| **A2 — All-deliveries tab**: QBO section gains a "Failed only" / "All deliveries" tab switcher; new `GET /api/admin/webhooks/qbo` returns PROCESSED / PENDING / FAILED rows with tenant name. | This branch (`22999cd`) |
+| **A5 — Queues dashboard**: new `/queues` page. Per-BullMQ-queue table — depth, 24h throughput, success rate, failure sparkline, paused state. Wired into Operations group with a ↻ icon. | This branch (`22999cd`) |
 
 ### Marina dashboard (web) features
 | Item | Where it shipped |
 |---|---|
 | Customer Merge — backend service, route, modal, page integration. Field-level conflict resolution. Includes undo within a 15-min window. | Pre-existing on this branch's base |
+
+### Customer portal depth
+| Item | Where it shipped |
+|---|---|
+| **P1 — Real Profile**: PATCH `/api/portal/me` for name / company / email / phone; PII (DL, DOB, emergency contact) stays marina-managed. | This branch (`e0f5749`) |
+| **P2 — Real Notifications**: GET/PUT `/api/portal/communication-prefs`; 4-category × 2-channel grid (Billing / Inspections / Announcements / Marketing × Email / SMS) with marketing off by default. | This branch (`e0f5749`) |
+| **P3 — Real Security**: embeds Clerk's `<UserProfile />` for password / 2FA / sessions. | This branch (`e0f5749`) |
+| **P5 — Documents hub**: GET `/api/portal/documents` lists `CustomerDocument` rows; GET `/api/portal/documents/:id/download` returns a 5-min presigned R2 URL. Table view with category badge + size + Download button. | This branch (`e0f5749`) |
+| **P6 — My Slip**: GET `/api/portal/my-slip` returns active SlipContracts with slip dimensions, dates, boat, location contact info. Card-per-slip page with click-to-call. | This branch (`e0f5749`) |
 
 ### What this means for the rest of the doc
 
@@ -60,19 +84,251 @@ The **target IA below is now live across all three apps**. The original "Phased 
 
 ---
 
+## What's next — feature plans (detailed)
+
+The IA work, Universal Report Builder MVP, portal account depth, admin Webhooks console, and the first wave of reporting follow-ups (R1, R2, R3, R4, R8, R9, R10, W3) all shipped on this branch. Below is the next prioritized batch — fewer items, more depth per item, so the next round of building is unambiguous.
+
+Each spec lists *what* the feature is, *why* it matters, the *data + endpoints* required, the *UI surfaces*, and a working-day *size estimate*. Order roughly reflects expected ROI.
+
+### 1. Notifications system (N1 + N2 + N3) — ~7 days
+
+**What.** A first-class notifications backbone that lights up a bell icon in every top bar across web, portal, and admin. Replaces the silence that currently surrounds critical events.
+
+**Why.** Today: a customer's payment fails → an audit row is written and that's it. A contract expires → cron job writes a row and that's it. The marina manager finds out via QuickBooks, a phone call, or weeks later. The platform feels dead between sessions; this fixes that.
+
+**Data model.**
+- `Notification` table: `id, tenantId, userId, type, title, body, link, readAt?, createdAt`
+- `NotificationPreference` table: `userId, type, inAppEnabled, emailEnabled, smsEnabled` (defaults from `NOTIFICATION_TYPES` registry, per-user override).
+- Optional `NotificationDigest` for daily roll-ups (defer to follow-up).
+
+**Backend.**
+- New service `apps/api/src/services/notifications.ts` with `notify(opts: { tenantId, userId?, role?, type, title, body, link })`. Fans out by user; for `role`-targeted notifications, resolves to all matching users in the tenant.
+- Wire into existing audit-event handlers (payment failed, chargeback, contract expiring, dock-walk finding, transient overstay, QBO sync failure). One hook per event source; emit `notify({ ... })`.
+- Endpoints: `GET /api/notifications?unread=1` · `POST /api/notifications/mark-read` (one or all) · `GET /api/notifications/preferences` · `PUT /api/notifications/preferences`.
+
+**UI.**
+- New `<NotificationsBell />` primitive in `@helm/ui-kit`. Bell icon with unread badge; dropdown with last 10, each item navigates to its `link` and marks read. "Mark all read" footer action.
+- Mounted in the top bar of all three apps.
+- Polls `/api/notifications?unread=1` every 30s for MVP; SSE/WebSocket upgrade deferred.
+- Settings → Team → "My Notifications" (web), portal Account → Notifications (already there — extend P2 to cover in-app channel too), admin My Profile → Notifications.
+
+**Out of scope for MVP.** Digest emails, mobile push, SMS-back from notifications.
+
+---
+
+### 2. Service / Work-Order system — ~15 days
+
+**What.** A first-class domain for non-dockage paid work the marina does on a customer's boat: haul-out, launch, winterize, bottom paint, engine service, repair quotes. Currently tracked in spreadsheets / sticky notes.
+
+**Why.** This is the single most-requested feature from marina operators in the New-Feature Catalog. The data lives nowhere structured today, so revenue from yard work is invisible to the system and gets lost in manual invoicing.
+
+**Data model.**
+- `WorkOrder` — `id, tenantId, locationId, customerId, boatId?, number (auto-increment per tenant), status (DRAFT/SCHEDULED/IN_PROGRESS/AWAITING_PARTS/COMPLETED/CANCELLED), title, description, scheduledFor?, startedAt?, completedAt?, assignedToUserId?, priority (LOW/NORMAL/HIGH/URGENT), estimatedHours?, actualHours?, customerNotesShared (bool — shows in portal), invoiceId?`
+- `WorkOrderLineItem` — `id, workOrderId, kind (LABOR/PART/FEE), productId?, description, quantity, unitCents, taxClass?, glAccountId?`
+- `WorkOrderNote` — `id, workOrderId, authorUserId, body, internalOnly, createdAt`
+- `WorkOrderPhoto` — `id, workOrderId, storageKey, caption?, createdAt`
+
+**Backend.**
+- New service `apps/api/src/services/work-orders.ts` — create / assign / start / pause / complete / invoice transitions.
+- Inventory integration: line items with `productId` decrement stock when the work order completes; restock on cancel.
+- Billing integration: completing a work order generates an Invoice with the labor + parts line items posting to the configured GL accounts.
+- Endpoints: full CRUD at `/api/work-orders` + `/api/work-orders/:id/line-items` + `/api/work-orders/:id/notes` + `/api/work-orders/:id/photos` + `/api/work-orders/:id/complete` (idempotent — emits invoice once).
+
+**UI.**
+- New nav entry under Daily Ops → "Work Orders" between Concierge and Rentals.
+- List page with filters (status, assigned, location, date range).
+- Detail page: header (customer, boat, status badge, assignee, priority), timeline of status changes + notes + photos, line-items editor, "Complete & Invoice" button.
+- Quick-create from a boat or customer detail page ("New work order for this boat").
+- Calendar view of scheduled work orders (later — defer; list view first).
+- Portal: customers see their own work orders read-only under My Marina if `customerNotesShared` is on.
+
+**Reports.** New leaf in Insights → Operations → "Work Orders" — revenue by service type, average hours per job, on-time-completion rate.
+
+---
+
+### 3. Two-way SMS conversations — ~5 days
+
+**What.** Customers can text replies to outbound SMS, and operators see threaded conversations in a staff inbox.
+
+**Why.** Today SMS is one-way: we send reminders, customers can't respond. They want to ("can you check my lines?"), and we want a record. Phone tag and forgotten requests today.
+
+**Data model.**
+- `SmsThread` — `id, tenantId, customerId?, fromPhone, lastMessageAt, unreadByStaff`
+- Extend existing `PortalMessage` to also serve as the SMS message store — or add `SmsMessage` if the schema separation is cleaner (`id, threadId, direction (IN/OUT), body, twilioMessageSid?, sentAt`).
+
+**Backend.**
+- Twilio inbound webhook handler at `/api/webhooks/twilio/sms` (signature-verified). Looks up customer by phone; creates / appends to thread; fires a `notify()` for assigned staff.
+- `GET /api/sms/threads` + `GET /api/sms/threads/:id` + `POST /api/sms/threads/:id/reply` (queues outbound SMS).
+
+**UI.**
+- New Communications → SMS Inbox page (web). Two-pane layout: threads list on left, conversation on right.
+- Quick reply from a customer detail page.
+- Portal-side: not needed for MVP (customers already see their own messages under Communications).
+
+---
+
+### 4. Anchor Operations reports (R6 — 4 parallel reports) — ~3 days each
+
+**What.** Make the Operations section of Insights actually useful. Today it lists 8 cards all marked phase-5a. Build the four highest-value ones using the existing engine + a new `@helm/ui-kit` chart primitive (see #5).
+
+**Reports.**
+
+1. **Occupancy** (`/insights/operations/occupancy`). Time-series of % occupied over last 12 weeks, broken down by dock; drill-down list of currently-vacant slips with last-occupied date.
+2. **Dock Walks** (`/insights/operations/dock-walks`). Findings by category, by dock, by staff. Heatmap of finding frequency. Open-vs-closed counts. Drill into the actual finding rows.
+3. **Transient Activity** (`/insights/operations/transient`). Arrivals per day, average length-of-stay, no-show rate, overstays. Cohort table for current-week arrivals.
+4. **Rentals Utilization** (`/insights/operations/rentals`). Hours utilized vs available per rental product per week. Surge effectiveness (rate at peak vs base). Pricing-suggestion hit rate.
+
+**Backend.** Each one is a new endpoint under `/api/reports/<name>`. Most share data with existing fields (Slip.status, DockWalkRecord, TransientBooking, RentalReservation). Add per-report aggregations.
+
+**UI.** Each is a new page using `InsightsShell` + the chart primitive + the existing `ReportCard` chrome. Toolbar with date range + location filter.
+
+---
+
+### 5. Chart primitive in `@helm/ui-kit` (R7) — ~3 days
+
+**What.** A small charting wrapper around Recharts so every report doesn't reinvent line / bar / donut.
+
+**Why.** Anchor reports above all need charts. Building each one ad-hoc means inconsistent visuals and duplicated wrapping code.
+
+**API sketch.**
+```tsx
+<LineChart data={...} xKey="date" yKeys={["occupancy"]} format="percent" />
+<BarChart data={...} xKey="category" yKey="count" />
+<DonutChart data={...} valueKey="amount" labelKey="category" />
+```
+Each accepts a `tokens`-provided color palette so light (web) and dark (admin) themes work without flipping props.
+
+**Out of scope.** Stacked charts, dual axes, brush selectors — add when first needed.
+
+---
+
+### 6. AI assist on the Builder (R5) — ~3 days
+
+**What.** A textarea on the Custom Builder where a marina admin types something like *"show me boats whose insurance expires next month with no payment in 90 days"* and gets back a runnable `ReportSpec`.
+
+**Why.** The catalog has 112 models; the engine supports filters / joins / aggregates. Without natural-language entry, the builder is power-user-only. NL → spec collapses the learning curve.
+
+**Backend.**
+- New `POST /api/insights/translate-prompt`. Body: `{ prompt: string, contextModel?: string }`. Returns `{ spec: ReportSpec, rationale: string, warnings: string[] }`.
+- Service wraps the Anthropic SDK. The catalog (filtered to non-sensitive models / fields) is given to Claude as tool context plus a tool that *only* returns a validated spec — no free-form output. The route then validates with the existing Zod schema before returning.
+- Hard rule: the model never sees raw tenant data. It only emits a spec; the engine runs it.
+
+**UI.**
+- "Describe what you want" textarea at the top of the Build tab. "Translate" button. On success the builder state populates with the model + fields + filters + aggregates from the returned spec; the user can review and tweak before hitting Run.
+- Rationale shown as an info banner — "AI picked the Boat model because you said 'boats'".
+
+**Out of scope.** Multi-turn refinement, chart-type suggestion, scheduled prompts. All follow-on.
+
+---
+
+### 7. Cash drawer / shift management — ~5 days
+
+**What.** Open / close POS shifts with declared opening + closing cash, an over/short calculation, and a per-shift summary report.
+
+**Why.** Today POS sales accumulate continuously; there's no notion of "this dockhand's shift" or "the cash drawer balanced at end-of-day." Variance auditing is impossible.
+
+**Data model.**
+- `PosShift` — `id, tenantId, locationId, terminalId?, userId, openedAt, closedAt?, startingCashCents, endingCashCents?, expectedCashCents?, varianceCents?, notes?`
+- POS sales tagged with `posShiftId`.
+
+**Backend.**
+- `POST /api/pos/shifts/open` (validate no open shift on the terminal/user); `POST /api/pos/shifts/close` (compute expected from cash sales since open, surface variance, lock further sales until next open).
+- `GET /api/pos/shifts` — list with summary; `GET /api/pos/shifts/:id` — full detail.
+
+**UI.**
+- POS register: a banner across the top "Shift not open" / "Shift open since 8:14 AM — $200 starting". Open / Close shift modals.
+- POS register refuses cash sales unless a shift is open (cards/ACH still work).
+- New report under Insights → Operations → POS → "Shifts" with variance heatmap.
+
+---
+
+### 8. Settings file-by-file extraction (S2 → S6, eventually S7) — ~13 days total
+
+**What.** Move each leaf out of the 2937-line `Settings.tsx` into its own file. The new IA already lives at `/settings/<section>/<leaf>`; each leaf currently delegates to the legacy file. Extraction is hygiene and unlocks per-tab tests + lazy loading.
+
+**Per chunk.**
+- **S2 Marina (Profile / Branding / Custom Domain)** — ~2 days. The Custom Domain page becomes real instead of piggybacking on Advanced.
+- **S3 Team (Members / Roles / API Keys / Audit Log)** — ~3 days. Brings the `ApiKey` table to a real management UI (today the TeamApiKeys leaf is a stub).
+- **S4 Pricing & Payments (6 leaves)** — ~4 days. Merge Tax Jurisdictions + Tax Rates into one Tax page.
+- **S5 Catalog (Products / Categories / Modules)** — ~2 days.
+- **S6 Integrations (QuickBooks / Email / Webhooks & API)** — ~2 days. Webhooks & API becomes a real page (currently delegates to Advanced).
+- **S7 Delete legacy Settings.tsx** — ~1 day. Drop the 2937-line monolith, retire the legacy `?tab=` redirect handler.
+
+---
+
+### 9. Transient overstay queue (W1) — ~3 days
+
+**What.** A list under Daily Ops → Transient of boats whose stay has ended but who haven't checked out, plus actions to contact / charge late fees / convert to long-term.
+
+**Why.** Transient revenue leaks here. A guest stays 5 days on a 3-day booking and nobody bills the extra 2 days. Operator needs to see overstays daily.
+
+**Backend.**
+- `GET /api/transient/overstays` — `TransientBooking` rows where `endDate < today` and `checkedOutAt IS NULL`. Joined with boat + customer + slip.
+- `POST /api/transient/overstays/:id/extend` — push the end date forward + auto-create the line item for the extra nights.
+- `POST /api/transient/overstays/:id/late-fee` — add the configured late-fee line item to the related invoice.
+
+**UI.**
+- New tab "Overstays" on the Transient page. Rows: boat, customer, contact (call / SMS / email), nights overstayed, suggested action.
+- Daily reminder notification (uses #1 above) goes to the assigned dockmaster.
+
+---
+
+### 10. `@helm/ui-kit` Sidebar primitive (U1 + U2) — ~8 days
+
+**What.** Move the three bespoke sidebars (`AppLayout`, `PortalLayout`, `AdminLayout`) onto a shared primitive with theme support.
+
+**Why.** Three sidebars × every future nav-item change = three diffs. The design tokens that span web's light theme and portal/admin's dark theme are the gate.
+
+**Plan.**
+- **U1. Design tokens** (~3 days): expand `packages/ui-kit/src/styles/tokens.ts` to cover both themes. Add a `theme` slot. Migrate hard-coded colors in the existing primitives.
+- **U2. `<Sidebar>` primitive** (~5 days): polymorphic API with `sections`, `footerSection`, `theme="light"|"dark"`, optional `header` slot, active-link detection via react-router. Replace each app's sidebar one at a time; commit per app.
+
+After U2 lands, U3 (`TopBar`), U4 (`Breadcrumb` + `EmptyState`), and U5 (Storybook) follow naturally.
+
+---
+
+### 11. Testing baseline (T1 + T2 + T3) — ~7 days
+
+**What.** Stand up Playwright + axe + RTL on the layout shells. Today every IA change is verified by hand.
+
+**Plan.**
+- **T1 Playwright smoke** (~3 days): one spec per top-level nav section per app. Each spec opens the nav, clicks every entry, asserts a known DOM marker on the resulting page. CI fails on dead links.
+- **T2 axe-core in CI** (~2 days): run on the new shells (`AppLayout`, `PortalLayout`, `AdminLayout`, `SettingsLayout`, `InsightsShell`). Fail on serious violations.
+- **T3 RTL on layout shells** (~2 days): role-gating, module-gating, location-switcher, footer slot behavior.
+
+---
+
+## Tier-two queue (smaller / follow-on)
+
+These are smaller chunks that ride alongside the top 11 without warranting a full spec block.
+
+- **P4** — Real portal Help & Support (FAQ + support-ticket form). ~3 days.
+- **P7** — Portal "Year in Review" (spend / usage rollups on Dashboard + Invoices). ~3 days.
+- **A3** — Break up `apps/admin/src/pages/TenantDetail.tsx` (81 KB) into nested routes. ~3 days.
+- **A4** — Promote Tenant Deep Dive into the Tenants list as a real action. ~1 day.
+- **R6.5** — Audit-action surface in Insights → Compliance & Audit. Pulls `InsightsRunLog` + `AdminAuditLog`. ~2 days.
+- **R3 UI follow-up** — Relation-field picker in the Build tab (currently dotted paths need to be typed). ~2 days.
+- **T4–T8** — 301 redirect regression test, Lighthouse budgets, multi-tenant isolation + permission-matrix generators, migration rehearsal in CI. ~9 days total.
+- **U3 / U4 / U5** — TopBar / Breadcrumb + EmptyState / Storybook. ~8 days total.
+- **W2** — Rental pricing-suggestions UI. ~3 days.
+- **W5** — Insurance AI review step in portal. ~3 days.
+
+---
+
 ## Next-up upgrades — sized chunks
 
 Each chunk below is **one focused PR**, scoped small enough that one engineer (or one Claude session) can ship it without a planning meeting. Sizes are working-day estimates, not calendar days. Items in the same area can be parallelized across people; items within an area have ordering dependencies called out.
 
-### Immediate queue (current ordering)
+### Immediate queue (historical record)
 
-What's next, in order, based on the latest priority pass:
+The original queue **all shipped on this branch** — see Accomplished above. Current planning surface is the *What's next — feature plans (detailed)* section near the top of the doc.
 
-1. **Settings clean redesign** — S1 → S2 → S3 → S4 → S5 → S6 → S7. See the dedicated *Settings — clean redesign* section below; replaces W4.
-2. **Portal depth** — P1, P2, P3 (account stubs become real), then P5, P6 (Documents hub + My Slip).
-3. **Platform admin operations** — A1 (webhook retry / replay), A2 (all-deliveries tab), A5 (job queue dashboard).
-4. **Card-expiry forecast** — W3.
-5. **Reporting follow-ups** — R3, R2, R8, and the Build UI for R1 + R3 + R4 (catalog + saved views are backend-ready; need a unified UI pass).
+Historical order for reference:
+1. ✅ Settings clean redesign — S1 (a9f9386). S2–S7 are queued under What's-next #8.
+2. ✅ Portal depth — P1, P2, P3, P5, P6 (e0f5749). P4 + P7 are queued under Tier-two.
+3. ✅ Platform admin operations — A1, A2, A5 (22999cd). A3 + A4 queued under Tier-two.
+4. ✅ Card-expiry forecast — W3 (22999cd).
+5. ✅ Reporting follow-ups — R3, R2, R8, Builder UI for R1+R3+R4 (8e62db9).
 
 ### Settings — clean redesign
 - **S1. Layout shell + new routes** (≈2 days). New `SettingsLayout`; route tree at `/settings/<section>/<leaf>`; bare `/settings` redirects.
