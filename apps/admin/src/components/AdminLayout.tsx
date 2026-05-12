@@ -6,16 +6,52 @@ import GlobalSearch from './GlobalSearch';
 
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 
-const NAV_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: '▣' },
-  { path: '/tenants', label: 'Tenants', icon: '⛵' },
-  { path: '/trials', label: 'Trials', icon: '◐' },
-  { path: '/billing', label: 'Billing', icon: '$' },
-  { path: '/analytics', label: 'Analytics', icon: '◈' },
-  { path: '/health', label: 'Health', icon: '♥' },
-  { path: '/support', label: 'Support', icon: '✉' },
-  { path: '/activity', label: 'Admin Activity', icon: '◷' },
-  { path: '/settings', label: 'Platform Settings', icon: '⚙' },
+type NavItem = { path: string; label: string; icon: string };
+type NavSection = { label: string; items: NavItem[] };
+
+// Sidebar grouped by intent: tenants, the money they generate, the systems
+// that keep them running. Configuration sits pinned to the footer.
+const NAV_SECTIONS: NavSection[] = [
+  {
+    label: 'Home',
+    items: [{ path: '/', label: 'Dashboard', icon: '▣' }],
+  },
+  {
+    label: 'Tenants',
+    items: [
+      { path: '/tenants', label: 'Tenants', icon: '⛵' },
+      { path: '/trials', label: 'Trials', icon: '◐' },
+    ],
+  },
+  {
+    label: 'Revenue',
+    items: [
+      { path: '/billing', label: 'Billing', icon: '$' },
+      { path: '/analytics', label: 'Analytics', icon: '◈' },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      { path: '/health', label: 'Health', icon: '♥' },
+      { path: '/support', label: 'Support', icon: '✉' },
+      { path: '/activity', label: 'Admin Activity', icon: '◷' },
+    ],
+  },
+];
+
+const FOOTER_SECTION: NavSection = {
+  label: 'Configuration',
+  items: [
+    { path: '/settings', label: 'Platform Settings', icon: '⚙' },
+    { path: '/me', label: 'My Profile', icon: '◉' },
+  ],
+};
+
+// Flat list used by the top-bar page-title lookup and the active-link helper.
+const NAV_ITEMS: NavItem[] = [
+  ...NAV_SECTIONS.flatMap((s) => s.items),
+  ...FOOTER_SECTION.items,
 ];
 
 const sidebar: React.CSSProperties = {
@@ -55,9 +91,24 @@ const logoSub: React.CSSProperties = {
 
 const navList: React.CSSProperties = {
   listStyle: 'none',
-  padding: '16px 0',
+  padding: '8px 0',
   margin: 0,
   flex: 1,
+  overflowY: 'auto',
+};
+
+const sectionLabel: React.CSSProperties = {
+  padding: '14px 20px 4px',
+  fontSize: 10,
+  fontWeight: 700,
+  color: 'rgba(255,255,255,0.35)',
+  letterSpacing: 1.5,
+  textTransform: 'uppercase',
+};
+
+const footerArea: React.CSSProperties = {
+  borderTop: '1px solid rgba(255,255,255,0.08)',
+  padding: '8px 0',
 };
 
 const topBar: React.CSSProperties = {
@@ -190,9 +241,27 @@ const AdminLayout: React.FC = () => {
           <div style={logoText}>HELM</div>
           <div style={logoSub}>Admin Console</div>
         </div>
-        <nav>
-          <ul style={navList}>
-            {NAV_ITEMS.map((item) => (
+        <nav style={navList}>
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.label}>
+              <div style={sectionLabel}>{section.label}</div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {section.items.map((item) => (
+                  <li key={item.path}>
+                    <NavLink to={item.path} style={getNavStyle(item.path)}>
+                      <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>{item.icon}</span>
+                      {item.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </nav>
+        <div style={footerArea}>
+          <div style={sectionLabel}>{FOOTER_SECTION.label}</div>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {FOOTER_SECTION.items.map((item) => (
               <li key={item.path}>
                 <NavLink to={item.path} style={getNavStyle(item.path)}>
                   <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>{item.icon}</span>
@@ -201,9 +270,9 @@ const AdminLayout: React.FC = () => {
               </li>
             ))}
           </ul>
-        </nav>
-        <div style={{ padding: '16px 20px', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
-          Helm Platform v0.1.0
+          <div style={{ padding: '12px 20px', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+            Helm Platform v0.1.0
+          </div>
         </div>
       </aside>
 

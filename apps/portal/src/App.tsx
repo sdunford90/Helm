@@ -10,6 +10,10 @@ import ConciergeRequests from './pages/ConciergeRequests';
 import WaitlistStatus from './pages/WaitlistStatus';
 import Announcements from './pages/Announcements';
 import Messages from './pages/Messages';
+import AccountProfile from './pages/AccountProfile';
+import AccountNotifications from './pages/AccountNotifications';
+import AccountSecurity from './pages/AccountSecurity';
+import AccountHelp from './pages/AccountHelp';
 import ThankYou from './pages/ThankYou';
 
 export default function App() {
@@ -29,6 +33,10 @@ export default function App() {
         <Route path="/waitlist" element={<WaitlistStatus />} />
         <Route path="/announcements" element={<Announcements />} />
         <Route path="/messages" element={<Messages />} />
+        <Route path="/account/profile" element={<AccountProfile />} />
+        <Route path="/account/notifications" element={<AccountNotifications />} />
+        <Route path="/account/security" element={<AccountSecurity />} />
+        <Route path="/account/help" element={<AccountHelp />} />
       </Route>
     </Routes>
   );

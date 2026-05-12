@@ -12,6 +12,7 @@ import Health from './pages/Health';
 import Support from './pages/Support';
 import PlatformSettings from './pages/PlatformSettings';
 import AdminActivity from './pages/AdminActivity';
+import MyProfile from './pages/MyProfile';
 
 const App: React.FC = () => {
   return (
@@ -28,6 +29,7 @@ const App: React.FC = () => {
         <Route path="/support" element={<Support />} />
         <Route path="/activity" element={<AdminActivity />} />
         <Route path="/settings" element={<PlatformSettings />} />
+        <Route path="/me" element={<MyProfile />} />
       </Route>
     </Routes>
   );

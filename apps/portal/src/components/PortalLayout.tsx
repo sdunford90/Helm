@@ -10,9 +10,12 @@ import {
   Megaphone,
   LogOut,
   Anchor,
-  User,
   Menu,
   X,
+  MessageSquare,
+  User,
+  HelpCircle,
+  Lock,
 } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import ImpersonationBanner from './ImpersonationBanner';
@@ -22,16 +25,60 @@ const CYAN = '#00D4FF';
 const DARK_NAVY = '#061A33';
 const LIGHT_BG = '#F5F7FA';
 
-const navItems = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/invoices', label: 'Invoices', icon: FileText },
-  { to: '/payments', label: 'Payment Methods', icon: CreditCard },
-  { to: '/boats', label: 'My Boats', icon: Ship },
-  { to: '/insurance', label: 'Insurance', icon: Shield },
-  { to: '/concierge', label: 'Concierge', icon: Bell },
-  { to: '/waitlist', label: 'Waitlist', icon: Clock },
-  { to: '/announcements', label: 'Announcements', icon: Megaphone },
+type NavItem = { to: string; label: string; icon: typeof LayoutDashboard };
+type NavSection = { label: string; items: NavItem[] };
+
+// Top-of-sidebar sections — walked top-to-bottom in the order a slip-holder
+// would actually use the portal in a typical week.
+const NAV_SECTIONS: NavSection[] = [
+  {
+    label: 'Home',
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+    ],
+  },
+  {
+    label: 'My Marina',
+    items: [
+      { to: '/boats', label: 'My Boats', icon: Ship },
+      { to: '/insurance', label: 'Insurance', icon: Shield },
+    ],
+  },
+  {
+    label: 'Billing',
+    items: [
+      { to: '/invoices', label: 'Invoices', icon: FileText },
+      { to: '/payments', label: 'Payment Methods', icon: CreditCard },
+    ],
+  },
+  {
+    label: 'Services',
+    items: [
+      { to: '/concierge', label: 'Concierge', icon: Bell },
+      { to: '/waitlist', label: 'Waitlist', icon: Clock },
+    ],
+  },
+  {
+    label: 'Communications',
+    items: [
+      { to: '/announcements', label: 'Announcements', icon: Megaphone },
+      { to: '/messages', label: 'Messages', icon: MessageSquare },
+    ],
+  },
 ];
+
+// Pinned to the footer of the sidebar — the same pattern the marina dashboard
+// uses for Settings. Account stays visually de-emphasized but always one click
+// away from anywhere in the portal.
+const FOOTER_SECTION: NavSection = {
+  label: 'Account',
+  items: [
+    { to: '/account/profile', label: 'Profile', icon: User },
+    { to: '/account/notifications', label: 'Notifications', icon: Bell },
+    { to: '/account/security', label: 'Security', icon: Lock },
+    { to: '/account/help', label: 'Help & Support', icon: HelpCircle },
+  ],
+};
 
 export default function PortalLayout() {
   const navigate = useNavigate();
@@ -60,9 +107,29 @@ export default function PortalLayout() {
     left: 0,
     bottom: 0,
     overflowY: 'auto',
-    padding: '16px 0',
     transition: 'transform 0.2s ease',
     zIndex: 90,
+    display: 'flex',
+    flexDirection: 'column',
+  };
+
+  const sidebarTopStyle: CSSProperties = {
+    flex: 1,
+    padding: '12px 0',
+  };
+
+  const sidebarFooterStyle: CSSProperties = {
+    borderTop: '1px solid rgba(255,255,255,0.08)',
+    padding: '12px 0',
+  };
+
+  const sectionLabelStyle: CSSProperties = {
+    padding: '12px 24px 4px',
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
   };
 
   const contentStyle: CSSProperties = {
@@ -93,6 +160,25 @@ export default function PortalLayout() {
     background: 'rgba(0, 212, 255, 0.08)',
     borderLeftColor: CYAN,
   };
+
+  const renderItem = (item: NavItem) => (
+    <NavLink
+      key={item.to}
+      to={item.to}
+      end={item.to === '/'}
+      style={({ isActive }) => (isActive ? navLinkActive : navLinkBase)}
+    >
+      <item.icon size={18} />
+      {item.label}
+    </NavLink>
+  );
+
+  const renderSection = (section: NavSection) => (
+    <div key={section.label}>
+      <div style={sectionLabelStyle}>{section.label}</div>
+      {section.items.map(renderItem)}
+    </div>
+  );
 
   return (
     <div style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -154,17 +240,12 @@ export default function PortalLayout() {
       {/* Sidebar */}
       {sidebarOpen && (
         <nav style={sidebarStyle}>
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              style={({ isActive }) => (isActive ? navLinkActive : navLinkBase)}
-            >
-              <item.icon size={18} />
-              {item.label}
-            </NavLink>
-          ))}
+          <div style={sidebarTopStyle}>
+            {NAV_SECTIONS.map(renderSection)}
+          </div>
+          <div style={sidebarFooterStyle}>
+            {renderSection(FOOTER_SECTION)}
+          </div>
         </nav>
       )}
 
