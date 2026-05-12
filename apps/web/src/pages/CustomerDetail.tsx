@@ -14,6 +14,8 @@ import { isCardExpired } from '../components/PaymentModal';
 import EmbeddedSetupForm from '../components/EmbeddedSetupForm';
 import { useToast } from '../components/Toast';
 import { useApi } from '../hooks/useApi';
+import { useModules } from '../context/ModulesContext';
+import RatePlanPicker from '../components/RatePlanPicker';
 import { api, ApiClientError } from '../lib/api';
 import { reportApiError } from '../lib/apiError';
 import { cacheThumbUrls, getCachedThumbUrl, invalidateThumbUrl } from '../lib/thumbUrlCache';
@@ -1352,25 +1354,116 @@ function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Pa
   );
 }
 
-function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () => void }) {
-  const [slip, setSlip] = useState('');
+interface BoatModalSlip { id: string; slipNumber: string; status: string; locationId?: string | null; slipType?: string | null; }
+interface BoatModalRatePlan {
+  id: string;
+  locationId: string;
+  name?: string | null;
+  slipType: string;
+  billingCadence?: 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+  monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  active: boolean;
+}
+
+const BOAT_MODAL_CYCLE_TO_API: Record<string, string> = {
+  Monthly: 'MONTHLY', Quarterly: 'QUARTERLY', 'Semi-Annual': 'SEMI_ANNUAL', Annual: 'ANNUAL', Seasonal: 'MONTHLY',
+};
+const BOAT_MODAL_CADENCE_TO_LABEL: Record<string, string> = {
+  MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
+};
+
+function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { boat: Boat; customerId: string; onClose: () => void; onCreated?: () => void }) {
+  const { currentLocationId } = useModules();
+  const [slipId, setSlipId] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [rate, setRate] = useState('');
   const [deposit, setDeposit] = useState('');
   const [autoRenew, setAutoRenew] = useState(false);
+  const [dockageRateId, setDockageRateId] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const createContract = useApi('post', '/api/contracts');
 
+  const { data: slipsResp, loading: loadingSlips } = useApi<{ data: BoatModalSlip[] }>(
+    'get', '/api/slips?take=200', { immediate: true },
+  );
+  const { data: ratesResp } = useApi<{ data: BoatModalRatePlan[] }>(
+    'get', '/api/settings/catalog/dockage-rates', { immediate: true },
+  );
+
+  // Scope slip dropdown to the current location (when one is picked) so the
+  // rate plan filter actually has something matchable. Fall back to all
+  // tenant slips when "All locations" is active.
+  const allSlips = slipsResp?.data ?? [];
+  const slips = currentLocationId
+    ? allSlips.filter((s) => s.locationId === currentLocationId)
+    : allSlips;
+  const selectedSlip = slips.find((s) => s.id === slipId);
+
+  const eligibleRates = (ratesResp?.data ?? []).filter((r) => {
+    if (!r.active) return false;
+    if (selectedSlip) {
+      if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
+      if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    } else if (currentLocationId) {
+      if (r.locationId !== currentLocationId) return false;
+    }
+    const probe = startDate || new Date().toISOString().slice(0, 10);
+    if (r.effectiveFrom && probe < r.effectiveFrom.slice(0, 10)) return false;
+    if (r.effectiveTo && probe > r.effectiveTo.slice(0, 10)) return false;
+    return true;
+  });
+
+  const handlePlanChange = (val: string) => {
+    setDockageRateId(val);
+    if (val) {
+      const plan = eligibleRates.find((r) => r.id === val);
+      if (plan) {
+        const cadence = plan.billingCadence ?? 'MONTHLY';
+        const cents =
+          cadence === 'QUARTERLY' && plan.quarterlyRateCents != null ? plan.quarterlyRateCents
+          : cadence === 'ANNUAL' && plan.annualRateCents != null ? plan.annualRateCents
+          : cadence === 'SEASONAL' && plan.seasonalRateCents != null ? plan.seasonalRateCents
+          : plan.monthlyRateCents;
+        setRate((cents / 100).toFixed(2));
+        setBillingCycle(BOAT_MODAL_CADENCE_TO_LABEL[cadence] ?? 'Monthly');
+      }
+    }
+  };
+
   const handleSave = async () => {
-    if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
+    if (!slipId || !startDate || !rate) { setErr('Please fill in Slip, Start Date, and Rate.'); return; }
     setErr('');
     setSaving(true);
-    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } });
-    setSaving(false);
-    onClose();
+    try {
+      await createContract.execute({
+        body: {
+          customerId,
+          slipId,
+          boatId: boat.id,
+          billingCycle: BOAT_MODAL_CYCLE_TO_API[billingCycle] ?? 'MONTHLY',
+          startDate,
+          endDate: endDate || undefined,
+          rateCents: Math.round(parseFloat(rate) * 100),
+          securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
+          autoRenew,
+          dockageRateId: dockageRateId || undefined,
+        },
+      });
+      onCreated?.();
+      onClose();
+    } catch {
+      setErr('Failed to create contract. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1388,19 +1481,17 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
           <div style={mTwoCol}>
             <div style={mField}>
               <label style={mLabel}>Slip *</label>
-              <select style={mSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
-                <option value="">Select slip...</option>
-                <option value="A-01">A-01</option>
-                <option value="A-02">A-02</option>
-                <option value="A-03">A-03 (Vacant)</option>
-                <option value="A-04">A-04 (Reserved)</option>
-                <option value="B-01">B-01</option>
-                <option value="B-02">B-02 (Maintenance)</option>
-                <option value="B-03">B-03 (Vacant)</option>
-                <option value="C-01">C-01</option>
-                <option value="C-02">C-02 (Vacant)</option>
-                <option value="C-03">C-03 (Vacant)</option>
+              <select style={mSelect} value={slipId} onChange={(e) => setSlipId(e.target.value)} disabled={loadingSlips}>
+                <option value="">{loadingSlips ? 'Loading…' : 'Select slip...'}</option>
+                {slips.map((s) => (
+                  <option key={s.id} value={s.id}>{s.slipNumber} ({s.status})</option>
+                ))}
               </select>
+              {!loadingSlips && slips.length === 0 && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  No slips found{currentLocationId ? ' for this location' : ''}.
+                </span>
+              )}
             </div>
             <div style={mField}>
               <label style={mLabel}>Billing Cycle</label>
@@ -1417,8 +1508,24 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
               <input style={mInput} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div style={mField}>
-              <label style={mLabel}>End Date *</label>
+              <label style={mLabel}>End Date</label>
               <input style={mInput} type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </div>
+            <div style={{ ...mField, gridColumn: '1 / -1' }}>
+              <label style={mLabel}>Rate Plan</label>
+              <RatePlanPicker
+                value={dockageRateId}
+                plans={eligibleRates}
+                onChange={(id) => handlePlanChange(id)}
+                placeholder={slipId ? 'Search rate plans…' : 'Search active rate plans…'}
+                inputStyle={mInput}
+                title="Drives GL account + tax class on invoices"
+              />
+              {slipId && eligibleRates.length === 0 && (
+                <span style={{ fontSize: '12px', color: '#B45309' }}>
+                  No active rate plan matches this slip — billing will use the legacy lookup.
+                </span>
+              )}
             </div>
             <div style={mField}>
               <label style={mLabel}>Rate ($/period) *</label>
@@ -3898,10 +4005,12 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {newContractBoat && (
+      {newContractBoat && id && (
         <NewContractFromBoatModal
           boat={newContractBoat}
+          customerId={id}
           onClose={() => setNewContractBoat(null)}
+          onCreated={() => { void refetchCustomer(); void refetchBoats(); }}
         />
       )}
 

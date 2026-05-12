@@ -7,6 +7,7 @@ import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
 import { formatDateOnlyISO, todayDateOnlyISO } from '@helm/shared-types';
 import ESignatureFlow from '../components/ESignatureFlow';
+import RatePlanPicker from '../components/RatePlanPicker';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -455,9 +456,13 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
   const selectedSlip = slips.find((s) => s.id === slipId);
   const eligibleRates = (ratesResp?.data ?? []).filter((r) => {
     if (!r.active) return false;
-    if (!selectedSlip) return true;
-    if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
-    if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    // Slip-based filtering only kicks in once a slip is selected; before
+    // that, show all active plans (still respecting effective dates) so
+    // operators can search the catalog before committing to a slip.
+    if (selectedSlip) {
+      if (selectedSlip.locationId && r.locationId !== selectedSlip.locationId) return false;
+      if (selectedSlip.slipType && r.slipType !== selectedSlip.slipType) return false;
+    }
     // Filter by effective dates against the contract start (if entered);
     // when no startDate yet, compare against today so operators see only
     // currently-effective plans. Server re-validates on POST.
@@ -583,20 +588,14 @@ function ContractFormModal({ onClose, onSave }: { onClose: () => void; onSave?: 
             </div>
             <div style={st.field}>
               <label style={st.label}>Rate Plan</label>
-              <select
-                style={st.formSelect}
+              <RatePlanPicker
                 value={dockageRateId}
-                onChange={(e) => handlePlanChange(e.target.value)}
-                disabled={!slipId}
-                title={!slipId ? 'Pick a slip first' : 'Drives GL account + tax class on invoices'}
-              >
-                <option value="">{slipId ? 'Unlinked (legacy fallback)' : 'Select slip first…'}</option>
-                {eligibleRates.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name ? `${r.name} · ` : ''}{r.slipType} · ${(r.monthlyRateCents / 100).toFixed(0)}/mo
-                  </option>
-                ))}
-              </select>
+                plans={eligibleRates}
+                onChange={(id) => handlePlanChange(id)}
+                placeholder={slipId ? 'Search rate plans…' : 'Search all active rate plans…'}
+                inputStyle={st.input}
+                title="Drives GL account + tax class on invoices"
+              />
               {slipId && eligibleRates.length === 0 && (
                 <span style={{ fontSize: '12px', color: '#B45309' }}>
                   No active rate plan matches this slip — billing will use the legacy lookup.
