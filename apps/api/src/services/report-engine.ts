@@ -28,6 +28,8 @@ import type {
   ReportFilter,
   ReportSort,
   ReportRunResult,
+  ReportAggregate,
+  AggregateFn,
 } from "@helm/shared-types";
 
 const HARD_ROW_CAP = 10_000;
@@ -229,13 +231,55 @@ async function runReportSpecInternal(
     throw new ReportEngineError(`Model ${spec.model} is not tenant-scoped and cannot be queried from the tenant builder.`);
   }
 
-  // ─── Deferred feature checks ──────────────────────────────────────────────
-  if (spec.groupBy && spec.groupBy.length > 0) {
-    throw new ReportEngineError("group-by queries are not supported yet");
+  // ─── Filter field map (shared by both code paths) ────────────────────────
+  const filterFieldByName = new Map(model.fields.map((f) => [f.name, f]));
+
+  // ─── Build the where clause now so the group-by path can reuse it.
+  const whereClauses: Record<string, unknown> = { tenantId };
+  for (const filter of spec.filters ?? []) {
+    const field = filterFieldByName.get(filter.field);
+    if (!field) {
+      warnings.push(`Filter on unknown field "${filter.field}" ignored`);
+      continue;
+    }
+    if ((field.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(field.name)) {
+      warnings.push(`Filter on sensitive field "${filter.field}" ignored`);
+      continue;
+    }
+    if (field.kind === "relation" || field.kind === "json" || field.isList) {
+      warnings.push(`Filter on non-scalar field "${filter.field}" ignored`);
+      continue;
+    }
+    if (filter.field === "tenantId") {
+      warnings.push(`Tenant scope cannot be filtered`);
+      continue;
+    }
+    const clause = buildWhereClause(field, filter);
+    if (clause === null) {
+      warnings.push(`Filter "${filter.field} ${filter.op}" was invalid`);
+      continue;
+    }
+    whereClauses[field.name] = clause;
   }
-  if (spec.aggregates && spec.aggregates.length > 0) {
-    throw new ReportEngineError("aggregate queries are not supported yet");
+
+  // ─── Group-by / aggregate path (R4) ───────────────────────────────────────
+  const groupBy = spec.groupBy ?? [];
+  const aggregates = spec.aggregates ?? [];
+  if (groupBy.length > 0 || aggregates.length > 0) {
+    return runGroupedQuery({
+      model,
+      groupBy,
+      aggregates,
+      whereClauses,
+      allowSensitive,
+      sort: spec.sort,
+      limit: spec.limit,
+      offset: spec.offset,
+      startedAt,
+      warnings,
+    });
   }
+
 
   // ─── Field projection ─────────────────────────────────────────────────────
   // Scalar + enum fields only. Drop sensitive, engine-blocked, relation,
@@ -277,39 +321,6 @@ async function runReportSpecInternal(
     }
   } else {
     projectedNames = safeFields.map((f) => f.name);
-  }
-
-  // ─── Filters ──────────────────────────────────────────────────────────────
-  const filterFieldByName = new Map(model.fields.map((f) => [f.name, f]));
-  const whereClauses: Record<string, unknown> = {
-    // Tenant scope, hardcoded — non-overridable.
-    tenantId,
-  };
-  for (const filter of spec.filters ?? []) {
-    const field = filterFieldByName.get(filter.field);
-    if (!field) {
-      warnings.push(`Filter on unknown field "${filter.field}" ignored`);
-      continue;
-    }
-    if ((field.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(field.name)) {
-      warnings.push(`Filter on sensitive field "${filter.field}" ignored`);
-      continue;
-    }
-    if (field.kind === "relation" || field.kind === "json" || field.isList) {
-      warnings.push(`Filter on non-scalar field "${filter.field}" ignored`);
-      continue;
-    }
-    if (filter.field === "tenantId") {
-      // Never let the caller widen or narrow tenant scope via filters.
-      warnings.push(`Tenant scope cannot be filtered`);
-      continue;
-    }
-    const clause = buildWhereClause(field, filter);
-    if (clause === null) {
-      warnings.push(`Filter "${filter.field} ${filter.op}" was invalid`);
-      continue;
-    }
-    whereClauses[field.name] = clause;
   }
 
   // ─── Limit + offset ───────────────────────────────────────────────────────
@@ -361,6 +372,200 @@ async function runReportSpecInternal(
     fields: projectedNames,
     rows: trimmed,
     rowCount: trimmed.length,
+    hasMore,
+    runtimeMs: Date.now() - startedAt,
+    warnings,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Group-by / aggregate path (R4).
+//
+// Uses Prisma's `groupBy` API. The spec's `groupBy` lists the columns to
+// partition by; `aggregates` lists the functions to compute on top.
+// Examples:
+//
+//   { groupBy: ["status"], aggregates: [{ fn: "count" }] }
+//     → SELECT status, COUNT(*) FROM customers WHERE tenantId=… GROUP BY status
+//
+//   { groupBy: ["locationId"], aggregates: [
+//       { fn: "sum", field: "lengthFt", alias: "totalLength" }
+//     ] }
+//     → SELECT locationId, SUM(lengthFt) FROM boats WHERE tenantId=… GROUP BY locationId
+//
+// Returned rows flatten the grouped column values and aggregate aliases
+// into a single object so the UI doesn't need to know about Prisma's
+// nested _sum/_avg/_count shape.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface GroupedQueryArgs {
+  model: CatalogModel;
+  groupBy: string[];
+  aggregates: ReportAggregate[];
+  whereClauses: Record<string, unknown>;
+  allowSensitive: boolean;
+  sort: ReportSort[] | undefined;
+  limit: number | undefined;
+  offset: number | undefined;
+  startedAt: number;
+  warnings: string[];
+}
+
+const NUMERIC_TYPES = new Set(["Int", "BigInt", "Float", "Decimal"]);
+
+async function runGroupedQuery(args: GroupedQueryArgs): Promise<ReportRunResult> {
+  const { model, groupBy, aggregates, whereClauses, allowSensitive, sort, startedAt, warnings } = args;
+
+  // ─── Validate groupBy fields ─────────────────────────────────────────────
+  const fieldByName = new Map(model.fields.map((f) => [f.name, f]));
+  const safeGroupBy: string[] = [];
+  for (const name of groupBy) {
+    const field = fieldByName.get(name);
+    if (!field) {
+      warnings.push(`Group-by field "${name}" is unknown — ignored`);
+      continue;
+    }
+    if (field.kind === "relation" || field.kind === "json" || field.isList) {
+      warnings.push(`Group-by field "${name}" is non-scalar — ignored`);
+      continue;
+    }
+    if ((field.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(field.name)) {
+      warnings.push(`Group-by field "${name}" is sensitive — ignored`);
+      continue;
+    }
+    safeGroupBy.push(name);
+  }
+
+  // ─── Validate aggregates ─────────────────────────────────────────────────
+  // Bucket by Prisma's _count / _sum / _avg / _min / _max shape. Each
+  // aggregate also gets an alias for the result row.
+  const buckets: Record<AggregateFn, Record<string, true>> = {
+    count: {}, sum: {}, avg: {}, min: {}, max: {},
+  };
+  const aliases: Array<{ alias: string; fn: AggregateFn; field: string }> = [];
+
+  for (const agg of aggregates) {
+    if (agg.fn === "count") {
+      const field = agg.field ?? "_all";
+      // Validate the field exists if it's not the synthetic _all
+      if (field !== "_all") {
+        const f = fieldByName.get(field);
+        if (!f || f.kind === "relation" || f.kind === "json" || f.isList) {
+          warnings.push(`Aggregate count("${field}") field is not scalar — ignored`);
+          continue;
+        }
+      }
+      buckets.count[field] = true;
+      aliases.push({ alias: agg.alias ?? `count_${field}`, fn: "count", field });
+      continue;
+    }
+    // sum / avg / min / max need a numeric field
+    const fieldName = agg.field;
+    if (!fieldName) {
+      warnings.push(`Aggregate ${agg.fn} needs a field — ignored`);
+      continue;
+    }
+    const f = fieldByName.get(fieldName);
+    if (!f) {
+      warnings.push(`Aggregate ${agg.fn}("${fieldName}") unknown field — ignored`);
+      continue;
+    }
+    if (!NUMERIC_TYPES.has(f.type)) {
+      warnings.push(`Aggregate ${agg.fn}("${fieldName}") needs a numeric field — ignored`);
+      continue;
+    }
+    if ((f.sensitive && !allowSensitive) || ENGINE_BLOCKED_FIELDS.has(f.name)) {
+      warnings.push(`Aggregate on sensitive field "${fieldName}" ignored`);
+      continue;
+    }
+    buckets[agg.fn][fieldName] = true;
+    aliases.push({ alias: agg.alias ?? `${agg.fn}_${fieldName}`, fn: agg.fn, field: fieldName });
+  }
+
+  if (safeGroupBy.length === 0 && aliases.length === 0) {
+    throw new ReportEngineError(
+      "Group-by query had no valid groupBy fields or aggregates after validation",
+    );
+  }
+
+  // ─── Order-by: only scalar group-by fields and aggregate aliases work ────
+  const orderBy: Array<Record<string, "asc" | "desc">> = [];
+  for (const s of sort ?? []) {
+    if (safeGroupBy.includes(s.field)) {
+      orderBy.push({ [s.field]: s.dir });
+      continue;
+    }
+    // Prisma's groupBy supports orderBy on _count etc. but the API surface
+    // is awkward and our UI doesn't need it yet — drop sort on aggregates
+    // with a warning.
+    warnings.push(`Sort on "${s.field}" ignored (only group-by columns are sortable today)`);
+  }
+
+  // ─── Limit + offset ──────────────────────────────────────────────────────
+  const requestedLimit = typeof args.limit === "number" ? args.limit : DEFAULT_LIMIT;
+  const limit = Math.max(1, Math.min(HARD_ROW_CAP, Math.floor(requestedLimit)));
+  if (requestedLimit > HARD_ROW_CAP) {
+    warnings.push(`Limit clamped from ${requestedLimit} to ${HARD_ROW_CAP}`);
+  }
+  const offset = Math.max(0, Math.floor(args.offset ?? 0));
+
+  // ─── Execute ─────────────────────────────────────────────────────────────
+  const delegate = modelDelegate(model.name);
+  if (!delegate) {
+    throw new ReportEngineError(
+      `Model ${model.name} is not callable through the Prisma client.`,
+      500,
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const groupByArgs: any = {
+    by: safeGroupBy.length > 0 ? safeGroupBy : ["tenantId"],
+    where: whereClauses,
+    take: limit + 1,
+    skip: offset,
+  };
+  if (orderBy.length > 0) groupByArgs.orderBy = orderBy;
+  if (Object.keys(buckets.count).length > 0) groupByArgs._count = buckets.count;
+  if (Object.keys(buckets.sum).length > 0) groupByArgs._sum = buckets.sum;
+  if (Object.keys(buckets.avg).length > 0) groupByArgs._avg = buckets.avg;
+  if (Object.keys(buckets.min).length > 0) groupByArgs._min = buckets.min;
+  if (Object.keys(buckets.max).length > 0) groupByArgs._max = buckets.max;
+
+  let raw: Array<Record<string, unknown>>;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    raw = await (delegate as any).groupBy(groupByArgs);
+  } catch (err) {
+    throw new ReportEngineError(
+      `Group-by query failed: ${err instanceof Error ? err.message : String(err)}`,
+      500,
+    );
+  }
+
+  // ─── Flatten the result rows ─────────────────────────────────────────────
+  // Prisma returns each row with the by-columns at the top level plus
+  // nested _count/_sum/etc. objects. The UI just wants a flat key/value map.
+  const fields = [...safeGroupBy, ...aliases.map((a) => a.alias)];
+  const hasMore = raw.length > limit;
+  const trimmed = hasMore ? raw.slice(0, limit) : raw;
+  const flatRows: Array<Record<string, unknown>> = trimmed.map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const g of safeGroupBy) out[g] = row[g];
+    for (const a of aliases) {
+      const bucket = row[`_${a.fn}`] as Record<string, unknown> | undefined;
+      // For count("_all") Prisma puts the value under bucket["_all"];
+      // for count("<field>") it's nested similarly.
+      out[a.alias] = bucket ? bucket[a.field] ?? null : null;
+    }
+    return out;
+  });
+
+  return {
+    model: model.name,
+    fields,
+    rows: flatRows,
+    rowCount: flatRows.length,
     hasMore,
     runtimeMs: Date.now() - startedAt,
     warnings,
