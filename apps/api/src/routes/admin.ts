@@ -760,6 +760,23 @@ router.put("/tenants/:id", async (req, res, next) => {
 // --------------------------------------------------------------------------
 router.post("/tenants/:id/impersonate", async (req, res, next) => {
   try {
+    // A11: require a reason at mint time. Stored in the audit metadata so
+    // the impersonation log explains *why* the session happened. Trimmed
+    // and length-capped to keep the audit feed sane.
+    const reasonRaw = (req.body && typeof req.body.reason === "string") ? req.body.reason : "";
+    const reason = reasonRaw.trim();
+    if (!reason) {
+      res.status(400).json({
+        error: "Reason is required to start an impersonation session.",
+        code: "IMPERSONATION_REASON_REQUIRED",
+      });
+      return;
+    }
+    if (reason.length > 500) {
+      res.status(400).json({ error: "Reason must be 500 characters or fewer." });
+      return;
+    }
+
     const tenant = await prisma.tenant.findUnique({
       where: { id: req.params.id },
       include: { users: { where: { role: "MARINA_OWNER", active: true }, take: 1 } },
@@ -812,6 +829,7 @@ router.post("/tenants/:id/impersonate", async (req, res, next) => {
         targetUserId: targetUser.id,
         targetEmail: targetUser.email,
         expiresInSec: ttlSeconds,
+        reason,
       },
     });
 

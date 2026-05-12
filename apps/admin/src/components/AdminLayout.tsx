@@ -39,6 +39,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: '/queues', label: 'Queues', icon: '↻' },
       { path: '/announcements', label: 'Announcements', icon: '📣' },
       { path: '/support', label: 'Support', icon: '✉' },
+      { path: '/impersonation-log', label: 'Impersonation Log', icon: '◉' },
       { path: '/activity', label: 'Admin Activity', icon: '◷' },
     ],
   },

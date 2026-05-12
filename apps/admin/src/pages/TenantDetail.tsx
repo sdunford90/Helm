@@ -907,17 +907,26 @@ const TenantDetail: React.FC = () => {
 
   const handleImpersonate = async () => {
     if (!id || !tenant) return;
-    if (!window.confirm(
+    // A11: require a reason — typed in here, persisted server-side in the
+    // audit metadata, and surfaced in the Impersonation Log.
+    const reason = window.prompt(
       `Log in as ${tenant.name} (${tenant.subdomain}.gethelm.com)?\n\n` +
-      `This action is recorded in the audit trail and the tenant will see a banner ` +
-      `indicating an admin is impersonating them.`,
-    )) return;
+      `Enter a reason — this is required and shown in the Impersonation Log.\n` +
+      `The tenant will see a banner indicating an admin is impersonating them.`,
+      '',
+    );
+    if (reason === null) return;
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      window.alert('A reason is required to start an impersonation session.');
+      return;
+    }
 
     setImpersonating(true);
     try {
       const data = await apiFetch<{ token: string; tenantSubdomain: string }>(
         `${API}/tenants/${id}/impersonate`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ reason: trimmed }) },
       );
       // Cross-origin handoff: pass the signed token in the URL fragment of the
       // tenant subdomain. The fragment is kept client-side (never sent to the
