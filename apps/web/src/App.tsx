@@ -61,6 +61,10 @@ import FuelReport from './pages/insights/operations/FuelReport';
 import PosSalesReport from './pages/insights/operations/PosSalesReport';
 import InventoryReport from './pages/insights/operations/InventoryReport';
 import PurchasingReport from './pages/insights/operations/PurchasingReport';
+import RevenueReport from './pages/insights/financial/RevenueReport';
+import ArAgingReport from './pages/insights/financial/ArAgingReport';
+import CardRailMixReport from './pages/insights/financial/CardRailMixReport';
+import RefundsReport from './pages/insights/financial/RefundsReport';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -125,6 +129,10 @@ function AppRoutes() {
         <Route path="/insights/financial" element={<InsightsFinancial />} />
         <Route path="/insights/financial/sales-tax" element={<ReportsSalesTax />} />
         <Route path="/insights/financial/trial-balance" element={<TrialBalance />} />
+        <Route path="/insights/financial/revenue" element={<RevenueReport />} />
+        <Route path="/insights/financial/ar-aging" element={<ArAgingReport />} />
+        <Route path="/insights/financial/card-rail-mix" element={<CardRailMixReport />} />
+        <Route path="/insights/financial/refunds" element={<RefundsReport />} />
         <Route path="/insights/customers" element={<InsightsCustomers />} />
         <Route path="/insights/customers/card-expiry" element={<CardExpiryForecast />} />
         <Route path="/insights/communications" element={<InsightsCommunications />} />

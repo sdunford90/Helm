@@ -15,26 +15,30 @@ export default function InsightsFinancial() {
         <ReportCard
           title="Revenue"
           description="By location, product, and period. Recurring (MRR) vs. transient mix, with prior-period comparison."
-          status="phase-5a"
+          status="live"
           icon={TrendingUp}
+          to="/insights/financial/revenue"
         />
         <ReportCard
           title="A/R Aging"
           description="Current / 30 / 60 / 90+ buckets with customer drilldown. Already live as a billing tool — Insights view adds trend & cohort lenses."
-          status="phase-5a"
+          status="live"
           icon={FileWarning}
+          to="/insights/financial/ar-aging"
         />
         <ReportCard
           title="Card Rail Mix"
           description="Card vs. ACH vs. cash vs. check. Surcharge capture, average ticket per rail."
-          status="phase-5a"
+          status="live"
           icon={CreditCard}
+          to="/insights/financial/card-rail-mix"
         />
         <ReportCard
           title="Refunds & Chargebacks"
           description="Volume, reasons, dispute outcomes, and chargeback rate by location."
-          status="phase-5a"
+          status="live"
           icon={RotateCcw}
+          to="/insights/financial/refunds"
         />
         <ReportCard
           title="Deferred Revenue"

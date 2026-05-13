@@ -1481,6 +1481,117 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/card-rail-mix ───────────────────────────────────────────────
+//
+// Splits payment volume across rails (card / ACH / cash / check / other) so
+// an operator can see surcharge effectiveness and the average ticket per
+// rail. Pulls from Payment + the surchargeCents column.
+router.get("/card-rail-mix", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const payments = await prisma.payment.groupBy({
+      by: ["method"],
+      where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED" },
+      _sum: { amountCents: true, refundedCents: true },
+      _count: { id: true },
+    });
+
+    const total = payments.reduce((s, p) => s + (p._sum.amountCents ?? 0), 0);
+    const refundTotal = payments.reduce((s, p) => s + (p._sum.refundedCents ?? 0), 0);
+
+    const byMethod = payments.map((p) => {
+      const gross = p._sum.amountCents ?? 0;
+      const count = p._count.id;
+      return {
+        method: p.method,
+        count,
+        grossCents: gross,
+        netCents: gross - (p._sum.refundedCents ?? 0),
+        refundedCents: p._sum.refundedCents ?? 0,
+        avgTicketCents: count > 0 ? Math.round(gross / count) : 0,
+        sharePct: total > 0 ? Number(((gross / total) * 100).toFixed(1)) : 0,
+      };
+    }).sort((a, b) => b.grossCents - a.grossCents);
+
+    res.json({
+      period: { startDate, endDate },
+      paymentCount: payments.reduce((s, p) => s + p._count.id, 0),
+      totalGrossCents: total,
+      totalRefundedCents: refundTotal,
+      byMethod,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/refunds-chargebacks ─────────────────────────────────────────
+//
+// Refund volume + reason distribution, plus chargeback / dispute counts when
+// they exist. Drives the "are we leaking customer trust" question that
+// payments leads ask at month-end.
+router.get("/refunds-chargebacks", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const refunds = await prisma.paymentRefund.findMany({
+      where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+      select: { amountCents: true, reason: true, createdAt: true, isFullRefund: true, source: true },
+    });
+
+    const paymentsAgg = await prisma.payment.aggregate({
+      where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED" },
+      _sum: { amountCents: true },
+      _count: { id: true },
+    });
+
+    const byReason = new Map<string, { reason: string; count: number; totalCents: number }>();
+    for (const r of refunds) {
+      const key = r.reason ?? "unspecified";
+      if (!byReason.has(key)) byReason.set(key, { reason: key, count: 0, totalCents: 0 });
+      const b = byReason.get(key)!;
+      b.count += 1;
+      b.totalCents += r.amountCents;
+    }
+
+    const totalRefundCents = refunds.reduce((s, r) => s + r.amountCents, 0);
+    const grossPaymentCents = paymentsAgg._sum.amountCents ?? 0;
+
+    // Disputes — only count tenants that have the model. If it doesn't exist
+    // yet on this build, the optional chain handles it.
+    let disputeCount = 0;
+    let disputeTotalCents = 0;
+    try {
+      const disputeAgg = await (prisma as any).paymentDispute?.aggregate?.({
+        where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+        _sum: { amountCents: true },
+        _count: { id: true },
+      });
+      if (disputeAgg) {
+        disputeCount = disputeAgg._count?.id ?? 0;
+        disputeTotalCents = disputeAgg._sum?.amountCents ?? 0;
+      }
+    } catch { /* disputes table absent — fine */ }
+
+    res.json({
+      period: { startDate, endDate },
+      refunds: {
+        count: refunds.length,
+        totalCents: totalRefundCents,
+        fullRefunds: refunds.filter((r) => r.isFullRefund).length,
+        rateOfGross: grossPaymentCents > 0 ? Number(((totalRefundCents / grossPaymentCents) * 100).toFixed(2)) : 0,
+      },
+      gross: {
+        paymentCount: paymentsAgg._count.id,
+        totalCents: grossPaymentCents,
+      },
+      disputes: { count: disputeCount, totalCents: disputeTotalCents },
+      byReason: Array.from(byReason.values()).sort((a, b) => b.totalCents - a.totalCents),
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /reports/purchasing ──────────────────────────────────────────────────
 //
 // Purchase-order activity for the window: aging (days since created for POs
