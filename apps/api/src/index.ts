@@ -51,6 +51,7 @@ import onboardingRouter from "./routes/onboarding.js";
 import contractsRouter from "./routes/contracts.js";
 import settingsRouter from "./routes/settings.js";
 import apiKeysRouter from "./routes/api-keys.js";
+import composeAssistRouter from "./routes/compose-assist.js";
 import transientRouter from "./routes/transient.js";
 import rampRouter from "./routes/ramp.js";
 import conciergeRouter from "./routes/concierge.js";
@@ -298,6 +299,7 @@ app.use("/api/settings", settingsRouter);
 // Plan 67 — Mounted at a sub-path so it doesn't interfere with the
 // pre-existing wildcard /api/settings catch-alls.
 app.use("/api/settings/api-keys", apiKeysRouter);
+app.use("/api/compose-assist", composeAssistRouter);
 app.use("/api/transient", transientRouter);
 app.use("/api/ramp", rampRouter);
 app.use("/api/concierge", conciergeRouter);

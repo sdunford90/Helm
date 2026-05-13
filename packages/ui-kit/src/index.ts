@@ -40,3 +40,6 @@ export type { NotificationItem, NotificationBellProps } from './components/Notif
 
 export { CommandPalette, useCommandPaletteHotkey } from './components/CommandPalette';
 export type { CommandItem, CommandPaletteProps } from './components/CommandPalette';
+
+export { ComposeAssist } from './components/ComposeAssist';
+export type { ComposeAssistProps, ComposeTone } from './components/ComposeAssist';
