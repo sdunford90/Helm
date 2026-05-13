@@ -3,7 +3,7 @@ import { Outlet, useLocation, Link, useNavigate } from 'react-router-dom';
 import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import ImpersonationBanner from './ImpersonationBanner';
-import { AnnouncementBanner, NotificationBell } from '@helm/ui-kit';
+import { AnnouncementBanner, NotificationBell, CommandPalette, useCommandPaletteHotkey, type CommandItem } from '@helm/ui-kit';
 import { useModules } from '../context/ModulesContext';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import {
@@ -390,6 +390,22 @@ export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const paletteHotkey = useCommandPaletteHotkey();
+  const paletteNavigate = useNavigate();
+
+  // Plan 19 — Flatten the sidebar into a CommandItem list so ⌘K can jump
+  // to any page. We add nothing per-section; the palette renders them
+  // grouped by `group` already.
+  const paletteCommands: CommandItem[] = NAV_SECTIONS.flatMap((section) =>
+    section.items.map((item) => ({
+      id: `nav-${item.path}`,
+      label: item.label,
+      hint: item.path,
+      group: section.label,
+      keywords: [item.path],
+      onSelect: () => paletteNavigate(item.path),
+    })),
+  );
 
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
@@ -420,6 +436,11 @@ export default function AppLayout() {
     <>
       <ImpersonationBanner />
       <AnnouncementBanner getToken={getToken} />
+      <CommandPalette
+        commands={paletteCommands}
+        open={paletteHotkey.open}
+        onOpenChange={paletteHotkey.setOpen}
+      />
     <div style={styles.container}>
       {/* Mobile overlay */}
       {sidebarOpen && (

@@ -37,3 +37,6 @@ export type { Announcement } from './components/AnnouncementBanner';
 
 export { NotificationBell } from './components/NotificationBell';
 export type { NotificationItem, NotificationBellProps } from './components/NotificationBell';
+
+export { CommandPalette, useCommandPaletteHotkey } from './components/CommandPalette';
+export type { CommandItem, CommandPaletteProps } from './components/CommandPalette';

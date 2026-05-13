@@ -1,9 +1,9 @@
 import React from 'react';
-import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useUser, useClerk, useAuth } from '@clerk/clerk-react';
 import { useAdminMe, adminRoleLabel } from '../hooks/useAdminMe';
 import GlobalSearch from './GlobalSearch';
-import { AnnouncementBanner, NotificationBell } from '@helm/ui-kit';
+import { AnnouncementBanner, NotificationBell, CommandPalette, useCommandPaletteHotkey, type CommandItem } from '@helm/ui-kit';
 
 const DEV_BYPASS = import.meta.env.VITE_ENABLE_AUTH_DEV_BYPASS === 'true';
 
@@ -216,7 +216,29 @@ const DevBypassUserControls: React.FC = () => {
 
 const AdminLayout: React.FC = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { getToken } = useAuth();
+  const paletteHotkey = useCommandPaletteHotkey();
+  const paletteCommands: CommandItem[] = [
+    ...NAV_SECTIONS.flatMap((section) =>
+      section.items.map((item) => ({
+        id: `nav-${item.path}`,
+        label: item.label,
+        hint: item.path,
+        group: section.label,
+        keywords: [item.path],
+        onSelect: () => navigate(item.path),
+      })),
+    ),
+    ...FOOTER_SECTION.items.map((item) => ({
+      id: `nav-${item.path}`,
+      label: item.label,
+      hint: item.path,
+      group: FOOTER_SECTION.label,
+      keywords: [item.path],
+      onSelect: () => navigate(item.path),
+    })),
+  ];
 
   const getNavStyle = (path: string): React.CSSProperties => {
     const isActive = path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
@@ -242,6 +264,11 @@ const AdminLayout: React.FC = () => {
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', background: '#070E18', minHeight: '100vh', color: '#E0E0E0' }}>
+      <CommandPalette
+        commands={paletteCommands}
+        open={paletteHotkey.open}
+        onOpenChange={paletteHotkey.setOpen}
+      />
       <div style={{ marginLeft: 240 }}>
         <AnnouncementBanner getToken={getToken} />
       </div>
