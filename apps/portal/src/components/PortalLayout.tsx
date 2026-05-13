@@ -17,6 +17,7 @@ import {
   HelpCircle,
   Lock,
   Folder,
+  Calendar,
 } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import ImpersonationBanner from './ImpersonationBanner';
@@ -60,6 +61,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Services',
     items: [
+      { to: '/reservations', label: 'Reservations', icon: Calendar },
       { to: '/concierge', label: 'Concierge', icon: Bell },
       { to: '/waitlist', label: 'Waitlist', icon: Clock },
     ],

@@ -18,6 +18,7 @@ import Documents from './pages/Documents';
 import MySlip from './pages/MySlip';
 import BoatDetail from './pages/BoatDetail';
 import AutopayManager from './pages/AutopayManager';
+import Reservations from './pages/Reservations';
 import ThankYou from './pages/ThankYou';
 
 export default function App() {
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="/insurance" element={<Insurance />} />
         <Route path="/documents" element={<Documents />} />
         <Route path="/concierge" element={<ConciergeRequests />} />
+        <Route path="/reservations" element={<Reservations />} />
         <Route path="/waitlist" element={<WaitlistStatus />} />
         <Route path="/announcements" element={<Announcements />} />
         <Route path="/messages" element={<Messages />} />

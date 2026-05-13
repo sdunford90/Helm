@@ -354,6 +354,64 @@ router.get(
 // ---------------------------------------------------------------------------
 // GET /api/portal/boats — customer's boats
 // ---------------------------------------------------------------------------
+// Plan 16 — Customer-facing list of their reservations across rental + transient.
+// Merged + sorted by start date so the portal can show "what you have coming up"
+// without needing two round-trips. Cancel/check-in actions are intentionally
+// not exposed here — the portal cancel flow lives on the rental page proper
+// and check-in still requires a staff member.
+router.get("/reservations", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const customerId = req.portalCustomerId!;
+    const [rentalRes, transientRes] = await Promise.all([
+      prisma.reservation.findMany({
+        where: { tenantId, customerId },
+        include: {
+          rentalProduct: { select: { id: true, name: true, category: true } },
+        },
+        orderBy: { startDt: "desc" },
+        take: 100,
+      }),
+      prisma.transientBooking.findMany({
+        where: { tenantId, customerId },
+        include: { slip: { select: { id: true, slipNumber: true } } },
+        orderBy: { checkIn: "desc" },
+        take: 100,
+      }),
+    ]);
+
+    const items = [
+      ...rentalRes.map((r) => ({
+        kind: "rental" as const,
+        id: r.id,
+        title: r.rentalProduct?.name ?? "Rental",
+        subtitle: r.rentalProduct?.category ?? null,
+        status: r.status,
+        startAt: r.startDt,
+        endAt: r.endDt,
+        totalCents: r.totalCents,
+      })),
+      ...transientRes.map((b) => ({
+        kind: "transient" as const,
+        id: b.id,
+        title: `Slip ${b.slip.slipNumber}`,
+        subtitle: "Transient stay",
+        status: b.status,
+        startAt: b.checkIn,
+        endAt: b.checkOut,
+        totalCents: b.totalCents,
+      })),
+    ].sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime());
+
+    const upcoming = items.filter((i) => i.endAt && new Date(i.endAt) >= new Date());
+    const past = items.filter((i) => !i.endAt || new Date(i.endAt) < new Date());
+
+    res.json({ upcoming, past });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/boats", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const boats = await prisma.boat.findMany({
