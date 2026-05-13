@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApiFetch } from '../lib/api';
 import { useAdminMe, isSuperuser } from '../hooks/useAdminMe';
 import TenantFeatureFlags from '../components/TenantFeatureFlags';
@@ -138,6 +138,16 @@ const fmtDate = (d: string) =>
   d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
 type Tab = 'overview' | 'subscription' | 'usage' | 'locations' | 'users' | 'flags' | 'webhooks' | 'export' | 'danger' | 'notes';
+
+// Plan 18 — Tab state is URL-backed so each section of a tenant detail
+// page is bookmarkable and the browser back button moves between tabs
+// instead of leaving the page entirely. This keeps a single route /tenants/:id
+// (so external links from emails/Slack/etc keep working) while breaking the
+// 1900-line tab monolith into discrete URLs.
+const VALID_TABS: readonly Tab[] = [
+  'overview', 'subscription', 'usage', 'locations', 'users',
+  'flags', 'webhooks', 'export', 'danger', 'notes',
+];
 
 interface TenantExportRow {
   id: string;
@@ -612,7 +622,17 @@ const TenantDetail: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [locLoading, setLocLoading] = useState(false);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<Tab>('overview');
+  // URL-backed tab state (Plan 18): read `?tab=foo` so each section is
+  // bookmarkable; setTab writes the param without remounting the page.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const tab: Tab = VALID_TABS.includes(rawTab as Tab) ? (rawTab as Tab) : 'overview';
+  const setTab = (next: Tab) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'overview') params.delete('tab');
+    else params.set('tab', next);
+    setSearchParams(params, { replace: false });
+  };
   const [showLocModal, setShowLocModal] = useState(false);
   const [editingLoc, setEditingLoc] = useState<Location | undefined>();
   const [tiers, setTiers] = useState<AdminTier[]>([]);
