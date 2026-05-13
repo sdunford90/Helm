@@ -31,6 +31,7 @@ import { runInventoryReconciliation } from "../jobs/inventory-reconciliation.js"
 import { generateRecurringInvoices } from "../services/billing.js";
 import { recognizeDeferred } from "../services/deferred-revenue.js";
 import { runCardExpiryRemindersForAllTenants, runCardExpiryReminders } from "../services/card-expiry-reminders.js";
+import { scanOverstayTransients } from "../services/transient-overstay.js";
 import {
   syncCustomer,
   syncInvoice,
@@ -446,6 +447,33 @@ const billingWorker = new Worker(
         break;
       }
 
+      case "transient-overstay-sweep": {
+        // Plan 13 — Scan every active tenant's transient bookings whose
+        // checkOut date has passed and flip BOOKED/CHECKED_IN → OVERSTAY.
+        // Idempotent: a tenant with nothing overdue returns flipped=0.
+        const tenantId = job.data?.tenantId as string | undefined;
+        if (tenantId) {
+          const r = await scanOverstayTransients(tenantId);
+          console.log(`[billing-worker] transient-overstay-sweep tenant=${tenantId} flipped=${r.flipped}`);
+        } else {
+          const tenants = await prisma.tenant.findMany({
+            where: { status: "ACTIVE" },
+            select: { id: true },
+          });
+          let total = 0;
+          for (const t of tenants) {
+            try {
+              const r = await scanOverstayTransients(t.id);
+              total += r.flipped;
+            } catch (err) {
+              console.error(`[billing-worker] overstay sweep failed for tenant ${t.id}:`, (err as Error).message);
+            }
+          }
+          console.log(`[billing-worker] transient-overstay-sweep complete — ${total} flips across ${tenants.length} tenants`);
+        }
+        break;
+      }
+
       case "inventory-reconciliation": {
         // Run for a specific tenant or all locations with QB connections
         const tenantId = job.data?.tenantId as string | undefined;
@@ -688,6 +716,18 @@ async function scheduleRepeatableJobs() {
       {
         repeat: { pattern: "0 2 * * *" },
         jobId: "cron-inventory-reconciliation",
+      },
+    );
+
+    // Hourly — flip transient bookings whose checkout has passed to OVERSTAY
+    // (Plan 13). Hourly cadence keeps the dashboard count fresh without
+    // hammering the DB.
+    await queues.billing.add(
+      "transient-overstay-sweep",
+      {},
+      {
+        repeat: { pattern: "0 * * * *" },
+        jobId: "cron-transient-overstay-sweep",
       },
     );
 
