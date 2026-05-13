@@ -1481,6 +1481,203 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/email-stats ─────────────────────────────────────────────────
+//
+// Outbound email health from EmailAutomationLog. Provides counts by status
+// (SENT, FAILED, etc.) and a short recent-failure list.
+router.get("/email-stats", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const logs = await prisma.emailAutomationLog.findMany({
+      where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+      select: { status: true, errorMessage: true, createdAt: true, subject: true, recipientEmail: true, trigger: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const byStatus = logs.reduce<Record<string, number>>((acc, l) => {
+      acc[l.status] = (acc[l.status] ?? 0) + 1;
+      return acc;
+    }, {});
+    const sent = byStatus.SENT ?? 0;
+    const failed = byStatus.FAILED ?? 0;
+    const total = logs.length;
+    const recentFailures = logs.filter((l) => l.status === "FAILED").slice(0, 25).map((l) => ({
+      recipient: l.recipientEmail,
+      subject: l.subject,
+      trigger: l.trigger,
+      error: l.errorMessage,
+      createdAt: l.createdAt,
+    }));
+
+    res.json({
+      period: { startDate, endDate },
+      total,
+      sent,
+      failed,
+      successRate: total > 0 ? Number(((sent / total) * 100).toFixed(1)) : 0,
+      byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
+      recentFailures,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/sms-stats ───────────────────────────────────────────────────
+//
+// Outbound SMS health. Filters EmailAutomationLog to rows that targeted a
+// phone number (recipientPhone). Twilio failures show up here.
+router.get("/sms-stats", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const logs = await prisma.emailAutomationLog.findMany({
+      where: {
+        tenantId,
+        createdAt: { gte: startDate, lte: endDate },
+        recipientPhone: { not: null },
+      },
+      select: { status: true, errorMessage: true, recipientPhone: true, createdAt: true, trigger: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const sent = logs.filter((l) => l.status === "SENT").length;
+    const failed = logs.filter((l) => l.status === "FAILED").length;
+    const recentFailures = logs.filter((l) => l.status === "FAILED").slice(0, 25).map((l) => ({
+      recipient: l.recipientPhone,
+      trigger: l.trigger,
+      error: l.errorMessage,
+      createdAt: l.createdAt,
+    }));
+
+    res.json({
+      period: { startDate, endDate },
+      total: logs.length,
+      sent,
+      failed,
+      successRate: logs.length > 0 ? Number(((sent / logs.length) * 100).toFixed(1)) : 0,
+      recentFailures,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/automation-rules ────────────────────────────────────────────
+//
+// Per-trigger and per-rule performance — runs vs failures. Surfaces which
+// automations are broken before customers notice.
+router.get("/automation-rules", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const grouped = await prisma.emailAutomationLog.groupBy({
+      by: ["trigger", "status"],
+      where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+      _count: { _all: true },
+    });
+    const triggerMap = new Map<string, { trigger: string; sent: number; failed: number; queued: number; total: number }>();
+    for (const r of grouped) {
+      if (!triggerMap.has(r.trigger)) triggerMap.set(r.trigger, { trigger: r.trigger, sent: 0, failed: 0, queued: 0, total: 0 });
+      const b = triggerMap.get(r.trigger)!;
+      b.total += r._count._all;
+      if (r.status === "SENT") b.sent += r._count._all;
+      else if (r.status === "FAILED") b.failed += r._count._all;
+      else if (r.status === "QUEUED") b.queued += r._count._all;
+    }
+
+    res.json({
+      period: { startDate, endDate },
+      byTrigger: Array.from(triggerMap.values())
+        .map((b) => ({
+          ...b,
+          successRate: b.total > 0 ? Number(((b.sent / b.total) * 100).toFixed(1)) : 0,
+        }))
+        .sort((a, b) => b.total - a.total),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/announcement-reach ──────────────────────────────────────────
+//
+// Per-announcement delivery summary — how many recipients each broadcast
+// reached and how many opened it.
+router.get("/announcement-reach", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const announcements = await prisma.announcement.findMany({
+      where: { tenantId, sentAt: { gte: startDate, lte: endDate } },
+      include: { deliveries: true },
+      orderBy: { sentAt: "desc" },
+    });
+
+    const rows = announcements.map((a) => {
+      const totalDeliveries = a.deliveries.length;
+      const opened = a.deliveries.filter((d) => d.openedAt !== null).length;
+      const delivered = a.deliveries.filter((d) => d.status === "DELIVERED" || d.status === "SENT" || d.openedAt !== null).length;
+      const failed = a.deliveries.filter((d) => d.status === "FAILED").length;
+      return {
+        id: a.id,
+        subject: a.subject,
+        channels: a.channels,
+        isEmergency: a.isEmergency,
+        sentAt: a.sentAt,
+        totalDeliveries,
+        delivered,
+        failed,
+        opened,
+        openRate: delivered > 0 ? Number(((opened / delivered) * 100).toFixed(1)) : 0,
+      };
+    });
+
+    res.json({
+      period: { startDate, endDate },
+      totalAnnouncements: announcements.length,
+      totalDeliveries: rows.reduce((s, r) => s + r.totalDeliveries, 0),
+      announcements: rows,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/email-suppression ───────────────────────────────────────────
+//
+// Suppression list growth, top reasons, and most recent additions.
+router.get("/email-suppression", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const [all, recent, addedInWindow] = await Promise.all([
+      prisma.emailSuppression.findMany({
+        where: { tenantId },
+        select: { reason: true, source: true, createdAt: true, email: true },
+      }),
+      prisma.emailSuppression.findMany({
+        where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      }),
+      prisma.emailSuppression.count({ where: { tenantId, createdAt: { gte: startDate, lte: endDate } } }),
+    ]);
+
+    const byReason = new Map<string, number>();
+    const bySource = new Map<string, number>();
+    for (const r of all) {
+      byReason.set(r.reason, (byReason.get(r.reason) ?? 0) + 1);
+      bySource.set(r.source, (bySource.get(r.source) ?? 0) + 1);
+    }
+
+    res.json({
+      period: { startDate, endDate },
+      totalSuppressed: all.length,
+      addedInWindow,
+      byReason: Array.from(byReason.entries()).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+      bySource: Array.from(bySource.entries()).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
+      recent: recent.map((r) => ({ email: r.email, reason: r.reason, source: r.source, createdAt: r.createdAt })),
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /reports/admin-actions ───────────────────────────────────────────────
 //
 // Platform-side audit events touching this tenant: impersonations, flag

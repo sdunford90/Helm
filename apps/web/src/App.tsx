@@ -75,6 +75,11 @@ import AdminActionsReport from './pages/insights/compliance/AdminActionsReport';
 import PeriodCloseReport from './pages/insights/compliance/PeriodCloseReport';
 import QboSyncReport from './pages/insights/compliance/QboSyncReport';
 import WebhooksReport from './pages/insights/compliance/WebhooksReport';
+import EmailReport from './pages/insights/communications/EmailReport';
+import SmsReport from './pages/insights/communications/SmsReport';
+import AutomationsReport from './pages/insights/communications/AutomationsReport';
+import AnnouncementsReport from './pages/insights/communications/AnnouncementsReport';
+import SuppressionReport from './pages/insights/communications/SuppressionReport';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -152,6 +157,11 @@ function AppRoutes() {
         <Route path="/insights/customers/nps" element={<NpsReport />} />
         <Route path="/insights/customers/compliance" element={<ComplianceReport />} />
         <Route path="/insights/communications" element={<InsightsCommunications />} />
+        <Route path="/insights/communications/email" element={<EmailReport />} />
+        <Route path="/insights/communications/sms" element={<SmsReport />} />
+        <Route path="/insights/communications/automations" element={<AutomationsReport />} />
+        <Route path="/insights/communications/announcements" element={<AnnouncementsReport />} />
+        <Route path="/insights/communications/suppression" element={<SuppressionReport />} />
         <Route path="/insights/compliance" element={<InsightsCompliance />} />
         <Route path="/insights/compliance/admin-actions" element={<AdminActionsReport />} />
         <Route path="/insights/compliance/period-close" element={<PeriodCloseReport />} />

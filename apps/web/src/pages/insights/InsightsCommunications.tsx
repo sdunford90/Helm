@@ -12,32 +12,37 @@ export default function InsightsCommunications() {
         <ReportCard
           title="Email"
           description="Volume, deliverability, opens, clicks, bounces, and complaint rate (via the Resend feed)."
-          status="phase-5b"
+          status="live"
           icon={Mail}
+          to="/insights/communications/email"
         />
         <ReportCard
           title="SMS"
           description="Volume, opt-out rate, and delivery failures by carrier (Twilio-backed)."
-          status="phase-5b"
+          status="live"
           icon={MessageSquare}
+          to="/insights/communications/sms"
         />
         <ReportCard
           title="Automations"
           description="Rule-by-rule performance and error tracking for the Email Automation engine."
-          status="phase-5b"
+          status="live"
           icon={Workflow}
+          to="/insights/communications/automations"
         />
         <ReportCard
           title="Announcements"
           description="Reach and read-rate per announcement (backed by PortalMessage delivery)."
-          status="phase-5b"
+          status="live"
           icon={Megaphone}
+          to="/insights/communications/announcements"
         />
         <ReportCard
           title="Suppression"
           description="Suppression-list growth, top reasons, and reactivation candidates."
-          status="phase-5b"
+          status="live"
           icon={Ban}
+          to="/insights/communications/suppression"
         />
       </ReportGrid>
     </InsightsShell>
