@@ -824,11 +824,101 @@ export async function postShiftZOut(
   const totalDebits = debits.reduce((s, l) => s + l.debitCents, 0);
   const totalCredits = debits.reduce((s, l) => s + l.creditCents, 0);
   if (totalDebits === 0 && totalCredits === 0) {
+    // Still post the COGS journal if there are tracked-product sales — it's
+    // independent of the tender side.
+    await postShiftCogs(tenantId, shiftId, locationId, tx);
     return ""; // empty journal id — caller treats as "no GL needed"
   }
   // Balance check is enforced by postEntries; we don't need to pre-check here.
 
-  return postEntries(tenantId, debits, "POS_ZOUT", shiftId, tx, locationId);
+  const journalId = await postEntries(tenantId, debits, "POS_ZOUT", shiftId, tx, locationId);
+
+  // Plan 3 — Post per-category COGS in a separate balanced journal. Source
+  // type POS_COGS so the books-tie report can match inventory consumption
+  // against the GL hit cleanly. Failure here is fatal to the Z-out commit
+  // since it runs in the same transaction.
+  await postShiftCogs(tenantId, shiftId, locationId, tx);
+
+  return journalId;
+}
+
+// Plan 3 — Post COGS (DR) and Inventory Asset (CR) per product category for
+// all tracked-product sales in this shift. Uses costAtSaleCents stamped on
+// PosLineItem at sale time, summed by ProductCategory and looked up via
+// ProductCategoryGlMapping. Skips silently if no tracked sales / no
+// configured mapping at the location.
+async function postShiftCogs(
+  tenantId: string,
+  shiftId: string,
+  locationId: string | null,
+  tx: ZoutTx,
+): Promise<void> {
+  if (!locationId) return; // COGS mapping is per-location; null-loc shifts skip
+  const lines = await (tx as typeof prisma).posLineItem.findMany({
+    where: {
+      costAtSaleCents: { not: null, gt: 0 },
+      transaction: {
+        tenantId,
+        shiftId,
+        status: { in: ["COMPLETED", "CHARGE_TO_AR", "CARD", "CASH", "ACH"] },
+      },
+    },
+    select: {
+      quantity: true,
+      costAtSaleCents: true,
+      product: {
+        select: { productCategoryId: true },
+      },
+      transaction: {
+        select: { refundOfId: true },
+      },
+    },
+  });
+  if (lines.length === 0) return;
+
+  // Net cost basis per category: sale cost minus refund cost. A net-positive
+  // amount posts DR COGS / CR Inventory (inventory consumed); a net-negative
+  // amount flips both directions (inventory returned). Same balanced journal.
+  const netByCategory = new Map<string, number>();
+  for (const l of lines) {
+    const catId = l.product?.productCategoryId;
+    if (!catId) continue;
+    const cost = l.costAtSaleCents ?? 0;
+    if (cost === 0) continue;
+    const signed = l.transaction.refundOfId !== null ? -cost : cost;
+    netByCategory.set(catId, (netByCategory.get(catId) ?? 0) + signed);
+  }
+  if (netByCategory.size === 0) return;
+
+  const cogsLines: Array<{ accountId: string; debitCents: number; creditCents: number; description: string }> = [];
+  for (const [catId, netCost] of netByCategory) {
+    if (netCost === 0) continue;
+    const mapping = await (tx as typeof prisma).productCategoryGlMapping.findFirst({
+      where: { productCategoryId: catId, locationId },
+      select: { cogsGlAccountId: true, inventoryAssetGlAccountId: true },
+    });
+    if (!mapping?.cogsGlAccountId || !mapping.inventoryAssetGlAccountId) {
+      // Tenant hasn't pinned COGS/Inventory accounts for this category-location
+      // yet. Surface this through the Accounting Completeness report (Plan 7)
+      // rather than blocking Z-out; sales without a mapping are skipped.
+      continue;
+    }
+    cogsLines.push({
+      accountId: mapping.cogsGlAccountId,
+      debitCents: netCost > 0 ? netCost : 0,
+      creditCents: netCost < 0 ? -netCost : 0,
+      description: `COGS — category ${catId} — shift ${shiftId}`,
+    });
+    cogsLines.push({
+      accountId: mapping.inventoryAssetGlAccountId,
+      debitCents: netCost < 0 ? -netCost : 0,
+      creditCents: netCost > 0 ? netCost : 0,
+      description: `Inventory consumption — category ${catId} — shift ${shiftId}`,
+    });
+  }
+  if (cogsLines.length === 0) return;
+
+  await postEntries(tenantId, cogsLines, "POS_COGS", shiftId, tx, locationId);
 }
 
 // ---------------------------------------------------------------------------

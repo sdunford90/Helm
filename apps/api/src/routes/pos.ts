@@ -610,6 +610,15 @@ router.post(
       const lineItemsData = lineCalcs.map((c, idx) => {
         const lineTax = taxByIndex[idx];
         subtotalCents += c.lineSubtotal;
+        // Plan 3 — stamp the cost basis at sale time for tracked products so
+        // Z-out can post COGS journals against it. WAC is the snapshot here;
+        // FIFO consumption (which would walk InventoryLot rows) is still
+        // ahead. `null` for non-tracked SKUs (services, gift cards, etc.)
+        // and for the rare row whose product lacks a recorded average cost.
+        const product = productMap.get(c.li.productId);
+        const costAtSaleCents = product?.trackInventory && (product.averageCostCents ?? 0) > 0
+          ? Math.round((product.averageCostCents ?? 0) * c.li.quantity)
+          : null;
         return {
           productId: c.li.productId,
           quantity: c.li.quantity,
@@ -619,6 +628,7 @@ router.post(
           extendedCents: c.lineSubtotal + lineTax,
           appliedDiscountId: c.appliedDiscountId,
           discountSourceLabel: c.discountSourceLabel,
+          costAtSaleCents,
         };
       });
 

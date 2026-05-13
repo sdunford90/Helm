@@ -2033,6 +2033,11 @@ model PosLineItem {
   // discount row). Null when no auto-discount applied (manual or anonymous).
   appliedDiscountId   String?
   discountSourceLabel String?
+  // Plan 3 — cost basis at sale time. Captured from product.averageCostCents
+  // (or FIFO unit cost for fuel) when the sale completes; consumed at Z-out
+  // to post COGS (DR) and Inventory Asset (CR) journals. Null on rows that
+  // pre-date this column or on lines tied to non-tracked products.
+  costAtSaleCents     Int?
 
   transaction     PosTransaction @relation(fields: [transactionId], references: [id])
   product         Product?       @relation(fields: [productId], references: [id])
