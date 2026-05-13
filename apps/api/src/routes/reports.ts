@@ -1481,6 +1481,214 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/pnl ─────────────────────────────────────────────────────────
+//
+// Income statement for the window. Sums GL postings on REVENUE and EXPENSE
+// accounts; revenue accounts net = credits - debits, expense net =
+// debits - credits.
+router.get("/pnl", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const accounts = await prisma.glAccount.findMany({
+      where: { tenantId, type: { in: ["REVENUE", "EXPENSE"] }, isActive: true },
+      orderBy: { accountNumber: "asc" },
+    });
+    const sums = accounts.length === 0 ? [] : await prisma.glEntry.groupBy({
+      by: ["accountId"],
+      where: {
+        tenantId,
+        entryDate: { gte: startDate, lte: endDate },
+        accountId: { in: accounts.map((a) => a.id) },
+      },
+      _sum: { debitCents: true, creditCents: true },
+    });
+    const sumMap = new Map(sums.map((s) => [s.accountId, s]));
+
+    const revenue: any[] = [];
+    const expense: any[] = [];
+    let revenueTotal = 0;
+    let expenseTotal = 0;
+    for (const a of accounts) {
+      const s = sumMap.get(a.id);
+      const debits = s?._sum.debitCents ?? 0;
+      const credits = s?._sum.creditCents ?? 0;
+      const row = {
+        accountNumber: a.accountNumber,
+        name: a.name,
+        type: a.type,
+        debitsCents: debits,
+        creditsCents: credits,
+        netCents: a.type === "REVENUE" ? credits - debits : debits - credits,
+      };
+      if (a.type === "REVENUE") { revenue.push(row); revenueTotal += row.netCents; }
+      else { expense.push(row); expenseTotal += row.netCents; }
+    }
+
+    res.json({
+      period: { startDate, endDate },
+      revenue,
+      revenueTotalCents: revenueTotal,
+      expense,
+      expenseTotalCents: expenseTotal,
+      netIncomeCents: revenueTotal - expenseTotal,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/balance-sheet ───────────────────────────────────────────────
+//
+// As-of-date balance sheet. Sums all postings up to and including endDate
+// on ASSET, LIABILITY, and EQUITY accounts.
+router.get("/balance-sheet", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { endDate } = dateFilters(req);
+
+    const accounts = await prisma.glAccount.findMany({
+      where: { tenantId, type: { in: ["ASSET", "LIABILITY", "EQUITY"] }, isActive: true },
+      orderBy: { accountNumber: "asc" },
+    });
+    const sums = accounts.length === 0 ? [] : await prisma.glEntry.groupBy({
+      by: ["accountId"],
+      where: { tenantId, entryDate: { lte: endDate }, accountId: { in: accounts.map((a) => a.id) } },
+      _sum: { debitCents: true, creditCents: true },
+    });
+    const sumMap = new Map(sums.map((s) => [s.accountId, s]));
+
+    const assets: any[] = [];
+    const liabilities: any[] = [];
+    const equity: any[] = [];
+    let assetsTotal = 0;
+    let liabilitiesTotal = 0;
+    let equityTotal = 0;
+    for (const a of accounts) {
+      const s = sumMap.get(a.id);
+      const debits = s?._sum.debitCents ?? 0;
+      const credits = s?._sum.creditCents ?? 0;
+      const row = {
+        accountNumber: a.accountNumber,
+        name: a.name,
+        type: a.type,
+        balanceCents: a.type === "ASSET" ? debits - credits : credits - debits,
+      };
+      if (a.type === "ASSET") { assets.push(row); assetsTotal += row.balanceCents; }
+      else if (a.type === "LIABILITY") { liabilities.push(row); liabilitiesTotal += row.balanceCents; }
+      else { equity.push(row); equityTotal += row.balanceCents; }
+    }
+
+    res.json({
+      asOf: endDate,
+      assets, assetsTotalCents: assetsTotal,
+      liabilities, liabilitiesTotalCents: liabilitiesTotal,
+      equity, equityTotalCents: equityTotal,
+      // Books-balance check: total assets should equal liabilities + equity.
+      balanceCheckCents: assetsTotal - (liabilitiesTotal + equityTotal),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/cash-flow ───────────────────────────────────────────────────
+//
+// Direct-method cash flow. "Cash in" = sum of completed Payments in the
+// window; "cash out" = sum of received PurchaseOrder totals + refunds.
+// Approximate but useful — the reconciliation report is the auditor's view.
+router.get("/cash-flow", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const [payments, refunds, poReceived] = await Promise.all([
+      prisma.payment.groupBy({
+        by: ["method"],
+        where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED" },
+        _sum: { amountCents: true },
+      }),
+      prisma.paymentRefund.aggregate({
+        where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+        _sum: { amountCents: true },
+      }),
+      prisma.purchaseOrder.aggregate({
+        where: { tenantId, receivedAt: { gte: startDate, lte: endDate } },
+        _sum: { totalCents: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    const cashIn = payments.reduce((s, p) => s + (p._sum.amountCents ?? 0), 0);
+    const refundsOut = refunds._sum.amountCents ?? 0;
+    const poOut = poReceived._sum.totalCents ?? 0;
+
+    res.json({
+      period: { startDate, endDate },
+      cashInCents: cashIn,
+      cashByMethod: payments.map((p) => ({ method: p.method, amountCents: p._sum.amountCents ?? 0 })),
+      refundsOutCents: refundsOut,
+      poReceivedCents: poOut,
+      poReceivedCount: poReceived._count.id,
+      netCashCents: cashIn - refundsOut - poOut,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/reconciliation ──────────────────────────────────────────────
+//
+// Three-way reconciliation: GL revenue vs Stripe-completed payments vs
+// invoices issued. Highlights the variance an accountant chases at close.
+router.get("/reconciliation", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const [revenueAccounts, stripePayments, invoiced, refunds] = await Promise.all([
+      prisma.glAccount.findMany({ where: { tenantId, type: "REVENUE" }, select: { id: true } }),
+      prisma.payment.aggregate({
+        where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED", method: "CARD" },
+        _sum: { amountCents: true },
+        _count: { id: true },
+      }),
+      prisma.invoice.aggregate({
+        where: { tenantId, issuedDate: { gte: startDate, lte: endDate }, status: { not: "VOID" } },
+        _sum: { totalCents: true },
+        _count: { id: true },
+      }),
+      prisma.paymentRefund.aggregate({
+        where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+        _sum: { amountCents: true },
+      }),
+    ]);
+
+    const revenueAggregate = revenueAccounts.length === 0 ? { _sum: { debitCents: 0, creditCents: 0 } } : await prisma.glEntry.aggregate({
+      where: {
+        tenantId,
+        accountId: { in: revenueAccounts.map((a) => a.id) },
+        entryDate: { gte: startDate, lte: endDate },
+      },
+      _sum: { debitCents: true, creditCents: true },
+    });
+    const glRevenueCents = (revenueAggregate._sum.creditCents ?? 0) - (revenueAggregate._sum.debitCents ?? 0);
+
+    const stripeCents = stripePayments._sum.amountCents ?? 0;
+    const invoicedCents = invoiced._sum.totalCents ?? 0;
+    const refundsCents = refunds._sum.amountCents ?? 0;
+
+    res.json({
+      period: { startDate, endDate },
+      glRevenueCents,
+      stripeCollectedCents: stripeCents,
+      stripePaymentCount: stripePayments._count.id,
+      invoicedCents,
+      invoiceCount: invoiced._count.id,
+      refundsCents,
+      // Variance = GL revenue - (Stripe collected - refunds). Positive means
+      // we recognized revenue we haven't seen cash for (e.g., manual receipts);
+      // negative means cash arrived without a posted journal.
+      varianceCents: glRevenueCents - (stripeCents - refundsCents),
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /reports/email-stats ─────────────────────────────────────────────────
 //
 // Outbound email health from EmailAutomationLog. Provides counts by status
