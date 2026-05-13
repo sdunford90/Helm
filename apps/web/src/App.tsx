@@ -65,6 +65,10 @@ import RevenueReport from './pages/insights/financial/RevenueReport';
 import ArAgingReport from './pages/insights/financial/ArAgingReport';
 import CardRailMixReport from './pages/insights/financial/CardRailMixReport';
 import RefundsReport from './pages/insights/financial/RefundsReport';
+import PnlReport from './pages/insights/financial/PnlReport';
+import BalanceSheetReport from './pages/insights/financial/BalanceSheetReport';
+import CashFlowReport from './pages/insights/financial/CashFlowReport';
+import ReconciliationReport from './pages/insights/financial/ReconciliationReport';
 import LtvReport from './pages/insights/customers/LtvReport';
 import ChurnReport from './pages/insights/customers/ChurnReport';
 import PipelineReport from './pages/insights/customers/PipelineReport';
@@ -148,6 +152,10 @@ function AppRoutes() {
         <Route path="/insights/financial/ar-aging" element={<ArAgingReport />} />
         <Route path="/insights/financial/card-rail-mix" element={<CardRailMixReport />} />
         <Route path="/insights/financial/refunds" element={<RefundsReport />} />
+        <Route path="/insights/financial/pnl" element={<PnlReport />} />
+        <Route path="/insights/financial/balance-sheet" element={<BalanceSheetReport />} />
+        <Route path="/insights/financial/cash-flow" element={<CashFlowReport />} />
+        <Route path="/insights/financial/reconciliation" element={<ReconciliationReport />} />
         <Route path="/insights/customers" element={<InsightsCustomers />} />
         <Route path="/insights/customers/card-expiry" element={<CardExpiryForecast />} />
         <Route path="/insights/customers/ltv" element={<LtvReport />} />

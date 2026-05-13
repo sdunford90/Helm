@@ -57,26 +57,30 @@ export default function InsightsFinancial() {
         <ReportCard
           title="P&L / Income Statement"
           description="Per-period, per-location income statement straight from the GL."
-          status="phase-5b"
+          status="live"
           icon={BarChart3}
+          to="/insights/financial/pnl"
         />
         <ReportCard
           title="Balance Sheet"
           description="As-of-date balance sheet from the GL."
-          status="phase-5b"
+          status="live"
           icon={Scale}
+          to="/insights/financial/balance-sheet"
         />
         <ReportCard
           title="Cash Flow"
           description="Direct-method cash flow built from payments and transfers."
-          status="phase-5b"
+          status="live"
           icon={ArrowLeftRight}
+          to="/insights/financial/cash-flow"
         />
         <ReportCard
           title="Reconciliation"
           description="Three-way state: Stripe ⇄ Helm ⇄ QBO. Surfaces variance and breaks."
-          status="phase-5b"
+          status="live"
           icon={BookOpen}
+          to="/insights/financial/reconciliation"
         />
         <ReportCard
           title="Trial Balance"
