@@ -3326,3 +3326,30 @@ model SupportTicketEvent {
   @@index([ticketId, createdAt])
   @@map("support_ticket_events")
 }
+
+// Plan 17 — In-app notifications. Source rows for the bell icon in the
+// top bars of all three apps. Audience is one of:
+//   - audienceUserId (a specific tenant staff user, FK → User.id)
+//   - audiencePortalCustomerId (a specific portal customer, FK → Customer.id)
+//   - audienceAdminUserId (a specific platform admin, User.id where role=PLATFORM_ADMIN)
+// At least one MUST be set per row. Tenant scope is denormalized on every
+// row so per-tenant listings can index cheaply.
+model Notification {
+  id                       String   @id @default(uuid())
+  tenantId                 String?  // null for platform-admin scoped rows
+  audienceUserId           String?  // staff member
+  audiencePortalCustomerId String?  // portal customer
+  audienceAdminUserId      String?  // platform admin
+  kind                     String   // e.g. INVOICE_PAID, WEBHOOK_FAILED, TICKET_REPLY
+  title                    String
+  body                     String?
+  linkUrl                  String?  // where the bell click should go
+  readAt                   DateTime?
+  createdAt                DateTime @default(now())
+
+  @@index([audienceUserId, readAt, createdAt])
+  @@index([audiencePortalCustomerId, readAt, createdAt])
+  @@index([audienceAdminUserId, readAt, createdAt])
+  @@index([tenantId, createdAt])
+  @@map("notifications")
+}

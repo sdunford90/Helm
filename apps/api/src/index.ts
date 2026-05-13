@@ -46,6 +46,7 @@ import platformAnnouncementsRouter, {
 } from "./routes/announcements-platform.js";
 import announcementsRouter from "./routes/announcements.js";
 import adminRouter from "./routes/admin.js";
+import notificationsRouter from "./routes/notifications.js";
 import onboardingRouter from "./routes/onboarding.js";
 import contractsRouter from "./routes/contracts.js";
 import settingsRouter from "./routes/settings.js";
@@ -289,6 +290,7 @@ app.use("/api/insights", insightsRouter);
 app.use("/api/platform-announcements", platformAnnouncementsRouter);
 app.use("/api/announcements", announcementsRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/notifications", notificationsRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/contracts", contractsRouter);
 app.use("/api/settings", settingsRouter);

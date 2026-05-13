@@ -22,7 +22,7 @@ import {
 import { useState, type CSSProperties } from 'react';
 import ImpersonationBanner from './ImpersonationBanner';
 import { useAuth } from '@clerk/clerk-react';
-import { AnnouncementBanner } from '@helm/ui-kit';
+import { AnnouncementBanner, NotificationBell } from '@helm/ui-kit';
 
 const NAVY = '#0A2342';
 const CYAN = '#00D4FF';
@@ -209,6 +209,7 @@ export default function PortalLayout() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <NotificationBell endpointBase="/api/portal/notifications" getToken={getToken} theme="dark" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div
               style={{

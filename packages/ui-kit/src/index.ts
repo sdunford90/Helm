@@ -34,3 +34,6 @@ export type { SubNavProps, SubNavItem, SettingsSection, SettingsLeaf } from './c
 
 export { AnnouncementBanner } from './components/AnnouncementBanner';
 export type { Announcement } from './components/AnnouncementBanner';
+
+export { NotificationBell } from './components/NotificationBell';
+export type { NotificationItem, NotificationBellProps } from './components/NotificationBell';

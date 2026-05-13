@@ -3,7 +3,7 @@ import { Outlet, useLocation, Link, useNavigate } from 'react-router-dom';
 import { useUser, useAuth, RedirectToSignIn } from '@clerk/clerk-react';
 import HelpCenter from './HelpCenter';
 import ImpersonationBanner from './ImpersonationBanner';
-import { AnnouncementBanner } from '@helm/ui-kit';
+import { AnnouncementBanner, NotificationBell } from '@helm/ui-kit';
 import { useModules } from '../context/ModulesContext';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import {
@@ -526,6 +526,7 @@ export default function AppLayout() {
             </div>
           </div>
           <div style={styles.topRight}>
+            <NotificationBell endpointBase="/api/notifications" getToken={getToken} />
             <div style={{ position: 'relative' }} className="helm-location-picker">
               <button
                 onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}

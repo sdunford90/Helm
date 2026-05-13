@@ -354,6 +354,65 @@ router.get(
 // ---------------------------------------------------------------------------
 // GET /api/portal/boats — customer's boats
 // ---------------------------------------------------------------------------
+// Plan 17 — In-app notifications for portal customers. Mirror of the staff
+// /api/notifications endpoints but scoped to audiencePortalCustomerId.
+router.get("/notifications", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const customerId = req.portalCustomerId!;
+    const [unread, recent] = await Promise.all([
+      prisma.notification.findMany({
+        where: { tenantId, audiencePortalCustomerId: customerId, readAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      }),
+      prisma.notification.findMany({
+        where: { tenantId, audiencePortalCustomerId: customerId, readAt: { not: null } },
+        orderBy: { createdAt: "desc" },
+        take: 25,
+      }),
+    ]);
+    res.json({ unread, recent, unreadCount: unread.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/notifications/:id/read", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const customerId = req.portalCustomerId!;
+    const existing = await prisma.notification.findFirst({
+      where: { id: req.params.id, tenantId, audiencePortalCustomerId: customerId },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Notification not found" });
+      return;
+    }
+    const updated = await prisma.notification.update({
+      where: { id: existing.id },
+      data: { readAt: new Date() },
+    });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/notifications/read-all", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenantId!;
+    const customerId = req.portalCustomerId!;
+    const { count } = await prisma.notification.updateMany({
+      where: { tenantId, audiencePortalCustomerId: customerId, readAt: null },
+      data: { readAt: new Date() },
+    });
+    res.json({ markedRead: count });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Plan 16 — Customer-facing list of their reservations across rental + transient.
 // Merged + sorted by start date so the portal can show "what you have coming up"
 // without needing two round-trips. Cancel/check-in actions are intentionally
