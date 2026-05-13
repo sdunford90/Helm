@@ -192,6 +192,7 @@ const NAV_SECTIONS = [
     label: 'Point of Sale',
     items: [
       { path: '/pos', label: 'POS', icon: ShoppingCart },
+      { path: '/pos/z-reports', label: 'Z-Reports', icon: ClipboardCheck },
       { path: '/fuel', label: 'Fuel', icon: Fuel },
     ],
   },
