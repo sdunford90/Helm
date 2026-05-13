@@ -53,6 +53,14 @@ import InsightsScheduled from './pages/insights/InsightsScheduled';
 import InsightsCustomBuilder from './pages/insights/InsightsCustomBuilder';
 import CardExpiryForecast from './pages/insights/CardExpiryForecast';
 import TrialBalance from './pages/insights/TrialBalance';
+import OccupancyReport from './pages/insights/operations/OccupancyReport';
+import DockWalksReport from './pages/insights/operations/DockWalksReport';
+import TransientReport from './pages/insights/operations/TransientReport';
+import RentalsReport from './pages/insights/operations/RentalsReport';
+import FuelReport from './pages/insights/operations/FuelReport';
+import PosSalesReport from './pages/insights/operations/PosSalesReport';
+import InventoryReport from './pages/insights/operations/InventoryReport';
+import PurchasingReport from './pages/insights/operations/PurchasingReport';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -106,6 +114,14 @@ function AppRoutes() {
         <Route path="/reports" element={<Navigate to="/insights" replace />} />
         <Route path="/insights" element={<InsightsOverview />} />
         <Route path="/insights/operations" element={<InsightsOperations />} />
+        <Route path="/insights/operations/occupancy" element={<OccupancyReport />} />
+        <Route path="/insights/operations/dock-walks" element={<DockWalksReport />} />
+        <Route path="/insights/operations/transient" element={<TransientReport />} />
+        <Route path="/insights/operations/rentals" element={<RentalsReport />} />
+        <Route path="/insights/operations/fuel" element={<FuelReport />} />
+        <Route path="/insights/operations/pos-sales" element={<PosSalesReport />} />
+        <Route path="/insights/operations/inventory" element={<InventoryReport />} />
+        <Route path="/insights/operations/purchasing" element={<PurchasingReport />} />
         <Route path="/insights/financial" element={<InsightsFinancial />} />
         <Route path="/insights/financial/sales-tax" element={<ReportsSalesTax />} />
         <Route path="/insights/financial/trial-balance" element={<TrialBalance />} />

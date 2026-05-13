@@ -1481,5 +1481,87 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/purchasing ──────────────────────────────────────────────────
+//
+// Purchase-order activity for the window: aging (days since created for POs
+// not yet received), spend by vendor, and a status breakdown so an
+// operations lead knows where the supply chain is leaking.
+router.get("/purchasing", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const pos = await prisma.purchaseOrder.findMany({
+      where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+      select: {
+        id: true,
+        poNumber: true,
+        status: true,
+        vendorName: true,
+        vendorId: true,
+        totalCents: true,
+        createdAt: true,
+        expectedDate: true,
+        receivedAt: true,
+        vendor: { select: { name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const now = Date.now();
+    const byStatus = pos.reduce<Record<string, number>>((acc, p) => {
+      acc[p.status] = (acc[p.status] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    const vendorMap = new Map<string, { name: string; orderCount: number; totalCents: number; avgLeadDays: number; leadSum: number; leadN: number }>();
+    for (const p of pos) {
+      const key = p.vendorId ?? p.vendorName ?? "_unknown";
+      const name = p.vendor?.name ?? p.vendorName ?? "Unknown vendor";
+      if (!vendorMap.has(key)) {
+        vendorMap.set(key, { name, orderCount: 0, totalCents: 0, avgLeadDays: 0, leadSum: 0, leadN: 0 });
+      }
+      const v = vendorMap.get(key)!;
+      v.orderCount += 1;
+      v.totalCents += p.totalCents;
+      if (p.receivedAt) {
+        const lead = (new Date(p.receivedAt).getTime() - new Date(p.createdAt).getTime()) / 86_400_000;
+        v.leadSum += lead;
+        v.leadN += 1;
+      }
+    }
+    const byVendor = Array.from(vendorMap.values()).map((v) => ({
+      vendor: v.name,
+      orderCount: v.orderCount,
+      totalCents: v.totalCents,
+      avgLeadDays: v.leadN > 0 ? Number((v.leadSum / v.leadN).toFixed(1)) : null,
+    })).sort((a, b) => b.totalCents - a.totalCents);
+
+    // Aging buckets for unreceived orders only.
+    const aging = { current: 0, days30: 0, days60: 0, days60plus: 0 };
+    let openTotalCents = 0;
+    for (const p of pos) {
+      if (p.receivedAt) continue;
+      openTotalCents += p.totalCents;
+      const age = (now - new Date(p.createdAt).getTime()) / 86_400_000;
+      if (age <= 30) aging.current += 1;
+      else if (age <= 60) aging.days30 += 1;
+      else aging.days60 += 1;
+      if (age > 60) aging.days60plus += 1;
+    }
+
+    res.json({
+      period: { startDate, endDate },
+      totalOrders: pos.length,
+      totalSpendCents: pos.reduce((s, p) => s + p.totalCents, 0),
+      openOrders: pos.filter((p) => !p.receivedAt).length,
+      openSpendCents: openTotalCents,
+      byStatus: Object.entries(byStatus).map(([status, count]) => ({ status, count })),
+      byVendor,
+      aging,
+    });
+  } catch (err) { next(err); }
+});
+
 export default router;
 
