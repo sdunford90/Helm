@@ -4,6 +4,7 @@ import { useApiFetch } from '../lib/api';
 import { useAdminMe, isSuperuser } from '../hooks/useAdminMe';
 import TenantFeatureFlags from '../components/TenantFeatureFlags';
 import TenantWebhooks from '../components/TenantWebhooks';
+import AccountingHealthPanel from '../components/AccountingHealthPanel';
 
 const API = '/api/admin';
 
@@ -1130,6 +1131,12 @@ const TenantDetail: React.FC = () => {
 
       {/* ── Overview ── */}
       {tab === 'overview' && (
+        <>
+          {id && (
+            <div style={{ marginBottom: 16 }}>
+              <AccountingHealthPanel tenantId={id} />
+            </div>
+          )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div style={card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -1173,6 +1180,7 @@ const TenantDetail: React.FC = () => {
             ))}
           </div>
         </div>
+        </>
       )}
 
       {/* ── Subscription ── */}

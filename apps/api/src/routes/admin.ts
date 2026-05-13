@@ -2581,6 +2581,85 @@ router.post("/tenants/:id/save-play", async (req, res, next) => {
 
 //  LOCATION MANAGEMENT  (per-tenant)
 
+// GET /api/admin/tenants/:id/accounting-completeness
+//
+// Plan 11 — Admin-side mirror of the tenant Insights report. Returns the
+// same gap shape so the onboarding wizard / tenant detail page can show
+// a "must-fix before go-live" panel without granting cross-tenant access
+// to the tenant-scoped /api/reports endpoint.
+router.get("/tenants/:id/accounting-completeness", async (req, res, next) => {
+  try {
+    const tenantId = req.params.id;
+
+    const locations = await prisma.location.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        name: true,
+        qboRealmId: true,
+        defaultRevenueGlAccountId: true,
+        arGlAccountId: true,
+        accountsPayableGlAccountId: true,
+        deferredRevenueGlAccountId: true,
+        salesTaxGlAccountId: true,
+        transientRevenueGlAccountId: true,
+        rampRevenueGlAccountId: true,
+        conciergeRevenueGlAccountId: true,
+        fuelRevenueGlAccountId: true,
+        electricityRevenueGlAccountId: true,
+      },
+    });
+
+    interface Gap {
+      kind: string;
+      label: string;
+      detail: string;
+      locationId: string;
+      locationName: string;
+      severity: "ERROR" | "WARNING";
+    }
+    const gaps: Gap[] = [];
+
+    const REQUIRED: Array<{ field: keyof typeof locations[number]; label: string; sev: "ERROR" | "WARNING" }> = [
+      { field: "defaultRevenueGlAccountId",     label: "Default revenue",     sev: "ERROR" },
+      { field: "arGlAccountId",                 label: "Accounts receivable", sev: "ERROR" },
+      { field: "salesTaxGlAccountId",           label: "Sales tax payable",   sev: "ERROR" },
+      { field: "deferredRevenueGlAccountId",    label: "Deferred revenue",    sev: "WARNING" },
+      { field: "accountsPayableGlAccountId",    label: "Accounts payable",    sev: "WARNING" },
+      { field: "transientRevenueGlAccountId",   label: "Transient revenue",   sev: "WARNING" },
+      { field: "rampRevenueGlAccountId",        label: "Ramp revenue",        sev: "WARNING" },
+      { field: "conciergeRevenueGlAccountId",   label: "Concierge revenue",   sev: "WARNING" },
+      { field: "fuelRevenueGlAccountId",        label: "Fuel revenue",        sev: "WARNING" },
+      { field: "electricityRevenueGlAccountId", label: "Electricity revenue", sev: "WARNING" },
+    ];
+
+    for (const loc of locations) {
+      for (const slot of REQUIRED) {
+        if (!loc[slot.field]) {
+          gaps.push({
+            kind: slot.label.toUpperCase().replace(/\s/g, "_"),
+            label: slot.label,
+            detail: `Pin a GL account on ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: loc.qboRealmId ? slot.sev : "WARNING",
+          });
+        }
+      }
+    }
+
+    const errors = gaps.filter((g) => g.severity === "ERROR").length;
+    const warnings = gaps.filter((g) => g.severity === "WARNING").length;
+
+    res.json({
+      summary: { totalLocations: locations.length, totalGaps: gaps.length, errors, warnings },
+      gaps,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/tenants/:id/locations
 //
 // Returns each location with its per-location SaaS subscription state (tier,

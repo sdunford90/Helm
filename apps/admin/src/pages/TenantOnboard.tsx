@@ -280,6 +280,27 @@ const TenantOnboard: React.FC = () => {
                 <tr><td style={{ padding: '6px 0', color: 'rgba(255,255,255,0.5)' }}>Tier</td><td>{tiers.find((t) => t.id === form.saasTierId)?.name ?? '— none (default fallback) —'}</td></tr>
               </tbody>
             </table>
+
+            {/* Plan 11 — Mapping-guard reminder. The wizard can't *block* go-live on
+                missing GL mappings (there are no products/dockage rates yet), so
+                instead surface the post-creation accounting setup with a clear
+                pointer to the Accounting Health panel on the tenant detail page. */}
+            <div style={{
+              marginTop: 20,
+              padding: 14,
+              borderRadius: 8,
+              background: 'rgba(255,152,0,0.10)',
+              border: '1px solid rgba(255,152,0,0.35)',
+              color: '#FFD180',
+              fontSize: 12,
+              lineHeight: 1.55,
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 6, color: '#FFB74D' }}>Next: pin GL accounts</div>
+              The tenant won't post cleanly until each location has its default-revenue, AR, sales-tax,
+              and AP accounts pinned (and, on QBO-connected locations, those pins are required).
+              After creation, open the tenant's <em>Overview</em> tab — the Accounting Health panel
+              lists every gap with deep links to the Settings page that fixes it.
+            </div>
           </div>
         )}
 
