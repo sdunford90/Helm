@@ -25,32 +25,106 @@ import {
 // Mirrors the pattern in gl-posting.ts.
 export type ZoutTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-// Hard-coded GL account numbers used by the Z-out journal. Keep in sync
-// with `gl-posting.ts::ACCOUNTS`. We import getAccountByNumber via the
-// helper below rather than re-export it from gl-posting (which keeps it
-// private to that module by design).
-const ACC_CASH = "1000";
-const ACC_STRIPE_CLEARING = "1010";
-// ACH settlements clear through their own ledger account so finance can
-// reconcile bank ACH deposits independently of card payouts.
-const ACC_ACH_CLEARING = "1015";
-// Declared non-cash tenders (checks, "other") sit in undeposited funds
-// until the manager records the bank deposit that clears them. Lumping
-// them into Stripe Clearing or Cash would corrupt those reconciliations.
-const ACC_UNDEPOSITED = "1020";
-const ACC_AR = "1200";
-const ACC_TIPS_PAYABLE = "2210"; // Customer Deposits (also used for tips held)
-const ACC_CASH_OVER_SHORT = "5900";
+// Plan 5 — the Z-out journal previously resolved each account by hardcoded
+// number ("1000", "1010", ...) which mispostsr on QBO-imported charts whose
+// numbers are "QBO-NN". The pinned-FK path below is now the primary
+// resolution; the legacy number lookup is kept as a fallback for non-QBO
+// tenants who haven't pinned yet.
 
-async function getAcct(
+type ZoutSlot =
+  | "cash"
+  | "stripeClearing"
+  | "achClearing"
+  | "undeposited"
+  | "ar"
+  | "tipsPayable"
+  | "cashOverShort";
+
+const SLOT_TO_PIN: Record<ZoutSlot, keyof {
+  cashGlAccountId: string | null;
+  stripeClearingGlAccountId: string | null;
+  achClearingGlAccountId: string | null;
+  undepositedFundsGlAccountId: string | null;
+  arGlAccountId: string | null;
+  tipsPayableGlAccountId: string | null;
+  cashOverShortGlAccountId: string | null;
+}> = {
+  cash:           "cashGlAccountId",
+  stripeClearing: "stripeClearingGlAccountId",
+  achClearing:    "achClearingGlAccountId",
+  undeposited:    "undepositedFundsGlAccountId",
+  ar:             "arGlAccountId",
+  tipsPayable:    "tipsPayableGlAccountId",
+  cashOverShort:  "cashOverShortGlAccountId",
+};
+
+// Legacy number fallback for non-QBO tenants. Tenants with `qboRealmId`
+// set on the location MUST use pins — falling back by number on a
+// QBO-imported chart is what created the cross-realm bug in the first place.
+const SLOT_TO_LEGACY_NUMBER: Record<ZoutSlot, string> = {
+  cash:           "1000",
+  stripeClearing: "1010",
+  achClearing:    "1015",
+  undeposited:    "1020",
+  ar:             "1200",
+  tipsPayable:    "2210",
+  cashOverShort:  "5900",
+};
+
+const SLOT_AUTOHEAL: Record<ZoutSlot, { name: string; type: "ASSET" | "LIABILITY" | "EXPENSE" }> = {
+  cash:           { name: "Cash / Operating Bank", type: "ASSET" },
+  stripeClearing: { name: "Stripe Clearing",       type: "ASSET" },
+  achClearing:    { name: "ACH Clearing",          type: "ASSET" },
+  undeposited:    { name: "Undeposited Funds",     type: "ASSET" },
+  ar:             { name: "Accounts Receivable",   type: "ASSET" },
+  tipsPayable:    { name: "Tips Payable",          type: "LIABILITY" },
+  cashOverShort:  { name: "Cash Over/Short",       type: "EXPENSE" },
+};
+
+async function resolveZoutSlot(
   tenantId: string,
-  number: string,
+  slot: ZoutSlot,
   locationId: string | null,
   context: string,
   tx?: ZoutTx,
 ): Promise<string> {
   const db = tx ?? prisma;
-  // Prefer location-scoped row, then tenant-wide.
+
+  // Step 1: prefer the location pin if location-scoped.
+  if (locationId) {
+    const loc = await (db as typeof prisma).location.findUnique({
+      where: { id: locationId },
+      select: {
+        qboRealmId: true,
+        cashGlAccountId: true,
+        stripeClearingGlAccountId: true,
+        achClearingGlAccountId: true,
+        undepositedFundsGlAccountId: true,
+        arGlAccountId: true,
+        tipsPayableGlAccountId: true,
+        cashOverShortGlAccountId: true,
+      },
+    });
+    const pinned = (loc as any)?.[SLOT_TO_PIN[slot]] as string | null | undefined;
+    if (pinned) return pinned;
+
+    // Step 2: QBO-connected location with no pin → hard error.
+    // Falling back to a number lookup on a QBO chart whose accountNumber is
+    // "QBO-NN" would either find the wrong account or auto-create a stray
+    // tenant-wide row. Better to surface the gap.
+    if (loc?.qboRealmId) {
+      throw Object.assign(
+        new Error(
+          `UNCONFIGURED_GL_ACCOUNT: ${slot} pin missing for QBO-connected location ${locationId} (${context}). ` +
+            `Open Settings → Accounting → Location pins and select an account for "${SLOT_AUTOHEAL[slot].name}".`,
+        ),
+        { statusCode: 400, code: "UNCONFIGURED_GL_ACCOUNT" },
+      );
+    }
+  }
+
+  // Step 3 (non-QBO only): legacy account-number lookup.
+  const number = SLOT_TO_LEGACY_NUMBER[slot];
   if (locationId) {
     const ls = await (db as typeof prisma).glAccount.findFirst({
       where: { tenantId, locationId, accountNumber: number },
@@ -63,31 +137,15 @@ async function getAcct(
     select: { id: true },
   });
   if (tw) return tw.id;
-  // Auto-create the tenant-wide row for system accounts. Mirrors the
-  // auto-heal behaviour in gl-posting.ts so a tenant whose chart predates
-  // the 5900 migration still posts cleanly on first Z-out.
-  const SYS: Record<string, { name: string; type: "ASSET" | "LIABILITY" | "EXPENSE" }> = {
-    "1000": { name: "Cash / Operating Bank", type: "ASSET" },
-    "1010": { name: "Stripe Clearing", type: "ASSET" },
-    "1200": { name: "Accounts Receivable", type: "ASSET" },
-    "2210": { name: "Customer Deposits", type: "LIABILITY" },
-    "5900": { name: "Cash Over/Short", type: "EXPENSE" },
-  };
-  const def = SYS[number];
-  if (def) {
-    const created = await prisma.glAccount.create({
-      data: { tenantId, accountNumber: number, name: def.name, type: def.type },
-      select: { id: true },
-    });
-    return created.id;
-  }
-  throw Object.assign(
-    new Error(
-      `UNCONFIGURED_GL_ACCOUNT: account ${number} missing for tenant ${tenantId} (${context}). ` +
-        `Add it to Settings → Chart of Accounts before running Z-out.`,
-    ),
-    { statusCode: 400, code: "UNCONFIGURED_GL_ACCOUNT" },
-  );
+
+  // Step 4: auto-create at tenant-wide scope (legacy auto-heal for non-QBO
+  // tenants whose chart predates the column).
+  const def = SLOT_AUTOHEAL[slot];
+  const created = await prisma.glAccount.create({
+    data: { tenantId, accountNumber: number, name: def.name, type: def.type },
+    select: { id: true },
+  });
+  return created.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +710,7 @@ export async function postShiftZOut(
 
   if (snapshot.tenders.cash.netCents > 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_CASH, locationId, `zout cash shift=${shiftId}`, tx),
+      accountId: await resolveZoutSlot(tenantId, "cash", locationId, `zout cash shift=${shiftId}`, tx),
       debitCents: snapshot.tenders.cash.netCents,
       creditCents: 0,
       description: `Z-out cash net — shift ${shiftId}`,
@@ -661,7 +719,7 @@ export async function postShiftZOut(
     // Net cash out (refunds > sales): credit cash, debit revenue contra
     // happens implicitly via the negative line items on the revenue side.
     debits.push({
-      accountId: await getAcct(tenantId, ACC_CASH, locationId, `zout cash shift=${shiftId}`, tx),
+      accountId: await resolveZoutSlot(tenantId, "cash", locationId, `zout cash shift=${shiftId}`, tx),
       debitCents: 0,
       creditCents: -snapshot.tenders.cash.netCents,
       description: `Z-out cash net (refund-heavy) — shift ${shiftId}`,
@@ -671,7 +729,7 @@ export async function postShiftZOut(
   const cardNet = snapshot.tenders.cardTerminal.netCents + snapshot.tenders.cardCnp.netCents;
   if (cardNet !== 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_STRIPE_CLEARING, locationId,
+      accountId: await resolveZoutSlot(tenantId, "stripeClearing", locationId,
         `zout card shift=${shiftId}`, tx),
       debitCents: cardNet > 0 ? cardNet : 0,
       creditCents: cardNet < 0 ? -cardNet : 0,
@@ -681,7 +739,7 @@ export async function postShiftZOut(
 
   if (snapshot.tenders.ach.netCents !== 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_ACH_CLEARING, locationId,
+      accountId: await resolveZoutSlot(tenantId, "achClearing", locationId,
         `zout ach shift=${shiftId}`, tx),
       debitCents: snapshot.tenders.ach.netCents > 0 ? snapshot.tenders.ach.netCents : 0,
       creditCents: snapshot.tenders.ach.netCents < 0 ? -snapshot.tenders.ach.netCents : 0,
@@ -702,14 +760,14 @@ export async function postShiftZOut(
     snapshot.tenders.check.declaredCents + snapshot.tenders.other.declaredCents;
   if (undepositedCents > 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_UNDEPOSITED, locationId,
+      accountId: await resolveZoutSlot(tenantId, "undeposited", locationId,
         `zout undeposited shift=${shiftId}`, tx),
       debitCents: undepositedCents,
       creditCents: 0,
       description: `Z-out reclass cash → undeposited (check + other) — shift ${shiftId}`,
     });
     debits.push({
-      accountId: await getAcct(tenantId, ACC_CASH, locationId,
+      accountId: await resolveZoutSlot(tenantId, "cash", locationId,
         `zout cash reclass shift=${shiftId}`, tx),
       debitCents: 0,
       creditCents: undepositedCents,
@@ -721,7 +779,7 @@ export async function postShiftZOut(
   const arNet = snapshot.tenders.chargeToAr.netCents;
   if (arNet !== 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_AR, locationId, `zout AR shift=${shiftId}`, tx),
+      accountId: await resolveZoutSlot(tenantId, "ar", locationId, `zout AR shift=${shiftId}`, tx),
       debitCents: arNet > 0 ? arNet : 0,
       creditCents: arNet < 0 ? -arNet : 0,
       description: `Z-out charge-to-A/R net — shift ${shiftId}`,
@@ -733,7 +791,7 @@ export async function postShiftZOut(
   const variance = snapshot.cashDrawer.varianceCents;
   if (variance !== 0) {
     debits.push({
-      accountId: await getAcct(tenantId, ACC_CASH_OVER_SHORT, locationId,
+      accountId: await resolveZoutSlot(tenantId, "cashOverShort", locationId,
         `zout variance shift=${shiftId}`, tx),
       debitCents: variance < 0 ? -variance : 0,
       creditCents: variance > 0 ? variance : 0,
@@ -747,7 +805,7 @@ export async function postShiftZOut(
     // tie out: drawer-short means we're claiming less cash than sales would
     // imply, the difference goes to 5900 expense (debit).
     debits.push({
-      accountId: await getAcct(tenantId, ACC_CASH, locationId,
+      accountId: await resolveZoutSlot(tenantId, "cash", locationId,
         `zout variance offset shift=${shiftId}`, tx),
       debitCents: variance > 0 ? variance : 0,
       creditCents: variance < 0 ? -variance : 0,
@@ -809,7 +867,7 @@ export async function postShiftZOut(
   // Tips payable. Held as a liability owed to staff; out of scope here is
   // the actual payout entry that clears it.
   if (snapshot.tipsCents !== 0) {
-    const tipsAcctId = await getAcct(tenantId, ACC_TIPS_PAYABLE, locationId,
+    const tipsAcctId = await resolveZoutSlot(tenantId, "tipsPayable", locationId,
       `zout tips shift=${shiftId}`, tx);
     debits.push({
       accountId: tipsAcctId,

@@ -528,12 +528,27 @@ model Location {
   // account. Required to enable the AP-side of inventory postings; if
   // null we skip and surface via Accounting Completeness (Plan 7).
   accountsPayableGlAccountId  String?
+  // Plan 5 — POS Z-out pins. Previously the Z-out journal looked up these
+  // accounts by hardcoded number (1000, 1010, 1015, 2210, 5900), which
+  // misposts on multi-marina tenants that imported a QBO chart with
+  // QBO-NN numbers. The pin slots let an operator wire the right
+  // location-scoped account once and let postShiftZOut resolve via FK.
+  cashGlAccountId             String?
+  stripeClearingGlAccountId   String?
+  achClearingGlAccountId      String?
+  tipsPayableGlAccountId      String?
+  cashOverShortGlAccountId    String?
 
   defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
   salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount", fields: [salesTaxGlAccountId], references: [id])
   earlyTerminationGlAccount GlAccount? @relation(name: "LocationEarlyTerminationGlAccount", fields: [earlyTerminationGlAccountId], references: [id])
   achReturnFeeGlAccount     GlAccount? @relation(name: "LocationAchReturnFeeGlAccount", fields: [achReturnFeeGlAccountId], references: [id])
   accountsPayableGlAccount  GlAccount? @relation(name: "LocationAccountsPayableGlAccount", fields: [accountsPayableGlAccountId], references: [id])
+  cashGlAccount             GlAccount? @relation(name: "LocationCashGlAccount", fields: [cashGlAccountId], references: [id])
+  stripeClearingGlAccount   GlAccount? @relation(name: "LocationStripeClearingGlAccount", fields: [stripeClearingGlAccountId], references: [id])
+  achClearingGlAccount      GlAccount? @relation(name: "LocationAchClearingGlAccount", fields: [achClearingGlAccountId], references: [id])
+  tipsPayableGlAccount      GlAccount? @relation(name: "LocationTipsPayableGlAccount", fields: [tipsPayableGlAccountId], references: [id])
+  cashOverShortGlAccount    GlAccount? @relation(name: "LocationCashOverShortGlAccount", fields: [cashOverShortGlAccountId], references: [id])
 
   // ----- Per-location SaaS subscription billing -----
   // We charge per marina (= per Location), not per holding company. Each
@@ -1388,6 +1403,11 @@ model GlAccount {
   locationsEarlyTermination Location[] @relation(name: "LocationEarlyTerminationGlAccount")
   locationsAchReturnFee     Location[] @relation(name: "LocationAchReturnFeeGlAccount")
   locationsAccountsPayable  Location[] @relation(name: "LocationAccountsPayableGlAccount")
+  locationsCash             Location[] @relation(name: "LocationCashGlAccount")
+  locationsStripeClearing   Location[] @relation(name: "LocationStripeClearingGlAccount")
+  locationsAchClearing      Location[] @relation(name: "LocationAchClearingGlAccount")
+  locationsTipsPayable      Location[] @relation(name: "LocationTipsPayableGlAccount")
+  locationsCashOverShort    Location[] @relation(name: "LocationCashOverShortGlAccount")
 
   @@index([tenantId])
   @@index([locationId])
