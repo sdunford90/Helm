@@ -14,6 +14,7 @@ import {
   isLocationQboConnected,
 } from "../services/gl-account-resolver.js";
 import { logAccountingChange } from "../lib/accounting-audit.js";
+import { POSTING_ACCOUNT_SPECS } from "@helm/shared-types";
 
 const router: Router = Router();
 
@@ -1186,19 +1187,15 @@ router.get(
         return;
       }
       const tenantId = req.tenantId!;
+      // Plan 94 — Loop the spec list rather than hand-listing 18 fields.
+      // POSTING_ACCOUNT_SPECS is the single source of truth (used by the UI
+      // panel and the Accounting Completeness report too).
+      const selectFields: Record<string, true> = { id: true, qboRealmId: true };
+      for (const spec of POSTING_ACCOUNT_SPECS) selectFields[spec.field] = true;
+
       const location = await prisma.location.findFirst({
         where: { id: req.params.id, tenantId },
-        select: {
-          id: true,
-          arGlAccountId: true,
-          undepositedFundsGlAccountId: true,
-          deferredRevenueGlAccountId: true,
-          defaultRevenueGlAccountId: true,
-          salesTaxGlAccountId: true,
-          earlyTerminationGlAccountId: true,
-          achReturnFeeGlAccountId: true,
-          qboRealmId: true,
-        },
+        select: selectFields as never,
       });
       if (!location) {
         res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
@@ -1225,23 +1222,36 @@ router.get(
           accountNumber: true,
           name: true,
           type: true,
+          subType: true,
           locationId: true,
           qboAccountId: true,
         },
       });
 
+      // Plan 94 — Build per-pin candidate buckets. The UI uses these directly
+      // so each dropdown is pre-filtered to a manageable shortlist (usually
+      // 1-3 options), instead of showing every account in the chart.
+      const accounts: Record<string, string | null> = {};
+      const candidatesByField: Record<string, typeof candidates> = {};
+      for (const spec of POSTING_ACCOUNT_SPECS) {
+        accounts[spec.field] = (location as Record<string, string | null>)[spec.field] ?? null;
+        // Prefer subType match (QBO-imported charts have these); fall back to
+        // GLAccountType match so hand-built non-QBO charts still narrow down.
+        const subTypeMatches = candidates.filter(
+          (a) => a.subType && spec.subType.includes(a.subType),
+        );
+        const typeMatches = candidates.filter((a) => spec.typeFilter.includes(a.type));
+        candidatesByField[spec.field] = subTypeMatches.length > 0 ? subTypeMatches : typeMatches;
+      }
+
       res.json({
-        locationId: location.id,
+        locationId: (location as { id: string }).id,
         qboConnected,
-        accounts: {
-          arGlAccountId: location.arGlAccountId,
-          undepositedFundsGlAccountId: location.undepositedFundsGlAccountId,
-          deferredRevenueGlAccountId: location.deferredRevenueGlAccountId,
-          defaultRevenueGlAccountId: location.defaultRevenueGlAccountId,
-          salesTaxGlAccountId: location.salesTaxGlAccountId,
-          earlyTerminationGlAccountId: location.earlyTerminationGlAccountId,
-          achReturnFeeGlAccountId: location.achReturnFeeGlAccountId,
-        },
+        accounts,
+        specs: POSTING_ACCOUNT_SPECS,
+        candidatesByField,
+        // Kept for backwards compatibility with older callers; new UI should
+        // use candidatesByField (pre-filtered per pin).
         candidates,
       });
     } catch (err) {
@@ -1273,47 +1283,30 @@ router.put(
       const tenantId = req.tenantId!;
       const locationId = req.params.id;
 
+      // Plan 94 — Loop the spec list; body, validation, update, and response
+      // all derive from the same source. Adding a new pin = adding one entry
+      // to POSTING_ACCOUNT_SPECS.
+      const locationSelect: Record<string, true> = { id: true };
+      for (const spec of POSTING_ACCOUNT_SPECS) locationSelect[spec.field] = true;
+
       const location = await prisma.location.findFirst({
         where: { id: locationId, tenantId },
-        select: {
-          id: true,
-          arGlAccountId: true,
-          undepositedFundsGlAccountId: true,
-          deferredRevenueGlAccountId: true,
-          defaultRevenueGlAccountId: true,
-          salesTaxGlAccountId: true,
-          earlyTerminationGlAccountId: true,
-          achReturnFeeGlAccountId: true,
-        },
+        select: locationSelect as never,
       });
       if (!location) {
         res.status(404).json({ error: "Location not found", code: "NOT_FOUND" });
         return;
       }
 
-      const body = req.body as {
-        arGlAccountId?: string | null;
-        undepositedFundsGlAccountId?: string | null;
-        deferredRevenueGlAccountId?: string | null;
-        defaultRevenueGlAccountId?: string | null;
-        salesTaxGlAccountId?: string | null;
-        earlyTerminationGlAccountId?: string | null;
-        achReturnFeeGlAccountId?: string | null;
-      };
+      const body = (req.body ?? {}) as Record<string, string | null | undefined>;
 
       const qboConnected = await isLocationQboConnected(locationId);
 
-      // Each system-posting slot expects a particular GLAccountType. We
-      // enforce that here so operators can't pin (say) a LIABILITY row to
-      // the default-revenue slot from the UI and have postings silently
-      // book the wrong side of the ledger. Mirrors
-      // LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS in gl-account-resolver.ts.
-      const SYSTEM_SLOT_TYPES: Record<string, ReadonlyArray<string>> = {
-        defaultRevenueGlAccountId: ["REVENUE"],
-        salesTaxGlAccountId: ["LIABILITY"],
-        earlyTerminationGlAccountId: ["REVENUE"],
-        achReturnFeeGlAccountId: ["REVENUE"],
-      };
+      // Per-pin type-filter map driven by the spec, so the validator stays in
+      // lockstep with the UI dropdown filter.
+      const SYSTEM_SLOT_TYPES: Record<string, readonly string[]> = Object.fromEntries(
+        POSTING_ACCOUNT_SPECS.map((s) => [s.field, s.typeFilter]),
+      );
 
       // Validate each provided id against the same constraint the catalog
       // helper uses (QBO-connected ⇒ must belong to this location;
@@ -1362,15 +1355,9 @@ router.put(
       }
 
       try {
-        await Promise.all([
-          validate(body.arGlAccountId, "arGlAccountId"),
-          validate(body.undepositedFundsGlAccountId, "undepositedFundsGlAccountId"),
-          validate(body.deferredRevenueGlAccountId, "deferredRevenueGlAccountId"),
-          validate(body.defaultRevenueGlAccountId, "defaultRevenueGlAccountId"),
-          validate(body.salesTaxGlAccountId, "salesTaxGlAccountId"),
-          validate(body.earlyTerminationGlAccountId, "earlyTerminationGlAccountId"),
-          validate(body.achReturnFeeGlAccountId, "achReturnFeeGlAccountId"),
-        ]);
+        await Promise.all(
+          POSTING_ACCOUNT_SPECS.map((s) => validate(body[s.field], s.field)),
+        );
       } catch (e: any) {
         res
           .status(e.status ?? 400)
@@ -1378,62 +1365,24 @@ router.put(
         return;
       }
 
+      const updateData: Record<string, string | null> = {};
+      for (const spec of POSTING_ACCOUNT_SPECS) {
+        if (body[spec.field] !== undefined) updateData[spec.field] = body[spec.field] ?? null;
+      }
       const updated = await prisma.location.update({
         where: { id: locationId },
-        data: {
-          ...(body.arGlAccountId !== undefined && { arGlAccountId: body.arGlAccountId }),
-          ...(body.undepositedFundsGlAccountId !== undefined && {
-            undepositedFundsGlAccountId: body.undepositedFundsGlAccountId,
-          }),
-          ...(body.deferredRevenueGlAccountId !== undefined && {
-            deferredRevenueGlAccountId: body.deferredRevenueGlAccountId,
-          }),
-          ...(body.defaultRevenueGlAccountId !== undefined && {
-            defaultRevenueGlAccountId: body.defaultRevenueGlAccountId,
-          }),
-          ...(body.salesTaxGlAccountId !== undefined && {
-            salesTaxGlAccountId: body.salesTaxGlAccountId,
-          }),
-          ...(body.earlyTerminationGlAccountId !== undefined && {
-            earlyTerminationGlAccountId: body.earlyTerminationGlAccountId,
-          }),
-          ...(body.achReturnFeeGlAccountId !== undefined && {
-            achReturnFeeGlAccountId: body.achReturnFeeGlAccountId,
-          }),
-        },
-        select: {
-          id: true,
-          arGlAccountId: true,
-          undepositedFundsGlAccountId: true,
-          deferredRevenueGlAccountId: true,
-          defaultRevenueGlAccountId: true,
-          salesTaxGlAccountId: true,
-          earlyTerminationGlAccountId: true,
-          achReturnFeeGlAccountId: true,
-        },
+        data: updateData,
+        select: locationSelect as never,
       });
 
       // Best-effort audit log — never fail the main request if logging fails
       try {
-        const POSTING_FIELDS = [
-          "arGlAccountId",
-          "undepositedFundsGlAccountId",
-          "deferredRevenueGlAccountId",
-          "defaultRevenueGlAccountId",
-          "salesTaxGlAccountId",
-          "earlyTerminationGlAccountId",
-          "achReturnFeeGlAccountId",
-        ] as const;
-        type PostingField = typeof POSTING_FIELDS[number];
         const changes: Record<string, { from: unknown; to: unknown }> = {};
-        for (const field of POSTING_FIELDS) {
-          if (body[field as PostingField] !== undefined) {
-            const from = location[field as PostingField];
-            const to = updated[field as PostingField];
-            if (from !== to) {
-              changes[field] = { from, to };
-            }
-          }
+        for (const spec of POSTING_ACCOUNT_SPECS) {
+          if (body[spec.field] === undefined) continue;
+          const from = (location as Record<string, string | null>)[spec.field];
+          const to = (updated as Record<string, string | null>)[spec.field];
+          if (from !== to) changes[spec.field] = { from, to };
         }
         if (Object.keys(changes).length > 0) {
           await logAccountingChange({
@@ -1454,18 +1403,11 @@ router.put(
         // intentionally swallowed — audit failure must not affect the response
       }
 
-      res.json({
-        locationId: updated.id,
-        accounts: {
-          arGlAccountId: updated.arGlAccountId,
-          undepositedFundsGlAccountId: updated.undepositedFundsGlAccountId,
-          deferredRevenueGlAccountId: updated.deferredRevenueGlAccountId,
-          defaultRevenueGlAccountId: updated.defaultRevenueGlAccountId,
-          salesTaxGlAccountId: updated.salesTaxGlAccountId,
-          earlyTerminationGlAccountId: updated.earlyTerminationGlAccountId,
-          achReturnFeeGlAccountId: updated.achReturnFeeGlAccountId,
-        },
-      });
+      const updatedAccounts: Record<string, string | null> = {};
+      for (const spec of POSTING_ACCOUNT_SPECS) {
+        updatedAccounts[spec.field] = (updated as Record<string, string | null>)[spec.field] ?? null;
+      }
+      res.json({ locationId: (updated as { id: string }).id, accounts: updatedAccounts });
     } catch (err) {
       next(err);
     }

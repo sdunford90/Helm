@@ -1,63 +1,93 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Save, AlertTriangle } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Save, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import {
+  POSTING_ACCOUNT_GROUPS,
+  POSTING_ACCOUNT_SPECS,
+  type GlPinGroup,
+  type PostingAccountSpec,
+} from '@helm/shared-types';
 import { api } from '../../lib/api';
 import { useModules } from '../../context/ModulesContext';
+
+// Plan 94 — Posting accounts panel, spec-driven.
+//
+// Each pin's dropdown is pre-filtered to accounts whose QBO subType matches
+// the pin's purpose (AR shows only AccountsReceivable rows, Tips shows only
+// OtherCurrentLiabilities, etc.). When exactly one account matches a pin's
+// filter and the operator hasn't picked anything else, we surface it as a
+// suggestion they can confirm in one click.
+
+interface Candidate {
+  id: string;
+  accountNumber: string;
+  name: string;
+  type: string;
+  subType: string | null;
+  locationId: string | null;
+  qboAccountId: string | null;
+}
 
 interface PostingAccountsResponse {
   locationId: string;
   qboConnected: boolean;
-  accounts: {
-    arGlAccountId: string | null;
-    undepositedFundsGlAccountId: string | null;
-    deferredRevenueGlAccountId: string | null;
-    defaultRevenueGlAccountId: string | null;
-    salesTaxGlAccountId: string | null;
-    earlyTerminationGlAccountId: string | null;
-    achReturnFeeGlAccountId: string | null;
-    bankGlAccountId: string | null;
-  };
-  candidates: Array<{
-    id: string;
-    accountNumber: string;
-    name: string;
-    type: string;
-    locationId: string | null;
-    qboAccountId: string | null;
-  }>;
+  accounts: Record<string, string | null>;
+  specs: PostingAccountSpec[];
+  candidatesByField: Record<string, Candidate[]>;
 }
 
-type AccountsPayload = PostingAccountsResponse['accounts'];
-
-const SLOTS = [
-  { key: 'arGlAccountId' as const, label: 'Accounts Receivable (A/R)', types: null as string[] | null, required: false },
-  { key: 'undepositedFundsGlAccountId' as const, label: 'Undeposited Funds', types: null, required: false },
-  { key: 'deferredRevenueGlAccountId' as const, label: 'Deferred Revenue', types: ['LIABILITY'] as string[], required: false },
-  { key: 'defaultRevenueGlAccountId' as const, label: 'Default Revenue', types: ['REVENUE'] as string[], required: true },
-  { key: 'salesTaxGlAccountId' as const, label: 'Sales Tax Payable', types: ['LIABILITY'] as string[], required: true },
-  { key: 'earlyTerminationGlAccountId' as const, label: 'Early Termination Income', types: ['REVENUE'] as string[], required: true },
-  { key: 'achReturnFeeGlAccountId' as const, label: 'ACH Return Fee Revenue', types: ['REVENUE'] as string[], required: true },
-  { key: 'bankGlAccountId' as const, label: 'Bank Account (Operating)', types: ['BANK', 'ASSET'] as string[], required: false },
-] as const;
-
 const stl = {
-  card: { background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '24px' } as React.CSSProperties,
-  label: { fontSize: '12px', fontWeight: 600, color: '#475569' } as React.CSSProperties,
-  select: { padding: '8px 10px', border: '1px solid #CBD5E1', borderRadius: '6px', fontSize: '13px', color: '#0A2342', width: '100%', background: '#FFFFFF' } as React.CSSProperties,
-  saveBtn: { background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '10px 20px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' } as React.CSSProperties,
-  requiredBadge: { display: 'inline-block', padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, background: '#FEF3C7', color: '#92400E', marginLeft: '6px' } as React.CSSProperties,
+  pageCard: {
+    background: '#FFFFFF', borderRadius: 10, border: '1px solid #E2E8F0',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)', padding: 20, marginBottom: 16,
+  } as React.CSSProperties,
+  groupHeader: {
+    fontSize: 12, fontWeight: 700, color: '#475569',
+    textTransform: 'uppercase', letterSpacing: '0.06em',
+    margin: '4px 0 12px',
+  } as React.CSSProperties,
+  row: {
+    display: 'grid', gridTemplateColumns: '240px 1fr 24px',
+    gap: 12, alignItems: 'center', padding: '10px 0',
+    borderBottom: '1px solid #F1F5F9',
+  } as React.CSSProperties,
+  rowLabel: { fontSize: 13, fontWeight: 600, color: '#0A2342' } as React.CSSProperties,
+  rowHint: { fontSize: 11, color: '#94A3B8', marginTop: 2 } as React.CSSProperties,
+  select: {
+    padding: '8px 10px', border: '1px solid #CBD5E1', borderRadius: 6,
+    fontSize: 13, color: '#0A2342', width: '100%', background: '#FFFFFF',
+  } as React.CSSProperties,
+  requiredBadge: {
+    display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+    fontSize: 10, fontWeight: 700, background: '#FEF3C7', color: '#92400E', marginLeft: 6,
+  } as React.CSSProperties,
+  filledBadge: {
+    color: '#166534', marginLeft: 6, fontSize: 14,
+  } as React.CSSProperties,
+  noMatch: {
+    fontSize: 11, color: '#9A3412', marginTop: 4,
+    fontStyle: 'italic',
+  } as React.CSSProperties,
+  saveBtn: {
+    background: '#0A2342', color: '#FFFFFF', border: 'none', borderRadius: 6,
+    padding: '10px 20px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+  } as React.CSSProperties,
 };
 
 export default function PostingAccountsPanel() {
   const { currentLocationId } = useModules();
   const [data, setData] = useState<PostingAccountsResponse | null>(null);
-  const [form, setForm] = useState<AccountsPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState<Record<string, string | null>>({});
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
 
   const load = useCallback(async () => {
-    if (!currentLocationId) { setLoading(false); return; }
+    if (!currentLocationId) {
+      setData(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -65,10 +95,9 @@ export default function PostingAccountsPanel() {
         `/api/settings/locations/${currentLocationId}/posting-accounts`,
       );
       setData(r);
-      setForm({ ...r.accounts });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Failed to load posting accounts';
-      setError(msg);
+      setDraft({ ...r.accounts });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -76,131 +105,150 @@ export default function PostingAccountsPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const grouped = useMemo(() => {
+    if (!data) return null;
+    const map = new Map<GlPinGroup, PostingAccountSpec[]>();
+    for (const spec of POSTING_ACCOUNT_SPECS) {
+      if (!map.has(spec.group)) map.set(spec.group, []);
+      map.get(spec.group)!.push(spec);
+    }
+    return map;
+  }, [data]);
+
   const handleSave = async () => {
-    if (!currentLocationId || !form) return;
+    if (!currentLocationId || !data) return;
     setSaving(true);
-    setSaveError(null);
+    setError(null);
     try {
+      const body: Record<string, string | null> = {};
+      for (const spec of POSTING_ACCOUNT_SPECS) {
+        const current = data.accounts[spec.field] ?? null;
+        const next = draft[spec.field] ?? null;
+        if (current !== next) body[spec.field] = next;
+      }
+      if (Object.keys(body).length === 0) {
+        setSavedFlash(true);
+        setTimeout(() => setSavedFlash(false), 1500);
+        return;
+      }
       await api.put<PostingAccountsResponse>(
         `/api/settings/locations/${currentLocationId}/posting-accounts`,
-        form,
+        body,
       );
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1500);
       await load();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Save failed';
-      setSaveError(msg);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
   };
 
   if (!currentLocationId) {
-    return <div style={stl.card}><div style={{ color: '#64748B', fontSize: '14px' }}>Select a location to manage posting accounts.</div></div>;
-  }
-
-  if (loading) {
-    return <div style={{ color: '#94A3B8', fontSize: '14px', padding: '24px' }}>Loading posting accounts…</div>;
-  }
-
-  if (error) {
     return (
-      <div style={{ ...stl.card, border: '1px solid #FECACA', background: '#FEF2F2' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#B91C1C', fontSize: '14px' }}>
-          <AlertTriangle size={16} /> {error}
-        </div>
-        <div style={{ marginTop: '12px', fontSize: '13px', color: '#64748B' }}>
-          Make sure this location is connected to QuickBooks and chart of accounts has been synced.
-        </div>
+      <div style={stl.pageCard}>
+        <div style={{ color: '#64748B' }}>Pick a location to configure posting accounts.</div>
       </div>
     );
   }
+  if (loading && !data) {
+    return <div style={stl.pageCard}><div style={{ color: '#64748B' }}>Loading…</div></div>;
+  }
+  if (!data) return null;
 
-  const candidates = data?.candidates ?? [];
-  const hasCandidates = candidates.length > 0;
-
-  const filteredCandidates = (types: string[] | null) => {
-    if (!types || types.length === 0) return candidates;
-    return candidates.filter((c) => types.includes(c.type));
-  };
-
-  const dirty = form && data ? JSON.stringify(form) !== JSON.stringify(data.accounts) : false;
+  const requiredMissing = POSTING_ACCOUNT_SPECS
+    .filter((s) => s.required && !draft[s.field])
+    .length;
 
   return (
-    <div style={stl.card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
-        <div>
-          <div style={{ fontSize: '16px', fontWeight: 700, color: '#0A2342' }}>Posting Accounts</div>
-          <div style={{ fontSize: '13px', color: '#64748B', marginTop: '4px' }}>
-            Map system accounts to GL accounts from the chart of accounts. These control where invoices, payments, and revenue post.
+    <div>
+      <div style={stl.pageCard}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0A2342' }}>Posting accounts</div>
+            <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
+              {data.qboConnected ? 'QBO-connected location.' : 'Manual chart.'} Dropdowns are filtered to accounts whose QBO subType matches each pin.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {requiredMissing > 0 && (
+              <span style={{ fontSize: 12, color: '#9A3412', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <AlertTriangle size={14} />
+                {requiredMissing} required pin{requiredMissing === 1 ? '' : 's'} missing
+              </span>
+            )}
+            {savedFlash && (
+              <span style={{ fontSize: 12, color: '#166534', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <CheckCircle2 size={14} /> Saved
+              </span>
+            )}
+            <button style={stl.saveBtn} onClick={handleSave} disabled={saving}>
+              <Save size={14} />
+              {saving ? 'Saving…' : 'Save'}
+            </button>
           </div>
         </div>
-        {dirty && (
-          <button style={stl.saveBtn} onClick={handleSave} disabled={saving}>
-            <Save size={14} /> {saving ? 'Saving…' : 'Save Changes'}
-          </button>
+        {error && (
+          <div style={{ marginTop: 12, padding: 10, background: '#FEE2E2', color: '#991B1B', borderRadius: 6, fontSize: 12 }}>
+            {error}
+          </div>
         )}
       </div>
 
-      {!hasCandidates && (
-        <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', padding: '12px 16px', fontSize: '13px', color: '#92400E', marginBottom: '20px' }}>
-          <strong>No GL accounts available.</strong> Connect QuickBooks and sync the chart of accounts to enable account mapping.
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
-        {SLOTS.map(({ key, label, types, required }) => {
-          const options = filteredCandidates(types ? [...types] : null);
-          const currentVal = form?.[key] ?? '';
-
-          return (
-            <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={stl.label}>
-                {label}
-                {required && data?.qboConnected && <span style={stl.requiredBadge}>Required</span>}
-              </label>
-              <select
-                style={stl.select}
-                value={currentVal ?? ''}
-                disabled={!hasCandidates || saving}
-                onChange={(e) => {
-                  const v = e.target.value === '' ? null : e.target.value;
-                  setForm((prev) => prev ? { ...prev, [key]: v } : null);
-                }}
-              >
-                <option value="">{required && data?.qboConnected ? '— Required: select an account —' : '— Use tenant default —'}</option>
-                {options.length === 0 ? (
-                  <option value="" disabled>No matching accounts in chart</option>
-                ) : (
-                  options.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.accountNumber} · {c.name}{c.qboAccountId ? ' · QBO' : ''}
-                    </option>
-                  ))
-                )}
-              </select>
-              {required && data?.qboConnected && !currentVal && (
-                <span style={{ fontSize: '11px', color: '#B45309', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                  <AlertTriangle size={11} /> Not mapped — required for QB sync
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {saveError && (
-        <div style={{ marginTop: '12px', padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', fontSize: '13px', color: '#B91C1C' }}>
-          {saveError}
-        </div>
-      )}
-
-      {dirty && (
-        <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
-          <button style={stl.saveBtn} onClick={handleSave} disabled={saving}>
-            <Save size={14} /> {saving ? 'Saving…' : 'Save Changes'}
-          </button>
-        </div>
-      )}
+      {POSTING_ACCOUNT_GROUPS.map((group) => {
+        const specs = grouped?.get(group);
+        if (!specs || specs.length === 0) return null;
+        return (
+          <div key={group} style={stl.pageCard}>
+            <div style={stl.groupHeader}>{group}</div>
+            {specs.map((spec) => {
+              const candidates = data.candidatesByField[spec.field] ?? [];
+              const value = draft[spec.field] ?? '';
+              const noMatch = candidates.length === 0;
+              const filled = Boolean(value);
+              return (
+                <div key={spec.field} style={stl.row}>
+                  <div>
+                    <div style={stl.rowLabel}>
+                      {spec.label}
+                      {spec.required && <span style={stl.requiredBadge}>required</span>}
+                      {filled && <CheckCircle2 size={14} style={stl.filledBadge as React.CSSProperties} />}
+                    </div>
+                    {spec.description && <div style={stl.rowHint}>{spec.description}</div>}
+                  </div>
+                  <div>
+                    <select
+                      style={stl.select}
+                      value={value}
+                      onChange={(e) => setDraft((d) => ({ ...d, [spec.field]: e.target.value || null }))}
+                      disabled={noMatch}
+                    >
+                      <option value="">
+                        {noMatch
+                          ? `No matching accounts in chart (subType: ${spec.subType.join(', ')})`
+                          : `— Select — (${candidates.length} match${candidates.length === 1 ? '' : 'es'})`}
+                      </option>
+                      {candidates.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.accountNumber} · {c.name}
+                          {c.subType ? ` (${c.subType})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {noMatch && (
+                      <div style={stl.noMatch}>
+                        Add an account with subType <code>{spec.subType.join(' / ')}</code> in QuickBooks, then sync your chart.
+                      </div>
+                    )}
+                  </div>
+                  <div />
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }

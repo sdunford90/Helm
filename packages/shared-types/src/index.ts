@@ -15,3 +15,4 @@ export * from './transient.js';
 export * from './ramp.js';
 export * from './date-only.js';
 export * from './insights-builder.js';
+export * from './posting-accounts.js';
