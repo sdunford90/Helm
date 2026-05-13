@@ -1377,8 +1377,42 @@ const BOAT_MODAL_CADENCE_TO_LABEL: Record<string, string> = {
   MONTHLY: 'Monthly', QUARTERLY: 'Quarterly', ANNUAL: 'Annual', SEASONAL: 'Monthly',
 };
 
+// Map known create-contract API error codes to inline messages so the
+// boat-tab modal surfaces a readable reason (rate plan / slip mismatch,
+// occupancy, missing rate, etc.) instead of a generic "create failed".
+function friendlyContractCreateError(e: unknown): string {
+  if (e instanceof ApiClientError) {
+    switch (e.code) {
+      case 'RATE_REQUIRED':
+        return 'Pick a rate plan or enter a rate.';
+      case 'SLIP_OCCUPIED':
+        return 'That slip already has an active contract — pick a different slip.';
+      case 'SLIP_NOT_FOUND':
+        return 'Selected slip is no longer available. Refresh and try again.';
+      case 'BOAT_NOT_FOUND':
+        return 'This boat is no longer linked to the customer. Refresh and try again.';
+      case 'CUSTOMER_NOT_FOUND':
+        return 'Customer is no longer visible from this location.';
+      case 'DOCKAGE_RATE_NOT_FOUND':
+        return 'Selected rate plan no longer exists. Pick another plan.';
+      case 'DOCKAGE_RATE_INACTIVE':
+        return 'Selected rate plan is inactive. Pick an active plan.';
+      case 'DOCKAGE_RATE_LOCATION_MISMATCH':
+        return "Rate plan belongs to a different location than the slip — pick a matching plan or change the slip.";
+      case 'DOCKAGE_RATE_SLIP_TYPE_MISMATCH':
+        return e.message || "Rate plan slip-type doesn't match the chosen slip.";
+      case 'DOCKAGE_RATE_NOT_EFFECTIVE':
+        return e.message || 'Rate plan is not effective on the contract start date.';
+      default:
+        return e.message || 'Failed to create contract. Please try again.';
+    }
+  }
+  return 'Failed to create contract. Please try again.';
+}
+
 function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { boat: Boat; customerId: string; onClose: () => void; onCreated?: () => void }) {
   const { currentLocationId } = useModules();
+  const { getToken } = useAuth();
   const [slipId, setSlipId] = useState('');
   const [billingCycle, setBillingCycle] = useState('Monthly');
   const [startDate, setStartDate] = useState('');
@@ -1389,7 +1423,6 @@ function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { bo
   const [dockageRateId, setDockageRateId] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  const createContract = useApi('post', '/api/contracts');
 
   const { data: slipsResp, loading: loadingSlips } = useApi<{ data: BoatModalSlip[] }>(
     'get', '/api/slips?take=200', { immediate: true },
@@ -1451,28 +1484,39 @@ function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { bo
   };
 
   const handleSave = async () => {
-    if (!slipId || !startDate || !rate) { setErr('Please fill in Slip, Start Date, and Rate.'); return; }
+    if (!slipId) { setErr('Please select a slip.'); return; }
+    if (!startDate) { setErr('Please enter a start date.'); return; }
+    // Rate is optional once a plan is picked — server defaults rate
+    // (and electricity mode) from the plan. Without a plan, fall back
+    // to the API's RATE_REQUIRED rule.
+    if (!dockageRateId && !rate) { setErr('Pick a rate plan or enter a rate.'); return; }
+    if (selectedPlanMismatch) {
+      setErr("Selected plan doesn't match the chosen slip's location/type — pick a different plan or change the slip.");
+      return;
+    }
     setErr('');
     setSaving(true);
     try {
-      await createContract.execute({
-        body: {
-          customerId,
-          slipId,
-          boatId: boat.id,
-          billingCycle: BOAT_MODAL_CYCLE_TO_API[billingCycle] ?? 'MONTHLY',
-          startDate,
-          endDate: endDate || undefined,
-          rateCents: Math.round(parseFloat(rate) * 100),
-          securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
-          autoRenew,
-          dockageRateId: dockageRateId || undefined,
-        },
-      });
+      const token = await getToken();
+      await api.post('/api/contracts', {
+        customerId,
+        slipId,
+        boatId: boat.id,
+        billingCycle: BOAT_MODAL_CYCLE_TO_API[billingCycle] ?? 'MONTHLY',
+        startDate,
+        endDate: endDate || undefined,
+        // Omit rateCents when a plan is linked — server uses the
+        // plan's cadence-aligned rate as authoritative either way,
+        // and an empty rate field shouldn't post as 0.
+        ...(rate ? { rateCents: Math.round(parseFloat(rate) * 100) } : {}),
+        securityDepositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0,
+        autoRenew,
+        dockageRateId: dockageRateId || undefined,
+      }, token);
       onCreated?.();
       onClose();
-    } catch {
-      setErr('Failed to create contract. Please try again.');
+    } catch (e) {
+      setErr(friendlyContractCreateError(e));
     } finally {
       setSaving(false);
     }
@@ -1496,7 +1540,9 @@ function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { bo
               <select style={mSelect} value={slipId} onChange={(e) => setSlipId(e.target.value)} disabled={loadingSlips}>
                 <option value="">{loadingSlips ? 'Loading…' : 'Select slip...'}</option>
                 {slips.map((s) => (
-                  <option key={s.id} value={s.id}>{s.slipNumber} ({s.status})</option>
+                  <option key={s.id} value={s.id} disabled={s.status === 'OCCUPIED'}>
+                    {s.slipNumber} {s.status === 'OCCUPIED' ? '(Unavailable)' : `(${s.status})`}
+                  </option>
                 ))}
               </select>
               {!loadingSlips && slips.length === 0 && (
@@ -1545,8 +1591,13 @@ function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { bo
               )}
             </div>
             <div style={mField}>
-              <label style={mLabel}>Rate ($/period) *</label>
-              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder="0.00" value={rate} onChange={(e) => setRate(e.target.value)} />
+              <label style={mLabel}>Rate ($/period){dockageRateId ? '' : ' *'}</label>
+              <input style={{ ...mInput, fontFamily: 'Inter, system-ui, sans-serif', fontVariantNumeric: 'tabular-nums' }} type="number" step="0.01" placeholder={dockageRateId ? 'Defaults from plan' : '0.00'} value={rate} onChange={(e) => setRate(e.target.value)} />
+              {dockageRateId && (
+                <span style={{ fontSize: '12px', color: '#64748B' }}>
+                  Optional — leave blank to use the plan's rate.
+                </span>
+              )}
             </div>
             <div style={mField}>
               <label style={mLabel}>Security Deposit</label>
