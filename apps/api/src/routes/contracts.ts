@@ -16,6 +16,7 @@ import {
 import {
   postSecurityDeposit,
   releaseSecurityDeposit,
+  postEarlyTermination,
 } from "../services/gl-posting.js";
 import { isLocationQboConnected } from "../services/gl-account-resolver.js";
 
@@ -1133,14 +1134,13 @@ router.post(
         reason,
         terminationDate,
         penaltyOverrideCents,
-        glAccountId,
         depositInstructions,
       } = TerminateContractSchema.parse(req.body);
 
       const contract = await prisma.slipContract.findFirst({
         where: { id: req.params.id, tenantId, ...scopedWhere(req, { includeNull: true }) },
         include: {
-          slip: { select: { id: true } },
+          slip: { select: { id: true, locationId: true } },
           securityDeposits: { where: { status: "HELD" } },
         },
       });
@@ -1466,22 +1466,17 @@ router.post(
           }
         }
 
-        // Post penalty GL entry if applicable
-        if (penaltyCents > 0 && glAccountId) {
-          await tx.glEntry.create({
-            data: {
-              tenantId,
-              accountId: glAccountId,
-              debitCents: 0,
-              creditCents: penaltyCents,
-              description: `Early termination penalty - Contract ${req.params.id}`,
-              sourceType: "SlipContract",
-              sourceId: req.params.id,
-            },
-          });
-        }
-
-        // Wash out any deferred revenue schedules
+        // Post the early-termination GL journals via the shared helper.
+        // It does penalty (DR A/R, CR Early Termination Income) and the
+        // deferred-revenue washout (DR Deferred Revenue, CR Default Revenue)
+        // as two separate balanced journals so reports can drill in by
+        // sourceType. Penalty falls back to the location's pinned
+        // earlyTerminationGlAccountId; washout uses the location's pinned
+        // deferredRevenueGlAccountId + defaultRevenueGlAccountId.
+        //
+        // Compute washout from any deferred schedule still attached to this
+        // contract's invoice lines; mark them RECOGNIZED in the same tx so
+        // the schedule row state and the GL stay in lockstep.
         const deferredSchedules = await tx.deferredSchedule.findMany({
           where: {
             tenantId,
@@ -1491,13 +1486,30 @@ router.post(
               sourceId: req.params.id,
             },
           },
+          select: { id: true, totalCents: true, recognizedCents: true },
         });
-
+        const washoutCents = deferredSchedules.reduce(
+          (sum, s) => sum + Math.max(0, s.totalCents - s.recognizedCents),
+          0,
+        );
         for (const schedule of deferredSchedules) {
           await tx.deferredSchedule.update({
             where: { id: schedule.id },
             data: { status: "RECOGNIZED" },
           });
+        }
+
+        if (penaltyCents > 0 || washoutCents > 0) {
+          await postEarlyTermination(
+            {
+              id: req.params.id,
+              tenantId,
+              locationId: contract.locationId ?? contract.slip.locationId ?? null,
+            },
+            penaltyCents,
+            washoutCents,
+            tx,
+          );
         }
 
         // Create audit log — include the per-deposit refund/apply choices so

@@ -882,6 +882,59 @@ describe('POST /api/contracts/:id/terminate', () => {
       }),
     );
   });
+
+  it('calls postEarlyTermination with computed penalty + deferred washout', async () => {
+    // Plan 2 — the previously orphaned `postEarlyTermination` helper is now
+    // invoked from the terminate handler. Verify both inputs: a calculated
+    // penalty from earlyTerminationValue, and a washout summed across
+    // pending deferred schedules tied to this contract's invoice lines.
+    const contract = buildContract({
+      status: 'ACTIVE',
+      earlyTerminationType: 'FIXED',
+      earlyTerminationValue: 50000,
+      locationId: 'loc-marina-A',
+    });
+
+    mockPrisma.slipContract.findFirst.mockResolvedValue({
+      ...contract,
+      slip: { id: contract.slipId, locationId: 'loc-marina-A' },
+      securityDeposits: [],
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const tx = {
+        slipContract: { update: vi.fn() },
+        slip: { update: vi.fn() },
+        securityDeposit: { update: vi.fn() },
+        glEntry: { create: vi.fn() },
+        deferredSchedule: {
+          findMany: vi.fn().mockResolvedValue([
+            { id: 'ds-1', totalCents: 120000, recognizedCents: 30000 },
+            { id: 'ds-2', totalCents: 80000, recognizedCents: 80000 }, // fully recognized — no washout
+          ]),
+          update: vi.fn(),
+        },
+        auditLog: { create: vi.fn() },
+      };
+      return fn(tx);
+    });
+
+    const res = await request(app)
+      .post(`/api/contracts/${contract.id}/terminate`)
+      .send({ reason: 'Plan 2 test' });
+
+    expect(res.status).toBe(200);
+    expect(glPosting.postEarlyTermination).toHaveBeenCalledTimes(1);
+    expect(glPosting.postEarlyTermination).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: contract.id,
+        tenantId: 'test-tenant-id',
+        locationId: 'loc-marina-A',
+      }),
+      50000,        // penaltyCents
+      90000,        // washoutCents (only ds-1 had 90k unrecognized)
+      expect.anything(), // the tx handle
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

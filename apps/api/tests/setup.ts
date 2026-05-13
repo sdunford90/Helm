@@ -446,6 +446,7 @@ vi.mock('../src/services/gl-posting.js', () => ({
   postManualJournalEntry: vi.fn().mockResolvedValue('je-test-id'),
   postSecurityDeposit: vi.fn().mockResolvedValue('je-deposit-id'),
   releaseSecurityDeposit: vi.fn().mockResolvedValue('je-deposit-release-id'),
+  postEarlyTermination: vi.fn().mockResolvedValue(['je-early-term-id']),
 }));
 
 vi.mock('../src/services/deferred-revenue.js', () => ({
