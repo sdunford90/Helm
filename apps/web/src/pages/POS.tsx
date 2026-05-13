@@ -27,6 +27,13 @@ interface Product {
   price: number;
   taxRate: number;
   taxClass: string | null;
+  // Category-level tax fallback. When taxClass is null/empty/"Standard"
+  // (the "no override" sentinels), tax falls through to the category's
+  // defaultTaxCategory. If the category itself is non-taxable, the line
+  // is exempt regardless of taxClass. Mirrors resolveProductTaxCategory()
+  // in apps/api/src/services/product-defaults.ts.
+  categoryTaxCategory: string | null;
+  categoryTaxable: boolean;
   inStock: number;
   reorderPoint: number;
   image?: string;
@@ -61,6 +68,7 @@ interface ApiProduct {
   taxClass: string | null;
   reorderQty: number | null;
   inventory: { qtyOnHand: number }[];
+  productCategory: { defaultTaxCategory: string | null; taxable: boolean } | null;
 }
 
 interface ApiTransaction {
@@ -98,9 +106,48 @@ function mapApiProduct(p: ApiProduct): Product {
     price: p.priceCents / 100,
     taxRate: 0,
     taxClass: p.taxClass ?? null,
+    categoryTaxCategory: p.productCategory?.defaultTaxCategory ?? null,
+    categoryTaxable: p.productCategory?.taxable ?? true,
     inStock: p.inventory?.[0]?.qtyOnHand ?? 0,
     reorderPoint: p.reorderQty ?? 0,
   };
+}
+
+// Mirrors apps/api/src/services/product-defaults.ts:resolveProductTaxCategory.
+// Precedence: real per-product taxClass override → category default → "general".
+// Sentinels "Standard" / "" / null on taxClass mean "no override".
+// Returns null when the line is exempt (per-product "Tax Exempt" OR
+// category-level taxable=false).
+const NO_OVERRIDE_TAX_CLASSES = new Set(['', 'standard']);
+function resolveTaxCategory(product: {
+  taxClass: string | null;
+  categoryTaxCategory: string | null;
+  categoryTaxable: boolean;
+}): string | null {
+  const tc = product.taxClass?.trim();
+  if (tc && tc.toLowerCase() === 'tax exempt') return null;
+  if (tc && tc.toLowerCase() === 'exempt') return null;
+  if (!product.categoryTaxable) return null;
+  const isSentinel = !tc || NO_OVERRIDE_TAX_CLASSES.has(tc.toLowerCase());
+  if (!isSentinel) return tc;
+  const categoryDefault = product.categoryTaxCategory?.trim();
+  return categoryDefault || 'general';
+}
+
+// Mirrors InternalTaxProvider's per-line rate lookup:
+//   exact category match → "general" → first available rate
+// Returns 0 only when locationTaxRates is empty or the line is exempt.
+function lookupRate(
+  taxCategory: string | null,
+  locationTaxRates: Record<string, number>,
+): number {
+  if (taxCategory === null) return 0;
+  const exact = locationTaxRates[taxCategory];
+  if (exact !== undefined) return exact;
+  const general = locationTaxRates['general'];
+  if (general !== undefined) return general;
+  const keys = Object.keys(locationTaxRates);
+  return keys.length > 0 ? (locationTaxRates[keys[0]] ?? 0) : 0;
 }
 
 const PAYMENT_METHOD_API: Record<string, string> = {
@@ -1807,6 +1854,8 @@ export default function POS() {
           price: li.unitPriceCents / 100,
           taxRate: 0,
           taxClass: null,
+          categoryTaxCategory: null,
+          categoryTaxable: true,
           inStock: 999,
           reorderPoint: 0,
         },
@@ -1822,8 +1871,8 @@ export default function POS() {
       const unitPriceCents = Math.round(i.product.price * 100);
       const qty = Math.max(1, Math.round(i.quantity));
       const lineSubtotalCents = unitPriceCents * qty;
-      const tc = i.product.taxClass;
-      const rate = (!tc || tc === 'Tax Exempt') ? 0 : (locationTaxRates[tc] ?? 0);
+      const taxCategory = resolveTaxCategory(i.product);
+      const rate = taxCategory === null ? 0 : lookupRate(taxCategory, locationTaxRates);
       const taxCents = Math.round(lineSubtotalCents * (rate / 100));
       return { productId: i.product.id, quantity: qty, unitPriceCents, taxCents };
     });
@@ -2020,9 +2069,9 @@ export default function POS() {
   // gross would over-quote the customer at the cart and then surprise them
   // when the receipt comes out lower.
   const tax = cart.reduce((s, i) => {
-    const tc = i.product.taxClass;
-    if (!tc || tc === 'Tax Exempt') return s;
-    const rate = locationTaxRates[tc] ?? 0;
+    const taxCategory = resolveTaxCategory(i.product);
+    if (taxCategory === null) return s;
+    const rate = lookupRate(taxCategory, locationTaxRates);
     const gross = i.product.price * i.quantity;
     const lineDiscount = (discountByProductId.get(i.product.id)?.discountCents ?? 0) / 100;
     const net = Math.max(0, gross - lineDiscount);

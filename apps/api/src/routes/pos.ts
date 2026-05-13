@@ -244,6 +244,18 @@ router.get(
           take: query.take,
           include: {
             inventory: true,
+            // Bug fix: the POS frontend tax-preview needs the category's
+            // defaultTaxCategory + taxable flag so it can mirror the
+            // server-side precedence (per-product taxClass override →
+            // category default → "general"). Without this, the cart was
+            // showing $0 tax for any product whose taxClass was a sentinel
+            // ("Standard", null, "") even when the category had a real
+            // default tax category set. Server-side calculation (the
+            // finalize endpoint) was always correct via
+            // resolveProductTaxCategory; only the preview was wrong.
+            productCategory: {
+              select: { defaultTaxCategory: true, taxable: true },
+            },
           },
         }),
         prisma.product.count({ where }),
