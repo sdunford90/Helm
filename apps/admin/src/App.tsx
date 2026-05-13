@@ -23,6 +23,7 @@ import Webhooks from './pages/Webhooks';
 import Queues from './pages/Queues';
 import Announcements from './pages/Announcements';
 import TenantBroadcast from './pages/TenantBroadcast';
+import Soc2Evidence from './pages/Soc2Evidence';
 import ImpersonationLog from './pages/ImpersonationLog';
 import TenantOnboard from './pages/TenantOnboard';
 
@@ -52,6 +53,7 @@ const App: React.FC = () => {
         <Route path="/queues" element={<Queues />} />
         <Route path="/announcements" element={<Announcements />} />
         <Route path="/tenant-broadcast" element={<TenantBroadcast />} />
+        <Route path="/soc2-evidence" element={<Soc2Evidence />} />
         <Route path="/impersonation-log" element={<ImpersonationLog />} />
         <Route path="/activity" element={<AdminActivity />} />
         <Route path="/settings" element={<PlatformSettings />} />

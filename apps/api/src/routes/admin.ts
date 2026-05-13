@@ -2581,6 +2581,31 @@ router.post("/tenants/:id/save-play", async (req, res, next) => {
 
 //  LOCATION MANAGEMENT  (per-tenant)
 
+// GET /api/admin/soc2-evidence — Plan 63
+//
+// Builds a platform-wide JSON evidence bundle covering the access/change
+// controls a SOC 2 auditor typically asks for. Defaults to a 90-day window;
+// override with ?windowStart=ISO&windowEnd=ISO. Streams JSON; the admin UI
+// also exposes a Download button that just hits this with Accept: ... and
+// writes the response to disk.
+router.get("/soc2-evidence", async (req, res, next) => {
+  try {
+    const { buildSoc2EvidenceBundle } = await import("../services/soc2-evidence.js");
+    const parseDate = (v: unknown): Date | undefined => {
+      if (typeof v !== "string") return undefined;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? undefined : d;
+    };
+    const bundle = await buildSoc2EvidenceBundle({
+      windowStart: parseDate(req.query.windowStart),
+      windowEnd: parseDate(req.query.windowEnd),
+    });
+    res.json(bundle);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/tenants/:id/accounting-completeness
 //
 // Plan 11 — Admin-side mirror of the tenant Insights report. Returns the
