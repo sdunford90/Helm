@@ -65,6 +65,12 @@ import RevenueReport from './pages/insights/financial/RevenueReport';
 import ArAgingReport from './pages/insights/financial/ArAgingReport';
 import CardRailMixReport from './pages/insights/financial/CardRailMixReport';
 import RefundsReport from './pages/insights/financial/RefundsReport';
+import LtvReport from './pages/insights/customers/LtvReport';
+import ChurnReport from './pages/insights/customers/ChurnReport';
+import PipelineReport from './pages/insights/customers/PipelineReport';
+import WaitlistReport from './pages/insights/customers/WaitlistReport';
+import NpsReport from './pages/insights/customers/NpsReport';
+import ComplianceReport from './pages/insights/customers/ComplianceReport';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -135,6 +141,12 @@ function AppRoutes() {
         <Route path="/insights/financial/refunds" element={<RefundsReport />} />
         <Route path="/insights/customers" element={<InsightsCustomers />} />
         <Route path="/insights/customers/card-expiry" element={<CardExpiryForecast />} />
+        <Route path="/insights/customers/ltv" element={<LtvReport />} />
+        <Route path="/insights/customers/churn" element={<ChurnReport />} />
+        <Route path="/insights/customers/pipeline" element={<PipelineReport />} />
+        <Route path="/insights/customers/waitlist" element={<WaitlistReport />} />
+        <Route path="/insights/customers/nps" element={<NpsReport />} />
+        <Route path="/insights/customers/compliance" element={<ComplianceReport />} />
         <Route path="/insights/communications" element={<InsightsCommunications />} />
         <Route path="/insights/compliance" element={<InsightsCompliance />} />
         <Route path="/insights/scheduled" element={<InsightsScheduled />} />

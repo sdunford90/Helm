@@ -1481,6 +1481,189 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/customer-ltv ────────────────────────────────────────────────
+//
+// Computes a rough lifetime-value per customer cohort. "Cohort" is the
+// year-month of first invoice; LTV is the sum of every completed Payment we
+// have on file for that customer, regardless of period. The cohort table
+// tells the operator whether 2024 cohorts are growing faster than 2023.
+router.get("/customer-ltv", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+
+    const customers = await prisma.customer.findMany({
+      where: { tenantId },
+      select: { id: true, createdAt: true, firstName: true, lastName: true },
+    });
+    if (customers.length === 0) {
+      res.json({ totalCustomers: 0, avgLtvCents: 0, medianLtvCents: 0, totalLtvCents: 0, cohorts: [], topCustomers: [] });
+      return;
+    }
+
+    const paymentSums = await prisma.payment.groupBy({
+      by: ["customerId"],
+      where: { tenantId, status: "COMPLETED" },
+      _sum: { amountCents: true, refundedCents: true },
+    });
+    const ltvByCustomer = new Map<string, number>();
+    for (const p of paymentSums) {
+      const gross = p._sum.amountCents ?? 0;
+      const refunded = p._sum.refundedCents ?? 0;
+      ltvByCustomer.set(p.customerId, gross - refunded);
+    }
+
+    const cohorts = new Map<string, { cohort: string; customers: number; totalLtvCents: number }>();
+    const customerRows = customers.map((c) => {
+      const cohort = c.createdAt.toISOString().slice(0, 7); // YYYY-MM
+      const ltv = ltvByCustomer.get(c.id) ?? 0;
+      if (!cohorts.has(cohort)) cohorts.set(cohort, { cohort, customers: 0, totalLtvCents: 0 });
+      const b = cohorts.get(cohort)!;
+      b.customers += 1;
+      b.totalLtvCents += ltv;
+      return { customerId: c.id, name: `${c.firstName} ${c.lastName}`.trim(), ltvCents: ltv };
+    });
+
+    const ltvs = customerRows.map((r) => r.ltvCents).sort((a, b) => a - b);
+    const median = ltvs.length > 0 ? ltvs[Math.floor(ltvs.length / 2)] : 0;
+    const total = ltvs.reduce((s, v) => s + v, 0);
+    const avg = ltvs.length > 0 ? Math.round(total / ltvs.length) : 0;
+
+    res.json({
+      totalCustomers: customers.length,
+      totalLtvCents: total,
+      avgLtvCents: avg,
+      medianLtvCents: median,
+      cohorts: Array.from(cohorts.values())
+        .map((c) => ({
+          ...c,
+          avgLtvCents: c.customers > 0 ? Math.round(c.totalLtvCents / c.customers) : 0,
+        }))
+        .sort((a, b) => b.cohort.localeCompare(a.cohort))
+        .slice(0, 24), // last 2 years of cohorts
+      topCustomers: customerRows.sort((a, b) => b.ltvCents - a.ltvCents).slice(0, 20),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/churn ───────────────────────────────────────────────────────
+//
+// Churn: how many active contracts ended in the window (terminated or
+// expired without renewal), and how many of those customers had no
+// contracts left afterwards. The "at-risk" list is contracts whose endDate
+// or renewal window is within the next 30 days and autoRenew is false.
+router.get("/churn", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+    const now = new Date();
+    const in30 = new Date(now.getTime() + 30 * 86_400_000);
+
+    const ended = await prisma.slipContract.findMany({
+      where: {
+        tenantId,
+        status: { in: ["TERMINATED", "EXPIRED"] },
+        OR: [
+          { terminationDate: { gte: startDate, lte: endDate } },
+          { endDate: { gte: startDate, lte: endDate } },
+        ],
+      },
+      select: { id: true, customerId: true, status: true, endDate: true, terminationDate: true, rateCents: true },
+    });
+
+    // For each ended contract, did the customer still have anything active?
+    const endedCustomerIds = Array.from(new Set(ended.map((c) => c.customerId)));
+    const activeByCustomer = endedCustomerIds.length === 0
+      ? new Map<string, number>()
+      : new Map(
+        (await prisma.slipContract.groupBy({
+          by: ["customerId"],
+          where: { tenantId, customerId: { in: endedCustomerIds }, status: "ACTIVE" },
+          _count: { _all: true },
+        })).map((r) => [r.customerId, r._count._all]),
+      );
+
+    const customersGone = endedCustomerIds.filter((cid) => !activeByCustomer.has(cid)).length;
+    const lostMrrCents = ended.reduce((s, c) => s + c.rateCents, 0);
+
+    // At-risk for next 30 days: contracts whose endDate falls in the window
+    // and autoRenew is false.
+    const atRisk = await prisma.slipContract.findMany({
+      where: {
+        tenantId,
+        status: "ACTIVE",
+        autoRenew: false,
+        endDate: { gte: now, lte: in30 },
+      },
+      select: { id: true, customerId: true, endDate: true, rateCents: true, customer: { select: { firstName: true, lastName: true, email: true } } },
+      orderBy: { endDate: "asc" },
+    });
+
+    res.json({
+      period: { startDate, endDate },
+      endedContractCount: ended.length,
+      customersChurned: customersGone,
+      lostMrrCents,
+      atRisk30Days: atRisk.map((c) => ({
+        contractId: c.id,
+        customerName: c.customer ? `${c.customer.firstName} ${c.customer.lastName}`.trim() : '—',
+        customerEmail: c.customer?.email ?? null,
+        endDate: c.endDate,
+        rateCents: c.rateCents,
+      })),
+      atRiskMrrCents: atRisk.reduce((s, c) => s + c.rateCents, 0),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/nps ─────────────────────────────────────────────────────────
+//
+// NPS over the window: response rate, promoter/passive/detractor mix,
+// score histogram, recent comments. Survey data lives in `NpsSurvey`.
+router.get("/nps", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const surveys = await prisma.npsSurvey.findMany({
+      where: { tenantId, sentAt: { gte: startDate, lte: endDate } },
+      select: { score: true, comment: true, sentAt: true, respondedAt: true },
+      orderBy: { respondedAt: "desc" },
+    });
+
+    const responded = surveys.filter((s) => s.respondedAt && s.score !== null);
+    const responseRate = surveys.length > 0 ? responded.length / surveys.length : 0;
+    const promoters = responded.filter((s) => (s.score ?? 0) >= 9).length;
+    const passives = responded.filter((s) => (s.score ?? 0) >= 7 && (s.score ?? 0) <= 8).length;
+    const detractors = responded.filter((s) => (s.score ?? 0) <= 6).length;
+    const nps = responded.length > 0
+      ? Math.round(((promoters - detractors) / responded.length) * 100)
+      : 0;
+
+    const histogram = Array.from({ length: 11 }, (_, score) => ({
+      score,
+      count: responded.filter((s) => s.score === score).length,
+    }));
+
+    const recentComments = responded
+      .filter((s) => s.comment && s.comment.trim().length > 0)
+      .slice(0, 20)
+      .map((s) => ({ score: s.score ?? 0, comment: s.comment, respondedAt: s.respondedAt }));
+
+    res.json({
+      period: { startDate, endDate },
+      sent: surveys.length,
+      responded: responded.length,
+      responseRate: Number((responseRate * 100).toFixed(1)),
+      nps,
+      promoters,
+      passives,
+      detractors,
+      histogram,
+      recentComments,
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /reports/card-rail-mix ───────────────────────────────────────────────
 //
 // Splits payment volume across rails (card / ACH / cash / check / other) so
