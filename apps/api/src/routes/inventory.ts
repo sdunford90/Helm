@@ -331,6 +331,22 @@ function getTenantId(req: Request): string {
   return (req as any).tenantId ?? (req as any).userRecord?.tenant_id ?? "default";
 }
 
+// Tax-class on a product is an admin-only escape hatch — the category is the
+// main driver. Managers, accounting, front-desk, and cashiers cannot change
+// taxClass; the UI hides the field for them, but a stale form / direct API
+// call must still be blocked. Silent-strip (not 403) so a non-admin saving
+// a product they otherwise have edit rights on doesn't error out — the
+// existing taxClass is just preserved.
+const TAX_CLASS_ADMIN_ROLES = new Set([
+  "MARINA_OWNER",
+  "TENANT_ADMIN",
+  "PLATFORM_ADMIN",
+]);
+function canWriteTaxClass(req: Request): boolean {
+  const role = (req as Request & { userRecord?: { role?: string } }).userRecord?.role;
+  return !!role && TAX_CLASS_ADMIN_ROLES.has(role);
+}
+
 // Shape products for API responses — keeps the front-end fields stable
 // (priceCents/costCents always numbers, etc.)
 function shapeProduct(p: ProductRow) {
@@ -652,7 +668,11 @@ router.post("/products", async (req: Request, res: Response, next: NextFunction)
     // overrides can shadow the (now-correct) category default at POS / on
     // invoices.  Empty strings and the legacy "Standard" sentinel are treated
     // as "no override" so they don't poison new rows either.
-    const trimmed = body.taxClass?.trim() ?? "";
+    //
+    // Only MARINA_OWNER / TENANT_ADMIN / PLATFORM_ADMIN can set this field
+    // at all — managers, accounting, front-desk, cashiers fall through to
+    // NULL regardless of what the body contained.
+    const trimmed = canWriteTaxClass(req) ? body.taxClass?.trim() ?? "" : "";
     const isExplicitOverride =
       trimmed.length > 0 && trimmed.toLowerCase() !== "standard";
     const resolvedTaxClass: string | null = isExplicitOverride
@@ -780,7 +800,12 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
     // a save-without-touching the override field doesn't poison the row
     // with a value that shadows the category at POS. The Tax Exempt
     // sentinel and any other explicit category label still win.
-    if (body.taxClass !== undefined) {
+    //
+    // Admin-only field. If the caller isn't MARINA_OWNER / TENANT_ADMIN /
+    // PLATFORM_ADMIN we silently drop the field — the existing value is
+    // preserved. This way a non-admin saving an otherwise-editable product
+    // doesn't get a 403 just because a stale form re-submitted taxClass.
+    if (body.taxClass !== undefined && canWriteTaxClass(req)) {
       const trimmed = body.taxClass?.trim() ?? "";
       const isExplicitOverride =
         trimmed.length > 0 && trimmed.toLowerCase() !== "standard";

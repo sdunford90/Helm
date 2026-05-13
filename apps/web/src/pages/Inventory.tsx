@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useToast } from '../components/Toast';
 import { useModules } from '../context/ModulesContext';
 import { api } from '../lib/api';
@@ -232,6 +233,10 @@ const st: Record<string, React.CSSProperties> = {
 
 function ProductModal({ product, onClose, onSave }: { product?: Product | null; onClose: () => void; onSave: (p: Product) => void }) {
   const isEdit = !!product;
+  // Per-product tax override is admin/owner only. Category is the main
+  // driver of tax; the override is a deliberate escape hatch and shouldn't
+  // be casually editable by managers or front-desk staff.
+  const { isAtLeastAdmin } = useCurrentUser();
 
   // Load reference data the dropdowns depend on. Categories own GL & tax
   // defaults now, so the form only needs the categories list and the tax
@@ -373,26 +378,35 @@ function ProductModal({ product, onClose, onSave }: { product?: Product | null; 
                 exceptions.
               </div>
             </div>
-            <details
-              style={{ marginTop: '12px', fontSize: '13px' }}
-              open={!!form.taxClass}
-            >
-              <summary style={{ cursor: 'pointer', color: '#475569', fontWeight: 500, userSelect: 'none' }}>
-                Advanced: override category default
-              </summary>
-              <div style={{ ...st.field, marginTop: '8px' }}>
-                <label style={st.label}>Tax Category (override)</label>
-                <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
-                  <option value="">— Use category default —</option>
-                  {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
-                  <option value="Tax Exempt">Tax Exempt</option>
-                </select>
-                <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
-                  Setting an override hides this product from the category&apos;s
-                  tax setting. Leave blank to inherit.
+            {isAtLeastAdmin ? (
+              <details
+                style={{ marginTop: '12px', fontSize: '13px' }}
+                open={!!form.taxClass}
+              >
+                <summary style={{ cursor: 'pointer', color: '#475569', fontWeight: 500, userSelect: 'none' }}>
+                  Advanced: override category default (admin only)
+                </summary>
+                <div style={{ ...st.field, marginTop: '8px' }}>
+                  <label style={st.label}>Tax Category (override)</label>
+                  <select style={st.input} value={form.taxClass} onChange={(e) => setField('taxClass', e.target.value)}>
+                    <option value="">— Use category default —</option>
+                    {taxCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                    <option value="Tax Exempt">Tax Exempt</option>
+                  </select>
+                  <div style={{ fontSize: '11px', color: '#9B1C1C', marginTop: '4px' }}>
+                    Setting an override hides this product from the category&apos;s
+                    tax setting. Leave blank to inherit.
+                  </div>
                 </div>
+              </details>
+            ) : form.taxClass ? (
+              // Non-admins still see WHAT the override is set to (so they
+              // know why this item taxes differently from its category) but
+              // can't change it. Read-only display only.
+              <div style={{ marginTop: 12, padding: 10, background: '#F8FAFC', borderRadius: 6, fontSize: 12, color: '#475569' }}>
+                Tax override on this product: <strong>{form.taxClass}</strong> (admin/owner only)
               </div>
-            </details>
+            ) : null}
             <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '6px', padding: '12px', fontSize: '13px', color: '#475569', marginTop: '12px', display: 'grid', gap: '6px' }}>
               <div style={{ fontSize: '12px', color: '#64748B' }}>
                 Revenue, COGS and inventory asset accounts are configured per

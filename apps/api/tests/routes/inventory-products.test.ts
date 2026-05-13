@@ -280,6 +280,13 @@ describe('POST /api/inventory/products', () => {
     expect(createArgs.data.taxClass).toBe('luxury');
   });
 
+  // Note on the admin gate: per-product taxClass writes are restricted to
+  // MARINA_OWNER / TENANT_ADMIN / PLATFORM_ADMIN via `canWriteTaxClass()`
+  // in inventory.ts. The global test setup mocks the caller as
+  // MARINA_OWNER (see tests/setup.ts), so the override test above runs
+  // the admin path. End-to-end coverage of the non-admin "silent strip"
+  // would require per-test role injection — kept out of scope here.
+
   it('rejects a create when the supplied productCategoryId is foreign to the tenant', async () => {
     // findFirst returns null → "category not found for this tenant" → 400.
     mockPrisma.productCategory.findFirst.mockResolvedValue(null as any);

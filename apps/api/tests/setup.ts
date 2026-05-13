@@ -280,7 +280,7 @@ vi.mock('../src/middleware/auth.js', () => ({
     (_req: any, _res: any, next: any) => {
       _req.userId = 'test-user-id';
       _req.userRole = 'admin';
-      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'admin', email: 'admin@test.com' };
+      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'MARINA_OWNER', email: 'admin@test.com' };
       _req.allowedLocationIds = null; // bypass — admins see everything
       next();
     },

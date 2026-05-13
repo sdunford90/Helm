@@ -15,6 +15,9 @@ export interface CurrentUserResult {
   loading: boolean;
   can: (permission: string) => boolean;
   isAtLeastManager: boolean;
+  // Tighter gate than Manager: only the owner / tenant admin can touch
+  // things like per-product tax overrides, GL pin changes, role assignments.
+  isAtLeastAdmin: boolean;
 }
 
 export function useCurrentUser(): CurrentUserResult {
@@ -33,5 +36,6 @@ export function useCurrentUser(): CurrentUserResult {
     loading,
     can: (permission: string) => permissions.includes(permission),
     isAtLeastManager: !!(user && ['MARINA_OWNER', 'MARINA_MANAGER', 'TENANT_ADMIN', 'PLATFORM_ADMIN'].includes(user.role)),
+    isAtLeastAdmin: !!(user && ['MARINA_OWNER', 'TENANT_ADMIN', 'PLATFORM_ADMIN'].includes(user.role)),
   };
 }
