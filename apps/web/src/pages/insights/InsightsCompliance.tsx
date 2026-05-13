@@ -1,4 +1,4 @@
-import { ScrollText, ShieldCheck, CalendarCheck, RefreshCw, Webhook } from 'lucide-react';
+import { ScrollText, ShieldCheck, CalendarCheck, RefreshCw, Webhook, BookCheck } from 'lucide-react';
 import InsightsShell from './InsightsShell';
 import { ReportCard, ReportGrid } from './ReportCard';
 
@@ -43,6 +43,13 @@ export default function InsightsCompliance() {
           status="live"
           icon={Webhook}
           to="/insights/compliance/webhooks"
+        />
+        <ReportCard
+          title="Accounting Completeness"
+          description="Every sellable thing and required system slot that has no GL mapping. ERRORs block postings on QBO-connected locations; WARNINGs fall back to default."
+          status="live"
+          icon={BookCheck}
+          to="/insights/compliance/accounting-completeness"
         />
       </ReportGrid>
     </InsightsShell>

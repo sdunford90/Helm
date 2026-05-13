@@ -79,6 +79,7 @@ import AdminActionsReport from './pages/insights/compliance/AdminActionsReport';
 import PeriodCloseReport from './pages/insights/compliance/PeriodCloseReport';
 import QboSyncReport from './pages/insights/compliance/QboSyncReport';
 import WebhooksReport from './pages/insights/compliance/WebhooksReport';
+import AccountingCompletenessReport from './pages/insights/compliance/AccountingCompletenessReport';
 import EmailReport from './pages/insights/communications/EmailReport';
 import SmsReport from './pages/insights/communications/SmsReport';
 import AutomationsReport from './pages/insights/communications/AutomationsReport';
@@ -175,6 +176,7 @@ function AppRoutes() {
         <Route path="/insights/compliance/period-close" element={<PeriodCloseReport />} />
         <Route path="/insights/compliance/qbo-sync" element={<QboSyncReport />} />
         <Route path="/insights/compliance/webhooks" element={<WebhooksReport />} />
+        <Route path="/insights/compliance/accounting-completeness" element={<AccountingCompletenessReport />} />
         <Route path="/insights/scheduled" element={<InsightsScheduled />} />
         <Route path="/insights/custom-builder" element={<InsightsCustomBuilder />} />
         <Route path="/announcements" element={<Announcements />} />

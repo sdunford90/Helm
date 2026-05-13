@@ -2459,5 +2459,185 @@ router.get("/purchasing", async (req: Request, res: Response, next: NextFunction
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/accounting-completeness ─────────────────────────────────────
+//
+// Plan 7 — Lists every active sellable thing in the tenant whose GL mapping
+// is missing for at least one active location. Walks the same kinds the
+// Plan 6 resolver supports, plus surfaces unpinned location-level slots
+// (default revenue, AR, AP, deferred, sales-tax, etc.) so an operator has
+// one screen that says "fix these to balance the books."
+router.get("/accounting-completeness", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+
+    const locations = await prisma.location.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        name: true,
+        qboRealmId: true,
+        defaultRevenueGlAccountId: true,
+        arGlAccountId: true,
+        accountsPayableGlAccountId: true,
+        deferredRevenueGlAccountId: true,
+        salesTaxGlAccountId: true,
+        cashGlAccountId: true,
+        stripeClearingGlAccountId: true,
+        achClearingGlAccountId: true,
+        tipsPayableGlAccountId: true,
+        cashOverShortGlAccountId: true,
+        transientRevenueGlAccountId: true,
+        rampRevenueGlAccountId: true,
+        conciergeRevenueGlAccountId: true,
+        fuelRevenueGlAccountId: true,
+        electricityRevenueGlAccountId: true,
+      },
+    });
+    const activeLocations = locations;
+
+    interface Gap {
+      kind: string;
+      label: string;
+      detail: string;
+      locationId: string | null;
+      locationName: string | null;
+      severity: "ERROR" | "WARNING";
+      fixHref: string;
+    }
+    const gaps: Gap[] = [];
+
+    // Layer 1: required Location-level system slots. ERROR for QBO-connected
+    // locations (postings will throw); WARNING otherwise (postings work but
+    // land on a fallback account).
+    const REQUIRED_LOC_SLOTS: Array<{
+      field: keyof typeof activeLocations[number];
+      kind: string;
+      label: string;
+      severity: "ERROR" | "WARNING";
+    }> = [
+      { field: "defaultRevenueGlAccountId",     kind: "DEFAULT_REVENUE",      label: "Default revenue",            severity: "ERROR" },
+      { field: "arGlAccountId",                 kind: "AR",                   label: "Accounts receivable",        severity: "ERROR" },
+      { field: "salesTaxGlAccountId",           kind: "SALES_TAX",            label: "Sales tax payable",          severity: "ERROR" },
+      { field: "deferredRevenueGlAccountId",    kind: "DEFERRED_REVENUE",     label: "Deferred revenue",           severity: "WARNING" },
+      { field: "accountsPayableGlAccountId",    kind: "AP",                   label: "Accounts payable (PO recv)", severity: "WARNING" },
+      { field: "cashGlAccountId",               kind: "CASH",                 label: "Cash / operating bank",      severity: "WARNING" },
+      { field: "stripeClearingGlAccountId",     kind: "STRIPE_CLEARING",      label: "Stripe clearing",            severity: "WARNING" },
+      { field: "achClearingGlAccountId",        kind: "ACH_CLEARING",         label: "ACH clearing",               severity: "WARNING" },
+      { field: "tipsPayableGlAccountId",        kind: "TIPS_PAYABLE",         label: "Tips payable",               severity: "WARNING" },
+      { field: "cashOverShortGlAccountId",      kind: "CASH_OVER_SHORT",      label: "Cash over/short",            severity: "WARNING" },
+      { field: "transientRevenueGlAccountId",   kind: "TRANSIENT_REVENUE",    label: "Transient revenue",          severity: "WARNING" },
+      { field: "rampRevenueGlAccountId",        kind: "RAMP_REVENUE",         label: "Ramp revenue",               severity: "WARNING" },
+      { field: "conciergeRevenueGlAccountId",   kind: "CONCIERGE_REVENUE",    label: "Concierge revenue",          severity: "WARNING" },
+      { field: "fuelRevenueGlAccountId",        kind: "FUEL_REVENUE",         label: "Fuel revenue",               severity: "WARNING" },
+      { field: "electricityRevenueGlAccountId", kind: "ELECTRICITY_REVENUE",  label: "Electricity revenue",        severity: "WARNING" },
+    ];
+    for (const loc of activeLocations) {
+      for (const slot of REQUIRED_LOC_SLOTS) {
+        if (!loc[slot.field]) {
+          gaps.push({
+            kind: slot.kind,
+            label: slot.label,
+            detail: `Pin a GL account on ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: loc.qboRealmId ? slot.severity : "WARNING",
+            fixHref: `/settings/accounting`,
+          });
+        }
+      }
+    }
+
+    // Layer 2: per-instance mappings missing at any active location.
+    const [productCategories, dockageRates, rentalProducts, serviceFees] = await Promise.all([
+      prisma.productCategory.findMany({ where: { tenantId, active: true }, select: { id: true, name: true } }),
+      prisma.dockageRate.findMany({ where: { tenantId, active: true }, select: { id: true, name: true } }),
+      prisma.rentalProduct.findMany({ where: { tenantId, active: true }, select: { id: true, name: true } }),
+      prisma.serviceFee.findMany({ where: { tenantId, active: true }, select: { id: true, name: true } }),
+    ]);
+
+    const [pcMappings, drMappings, rpMappings, sfMappings] = await Promise.all([
+      prisma.productCategoryGlMapping.findMany({ where: { tenantId }, select: { productCategoryId: true, locationId: true, revenueGlAccountId: true, cogsGlAccountId: true, inventoryAssetGlAccountId: true } }),
+      prisma.dockageRateGlMapping.findMany({ where: { tenantId }, select: { dockageRateId: true, locationId: true, glAccountId: true } }),
+      prisma.rentalProductGlMapping.findMany({ where: { tenantId }, select: { rentalProductId: true, locationId: true, revenueGlAccountId: true } }),
+      prisma.serviceFeeGlMapping.findMany({ where: { tenantId }, select: { serviceFeeId: true, locationId: true, glAccountId: true } }),
+    ]);
+
+    const pcMap = new Map(pcMappings.map((m) => [`${m.productCategoryId}:${m.locationId}`, m]));
+    const drMap = new Map(drMappings.map((m) => [`${m.dockageRateId}:${m.locationId}`, m]));
+    const rpMap = new Map(rpMappings.map((m) => [`${m.rentalProductId}:${m.locationId}`, m]));
+    const sfMap = new Map(sfMappings.map((m) => [`${m.serviceFeeId}:${m.locationId}`, m]));
+
+    for (const loc of activeLocations) {
+      for (const cat of productCategories) {
+        const m = pcMap.get(`${cat.id}:${loc.id}`);
+        if (!m?.revenueGlAccountId) {
+          gaps.push({
+            kind: "PRODUCT_CATEGORY",
+            label: `Product category "${cat.name}"`,
+            detail: `No revenue mapping at ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: "ERROR",
+            fixHref: `/settings/products`,
+          });
+        }
+      }
+      for (const r of dockageRates) {
+        const m = drMap.get(`${r.id}:${loc.id}`);
+        if (!m?.glAccountId) {
+          gaps.push({
+            kind: "DOCKAGE_RATE",
+            label: `Dockage rate "${r.name}"`,
+            detail: `No revenue mapping at ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: "WARNING",
+            fixHref: `/settings/products`,
+          });
+        }
+      }
+      for (const r of rentalProducts) {
+        const m = rpMap.get(`${r.id}:${loc.id}`);
+        if (!m?.revenueGlAccountId) {
+          gaps.push({
+            kind: "RENTAL_PRODUCT",
+            label: `Rental "${r.name}"`,
+            detail: `No revenue mapping at ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: "WARNING",
+            fixHref: `/rentals`,
+          });
+        }
+      }
+      for (const f of serviceFees) {
+        const m = sfMap.get(`${f.id}:${loc.id}`);
+        if (!m?.glAccountId) {
+          gaps.push({
+            kind: "SERVICE_FEE",
+            label: `Service fee "${f.name}"`,
+            detail: `No revenue mapping at ${loc.name}`,
+            locationId: loc.id,
+            locationName: loc.name,
+            severity: "WARNING",
+            fixHref: `/settings/products`,
+          });
+        }
+      }
+    }
+
+    const summary = {
+      totalLocations: activeLocations.length,
+      totalGaps: gaps.length,
+      errors: gaps.filter((g) => g.severity === "ERROR").length,
+      warnings: gaps.filter((g) => g.severity === "WARNING").length,
+    };
+
+    res.json({ summary, gaps });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
 
