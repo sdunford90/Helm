@@ -6,6 +6,7 @@ import {
 import { useAuth } from '@clerk/clerk-react';
 import PricingCalendar from '../components/PricingCalendar';
 import PriceSimulator from '../components/PriceSimulator';
+import PricingSuggestionsPanel from '../components/PricingSuggestionsPanel';
 import { useApi } from '../hooks/useApi';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useToast } from '../components/Toast';
@@ -2310,6 +2311,9 @@ export default function Rentals() {
 
           {settingsTab === 'pricing' && (
             <>
+              <div style={{ marginBottom: 20 }}>
+                <PricingSuggestionsPanel />
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <div style={{ fontSize: '14px', color: '#64748B' }}>Configure dynamic pricing rules applied to rental products.</div>
                 <button style={{ ...st.addBtn }} onClick={() => toast.info('Coming Soon', 'Pricing rule form will open here')}><Plus size={16} /> Add Rule</button>
