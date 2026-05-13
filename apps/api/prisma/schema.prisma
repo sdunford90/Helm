@@ -523,11 +523,17 @@ model Location {
   salesTaxGlAccountId         String?
   earlyTerminationGlAccountId String?
   achReturnFeeGlAccountId     String?
+  // Plan 4 — accounts-payable pin for PO receipts. When a PO is received
+  // we DR Inventory Asset (per product-category mapping) and CR this AP
+  // account. Required to enable the AP-side of inventory postings; if
+  // null we skip and surface via Accounting Completeness (Plan 7).
+  accountsPayableGlAccountId  String?
 
   defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
   salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount", fields: [salesTaxGlAccountId], references: [id])
   earlyTerminationGlAccount GlAccount? @relation(name: "LocationEarlyTerminationGlAccount", fields: [earlyTerminationGlAccountId], references: [id])
   achReturnFeeGlAccount     GlAccount? @relation(name: "LocationAchReturnFeeGlAccount", fields: [achReturnFeeGlAccountId], references: [id])
+  accountsPayableGlAccount  GlAccount? @relation(name: "LocationAccountsPayableGlAccount", fields: [accountsPayableGlAccountId], references: [id])
 
   // ----- Per-location SaaS subscription billing -----
   // We charge per marina (= per Location), not per holding company. Each
@@ -1381,6 +1387,7 @@ model GlAccount {
   locationsSalesTax         Location[] @relation(name: "LocationSalesTaxGlAccount")
   locationsEarlyTermination Location[] @relation(name: "LocationEarlyTerminationGlAccount")
   locationsAchReturnFee     Location[] @relation(name: "LocationAchReturnFeeGlAccount")
+  locationsAccountsPayable  Location[] @relation(name: "LocationAccountsPayableGlAccount")
 
   @@index([tenantId])
   @@index([locationId])

@@ -1445,3 +1445,62 @@ export async function postInventoryReturn(params: {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Plan 4 — PO receipt: DR Inventory Asset, CR Accounts Payable.
+//
+// Receiving inventory historically only updated qtyOnHand and inventory-lot
+// cost basis; the AP and Inventory Asset legs were both silent on the GL,
+// which is what made the books not tie. This function posts a single
+// balanced journal per receipt batch using each line's product category
+// mapping for inventory-asset, and the location's accountsPayableGlAccountId
+// pin for AP. Lines whose category has no inventory-asset mapping are
+// skipped silently — the Accounting Completeness report (Plan 7) will
+// surface that as configuration drift.
+// ---------------------------------------------------------------------------
+export async function postPoReceipt(args: {
+  tenantId: string;
+  locationId: string;
+  purchaseOrderId: string;
+  lines: Array<{ productId: string; qty: number; unitCostCents: number }>;
+  tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+}): Promise<string | null> {
+  const { tenantId, locationId, purchaseOrderId, lines, tx } = args;
+  const db = tx ?? prisma;
+
+  const location = await (db as typeof prisma).location.findUnique({
+    where: { id: locationId },
+    select: { accountsPayableGlAccountId: true },
+  });
+  const apAccountId = location?.accountsPayableGlAccountId ?? null;
+  if (!apAccountId) {
+    console.warn(`[gl-posting] postPoReceipt: location ${locationId} has no accountsPayableGlAccountId pinned — skipping`);
+    return null;
+  }
+
+  const glLines: Array<{ accountId: string; debitCents: number; creditCents: number; description: string }> = [];
+  let totalCents = 0;
+  for (const line of lines) {
+    const lineCost = line.qty * line.unitCostCents;
+    if (lineCost <= 0) continue;
+    const glAccounts = await resolveProductGlAccounts(tenantId, line.productId, locationId);
+    if (!glAccounts.inventoryAssetGlAccountId) continue;
+    glLines.push({
+      accountId: glAccounts.inventoryAssetGlAccountId,
+      debitCents: lineCost,
+      creditCents: 0,
+      description: `PO receipt ${purchaseOrderId} — inventory asset (product ${line.productId})`,
+    });
+    totalCents += lineCost;
+  }
+  if (glLines.length === 0 || totalCents === 0) return null;
+
+  glLines.push({
+    accountId: apAccountId,
+    debitCents: 0,
+    creditCents: totalCents,
+    description: `PO receipt ${purchaseOrderId} — accounts payable`,
+  });
+
+  return postEntries(tenantId, glLines, "PO_RECEIPT", purchaseOrderId, tx, locationId);
+}

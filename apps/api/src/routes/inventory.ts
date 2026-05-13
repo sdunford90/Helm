@@ -8,6 +8,7 @@ import {
   resolveProductGlAccountsStrict,
 } from "../services/gl-account-resolver.js";
 import { recordInventoryReceipt } from "../services/costing-engine.js";
+import { postPoReceipt } from "../services/gl-posting.js";
 import {
   syncInventoryItem,
   syncReceivingBill,
@@ -1646,6 +1647,29 @@ router.put("/purchase-orders/:id/receive", async (req: Request, res: Response, n
       },
       include: { lineItems: true },
     });
+
+    // Plan 4 — Post the Helm-side GL journal for this receipt batch.
+    // DR Inventory Asset per category, CR Accounts Payable (location pin).
+    // Best-effort: if the location has no AP pin or a line's category lacks
+    // an inventory-asset mapping, we skip silently. The Accounting
+    // Completeness report (Plan 7) surfaces the configuration gap so it
+    // doesn't go unnoticed.
+    if (effectiveLocationId && billLines.length > 0) {
+      try {
+        await postPoReceipt({
+          tenantId,
+          locationId: effectiveLocationId,
+          purchaseOrderId: po.id,
+          lines: billLines.map((b) => ({
+            productId: b.productId,
+            qty: b.receivedQty,
+            unitCostCents: b.unitCostCents,
+          })),
+        });
+      } catch (glErr) {
+        console.warn(`[inventory] postPoReceipt GL post failed for PO ${po.id}: ${glErr instanceof Error ? glErr.message : String(glErr)}`);
+      }
+    }
 
     // Best-effort QBO Bill for everything received in this batch
     await tryPushReceivingBill(updatedPo, billLines);
