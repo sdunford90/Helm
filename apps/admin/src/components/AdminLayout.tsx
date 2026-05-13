@@ -38,6 +38,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: '/webhooks', label: 'Webhooks', icon: '⚡' },
       { path: '/queues', label: 'Queues', icon: '↻' },
       { path: '/announcements', label: 'Announcements', icon: '📣' },
+      { path: '/tenant-broadcast', label: 'Tenant Broadcast', icon: '✉' },
       { path: '/support', label: 'Support', icon: '✉' },
       { path: '/impersonation-log', label: 'Impersonation Log', icon: '◉' },
       { path: '/activity', label: 'Admin Activity', icon: '◷' },

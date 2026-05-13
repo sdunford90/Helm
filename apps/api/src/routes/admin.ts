@@ -6054,6 +6054,89 @@ router.post("/bulk/tenants/announce", async (req, res, next) => {
 import { buildAdminAnnouncementsRouter } from "./announcements-platform.js";
 router.use("/announcements", buildAdminAnnouncementsRouter());
 
+// Plan 52 — Tenant-targeted broadcast. Fans out one Notification row per
+// staff user at every selected tenant so the message lands in their bell
+// rather than as a global banner (which is what PlatformAnnouncement does).
+router.post("/tenant-broadcasts", async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as {
+      tenantIds?: string[];
+      tierIds?: string[];
+      title?: string;
+      body?: string;
+      linkUrl?: string;
+      audienceRole?: "ALL" | "MARINA_OWNER" | "TENANT_ADMIN" | "ACCOUNTING";
+    };
+    const title = (body.title ?? "").trim();
+    if (!title) {
+      res.status(400).json({ error: "title is required", code: "TITLE_REQUIRED" });
+      return;
+    }
+    if (title.length > 200) {
+      res.status(400).json({ error: "title is too long (max 200)", code: "TITLE_TOO_LONG" });
+      return;
+    }
+    const messageBody = (body.body ?? "").slice(0, 2000) || null;
+    const linkUrl = body.linkUrl?.trim().slice(0, 500) || null;
+    const audienceRole = body.audienceRole ?? "ALL";
+
+    // Pick the tenants. Either an explicit list, or every tenant on a tier.
+    let tenantIds = Array.isArray(body.tenantIds) ? body.tenantIds.filter((id) => typeof id === "string") : [];
+    if (Array.isArray(body.tierIds) && body.tierIds.length > 0) {
+      const tierTenants = await prisma.tenant.findMany({
+        where: { saasTierId: { in: body.tierIds } },
+        select: { id: true },
+      });
+      tenantIds = [...new Set([...tenantIds, ...tierTenants.map((t) => t.id)])];
+    }
+    if (tenantIds.length === 0) {
+      res.status(400).json({ error: "At least one tenant or tier must be selected", code: "AUDIENCE_REQUIRED" });
+      return;
+    }
+
+    // Find every active staff user in those tenants; role filter optional.
+    const users = await prisma.user.findMany({
+      where: {
+        tenantId: { in: tenantIds },
+        active: true,
+        ...(audienceRole !== "ALL" ? { role: audienceRole } : {}),
+      },
+      select: { id: true, tenantId: true },
+    });
+    if (users.length === 0) {
+      res.json({ recipientCount: 0, tenantIds });
+      return;
+    }
+
+    // Bulk-create notifications. createMany is much cheaper than per-row.
+    await prisma.notification.createMany({
+      data: users.map((u) => ({
+        tenantId: u.tenantId,
+        audienceUserId: u.id,
+        kind: "PLATFORM_TENANT_BROADCAST",
+        title,
+        body: messageBody,
+        linkUrl,
+      })),
+    });
+
+    await logAdminAction(req, {
+      action: "TENANT_BROADCAST_SENT",
+      targetType: "TENANT_BROADCAST",
+      targetId: null,
+      details: {
+        recipientCount: users.length,
+        tenantIds,
+        title,
+      },
+    });
+
+    res.json({ recipientCount: users.length, tenantIds });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // A6 — Tenant feature-flag editor.
 import {
   FEATURE_FLAGS,
