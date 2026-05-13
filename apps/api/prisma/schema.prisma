@@ -538,6 +538,17 @@ model Location {
   achClearingGlAccountId      String?
   tipsPayableGlAccountId      String?
   cashOverShortGlAccountId    String?
+  // Plan 6 — Sellable-thing revenue pins. Five categories of revenue
+  // that historically had no GL mapping: transient bookings, ramp
+  // tickets, concierge services, fuel sales, electricity passthrough.
+  // resolveSellableGlAccounts() consults these before falling back to
+  // defaultRevenueGlAccountId so each revenue stream can land in its own
+  // GL bucket without operators editing posting code.
+  transientRevenueGlAccountId   String?
+  rampRevenueGlAccountId        String?
+  conciergeRevenueGlAccountId   String?
+  fuelRevenueGlAccountId        String?
+  electricityRevenueGlAccountId String?
 
   defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
   salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount", fields: [salesTaxGlAccountId], references: [id])
@@ -549,6 +560,11 @@ model Location {
   achClearingGlAccount      GlAccount? @relation(name: "LocationAchClearingGlAccount", fields: [achClearingGlAccountId], references: [id])
   tipsPayableGlAccount      GlAccount? @relation(name: "LocationTipsPayableGlAccount", fields: [tipsPayableGlAccountId], references: [id])
   cashOverShortGlAccount    GlAccount? @relation(name: "LocationCashOverShortGlAccount", fields: [cashOverShortGlAccountId], references: [id])
+  transientRevenueGlAccount   GlAccount? @relation(name: "LocationTransientRevenueGlAccount", fields: [transientRevenueGlAccountId], references: [id])
+  rampRevenueGlAccount        GlAccount? @relation(name: "LocationRampRevenueGlAccount", fields: [rampRevenueGlAccountId], references: [id])
+  conciergeRevenueGlAccount   GlAccount? @relation(name: "LocationConciergeRevenueGlAccount", fields: [conciergeRevenueGlAccountId], references: [id])
+  fuelRevenueGlAccount        GlAccount? @relation(name: "LocationFuelRevenueGlAccount", fields: [fuelRevenueGlAccountId], references: [id])
+  electricityRevenueGlAccount GlAccount? @relation(name: "LocationElectricityRevenueGlAccount", fields: [electricityRevenueGlAccountId], references: [id])
 
   // ----- Per-location SaaS subscription billing -----
   // We charge per marina (= per Location), not per holding company. Each
@@ -1408,6 +1424,11 @@ model GlAccount {
   locationsAchClearing      Location[] @relation(name: "LocationAchClearingGlAccount")
   locationsTipsPayable      Location[] @relation(name: "LocationTipsPayableGlAccount")
   locationsCashOverShort    Location[] @relation(name: "LocationCashOverShortGlAccount")
+  locationsTransientRevenue   Location[] @relation(name: "LocationTransientRevenueGlAccount")
+  locationsRampRevenue        Location[] @relation(name: "LocationRampRevenueGlAccount")
+  locationsConciergeRevenue   Location[] @relation(name: "LocationConciergeRevenueGlAccount")
+  locationsFuelRevenue        Location[] @relation(name: "LocationFuelRevenueGlAccount")
+  locationsElectricityRevenue Location[] @relation(name: "LocationElectricityRevenueGlAccount")
 
   @@index([tenantId])
   @@index([locationId])
