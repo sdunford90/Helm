@@ -19,26 +19,30 @@ export default function InsightsCompliance() {
         <ReportCard
           title="Admin Actions"
           description="Platform-side audit events — who impersonated, who toggled flags, who exported data."
-          status="phase-5b"
+          status="live"
           icon={ShieldCheck}
+          to="/insights/compliance/admin-actions"
         />
         <ReportCard
           title="Period Close"
           description="Open/closed periods, lock attestations, and unposted-entry reports for close."
-          status="phase-5b"
+          status="live"
           icon={CalendarCheck}
+          to="/insights/compliance/period-close"
         />
         <ReportCard
           title="QBO Sync Health"
           description="Sync deltas, error history, and reconciliation status per location."
-          status="phase-5b"
+          status="live"
           icon={RefreshCw}
+          to="/insights/compliance/qbo-sync"
         />
         <ReportCard
           title="Webhooks"
           description="Stripe and QBO delivery success, retry queue, and dead-letter inspection."
-          status="phase-5b"
+          status="live"
           icon={Webhook}
+          to="/insights/compliance/webhooks"
         />
       </ReportGrid>
     </InsightsShell>

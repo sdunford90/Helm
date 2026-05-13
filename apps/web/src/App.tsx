@@ -71,6 +71,10 @@ import PipelineReport from './pages/insights/customers/PipelineReport';
 import WaitlistReport from './pages/insights/customers/WaitlistReport';
 import NpsReport from './pages/insights/customers/NpsReport';
 import ComplianceReport from './pages/insights/customers/ComplianceReport';
+import AdminActionsReport from './pages/insights/compliance/AdminActionsReport';
+import PeriodCloseReport from './pages/insights/compliance/PeriodCloseReport';
+import QboSyncReport from './pages/insights/compliance/QboSyncReport';
+import WebhooksReport from './pages/insights/compliance/WebhooksReport';
 import BillingDeferredRevenue from './pages/BillingDeferredRevenue';
 import Inventory from './pages/Inventory';
 import PurchaseOrders from './pages/PurchaseOrders';
@@ -149,6 +153,10 @@ function AppRoutes() {
         <Route path="/insights/customers/compliance" element={<ComplianceReport />} />
         <Route path="/insights/communications" element={<InsightsCommunications />} />
         <Route path="/insights/compliance" element={<InsightsCompliance />} />
+        <Route path="/insights/compliance/admin-actions" element={<AdminActionsReport />} />
+        <Route path="/insights/compliance/period-close" element={<PeriodCloseReport />} />
+        <Route path="/insights/compliance/qbo-sync" element={<QboSyncReport />} />
+        <Route path="/insights/compliance/webhooks" element={<WebhooksReport />} />
         <Route path="/insights/scheduled" element={<InsightsScheduled />} />
         <Route path="/insights/custom-builder" element={<InsightsCustomBuilder />} />
         <Route path="/announcements" element={<Announcements />} />

@@ -1481,6 +1481,203 @@ router.get("/card-expiry-forecast", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
+// ─── GET /reports/admin-actions ───────────────────────────────────────────────
+//
+// Platform-side audit events touching this tenant: impersonations, flag
+// toggles, exports, lock/unlock. Window-filtered, with the actor + verb
+// summarized.
+router.get("/admin-actions", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const events = await prisma.adminAuditEvent.findMany({
+      where: { tenantId, createdAt: { gte: startDate, lte: endDate } },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+    const byAction = events.reduce<Record<string, number>>((acc, e) => {
+      acc[e.action] = (acc[e.action] ?? 0) + 1;
+      return acc;
+    }, {});
+    const byActor = new Map<string, { actor: string; count: number }>();
+    for (const e of events) {
+      const actor = e.adminEmail ?? e.adminUserId ?? "system";
+      if (!byActor.has(actor)) byActor.set(actor, { actor, count: 0 });
+      byActor.get(actor)!.count += 1;
+    }
+
+    res.json({
+      period: { startDate, endDate },
+      totalEvents: events.length,
+      byAction: Object.entries(byAction).map(([action, count]) => ({ action, count })).sort((a, b) => b.count - a.count),
+      byActor: Array.from(byActor.values()).sort((a, b) => b.count - a.count),
+      recent: events.slice(0, 100).map((e) => ({
+        id: e.id,
+        action: e.action,
+        actor: e.adminEmail ?? "—",
+        ipAddress: e.ipAddress,
+        createdAt: e.createdAt,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/period-close ────────────────────────────────────────────────
+//
+// All accounting periods across locations + their close state. Lets a CFO see
+// at a glance which months are open and how many are still un-attested.
+router.get("/period-close", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+
+    const periods = await prisma.accountingPeriod.findMany({
+      where: { tenantId },
+      include: { location: { select: { id: true, name: true } } },
+      orderBy: [{ locationId: "asc" }, { periodStart: "desc" }],
+    });
+    const total = periods.length;
+    const closed = periods.filter((p) => p.closedAt !== null).length;
+    const open = total - closed;
+
+    res.json({
+      total,
+      closed,
+      open,
+      closeRate: total > 0 ? Number(((closed / total) * 100).toFixed(1)) : 0,
+      periods: periods.map((p) => ({
+        id: p.id,
+        location: p.location.name,
+        locationId: p.locationId,
+        periodStart: p.periodStart,
+        periodEnd: p.periodEnd,
+        closedAt: p.closedAt,
+        notes: p.notes,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/qbo-sync ────────────────────────────────────────────────────
+//
+// Inbound QBO webhook health (QboWebhookDelivery) + the tenant's connection
+// state. Surfaces stuck deliveries and last-pull watermarks.
+router.get("/qbo-sync", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const [tenant, byStatus, recentFailures] = await Promise.all([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { qboConnectedAt: true, qboLastVendorPullAt: true, qboLastBillPullAt: true },
+      }),
+      prisma.qboWebhookDelivery.groupBy({
+        by: ["status"],
+        where: { tenantId, receivedAt: { gte: startDate, lte: endDate } },
+        _count: { _all: true },
+      }),
+      prisma.qboWebhookDelivery.findMany({
+        where: { tenantId, status: "FAILED", receivedAt: { gte: startDate, lte: endDate } },
+        select: { id: true, signature: true, attempts: true, lastError: true, receivedAt: true },
+        orderBy: { receivedAt: "desc" },
+        take: 50,
+      }),
+    ]);
+
+    const total = byStatus.reduce((s, r) => s + r._count._all, 0);
+    const counts: Record<string, number> = {};
+    for (const r of byStatus) counts[r.status] = r._count._all;
+
+    res.json({
+      period: { startDate, endDate },
+      connected: tenant?.qboConnectedAt !== null,
+      connectedAt: tenant?.qboConnectedAt,
+      lastVendorPullAt: tenant?.qboLastVendorPullAt,
+      lastBillPullAt: tenant?.qboLastBillPullAt,
+      total,
+      counts,
+      successRate: total > 0 ? Number((((counts.PROCESSED ?? 0) / total) * 100).toFixed(1)) : 0,
+      recentFailures,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /reports/webhook-deliveries ──────────────────────────────────────────
+//
+// Outbound webhook health (the WebhookDelivery table written by
+// outbound-webhooks.ts). Per-destination success rate + recent failures.
+router.get("/webhook-deliveries", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const { startDate, endDate } = dateFilters(req);
+
+    const destinations = await prisma.webhookDestination.findMany({
+      where: { tenantId },
+      select: { id: true, name: true, url: true, enabled: true, consecutiveFailures: true, disabledAt: true },
+    });
+    const destIds = destinations.map((d) => d.id);
+
+    const deliveries = destIds.length === 0
+      ? []
+      : await prisma.webhookDelivery.findMany({
+        where: {
+          destinationId: { in: destIds },
+          createdAt: { gte: startDate, lte: endDate },
+        },
+        select: { destinationId: true, status: true, httpStatus: true, createdAt: true, responseSnippet: true, event: true },
+        orderBy: { createdAt: "desc" },
+      });
+
+    const byDest = destinations.map((d) => {
+      const rows = deliveries.filter((r) => r.destinationId === d.id);
+      const success = rows.filter((r) => r.status === "SUCCESS").length;
+      const failed = rows.filter((r) => r.status === "FAILED").length;
+      return {
+        id: d.id,
+        name: d.name,
+        url: d.url,
+        enabled: d.enabled,
+        disabledAt: d.disabledAt,
+        consecutiveFailures: d.consecutiveFailures,
+        deliveryCount: rows.length,
+        successCount: success,
+        failedCount: failed,
+        successRate: rows.length > 0 ? Number(((success / rows.length) * 100).toFixed(1)) : 0,
+      };
+    });
+
+    const totalSuccess = deliveries.filter((d) => d.status === "SUCCESS").length;
+    const totalFailed = deliveries.filter((d) => d.status === "FAILED").length;
+    const recentFailures = deliveries
+      .filter((d) => d.status === "FAILED")
+      .slice(0, 50)
+      .map((d) => {
+        const dest = destinations.find((dd) => dd.id === d.destinationId);
+        return {
+          destination: dest?.name ?? d.destinationId,
+          event: d.event,
+          httpStatus: d.httpStatus,
+          responseSnippet: d.responseSnippet,
+          createdAt: d.createdAt,
+        };
+      });
+
+    res.json({
+      period: { startDate, endDate },
+      destinationCount: destinations.length,
+      enabledDestinations: destinations.filter((d) => d.enabled).length,
+      disabledDestinations: destinations.filter((d) => !d.enabled && d.disabledAt).length,
+      totalDeliveries: deliveries.length,
+      totalSuccess,
+      totalFailed,
+      successRate: deliveries.length > 0 ? Number(((totalSuccess / deliveries.length) * 100).toFixed(1)) : 0,
+      byDestination: byDest,
+      recentFailures,
+    });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /reports/customer-ltv ────────────────────────────────────────────────
 //
 // Computes a rough lifetime-value per customer cohort. "Cohort" is the
