@@ -211,41 +211,44 @@ describe('GET /api/reports/gl-summary', () => {
 });
 
 describe('GET /api/reports/pnl', () => {
-  it('returns P&L data with revenue, expenses, and net income', async () => {
-    mockPrisma.glEntry.aggregate
-      .mockResolvedValueOnce({ _sum: { creditCents: 1000000, debitCents: 50000 } })   // revenue
-      .mockResolvedValueOnce({ _sum: { debitCents: 300000, creditCents: 10000 } })     // expenses
-      .mockResolvedValueOnce({ _sum: { debitCents: 100000, creditCents: 5000 } });     // COGS
+  // Plan 1 / Plan-95-followup: response shape moved from flat
+  // {revenueCents, cogsCents, grossProfitCents, expensesCents, netIncomeCents}
+  // to per-account arrays so the Insights P&L page can render line items.
+  // New shape: {period, revenue[], revenueTotalCents, expense[], expenseTotalCents, netIncomeCents}.
+  it('returns P&L data grouped by revenue and expense accounts', async () => {
+    mockPrisma.glAccount.findMany.mockResolvedValue([
+      { id: 'rev-1', accountNumber: '4100', name: 'Slip Revenue', type: 'REVENUE' },
+      { id: 'exp-1', accountNumber: '5100', name: 'Maintenance',  type: 'EXPENSE' },
+    ] as any);
+    mockPrisma.glEntry.groupBy.mockResolvedValue([
+      { accountId: 'rev-1', _sum: { creditCents: 1000000, debitCents: 50000 } },
+      { accountId: 'exp-1', _sum: { debitCents: 300000, creditCents: 10000 } },
+    ] as any);
 
     const res = await request(app).get('/api/reports/pnl');
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('period');
-    expect(res.body).toHaveProperty('revenueCents');
-    expect(res.body).toHaveProperty('cogsCents');
-    expect(res.body).toHaveProperty('grossProfitCents');
-    expect(res.body).toHaveProperty('expensesCents');
-    expect(res.body).toHaveProperty('netIncomeCents');
-    // revenue = 1000000 - 50000 = 950000
-    expect(res.body.revenueCents).toBe(950000);
-    // cogs = 100000 - 5000 = 95000
-    expect(res.body.cogsCents).toBe(95000);
-    // grossProfit = 950000 - 95000 = 855000
-    expect(res.body.grossProfitCents).toBe(855000);
-    // expenses = 300000 - 10000 = 290000
-    expect(res.body.expensesCents).toBe(290000);
-    // netIncome = 950000 - 95000 - 290000 = 565000
-    expect(res.body.netIncomeCents).toBe(565000);
+    expect(res.body).toHaveProperty('revenue');
+    expect(res.body).toHaveProperty('expense');
+    expect(res.body.revenueTotalCents).toBe(950000);   // 1000000 - 50000
+    expect(res.body.expenseTotalCents).toBe(290000);   // 300000 - 10000
+    expect(res.body.netIncomeCents).toBe(660000);      // 950000 - 290000
+    expect(res.body.revenue[0]).toMatchObject({ accountNumber: '4100', netCents: 950000 });
   });
 
-  it('returns zero values when no GL entries exist', async () => {
-    mockPrisma.glEntry.aggregate.mockResolvedValue({ _sum: { creditCents: 0, debitCents: 0 } });
+  it('returns zero totals when no GL accounts exist', async () => {
+    mockPrisma.glAccount.findMany.mockResolvedValue([] as any);
+    mockPrisma.glEntry.groupBy.mockResolvedValue([] as any);
 
     const res = await request(app).get('/api/reports/pnl');
 
     expect(res.status).toBe(200);
-    expect(res.body.revenueCents).toBe(0);
+    expect(res.body.revenueTotalCents).toBe(0);
+    expect(res.body.expenseTotalCents).toBe(0);
     expect(res.body.netIncomeCents).toBe(0);
+    expect(res.body.revenue).toEqual([]);
+    expect(res.body.expense).toEqual([]);
   });
 });
 

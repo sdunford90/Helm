@@ -640,34 +640,6 @@ router.get("/insurance-compliance", async (req: Request, res: Response, next: Ne
   } catch (err) { next(err); }
 });
 
-// ─── GET /reports/pnl ─────────────────────────────────────────────────────────
-
-router.get("/pnl", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const tenantId = (req as any).tenantId;
-    const { startDate, endDate } = dateFilters(req);
-    const revenue = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "REVENUE" } }, _sum: { creditCents: true, debitCents: true } });
-    const expenses = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "EXPENSE" } }, _sum: { debitCents: true, creditCents: true } });
-    const cogs = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "EXPENSE" } }, _sum: { debitCents: true, creditCents: true } });
-    const totalRevenue = (revenue._sum.creditCents ?? 0) - (revenue._sum.debitCents ?? 0);
-    const totalExpenses = (expenses._sum.debitCents ?? 0) - (expenses._sum.creditCents ?? 0);
-    const totalCogs = (cogs._sum.debitCents ?? 0) - (cogs._sum.creditCents ?? 0);
-    res.json({ period: { startDate, endDate }, revenueCents: totalRevenue, cogsCents: totalCogs, grossProfitCents: totalRevenue - totalCogs, expensesCents: totalExpenses, netIncomeCents: totalRevenue - totalCogs - totalExpenses });
-  } catch (err) { next(err); }
-});
-
-// ─── GET /reports/balance-sheet ───────────────────────────────────────────────
-
-router.get("/balance-sheet", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const tenantId = (req as any).tenantId;
-    const assets = await prisma.glEntry.aggregate({ where: { tenantId, account: { type: "ASSET" } }, _sum: { debitCents: true, creditCents: true } });
-    const liabilities = await prisma.glEntry.aggregate({ where: { tenantId, account: { type: "LIABILITY" } }, _sum: { creditCents: true, debitCents: true } });
-    const equity = await prisma.glEntry.aggregate({ where: { tenantId, account: { type: "EQUITY" } }, _sum: { creditCents: true, debitCents: true } });
-    res.json({ totalAssetsCents: (assets._sum.debitCents ?? 0) - (assets._sum.creditCents ?? 0), totalLiabilitiesCents: (liabilities._sum.creditCents ?? 0) - (liabilities._sum.debitCents ?? 0), totalEquityCents: (equity._sum.creditCents ?? 0) - (equity._sum.debitCents ?? 0) });
-  } catch (err) { next(err); }
-});
-
 // ─── GET /reports/trial-balance ───────────────────────────────────────────────
 
 router.get("/trial-balance", async (req: Request, res: Response, next: NextFunction) => {
@@ -679,18 +651,6 @@ router.get("/trial-balance", async (req: Request, res: Response, next: NextFunct
     const totalDebits = result.reduce((s, r) => s + r.debitsCents, 0);
     const totalCredits = result.reduce((s, r) => s + r.creditsCents, 0);
     res.json({ accounts: result, totalDebitsCents: totalDebits, totalCreditsCents: totalCredits, balanced: totalDebits === totalCredits });
-  } catch (err) { next(err); }
-});
-
-// ─── GET /reports/cash-flow ───────────────────────────────────────────────────
-
-router.get("/cash-flow", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const tenantId = (req as any).tenantId;
-    const { startDate, endDate } = dateFilters(req);
-    const receipts = await prisma.payment.aggregate({ where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "COMPLETED" }, _sum: { amountCents: true } });
-    const refunds = await prisma.payment.aggregate({ where: { tenantId, postedDate: { gte: startDate, lte: endDate }, status: "REFUNDED" }, _sum: { amountCents: true } });
-    res.json({ period: { startDate, endDate }, cashReceiptsCents: receipts._sum.amountCents ?? 0, refundsCents: refunds._sum.amountCents ?? 0, netCashFlowCents: (receipts._sum.amountCents ?? 0) - (refunds._sum.amountCents ?? 0) });
   } catch (err) { next(err); }
 });
 
