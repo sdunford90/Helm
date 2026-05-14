@@ -15,9 +15,21 @@ function dateFilters(req: Request) {
   const startDate = req.query.startDate
     ? new Date(req.query.startDate as string)
     : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-  const endDate = req.query.endDate
-    ? new Date(req.query.endDate as string)
-    : new Date();
+  // Date-only inputs (YYYY-MM-DD) parse as midnight UTC. For endDate that
+  // produces a half-open window that *excludes* same-day activity (e.g. a
+  // payment posted at 11:18 on the end date is missed → reports show 0%
+  // collection rate even though the invoice was paid). Bump date-only
+  // endDates to end-of-day so the upper bound is inclusive of the full day.
+  let endDate: Date;
+  if (req.query.endDate) {
+    const raw = req.query.endDate as string;
+    endDate = new Date(raw);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      endDate = new Date(`${raw}T23:59:59.999Z`);
+    }
+  } else {
+    endDate = new Date();
+  }
   return { startDate, endDate };
 }
 
