@@ -487,6 +487,24 @@ router.post(
         return;
       }
 
+      // Best practice: block cash-tender / card / ACH sales when no shift is
+      // open. A sale without a shift has no cashier accountability, no entry
+      // in any Z-out, and breaks COGS posting (Plan 3 attaches the COGS
+      // journal to the shift). Charge-to-A/R is the deliberate carve-out:
+      // it doesn't touch the cash drawer — it creates an A/R Invoice, which
+      // is a billing event, not a register sale.
+      const isChargeToArAtGate =
+        data.paymentMethod === "CHARGE_TO_AR" ||
+        data.paymentMethod === "CHARGE_TO_ACCOUNT";
+      if (!data.shiftId && !isChargeToArAtGate) {
+        res.status(400).json({
+          error:
+            "Cannot complete a sale without an open shift. Open a shift to begin selling, or charge to A/R if this is a member billing event.",
+          code: "SHIFT_REQUIRED",
+        });
+        return;
+      }
+
       // Look up products and compute line item totals
       const productIds = data.lineItems.map((li) => li.productId);
       const products = await prisma.product.findMany({

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { api } from '../lib/api';
 import { reportApiError } from '../lib/apiError';
 import { useModules } from '../context/ModulesContext';
@@ -1686,6 +1687,14 @@ export default function POS() {
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
   const [closingShift, setClosingShift] = useState(false);
   const [closeShiftError, setCloseShiftError] = useState('');
+  // After Close Shift succeeds, surface a "Run Z-out now →" link in the
+  // shift banner area. Cleared once the operator dismisses or navigates.
+  const [justClosedShift, setJustClosedShift] = useState(false);
+  // Pending-Z-out badge — count of CLOSED shifts at this location that
+  // haven't been Z-out'd yet. Visible whether or not a shift is currently
+  // open so a manager walking up to the POS can see there's housekeeping.
+  const [pendingZOutCount, setPendingZOutCount] = useState(0);
+  const { isAtLeastManager: isManagerOrAbove } = useCurrentUser();
   // `totalSnapshot` pins the dollar amount at the moment the cashier picked
   // a payment method. Without it, after a successful sale `setCart([])`
   // would re-render the still-mounted CardPaymentModal with a fresh
@@ -1820,6 +1829,10 @@ export default function POS() {
       setShiftFloat(0);
       setShiftOpenedAt(null);
       setShowCloseShiftModal(false);
+      // Surface the "Run Z-out now →" shortcut and refresh the pending-Z-out
+      // count so the badge updates immediately.
+      setJustClosedShift(true);
+      void refreshPendingZOutCount();
       await fetchShifts();
     } catch (err) {
       setCloseShiftError((err as Error).message ?? 'Failed to close shift. Please try again.');
@@ -1827,6 +1840,30 @@ export default function POS() {
       setClosingShift(false);
     }
   };
+
+  // Pending-Z-out count for the badge. Polls on mount and after a Close
+  // Shift; doesn't need its own auto-refresh — managers reload the page or
+  // navigate to /pos/z-reports to act on it.
+  const refreshPendingZOutCount = useCallback(async () => {
+    if (!currentLocationId) return;
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/pos/shifts/pending-zout', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return;
+      const body = await res.json();
+      const count = Array.isArray(body?.shifts)
+        ? body.shifts.length
+        : Array.isArray(body)
+          ? body.length
+          : 0;
+      setPendingZOutCount(count);
+    } catch {
+      /* best-effort badge — silent on error */
+    }
+  }, [currentLocationId, getToken]);
+  useEffect(() => { void refreshPendingZOutCount(); }, [refreshPendingZOutCount]);
 
   const posProducts = useMemo(() => {
     const raw = apiProductsResp?.data ?? [];
@@ -2094,6 +2131,52 @@ export default function POS() {
 
       {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading POS data...</div>}
 
+      {/* Pending Z-out badge — visible whenever there's housekeeping due,
+          regardless of whether a shift is currently open. Click jumps to
+          the Z-Reports list where the manager can run them. */}
+      {pendingZOutCount > 0 && (
+        <a
+          href="/pos/z-reports"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '6px 12px', marginBottom: 12, borderRadius: 999,
+            background: '#FEF3C7', border: '1px solid #FDE68A',
+            color: '#92400E', fontSize: 13, fontWeight: 600,
+            textDecoration: 'none',
+          }}
+        >
+          <Clock size={14} /> {pendingZOutCount} shift{pendingZOutCount === 1 ? '' : 's'} pending Z-out
+        </a>
+      )}
+
+      {/* Just-closed-shift shortcut — surfaces a "Run Z-out now →" CTA so a
+          manager closing their own shift doesn't have to navigate away to
+          finish the job. Dismissible. */}
+      {justClosedShift && isManagerOrAbove && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '10px 14px', marginBottom: 12, borderRadius: 8,
+          background: '#DCFCE7', border: '1px solid #86EFAC', color: '#166534',
+          fontSize: 13,
+        }}>
+          <span>Shift closed. Run the Z-out next to lock it and post the GL journal.</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a
+              href="/pos/z-reports"
+              style={{ ...st.addBtn, backgroundColor: '#166534', color: '#FFFFFF', textDecoration: 'none', padding: '4px 12px' }}
+            >
+              Run Z-out now →
+            </a>
+            <button
+              onClick={() => setJustClosedShift(false)}
+              style={{ background: 'transparent', border: 0, color: '#166534', cursor: 'pointer', fontSize: 13 }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Shift Banner */}
       {shiftOpen ? (
         <div style={st.shiftBanner}>
@@ -2116,13 +2199,21 @@ export default function POS() {
           </div>
         </div>
       ) : (
-        <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center', gap: 8 }}>
-          <button style={st.addBtn} onClick={() => setShowShiftModal(true)}>
-            <Clock size={16} /> Open Shift
-          </button>
-          <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            Z-Reports
-          </a>
+        <div style={{ ...st.shiftBanner, background: '#FEF2F2', border: '1px solid #FCA5A5', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#991B1B' }}>
+            Register is closed — no cash sales
+          </div>
+          <div style={{ fontSize: 12, color: '#7F1D1D' }}>
+            Open a shift before ringing up Card / Cash / ACH sales. Charge to A/R is allowed without a shift (it creates an A/R invoice, not a register transaction).
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={st.addBtn} onClick={() => setShowShiftModal(true)}>
+              <Clock size={16} /> Open Shift
+            </button>
+            <a href="/pos/z-reports" style={{ ...st.addBtn, backgroundColor: '#fff', color: '#0A2342', border: '1px solid #CBD5E1', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              Z-Reports
+            </a>
+          </div>
         </div>
       )}
 
@@ -2511,26 +2602,41 @@ export default function POS() {
                       style={{
                         ...st.payBtn,
                         ...st.payBtnPrimary,
-                        opacity: cardDisabled ? 0.5 : 1,
-                        cursor: cardDisabled ? 'not-allowed' : 'pointer',
+                        opacity: (cardDisabled || !shiftOpen) ? 0.5 : 1,
+                        cursor: (cardDisabled || !shiftOpen) ? 'not-allowed' : 'pointer',
                       }}
-                      disabled={cardDisabled}
-                      title={cardDisabledReason}
+                      disabled={cardDisabled || !shiftOpen}
+                      title={!shiftOpen ? 'Open a shift to ring up card sales' : cardDisabledReason}
                       onClick={() => {
                         // Belt-and-braces: refuse to open the modal unless we
                         // have positively confirmed Stripe is configured. This
                         // closes the race where the button could be clicked
                         // between render and the disabled state taking effect.
                         if (!stripeReady) return;
+                        if (!shiftOpen) return;
                         if (total > 0) setPaymentModal({ method: 'Card', cartSnapshot: cart, totalSnapshot: total });
                       }}
                     >
                       <CreditCard size={16} />
                       {stripeChecking ? ' Checking…' : ' Card'}
                     </button>
-                    <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart, totalSnapshot: total })}><Banknote size={16} /> Cash</button>
+                    <button
+                      style={{ ...st.payBtn, opacity: shiftOpen ? 1 : 0.4, cursor: shiftOpen ? 'pointer' : 'not-allowed' }}
+                      disabled={!shiftOpen}
+                      title={shiftOpen ? undefined : 'Open a shift to ring up cash sales'}
+                      onClick={() => shiftOpen && total > 0 && setPaymentModal({ method: 'Cash', cartSnapshot: cart, totalSnapshot: total })}
+                    >
+                      <Banknote size={16} /> Cash
+                    </button>
                     {achEnabled && (
-                      <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart, totalSnapshot: total })}><Building2 size={16} /> ACH</button>
+                      <button
+                        style={{ ...st.payBtn, opacity: shiftOpen ? 1 : 0.4, cursor: shiftOpen ? 'pointer' : 'not-allowed' }}
+                        disabled={!shiftOpen}
+                        title={shiftOpen ? undefined : 'Open a shift to ring up ACH sales'}
+                        onClick={() => shiftOpen && total > 0 && setPaymentModal({ method: 'ACH', cartSnapshot: cart, totalSnapshot: total })}
+                      >
+                        <Building2 size={16} /> ACH
+                      </button>
                     )}
                     {posChargeToAREnabled && (
                       <button

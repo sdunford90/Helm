@@ -73,6 +73,7 @@ describe('POST /api/pos/transactions', () => {
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [
           {
             productId: product.id,
@@ -86,6 +87,64 @@ describe('POST /api/pos/transactions', () => {
     expect(res.status).toBe(201);
     expect(res.body).toHaveProperty('totalCents');
     expect(res.body).toHaveProperty('lineItems');
+  });
+
+  // Best-practice gate: a register sale (cash / card / ACH) must be
+  // attached to an open shift so it lands in the cashier's Z-out and
+  // hits the right COGS journal. Charge-to-A/R is the documented carve-
+  // out — it's a billing event, not a register sale, so it can be
+  // recorded with no shift open.
+  it('rejects a CASH sale with no shiftId (SHIFT_REQUIRED)', async () => {
+    const product = buildPosProduct({ priceCents: 1500, taxClass: null });
+    mockPrisma.product.findMany.mockResolvedValue([product]);
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: product.id, quantity: 1, unitPriceCents: 1500 }],
+        paymentMethod: 'CASH',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('SHIFT_REQUIRED');
+    // Sale must not have been written.
+    expect(mockPrisma.posTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('allows a CHARGE_TO_AR sale with no shiftId (carve-out for member billing)', async () => {
+    const product = buildPosProduct({ priceCents: 1500, taxClass: null });
+    mockPrisma.product.findMany.mockResolvedValue([product]);
+    // location.findUnique (accounting gate + tax provider lookup) and
+    // location.findFirst (CHARGE_TO_AR allowance check) both need to
+    // resolve a location with posChargeToARAllowed=true so the carve-out
+    // path can complete.
+    mockPrisma.location.findUnique.mockResolvedValue({
+      accountingSetupComplete: true,
+      accountingGracePeriodEndsAt: null,
+      taxProvider: null,
+    } as any);
+    mockPrisma.location.findFirst.mockResolvedValue({
+      posChargeToARAllowed: true,
+    } as any);
+    mockPrisma.invoice.create.mockResolvedValue({ id: 'inv-ar-1' } as any);
+    mockPrisma.posTransaction.create.mockImplementation(async ({ data }: any) => ({
+      id: 'txn-ar',
+      ...data,
+      lineItems: data.lineItems?.create ?? [],
+    }));
+    mockPrisma.inventory.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/pos/transactions')
+      .send({
+        lineItems: [{ productId: product.id, quantity: 1, unitPriceCents: 1500 }],
+        paymentMethod: 'CHARGE_TO_AR',
+        customerId: 'cust-1',
+        locationId: 'loc-1',
+      });
+
+    expect(res.status).toBe(201);
   });
 });
 
@@ -364,6 +423,7 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'TERMINAL',
@@ -379,6 +439,7 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'CNP',
@@ -397,6 +458,7 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
     await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'TERMINAL',
@@ -413,6 +475,7 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
     await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CASH',
         cardRail: 'CNP',
@@ -428,6 +491,7 @@ describe('POST /api/pos/transactions — card rail tagging', () => {
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'BITCOIN',
@@ -465,6 +529,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'CNP',
@@ -484,6 +549,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CASH',
         stripePaymentIntentId: 'pi_should_be_dropped',
@@ -498,6 +564,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'TERMINAL',
@@ -514,13 +581,14 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
   // afterwards, would route to the wrong account (or fail outright).
   it('captures and persists the connected Stripe account on the row when a CARD sale carries a PI id', async () => {
     const get = captureCreate();
-    // No shift, but explicit locationId — the per-location Stripe account
-    // (acct_loc_per_location) must be the one that ends up on the row.
+    // Shift open but its location is unset — the explicit locationId on the
+    // request drives the per-location Stripe account resolution
+    // (acct_loc_per_location), not the shift's.
     // location.findUnique is hit twice: once by the accounting-gate
     // middleware (needs accountingSetupComplete), once by the route to
     // resolve taxProvider. Returning a row that satisfies both lets the
     // request pass through and lets the tax lookup no-op.
-    mockPrisma.shift.findFirst.mockResolvedValue(null);
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: null });
     mockPrisma.location.findUnique.mockResolvedValue({
       accountingSetupComplete: true,
       accountingGracePeriodEndsAt: null,
@@ -533,6 +601,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'CNP',
@@ -559,6 +628,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CARD',
         cardRail: 'CNP',
@@ -576,6 +646,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     // CASH row must never carry one — the column is meaningful only for
     // sales that actually hit Stripe.
     const get = captureCreate();
+    mockPrisma.shift.findFirst.mockResolvedValue({ locationId: null });
     mockPrisma.location.findUnique.mockResolvedValue({
       accountingSetupComplete: true,
       accountingGracePeriodEndsAt: null,
@@ -588,6 +659,7 @@ describe('POST /api/pos/transactions — Stripe PaymentIntent reconciliation id 
     const res = await request(app)
       .post('/api/pos/transactions')
       .send({
+        shiftId: 'shift-1',
         lineItems: [{ productId: 'p1', quantity: 1, unitPriceCents: 1000 }],
         paymentMethod: 'CASH',
         locationId: 'loc-A',
