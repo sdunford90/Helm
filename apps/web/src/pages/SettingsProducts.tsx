@@ -48,6 +48,33 @@ const CADENCE_LABELS: Record<BillingCadence, string> = {
   SEASONAL: 'Seasonal',
 };
 
+const CADENCE_RATE_SUFFIX: Record<BillingCadence, string> = {
+  MONTHLY: '/mo',
+  QUARTERLY: '/qtr',
+  ANNUAL: '/yr',
+  SEASONAL: '/season',
+};
+
+// The rate a contract on this plan actually bills is the one aligned to
+// the plan's cadence — not always monthlyRateCents. Mirrors the resolver
+// in contracts.ts so the catalog list shows what will be billed.
+function cadenceRateDisplay(rate: {
+  billingCadence?: BillingCadence;
+  monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
+}): string {
+  const cadence = (rate.billingCadence ?? 'MONTHLY') as BillingCadence;
+  const cents =
+    cadence === 'QUARTERLY' ? rate.quarterlyRateCents
+    : cadence === 'ANNUAL' ? rate.annualRateCents
+    : cadence === 'SEASONAL' ? rate.seasonalRateCents
+    : rate.monthlyRateCents;
+  if (cents == null) return '—';
+  return `$${(cents / 100).toFixed(2)}${CADENCE_RATE_SUFFIX[cadence]}`;
+}
+
 interface ServiceFee {
   id: string;
   locationId: string;
@@ -776,6 +803,18 @@ function DockageRateModal({
     if (monthlyCents == null || monthlyCents < 0) {
       setErr('Monthly rate is required'); return;
     }
+    // The cadence-aligned rate is what contracts on this plan actually
+    // bill and defer. If it's missing, contract creation + the billing
+    // engine silently fall back to the monthly rate.
+    if (form.billingCadence === 'QUARTERLY' && inputStrToCents(form.quarterlyRate) == null) {
+      setErr('Quarterly rate is required for a quarterly plan'); return;
+    }
+    if (form.billingCadence === 'ANNUAL' && inputStrToCents(form.annualRate) == null) {
+      setErr('Annual rate is required for an annual plan'); return;
+    }
+    if (form.billingCadence === 'SEASONAL' && inputStrToCents(form.seasonalRate) == null) {
+      setErr('Seasonal rate is required for a seasonal plan'); return;
+    }
     setSaving(true);
     try {
       await onSave(form);
@@ -883,9 +922,15 @@ function DockageRateModal({
               onChange={(e) => upd('monthlyRate', e.target.value)}
             />
           </div>
+          {form.billingCadence !== 'MONTHLY' && (
+            <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '8px' }}>
+              {CADENCE_LABELS[form.billingCadence]} plans bill the full {form.billingCadence.toLowerCase()} amount
+              on one invoice and recognize it across the period via a deferred schedule.
+            </div>
+          )}
           {form.billingCadence === 'QUARTERLY' && (
             <div style={s.field}>
-              <label style={s.label}>Quarterly Rate (USD)</label>
+              <label style={s.label}>Quarterly Rate (USD) *</label>
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
@@ -896,7 +941,7 @@ function DockageRateModal({
           )}
           {form.billingCadence === 'ANNUAL' && (
             <div style={s.field}>
-              <label style={s.label}>Annual Rate (USD)</label>
+              <label style={s.label}>Annual Rate (USD) *</label>
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
@@ -907,7 +952,7 @@ function DockageRateModal({
           )}
           {form.billingCadence === 'SEASONAL' && (
             <div style={s.field}>
-              <label style={s.label}>Seasonal Rate (USD)</label>
+              <label style={s.label}>Seasonal Rate (USD) *</label>
               <input
                 style={s.input}
                 type="number" step="0.01" min="0"
@@ -1495,7 +1540,7 @@ export default function SettingsProducts() {
                     </span>
                   </td>
                   <td style={s.td}>
-                    ${(rate.monthlyRateCents / 100).toFixed(2)}/mo
+                    {cadenceRateDisplay(rate)}
                   </td>
                   <td style={s.td}>
                     <span style={{ fontSize: '12px', color: '#64748B' }}>

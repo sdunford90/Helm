@@ -11,14 +11,40 @@ interface GlAccount {
   locationId?: string | null;
 }
 
+type BillingCadence = 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'SEASONAL';
+
 interface DockageRate {
   id: string;
   locationId: string;
   slipType: string;
+  billingCadence?: BillingCadence;
   monthlyRateCents: number;
+  quarterlyRateCents?: number | null;
+  annualRateCents?: number | null;
+  seasonalRateCents?: number | null;
   glAccountId: string | null;
   active: boolean;
   location: { name: string };
+}
+
+const CADENCE_RATE_SUFFIX: Record<BillingCadence, string> = {
+  MONTHLY: '/mo',
+  QUARTERLY: '/qtr',
+  ANNUAL: '/yr',
+  SEASONAL: '/season',
+};
+
+// Show the rate aligned to the plan's cadence — the amount a contract on
+// this plan actually bills — not always monthlyRateCents.
+function cadenceRateDisplay(rate: DockageRate): string {
+  const cadence = (rate.billingCadence ?? 'MONTHLY') as BillingCadence;
+  const cents =
+    cadence === 'QUARTERLY' ? rate.quarterlyRateCents
+    : cadence === 'ANNUAL' ? rate.annualRateCents
+    : cadence === 'SEASONAL' ? rate.seasonalRateCents
+    : rate.monthlyRateCents;
+  if (cents == null) return '—';
+  return `$${(cents / 100).toFixed(2)}${CADENCE_RATE_SUFFIX[cadence]}`;
 }
 
 interface ServiceFee {
@@ -195,7 +221,7 @@ export default function RatesFeesPanel() {
             <thead>
               <tr>
                 <th style={stl.th}>Slip Type</th>
-                <th style={stl.th}>Monthly Rate</th>
+                <th style={stl.th}>Rate</th>
                 <th style={stl.th}>Revenue GL Account</th>
                 <th style={stl.th}></th>
               </tr>
@@ -209,7 +235,7 @@ export default function RatesFeesPanel() {
                 return (
                   <tr key={rate.id}>
                     <td style={{ ...stl.td, fontWeight: 600 }}>{rate.slipType}</td>
-                    <td style={stl.td}>{fmtCents(rate.monthlyRateCents)} / mo</td>
+                    <td style={stl.td}>{cadenceRateDisplay(rate)}</td>
                     <td style={stl.td}>
                       <select
                         style={stl.select}

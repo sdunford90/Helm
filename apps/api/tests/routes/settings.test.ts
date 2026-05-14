@@ -143,6 +143,114 @@ describe('DELETE /api/settings/catalog/dockage-rates/:id — safeguards linked c
   });
 });
 
+// A non-monthly rate plan must carry its cadence-aligned rate. Without
+// it, contract creation and the billing engine both fall back to
+// monthlyRateCents — billing an annual plan only a month's worth at a
+// time instead of the full period (which then can't defer correctly).
+describe('POST /api/settings/catalog/dockage-rates — cadence rate validation', () => {
+  it('rejects an ANNUAL plan that omits annualRateCents', async () => {
+    const res = await request(app)
+      .post('/api/settings/catalog/dockage-rates')
+      .send({
+        locationId: 'loc-1',
+        slipType: '30ft',
+        billingCadence: 'ANNUAL',
+        monthlyRateCents: 50000,
+        // annualRateCents intentionally omitted
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('CADENCE_RATE_REQUIRED');
+    expect(mockPrisma.dockageRate.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts an ANNUAL plan that supplies annualRateCents', async () => {
+    mockPrisma.dockageRate.create.mockResolvedValue({ id: 'rate-annual' });
+
+    const res = await request(app)
+      .post('/api/settings/catalog/dockage-rates')
+      .send({
+        locationId: 'loc-1',
+        slipType: '30ft',
+        billingCadence: 'ANNUAL',
+        monthlyRateCents: 50000,
+        annualRateCents: 540000,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.dockageRate.create).toHaveBeenCalled();
+  });
+
+  it('still accepts a MONTHLY plan with only monthlyRateCents', async () => {
+    mockPrisma.dockageRate.create.mockResolvedValue({ id: 'rate-monthly' });
+
+    const res = await request(app)
+      .post('/api/settings/catalog/dockage-rates')
+      .send({
+        locationId: 'loc-1',
+        slipType: '30ft',
+        billingCadence: 'MONTHLY',
+        monthlyRateCents: 50000,
+      });
+
+    expect(res.status).toBe(201);
+  });
+});
+
+describe('PUT /api/settings/catalog/dockage-rates/:id — cadence rate validation', () => {
+  const RATE_ID = 'rate-edit';
+  const monthlyPlan = {
+    id: RATE_ID,
+    tenantId: 'test-tenant-id',
+    billingCadence: 'MONTHLY',
+    monthlyRateCents: 50000,
+    quarterlyRateCents: null,
+    annualRateCents: null,
+    seasonalRateCents: null,
+    locationId: 'loc-1',
+    glAccountId: null,
+    active: true,
+  };
+
+  it('rejects switching a plan to ANNUAL when no annualRateCents exists', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({ ...monthlyPlan });
+
+    const res = await request(app)
+      .put(`/api/settings/catalog/dockage-rates/${RATE_ID}`)
+      .send({ billingCadence: 'ANNUAL' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('CADENCE_RATE_REQUIRED');
+    expect(mockPrisma.dockageRate.update).not.toHaveBeenCalled();
+  });
+
+  it('allows switching to ANNUAL when annualRateCents is supplied in the same request', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({ ...monthlyPlan });
+    mockPrisma.dockageRate.update.mockResolvedValue({ id: RATE_ID });
+
+    const res = await request(app)
+      .put(`/api/settings/catalog/dockage-rates/${RATE_ID}`)
+      .send({ billingCadence: 'ANNUAL', annualRateCents: 540000 });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.dockageRate.update).toHaveBeenCalled();
+  });
+
+  it('allows switching to ANNUAL when the plan already has annualRateCents', async () => {
+    mockPrisma.dockageRate.findFirst.mockResolvedValue({
+      ...monthlyPlan,
+      annualRateCents: 540000,
+    });
+    mockPrisma.dockageRate.update.mockResolvedValue({ id: RATE_ID });
+
+    const res = await request(app)
+      .put(`/api/settings/catalog/dockage-rates/${RATE_ID}`)
+      .send({ billingCadence: 'ANNUAL' });
+
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/settings/qbo/inventory-resync (job-based)', () => {
   it('returns 202 with a jobId so the UI can poll progress', async () => {
     // No failed sync refs → the background job completes near-instantly with

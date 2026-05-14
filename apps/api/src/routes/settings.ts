@@ -1834,6 +1834,23 @@ router.post("/catalog/dockage-rates", ...clerkAuth(), requireRole("MARINA_OWNER"
     if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
       res.status(400).json({ error: "Invalid billingCadence" }); return;
     }
+    // A non-monthly plan MUST carry its cadence-aligned rate. Without it,
+    // contract creation and the billing engine both silently fall back to
+    // monthlyRateCents — billing (and deferring) an annual plan only a
+    // month's worth at a time instead of the full period up front.
+    const effectiveCadence = billingCadence ?? "MONTHLY";
+    const cadenceRateCents =
+      effectiveCadence === "QUARTERLY" ? quarterlyRateCents
+      : effectiveCadence === "ANNUAL" ? annualRateCents
+      : effectiveCadence === "SEASONAL" ? seasonalRateCents
+      : monthlyRateCents;
+    if (effectiveCadence !== "MONTHLY" && cadenceRateCents == null) {
+      res.status(400).json({
+        error: `A ${effectiveCadence.toLowerCase()} plan requires its ${effectiveCadence.toLowerCase()} rate.`,
+        code: "CADENCE_RATE_REQUIRED",
+      });
+      return;
+    }
     if (glAccountId) {
       try {
         await assertGlAccountForCatalogItem(req.tenantId!, locationId, glAccountId);
@@ -1908,6 +1925,25 @@ router.put("/catalog/dockage-rates/:id", ...clerkAuth(), requireRole("MARINA_OWN
     const allowedCadences = ["MONTHLY", "QUARTERLY", "ANNUAL", "SEASONAL"] as const;
     if (billingCadence != null && !allowedCadences.includes(billingCadence)) {
       res.status(400).json({ error: "Invalid billingCadence" }); return;
+    }
+    // Same invariant as POST, but resolved against the post-update state:
+    // whatever the cadence ends up being, its aligned rate must be set —
+    // otherwise downstream billing silently falls back to the monthly rate.
+    const effectiveCadence = billingCadence ?? existing.billingCadence;
+    const effectiveCadenceRate =
+      effectiveCadence === "QUARTERLY"
+        ? (quarterlyRateCents !== undefined ? quarterlyRateCents : existing.quarterlyRateCents)
+        : effectiveCadence === "ANNUAL"
+          ? (annualRateCents !== undefined ? annualRateCents : existing.annualRateCents)
+          : effectiveCadence === "SEASONAL"
+            ? (seasonalRateCents !== undefined ? seasonalRateCents : existing.seasonalRateCents)
+            : (monthlyRateCents != null ? monthlyRateCents : existing.monthlyRateCents);
+    if (effectiveCadence !== "MONTHLY" && effectiveCadenceRate == null) {
+      res.status(400).json({
+        error: `A ${effectiveCadence.toLowerCase()} plan requires its ${effectiveCadence.toLowerCase()} rate.`,
+        code: "CADENCE_RATE_REQUIRED",
+      });
+      return;
     }
     // Deactivating keeps live contracts pointed at this plan (locked
     // rate + plan's GL mapping). It only stops appearing in pickers
