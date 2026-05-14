@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireStripe } from "../lib/stripe.js";
 import { issueOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 import { seedChartOfAccounts } from "../services/tenant-provisioning.js";
+import { seedSystemFeeProducts } from "../services/system-fee-products.js";
 
 const router: Router = Router();
 
@@ -94,6 +95,9 @@ router.post("/start", async (req, res, next) => {
         accountingGracePeriodEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
+
+    // Auto-seed per-location system ServiceFee products (Task #353).
+    await seedSystemFeeProducts(prisma, tenant.id, defaultLocation.id);
 
     // Create admin user with MARINA_OWNER role. If the request came from an
     // authenticated Clerk sign-up, link the clerkUserId so subsequent

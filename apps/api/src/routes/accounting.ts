@@ -39,8 +39,6 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
       deferredRevenueGlAccountId: true,
       defaultRevenueGlAccountId: true,
       salesTaxGlAccountId: true,
-      earlyTerminationGlAccountId: true,
-      achReturnFeeGlAccountId: true,
       accountingSetupComplete: true,
       accountingGracePeriodEndsAt: true,
       _count: {
@@ -55,15 +53,16 @@ async function computeSetupStatus(tenantId: string, locationId: string) {
   const qboConnected = !!location.qboRealmId;
   const glAccountCount = location._count.glAccounts;
 
-  // Step 2: Posting accounts (8 pins)
+  // Step 2: Posting accounts. Early Termination Fee + ACH Return Fee
+  // moved out to per-location system ServiceFee products in Task #353,
+  // so they're no longer pins here — they'll show up as service-fee gaps
+  // (Step 5) if their GL account is unmapped.
   const POSTING_SLOTS = [
     "arGlAccountId",
     "undepositedFundsGlAccountId",
     "deferredRevenueGlAccountId",
     "defaultRevenueGlAccountId",
     "salesTaxGlAccountId",
-    "earlyTerminationGlAccountId",
-    "achReturnFeeGlAccountId",
   ] as const;
   const totalPostingCount = POSTING_SLOTS.length;
   let mappedPostingCount = 0;

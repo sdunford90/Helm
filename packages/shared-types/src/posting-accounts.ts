@@ -168,24 +168,11 @@ export const POSTING_ACCOUNT_SPECS: PostingAccountSpec[] = [
     typeFilter: ["REVENUE"],
     required: false,
   },
-  {
-    field: "earlyTerminationGlAccountId",
-    label: "Early Termination Income",
-    description: "Revenue from contract early-termination penalties.",
-    group: "Revenue by Stream",
-    subType: ["OtherPrimaryIncome", "ServiceFeeIncome"],
-    typeFilter: ["REVENUE"],
-    required: true,
-  },
-  {
-    field: "achReturnFeeGlAccountId",
-    label: "ACH Return Fee",
-    description: "Revenue from fees charged when a customer ACH bounces.",
-    group: "Revenue by Stream",
-    subType: ["OtherPrimaryIncome", "ServiceFeeIncome"],
-    typeFilter: ["REVENUE"],
-    required: true,
-  },
+  // Early Termination Fee + ACH Return Fee used to live here as pinned
+  // GL accounts. Task #353 moved them to per-location system-managed
+  // ServiceFee products (kind = EARLY_TERMINATION_FEE / ACH_RETURN_FEE)
+  // so the operator can edit fee amount, fee type, GL account, and tax
+  // class on the product itself in Settings → Products.
 
   // ── POS Z-out Clearing ──────────────────────────────────────────────────
   {

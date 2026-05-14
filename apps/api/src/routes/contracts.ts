@@ -18,6 +18,11 @@ import {
   releaseSecurityDeposit,
   postEarlyTermination,
 } from "../services/gl-posting.js";
+import {
+  assertSystemFeeGlAccountId,
+  computeSystemEarlyTerminationPenaltyCents,
+  resolveSystemFeeProduct,
+} from "../services/system-fee-products.js";
 import { isLocationQboConnected } from "../services/gl-account-resolver.js";
 
 const router: Router = Router();
@@ -1272,7 +1277,24 @@ router.post(
 
       const effectiveDate = terminationDate ?? todayDateOnly();
 
-      // Calculate penalty
+      // Resolve the per-location EARLY_TERMINATION_FEE system fee product
+      // (Task #353) so we can both compute the default penalty AND get
+      // the GL account that will be credited. Falls back to operator
+      // overrides on the contract row when set; explicit override on the
+      // request still takes top priority.
+      const terminationLocationId =
+        contract.locationId ?? contract.slip.locationId ?? null;
+      const sysTerminationFee = terminationLocationId
+        ? await resolveSystemFeeProduct(
+            tenantId,
+            terminationLocationId,
+            "EARLY_TERMINATION_FEE",
+            `contract ${contract.id} terminate`,
+          )
+        : null;
+
+      // Calculate penalty: explicit override → contract-level override →
+      // per-location system fee product (FLAT amount or PERCENT × rate).
       let penaltyCents = 0;
       if (penaltyOverrideCents !== undefined) {
         penaltyCents = penaltyOverrideCents;
@@ -1285,6 +1307,11 @@ router.post(
             contract.rateCents * contract.earlyTerminationValue,
           );
         }
+      } else if (sysTerminationFee) {
+        penaltyCents = computeSystemEarlyTerminationPenaltyCents(
+          sysTerminationFee,
+          contract.rateCents,
+        );
       }
 
       // Pre-flight: every held deposit's release will post a reversing
@@ -1500,14 +1527,27 @@ router.post(
         }
 
         if (penaltyCents > 0 || washoutCents > 0) {
+          // Only require the system fee's GL when we're actually posting
+          // a non-zero penalty leg. A zero-amount default penalty (the
+          // out-of-the-box state of EARLY_TERMINATION_FEE) must NOT block
+          // a no-fee termination just because no GL was mapped.
+          const penaltyGl = penaltyCents > 0 && sysTerminationFee && terminationLocationId
+            ? assertSystemFeeGlAccountId(
+                sysTerminationFee,
+                "EARLY_TERMINATION_FEE",
+                terminationLocationId,
+                `contract ${req.params.id} terminate`,
+              )
+            : null;
           await postEarlyTermination(
             {
               id: req.params.id,
               tenantId,
-              locationId: contract.locationId ?? contract.slip.locationId ?? null,
+              locationId: terminationLocationId,
             },
             penaltyCents,
             washoutCents,
+            penaltyGl,
             tx,
           );
         }

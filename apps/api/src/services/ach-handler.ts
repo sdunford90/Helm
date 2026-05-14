@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import { postAchReturn } from "./gl-posting.js";
+import { assertSystemFeeGlAccountId, resolveSystemFeeProduct } from "./system-fee-products.js";
 import { queues } from "../lib/queue.js";
 import type Stripe from "stripe";
 
@@ -31,11 +32,6 @@ const R_CODE_DESCRIPTIONS: Record<string, string> = {
   R20: "Non-Transaction Account",
   R29: "Corporate Customer Advises Not Authorized",
 };
-
-/**
- * Default return fee in cents charged to the customer.
- */
-const DEFAULT_RETURN_FEE_CENTS = 2500; // $25.00
 
 export interface AchReturnResult {
   achReturnId: string;
@@ -97,8 +93,41 @@ export async function handleAchReturn(
   }
 
   const shouldBlock = BLOCK_R_CODES.has(rCode);
-  const returnFeeCents = DEFAULT_RETURN_FEE_CENTS;
   const achReturnId = uuid();
+
+  // Resolve the per-location ACH Return Fee system product (Task #353).
+  // The product is auto-seeded per location and operator-editable for
+  // amount + GL + tax. PERCENT-mode is intentionally ignored here — there
+  // is no obvious "amount basis" for a return fee, so we charge the FLAT
+  // amount (or 0 if the operator zeroed it out / set PERCENT).
+  const locationIdForFee = payment.invoice?.locationId ?? null;
+  let returnFeeCents = 0;
+  let returnFeeServiceFeeId: string | null = null;
+  let returnFeeGlAccountId: string | null = null;
+  if (locationIdForFee) {
+    const sysFee = await resolveSystemFeeProduct(
+      tenantId,
+      locationIdForFee,
+      "ACH_RETURN_FEE",
+      `ach return ${achReturnId}`,
+    );
+    returnFeeServiceFeeId = sysFee.serviceFeeId;
+    if (sysFee.feeType === "FLAT") {
+      returnFeeCents = Math.max(0, sysFee.amountCents ?? 0);
+    }
+    // Only require the system fee's GL when we're actually going to add a
+    // non-zero return-fee line item to the invoice. A $0 (or zeroed-out)
+    // ACH return fee must NOT block the underlying payment-reversal flow
+    // just because the operator hasn't mapped a GL account.
+    if (returnFeeCents > 0) {
+      returnFeeGlAccountId = assertSystemFeeGlAccountId(
+        sysFee,
+        "ACH_RETURN_FEE",
+        locationIdForFee,
+        `ach return ${achReturnId}`,
+      );
+    }
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     // 1. Reverse payment GL entries
@@ -132,32 +161,36 @@ export async function handleAchReturn(
         },
       });
 
-      // 4. Add return fee as a new line item on the invoice
-      await tx.invoiceLineItem.create({
-        data: {
-          id: uuid(),
-          invoiceId: payment.invoice.id,
-          description: `ACH Return Fee (${rCode}: ${R_CODE_DESCRIPTIONS[rCode] ?? "Unknown"})`,
-          quantity: 1,
-          unitPriceCents: returnFeeCents,
-          discountCents: 0,
-          taxRate: 0,
-          taxCents: 0,
-          extendedCents: returnFeeCents,
-          sourceType: "ACH_RETURN",
-          sourceId: achReturnId,
-        },
-      });
+      // 4. Add return fee as a new line item on the invoice (only if the
+      // operator hasn't zeroed out the system fee).
+      if (returnFeeCents > 0) {
+        await tx.invoiceLineItem.create({
+          data: {
+            id: uuid(),
+            invoiceId: payment.invoice.id,
+            description: `ACH Return Fee (${rCode}: ${R_CODE_DESCRIPTIONS[rCode] ?? "Unknown"})`,
+            quantity: 1,
+            unitPriceCents: returnFeeCents,
+            discountCents: 0,
+            taxRate: 0,
+            taxCents: 0,
+            extendedCents: returnFeeCents,
+            sourceType: "ACH_RETURN",
+            sourceId: returnFeeServiceFeeId ?? achReturnId,
+            glAccountId: returnFeeGlAccountId,
+          },
+        });
 
-      // Update invoice totals
-      await tx.invoice.update({
-        where: { id: payment.invoice.id },
-        data: {
-          subtotalCents: { increment: returnFeeCents },
-          totalCents: { increment: returnFeeCents },
-          balanceCents: { increment: returnFeeCents },
-        },
-      });
+        // Update invoice totals
+        await tx.invoice.update({
+          where: { id: payment.invoice.id },
+          data: {
+            subtotalCents: { increment: returnFeeCents },
+            totalCents: { increment: returnFeeCents },
+            balanceCents: { increment: returnFeeCents },
+          },
+        });
+      }
     }
 
     // 5. Block ACH if applicable

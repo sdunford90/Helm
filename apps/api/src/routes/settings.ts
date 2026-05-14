@@ -2064,6 +2064,10 @@ router.post("/catalog/service-fees", ...clerkAuth(), requireRole("MARINA_OWNER",
     if (!locationId || !name) {
       res.status(400).json({ error: "locationId and name are required" }); return;
     }
+    // System fee kinds (Task #353) are auto-seeded per location and may
+    // not be created by hand — they're enforced at-most-one per location
+    // by a partial unique index, so accepting `kind` here would let API
+    // clients race the seeder. Always create as STANDARD.
     if (glAccountId) {
       try {
         await assertGlAccountForCatalogItem(req.tenantId!, locationId, glAccountId);
@@ -2123,6 +2127,22 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
     const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
     const { name, feeType, amountCents, pct, glAccountId, taxClass, active } = req.body;
+    // System fee kinds (Task #353) have a fixed name + kind + location;
+    // operators may only edit feeType / amount / pct / glAccount / tax /
+    // active. Strip name from the payload defensively (UI also disables
+    // the field) so a stale client can't rename them.
+    const isSystemKind = existing.kind !== "STANDARD";
+    // ACH_RETURN_FEE is FLAT-only by product spec: there is no sensible
+    // amount basis for a returned-payment fee. Reject PERCENT writes
+    // explicitly so a stale UI / curl can't silently zero-out the fee
+    // (ach-handler.ts only honors FLAT and would otherwise post $0).
+    if (existing.kind === "ACH_RETURN_FEE" && feeType != null && feeType !== "FLAT") {
+      res.status(400).json({
+        error: "ACH Return Fee must be a flat-dollar amount; percentage is not supported.",
+        code: "ACH_RETURN_FEE_FLAT_ONLY",
+      });
+      return;
+    }
     if (glAccountId && existing.locationId) {
       try {
         await assertGlAccountForCatalogItem(req.tenantId!, existing.locationId, glAccountId);
@@ -2136,13 +2156,13 @@ router.put("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_OWNE
     const updated = await prisma.serviceFee.update({
       where: { id: req.params.id },
       data: {
-        ...(name != null && { name }),
+        ...(name != null && !isSystemKind && { name }),
         ...(feeType != null && { feeType }),
         ...(amountCents !== undefined && { amountCents: amountCents != null ? Number(amountCents) : null }),
         ...(pct !== undefined && { pct: pct != null ? Number(pct) : null }),
         ...(glAccountId !== undefined && { glAccountId }),
         ...(taxClass != null && { taxClass }),
-        ...(active !== undefined && { active }),
+        ...(active !== undefined && !isSystemKind && { active }),
       },
     });
     if (
@@ -2193,6 +2213,20 @@ router.delete("/catalog/service-fees/:id", ...clerkAuth(), requireRole("MARINA_O
   try {
     const existing = await prisma.serviceFee.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
     if (!existing) { res.status(404).json({ error: "Fee not found" }); return; }
+    // System fee kinds (Task #353) are required by canonical accounting
+    // flows (early termination, ACH return) and are auto-seeded per
+    // location, so they're not deletable. Operators can change the
+    // amount, GL account, or tax class but cannot remove the row.
+    if (existing.kind !== "STANDARD") {
+      res.status(400).json({
+        error:
+          "This is a system fee used by core marina workflows (early " +
+          "termination, ACH return). It can't be deleted — edit the " +
+          "amount, GL account, or tax class instead.",
+        code: "SYSTEM_FEE_UNDELETABLE",
+      });
+      return;
+    }
     await prisma.serviceFee.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) { next(err); }

@@ -56,8 +56,6 @@ export interface LocationPostingAccounts {
   deferredRevenue: LocationPostingAccount | null;
   defaultRevenue: LocationPostingAccount | null;
   salesTax: LocationPostingAccount | null;
-  earlyTermination: LocationPostingAccount | null;
-  achReturnFee: LocationPostingAccount | null;
 }
 
 export async function getLocationPostingAccounts(
@@ -81,12 +79,6 @@ export async function getLocationPostingAccounts(
       salesTaxGlAccount: {
         select: { id: true, accountNumber: true, name: true, qboAccountId: true },
       },
-      earlyTerminationGlAccount: {
-        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
-      },
-      achReturnFeeGlAccount: {
-        select: { id: true, accountNumber: true, name: true, qboAccountId: true },
-      },
     },
   });
   return {
@@ -95,8 +87,6 @@ export async function getLocationPostingAccounts(
     deferredRevenue: loc?.deferredRevenueGlAccount ?? null,
     defaultRevenue: loc?.defaultRevenueGlAccount ?? null,
     salesTax: loc?.salesTaxGlAccount ?? null,
-    earlyTermination: loc?.earlyTerminationGlAccount ?? null,
-    achReturnFee: loc?.achReturnFeeGlAccount ?? null,
   };
 }
 
@@ -115,16 +105,12 @@ export async function isLocationQboConnected(locationId: string): Promise<boolea
 
 export type LocationSystemPostingAccountSlot =
   | "defaultRevenue"
-  | "salesTax"
-  | "earlyTermination"
-  | "achReturnFee";
+  | "salesTax";
 
 interface SystemPostingAccountSpec {
   field:
     | "defaultRevenueGlAccountId"
-    | "salesTaxGlAccountId"
-    | "earlyTerminationGlAccountId"
-    | "achReturnFeeGlAccountId";
+    | "salesTaxGlAccountId";
   expectedTypes: ReadonlyArray<"REVENUE" | "LIABILITY">;
   description: string;
 }
@@ -142,16 +128,6 @@ export const LOCATION_SYSTEM_POSTING_ACCOUNT_SPECS: Record<
     field: "salesTaxGlAccountId",
     expectedTypes: ["LIABILITY"],
     description: "sales tax payable",
-  },
-  earlyTermination: {
-    field: "earlyTerminationGlAccountId",
-    expectedTypes: ["REVENUE"],
-    description: "early termination income",
-  },
-  achReturnFee: {
-    field: "achReturnFeeGlAccountId",
-    expectedTypes: ["REVENUE"],
-    description: "ACH return fee revenue",
   },
 };
 
@@ -174,8 +150,6 @@ export async function resolveLocationSystemPostingAccount(
       select: {
         defaultRevenueGlAccountId: true,
         salesTaxGlAccountId: true,
-        earlyTerminationGlAccountId: true,
-        achReturnFeeGlAccountId: true,
       },
     });
     const pinnedId = loc ? (loc[spec.field] as string | null) : null;

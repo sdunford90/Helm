@@ -13,8 +13,8 @@ async function main() {
       deferredRevenueGlAccountId: true,
       defaultRevenueGlAccountId: true,
       salesTaxGlAccountId: true,
-      earlyTerminationGlAccountId: true,
-      achReturnFeeGlAccountId: true,
+      // Task #353 — earlyTermination/achReturnFee are no longer Location
+      // pins; they live on per-location system ServiceFee products.
       _count: {
         select: {
           glAccounts: true,

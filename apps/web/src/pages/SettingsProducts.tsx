@@ -57,8 +57,29 @@ interface ServiceFee {
   pct?: number | null;
   glAccountId?: string | null;
   active: boolean;
+  // Task #353 — system-managed fee products are auto-seeded per
+  // location and undeletable; the operator can edit fee amount, GL
+  // account, and tax class but not the name/kind/location.
+  kind?: 'STANDARD' | 'EARLY_TERMINATION_FEE' | 'ACH_RETURN_FEE';
   location: { name: string };
 }
+
+// Operator-facing copy explaining why each system-managed fee is
+// undeletable. Surfaced as a tooltip on the disabled trash button so
+// the answer to "why can't I delete this?" is one hover away.
+const SYSTEM_FEE_EXPLAINER: Record<
+  Exclude<NonNullable<ServiceFee['kind']>, 'STANDARD'>,
+  string
+> = {
+  EARLY_TERMINATION_FEE:
+    "System fee — charged when a contract is terminated early. " +
+    "Edit the amount, GL account, or tax class to match how your " +
+    "marina handles termination penalties.",
+  ACH_RETURN_FEE:
+    "System fee — added to the customer's invoice when an ACH payment " +
+    "is returned by the bank. Edit the amount, GL account, or tax " +
+    "class to match your marina's policy.",
+};
 
 interface RentalProductPerLocationRow {
   locationId: string;
@@ -971,6 +992,9 @@ interface ServiceFeeForm {
   amountCents: number | '';
   pct: number | '';
   active: boolean;
+  // Task #353 — when editing a system-managed fee, lock name +
+  // location + active toggle in the modal.
+  kind?: 'STANDARD' | 'EARLY_TERMINATION_FEE' | 'ACH_RETURN_FEE';
 }
 
 function ServiceFeeModal({
@@ -999,6 +1023,9 @@ function ServiceFeeModal({
 
   const upd = <K extends keyof ServiceFeeForm>(k: K, v: ServiceFeeForm[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
+  // Task #353 — system fee rows lock name/location/active; only the
+  // operator-tunable knobs (feeType, amount, pct, GL, tax) stay editable.
+  const isSystemKind = !!form.kind && form.kind !== 'STANDARD';
 
   const handleSave = async () => {
     setErr(null);
@@ -1030,6 +1057,11 @@ function ServiceFeeModal({
         </div>
         <div style={s.modalBody}>
           {err ? <div style={s.errorText}>{err}</div> : null}
+          {isSystemKind ? (
+            <div style={{ ...s.errorText, background: '#EFF6FF', color: '#1E40AF', borderColor: '#BFDBFE' }}>
+              {SYSTEM_FEE_EXPLAINER[form.kind as keyof typeof SYSTEM_FEE_EXPLAINER]}
+            </div>
+          ) : null}
           <div style={s.field}>
             <label style={s.label}>Location *</label>
             <select
@@ -1051,6 +1083,7 @@ function ServiceFeeModal({
               type="text"
               placeholder='e.g. "Pump-out", "Late Payment Fee"'
               value={form.name}
+              disabled={isSystemKind}
               onChange={(e) => upd('name', e.target.value)}
             />
           </div>
@@ -1059,10 +1092,13 @@ function ServiceFeeModal({
             <select
               style={s.input}
               value={form.feeType}
+              disabled={form.kind === 'ACH_RETURN_FEE'}
               onChange={(e) => upd('feeType', e.target.value as 'FLAT' | 'PERCENT')}
             >
               <option value="FLAT">Flat amount</option>
-              <option value="PERCENT">Percentage</option>
+              {form.kind === 'ACH_RETURN_FEE' ? null : (
+                <option value="PERCENT">Percentage</option>
+              )}
             </select>
           </div>
           {form.feeType === 'FLAT' ? (
@@ -1101,6 +1137,7 @@ function ServiceFeeModal({
               <input
                 type="checkbox"
                 checked={form.active}
+                disabled={isSystemKind}
                 onChange={(e) => upd('active', e.target.checked)}
               />
               Active
@@ -1561,9 +1598,30 @@ export default function SettingsProducts() {
                 </td>
               </tr>
             ) : (
-              serviceFees.map((fee) => (
+              serviceFees.map((fee) => {
+                const isSystemFee = !!fee.kind && fee.kind !== 'STANDARD';
+                const sysExplainer = isSystemFee
+                  ? SYSTEM_FEE_EXPLAINER[fee.kind as keyof typeof SYSTEM_FEE_EXPLAINER]
+                  : null;
+                return (
                 <tr key={fee.id}>
-                  <td style={s.td}>{fee.name}</td>
+                  <td style={s.td}>
+                    {fee.name}
+                    {isSystemFee ? (
+                      <span
+                        title={sysExplainer ?? ''}
+                        style={{
+                          ...s.badge,
+                          marginLeft: 8,
+                          backgroundColor: '#EFF6FF',
+                          color: '#1E40AF',
+                          fontSize: 10,
+                        }}
+                      >
+                        System
+                      </span>
+                    ) : null}
+                  </td>
                   <td style={s.td}>
                     <span style={{ fontSize: '13px', color: '#475569' }}>{fee.location.name}</span>
                   </td>
@@ -1601,6 +1659,7 @@ export default function SettingsProducts() {
                           amountCents: fee.amountCents ?? '',
                           pct: fee.pct ?? '',
                           active: fee.active,
+                          kind: fee.kind ?? 'STANDARD',
                         });
                         setShowFeeModal(true);
                       }}
@@ -1609,15 +1668,23 @@ export default function SettingsProducts() {
                     </button>
                     <button
                       type="button"
-                      style={s.rowDeleteBtn}
-                      title="Delete service fee"
-                      onClick={() => deleteServiceFee(fee.id, fee.name)}
+                      style={{
+                        ...s.rowDeleteBtn,
+                        ...(isSystemFee ? { opacity: 0.4, cursor: 'not-allowed' } : null),
+                      }}
+                      title={isSystemFee ? (sysExplainer ?? '') : 'Delete service fee'}
+                      disabled={isSystemFee}
+                      onClick={() => {
+                        if (isSystemFee) return;
+                        deleteServiceFee(fee.id, fee.name);
+                      }}
                     >
                       <Trash2 size={13} />
                     </button>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

@@ -900,6 +900,21 @@ describe('POST /api/contracts/:id/terminate', () => {
       slip: { id: contract.slipId, locationId: 'loc-marina-A' },
       securityDeposits: [],
     });
+    // Task #353 — terminate route resolves the per-location
+    // EARLY_TERMINATION_FEE system ServiceFee + its GL mapping before
+    // posting; mock both so the route can thread a real penalty GL into
+    // postEarlyTermination.
+    mockPrisma.serviceFee.findFirst.mockResolvedValue({
+      id: 'sysfee-etf-A',
+      feeType: 'FLAT',
+      amountCents: 0,
+      pct: null,
+      taxClass: 'Tax Exempt',
+      glAccountId: 'gl-etf-A',
+    });
+    mockPrisma.serviceFeeGlMapping.findFirst.mockResolvedValue({
+      glAccountId: 'gl-etf-A',
+    });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
         slipContract: { update: vi.fn() },
@@ -932,6 +947,7 @@ describe('POST /api/contracts/:id/terminate', () => {
       }),
       50000,        // penaltyCents
       90000,        // washoutCents (only ds-1 had 90k unrecognized)
+      'gl-etf-A',   // resolved per-location EARLY_TERMINATION_FEE GL
       expect.anything(), // the tx handle
     );
   });

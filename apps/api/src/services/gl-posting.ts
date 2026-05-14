@@ -392,7 +392,7 @@ async function getAccountByNumber(
 // posting accounts that used to fall back by number — default revenue
 // (4500), sales tax payable (2400), early-termination income (4700), and
 // ACH return fee (4600) — have moved into per-location pinned slots
-// (Location.{defaultRevenue,salesTax,earlyTermination,achReturnFee}-
+// (Location.{defaultRevenue,salesTax}-
 // GlAccountId) resolved by `resolveLocationSystemPostingAccount` in
 // gl-account-resolver.ts.
 //
@@ -1280,6 +1280,10 @@ export async function postEarlyTermination(
   },
   penaltyCents: number,
   remainingDeferredCents: number,
+  /** Pre-resolved revenue account for the penalty leg. Required when
+   *  `penaltyCents > 0`. Caller is expected to resolve via the per-location
+   *  EARLY_TERMINATION_FEE system ServiceFee product (Task #353). */
+  penaltyRevenueAccountId: string | null,
   tx?: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
 ): Promise<string[]> {
   const { tenantId } = contract;
@@ -1288,19 +1292,21 @@ export async function postEarlyTermination(
 
   // 1. Recognize penalty — debit A/R, credit Termination Income
   if (penaltyCents > 0) {
+    if (!penaltyRevenueAccountId) {
+      throw new Error(
+        `UNCONFIGURED_GL_MAPPING: postEarlyTermination called with penaltyCents>0 ` +
+        `but no penaltyRevenueAccountId for contract=${contract.id} ` +
+        `(location=${locationId ?? "none"}). Resolve via the EARLY_TERMINATION_FEE ` +
+        `system fee product before posting.`,
+      );
+    }
     const pinned = locationId
       ? await getLocationPinnedPostingAccounts(locationId, tx)
       : { arGlAccountId: null, undepositedFundsGlAccountId: null, deferredRevenueGlAccountId: null };
     const arAccountId =
       pinned.arGlAccountId
       ?? (await getAccountByNumber(tenantId, ACCOUNTS.ACCOUNTS_RECEIVABLE, tx, locationId));
-    const termIncomeAccountId = await resolveLocationSystemPostingAccount(
-      tenantId,
-      locationId,
-      "earlyTermination",
-      `early termination penalty contract=${contract.id}`,
-      tx,
-    );
+    const termIncomeAccountId = penaltyRevenueAccountId;
 
     const jid = await postEntries(
       tenantId,

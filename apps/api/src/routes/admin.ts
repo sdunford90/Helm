@@ -16,6 +16,7 @@ import {
   publicExportView,
 } from "../services/tenant-export.js";
 import { GRACE_PERIOD_MS } from "../services/tenant-deletion.js";
+import { seedSystemFeeProducts } from "../services/system-fee-products.js";
 import { processDelivery as processQboDelivery } from "../services/qbo-webhook-deliveries.js";
 import {
   getCohortsReport,
@@ -691,6 +692,9 @@ router.post("/tenants", async (req, res, next) => {
           accountingGracePeriodEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         },
       });
+
+      // Auto-seed per-location system ServiceFee products (Task #353).
+      await seedSystemFeeProducts(tx, tenant.id, location.id);
 
       await tx.user.create({
         data: {
@@ -2750,6 +2754,8 @@ router.post("/tenants/:id/locations", async (req, res, next) => {
         accountingGracePeriodEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
+    // Auto-seed per-location system ServiceFee products (Task #353).
+    await seedSystemFeeProducts(prisma, req.params.id, location.id);
     res.status(201).json(location);
   } catch (err) { next(err); }
 });

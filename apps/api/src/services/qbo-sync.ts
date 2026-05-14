@@ -3452,7 +3452,7 @@ export async function syncPosTicketAsReceipt(
   // Resolve location-pinned GL accounts (cash drawer vs undeposited funds)
   const locationPinned = locationId
     ? await getLocationPostingAccounts(locationId)
-    : { ar: null, undepositedFunds: null, deferredRevenue: null, defaultRevenue: null, salesTax: null, earlyTermination: null, achReturnFee: null };
+    : { ar: null, undepositedFunds: null, deferredRevenue: null, defaultRevenue: null, salesTax: null };
 
   // For CASH payments use the cash-drawer bank account; for card/ACH use
   // undeposited funds so reconciliation can batch them by deposit date.

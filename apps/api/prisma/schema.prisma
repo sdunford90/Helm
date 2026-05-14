@@ -521,8 +521,10 @@ model Location {
 
   defaultRevenueGlAccountId   String?
   salesTaxGlAccountId         String?
-  earlyTerminationGlAccountId String?
-  achReturnFeeGlAccountId     String?
+  // Early Termination Fee + ACH Return Fee used to be pinned here.
+  // Task #353 moved them to per-location system-managed ServiceFee
+  // products (kind = EARLY_TERMINATION_FEE / ACH_RETURN_FEE) so
+  // operators can edit amount + GL + tax class on the product.
   // Plan 4 — accounts-payable pin for PO receipts. When a PO is received
   // we DR Inventory Asset (per product-category mapping) and CR this AP
   // account. Required to enable the AP-side of inventory postings; if
@@ -552,8 +554,6 @@ model Location {
 
   defaultRevenueGlAccount   GlAccount? @relation(name: "LocationDefaultRevenueGlAccount", fields: [defaultRevenueGlAccountId], references: [id])
   salesTaxGlAccount         GlAccount? @relation(name: "LocationSalesTaxGlAccount", fields: [salesTaxGlAccountId], references: [id])
-  earlyTerminationGlAccount GlAccount? @relation(name: "LocationEarlyTerminationGlAccount", fields: [earlyTerminationGlAccountId], references: [id])
-  achReturnFeeGlAccount     GlAccount? @relation(name: "LocationAchReturnFeeGlAccount", fields: [achReturnFeeGlAccountId], references: [id])
   accountsPayableGlAccount  GlAccount? @relation(name: "LocationAccountsPayableGlAccount", fields: [accountsPayableGlAccountId], references: [id])
   cashGlAccount             GlAccount? @relation(name: "LocationCashGlAccount", fields: [cashGlAccountId], references: [id])
   stripeClearingGlAccount   GlAccount? @relation(name: "LocationStripeClearingGlAccount", fields: [stripeClearingGlAccountId], references: [id])
@@ -1416,8 +1416,6 @@ model GlAccount {
 
   locationsDefaultRevenue   Location[] @relation(name: "LocationDefaultRevenueGlAccount")
   locationsSalesTax         Location[] @relation(name: "LocationSalesTaxGlAccount")
-  locationsEarlyTermination Location[] @relation(name: "LocationEarlyTerminationGlAccount")
-  locationsAchReturnFee     Location[] @relation(name: "LocationAchReturnFeeGlAccount")
   locationsAccountsPayable  Location[] @relation(name: "LocationAccountsPayableGlAccount")
   locationsCash             Location[] @relation(name: "LocationCashGlAccount")
   locationsStripeClearing   Location[] @relation(name: "LocationStripeClearingGlAccount")
@@ -2836,19 +2834,34 @@ enum FeeType {
   PERCENT
 }
 
+// `kind` distinguishes operator-created fees (STANDARD) from
+// system-managed, per-location fee products auto-seeded for canonical flows
+// (Task #353 — early termination, ACH return). System rows are
+// undeletable and have a fixed name+kind+location, but their amount,
+// fee type (FLAT/PERCENT), GL account, and tax class are operator-editable.
+// A partial unique index on (locationId, kind) WHERE kind <> STANDARD
+// enforces at-most-one row per system kind per location (declared in
+// migration 20260514000000_service_fee_kinds_replace_pins).
+enum ServiceFeeKind {
+  STANDARD
+  EARLY_TERMINATION_FEE
+  ACH_RETURN_FEE
+}
+
 model ServiceFee {
-  id          String   @id @default(uuid())
+  id          String         @id @default(uuid())
   tenantId    String
   locationId  String
   name        String
-  feeType     FeeType  @default(FLAT)
+  feeType     FeeType        @default(FLAT)
   amountCents Int?
   pct         Float?
   glAccountId String?
-  taxClass    String?  @default("Tax Exempt")
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  taxClass    String?        @default("Tax Exempt")
+  active      Boolean        @default(true)
+  kind        ServiceFeeKind @default(STANDARD)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   location   Location              @relation(fields: [locationId], references: [id])
   glMappings ServiceFeeGlMapping[]

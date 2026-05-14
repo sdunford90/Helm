@@ -66,6 +66,9 @@ interface LocationRow {
   deferredRevenueGlAccountId?: string | null;
   defaultRevenueGlAccountId?: string | null;
   salesTaxGlAccountId?: string | null;
+  // Task #353 — earlyTermination/achReturnFee left as optional shim props
+  // on the test row so existing scenario setup that assigns them still
+  // compiles, even though Prisma no longer surfaces them.
   earlyTerminationGlAccountId?: string | null;
   achReturnFeeGlAccountId?: string | null;
 }
@@ -972,15 +975,19 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
 
     // ----- Early termination: penalty leg uses the earlyTermination pin,
     // washout leg uses defaultRevenue.
+    // Task #353 — pin columns are gone; the resolved EARLY_TERMINATION_FEE
+    // system fee GL account is threaded through as penaltyRevenueAccountId.
     await postEarlyTermination(
       { id: 'contract-sys-A', tenantId, locationId: locA.id },
       5000,
       3000,
+      termA.id,
     );
     await postEarlyTermination(
       { id: 'contract-sys-B', tenantId, locationId: locB.id },
       7000,
       4000,
+      termB.id,
     );
 
     // postEarlyTermination posts two journals per contract with distinct
@@ -1063,16 +1070,18 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
       /UNCONFIGURED_GL_MAPPING.*sales tax payable/,
     );
 
-    // Early-termination slot: postEarlyTermination on C without an
-    // earlyTermination pin must throw — never silently routing the
+    // Early-termination slot (Task #353): when penaltyCents>0 the caller
+    // must pass a resolved penaltyRevenueAccountId from the system fee
+    // product. Calling with null must throw — never silently routing the
     // penalty to the wrong realm's 4700 row.
     await expect(
       postEarlyTermination(
         { id: 'contract-sys-C', tenantId, locationId: locC.id },
         1000,
         0,
+        null,
       ),
-    ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*early termination income/);
+    ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*penaltyRevenueAccountId/);
 
     // Default-revenue slot: post a washout-only early termination on C.
     // We pin earlyTermination + add a flagged deferred-revenue row so the
@@ -1109,13 +1118,16 @@ describe('end-to-end: QBO pull → per-location mapping → invoice posting keep
     };
     glAccounts.set(termC.id, termC);
     glAccounts.set(defrC.id, defrC);
-    locC.earlyTerminationGlAccountId = termC.id;
-    // defaultRevenueGlAccountId still unpinned on C → washout must throw.
+    // defaultRevenueGlAccountId still unpinned on C → washout must throw
+    // even when the penalty leg is resolved to a valid system fee GL.
+    // (Task #353 — earlyTermination is no longer a Location pin; only the
+    // resolved system-fee account is threaded in as penaltyRevenueAccountId.)
     await expect(
       postEarlyTermination(
         { id: 'contract-sys-C-washout', tenantId, locationId: locC.id },
         0,
         2000,
+        termC.id,
       ),
     ).rejects.toThrow(/UNCONFIGURED_GL_MAPPING.*default revenue/);
   });

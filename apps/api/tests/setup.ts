@@ -44,7 +44,7 @@ export const mockPrisma = {
   rentalProductGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   dockageRate: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   dockageRateGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
-  serviceFee: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn().mockResolvedValue(0) },
+  serviceFee: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), count: vi.fn().mockResolvedValue(0) },
   serviceFeeGlMapping: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), delete: vi.fn() },
   taxRate: { findMany: vi.fn().mockResolvedValue([]) },
   locationTaxJurisdiction: { findMany: vi.fn().mockResolvedValue([]) },
