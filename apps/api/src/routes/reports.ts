@@ -130,7 +130,14 @@ router.get("/revenue", async (req: Request, res: Response, next: NextFunction) =
     });
 
     const invoices = await prisma.invoice.aggregate({
-      where: { tenantId, issuedDate: { gte: startDate, lte: endDate }, ...locFilter },
+      // Exclude DRAFT (not yet issued to customer) and VOID (cancelled).
+      // Those aren't real invoiced amounts and would skew the collection rate.
+      where: {
+        tenantId,
+        issuedDate: { gte: startDate, lte: endDate },
+        status: { in: ["ISSUED", "PAID", "PAST_DUE", "COLLECTIONS"] },
+        ...locFilter,
+      },
       _sum: { totalCents: true },
       _count: { id: true },
     });
