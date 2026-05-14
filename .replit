@@ -11,11 +11,7 @@ externalPort = 3001
 
 [[ports]]
 localPort = 3002
-externalPort = 3003
-
-[[ports]]
-localPort = 3003
-externalPort = 3003
+externalPort = 3002
 
 [[ports]]
 localPort = 5000
@@ -57,6 +53,10 @@ args = "API Server"
 task = "workflow.run"
 args = "Admin App"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Portal App"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -92,6 +92,18 @@ outputType = "console"
 task = "shell.exec"
 args = "pnpm --filter @helm/admin dev"
 waitForPort = 3003
+
+[[workflows.workflow]]
+name = "Portal App"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @helm/portal dev"
+waitForPort = 3002
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [deployment]
 deploymentTarget = "autoscale"
