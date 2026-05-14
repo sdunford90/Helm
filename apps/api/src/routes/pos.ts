@@ -143,7 +143,12 @@ const AdjustInventorySchema = z.object({
 
 const OpenShiftSchema = z.object({
   openingFloatCents: z.number().int().min(0),
-  locationId: z.string().optional().nullable(),
+  // Required: shifts MUST be tied to a location so Z-out GL posting can
+  // resolve per-location revenue/cash/AR pins. A null-location shift
+  // would force the resolver to fall back to tenant-wide chart rows that
+  // typically don't exist (every REVENUE row is location-scoped), and
+  // Z-out would fail with UNCONFIGURED_GL_MAPPING.
+  locationId: z.string().min(1),
 });
 
 const CloseShiftSchema = z.object({

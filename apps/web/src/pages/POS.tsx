@@ -1793,7 +1793,14 @@ export default function POS() {
   }, [shiftsData]);
 
   const handleOpenShift = async (name: string, floatAmt: number) => {
-    const result = await openShiftApi({ openingFloatCents: Math.round(floatAmt * 100) });
+    if (!currentLocationId) {
+      alert('Select a location before opening a shift.');
+      return;
+    }
+    const result = await openShiftApi({
+      openingFloatCents: Math.round(floatAmt * 100),
+      locationId: currentLocationId,
+    });
     if (result) {
       setShiftOpen(true);
       setShiftId(result.id);
