@@ -33,7 +33,11 @@ const TENANT_SCOPED_MODELS = new Set([
   "PumpOut",
   "POSTransaction",
   "PosTransaction",
-  "PosLineItem",
+  // NOTE: PosLineItem is intentionally NOT tenant-scoped here — the
+  // model has no `tenantId` column. It inherits tenancy through its
+  // parent PosTransaction; call sites filter via
+  // `transaction: { tenantId }`. Adding it back would auto-inject an
+  // unknown `tenantId` argument and crash every read (e.g. Z-out COGS).
   "Product",
   "ProductCategory",
   "Inventory",
