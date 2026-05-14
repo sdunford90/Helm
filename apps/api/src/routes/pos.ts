@@ -1549,32 +1549,13 @@ router.post(
         );
       }
 
-      // Block reopening at this location until any prior CLOSED shift is
-      // Z-out reconciled (Task #320). This is the gate that forces an
-      // operator to complete end-of-day before the next shift can begin —
-      // without it, two un-reconciled shifts can overlap on the same
-      // drawer and the GL postings get tangled. Tenant-scoped + matching
-      // the requested location (or null = portable POS not pinned to a
-      // location).
-      const unreconciledPrior = await prisma.shift.findFirst({
-        where: {
-          tenantId,
-          locationId: data.locationId ?? null,
-          status: "CLOSED",
-        },
-        select: { id: true, cashierId: true, closedAt: true },
-        orderBy: { closedAt: "desc" },
-      });
-      if (unreconciledPrior) {
-        const err: Error & { priorShiftId?: string } = appError(
-          "A prior shift at this location is closed but not yet Z-out reconciled. " +
-            "A manager must run Z-out on the previous shift before a new one can open.",
-          409,
-          "PRIOR_SHIFT_NOT_RECONCILED",
-        );
-        err.priorShiftId = unreconciledPrior.id;
-        throw err;
-      }
+      // Note: prior CLOSED-but-not-yet-Z-out-reconciled shifts at this
+      // location no longer block opening a new shift (Task #352). Operators
+      // found the hard gate too strict — a cashier can start their shift
+      // while a manager catches up on Z-out for the previous one. The
+      // pending-Z-out list on the Z-Reports page still surfaces those
+      // shifts so they get reconciled, and the shift-lock guards on
+      // sales/refunds against an already-reconciled shift are unchanged.
 
       const shift = await prisma.shift.create({
         data: {

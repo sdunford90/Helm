@@ -175,6 +175,35 @@ describe('POST /api/pos/shifts/open', () => {
 
     expect(res.status).toBe(400);
   });
+
+  // Task #352: opening a new shift no longer blocks on a prior CLOSED-but-
+  // not-yet-Z-out-reconciled shift at the same location. The pending-Z-out
+  // list still surfaces it for a manager to reconcile separately.
+  it('allows opening a shift even when a prior shift at the location is pending Z-out', async () => {
+    const newShift = buildShift({ status: 'OPEN', openingFloatCents: 10000 });
+    // Single findFirst call now — the same-cashier "already open" check.
+    // Returning null lets the open path proceed; if the removed
+    // prior-shift gate were still here it would have made a second
+    // findFirst call and rejected with 409 PRIOR_SHIFT_NOT_RECONCILED.
+    mockPrisma.shift.findFirst.mockResolvedValue(null);
+    mockPrisma.shift.create.mockResolvedValue(newShift);
+    mockPrisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/pos/shifts/open')
+      .send({ openingFloatCents: 10000, locationId: 'loc-1' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty('status', 'OPEN');
+    // Exactly one shift lookup (the same-cashier check) — proves the
+    // prior-shift gate query was removed.
+    expect(mockPrisma.shift.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.shift.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'OPEN' }),
+      }),
+    );
+  });
 });
 
 describe('POST /api/pos/transactions — tax engine integration', () => {
