@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useModules } from '../context/ModulesContext';
+import { POSTING_ACCOUNT_SPECS, POSTING_ACCOUNT_GROUPS } from '@helm/shared-types';
 
 interface LocationStatus {
   locationId: string;
@@ -60,15 +61,10 @@ interface CoaAccount {
 interface PostingAccountsResponse {
   locationId: string;
   qboConnected: boolean;
-  accounts: {
-    arGlAccountId: string | null;
-    undepositedFundsGlAccountId: string | null;
-    deferredRevenueGlAccountId: string | null;
-    defaultRevenueGlAccountId: string | null;
-    salesTaxGlAccountId: string | null;
-    earlyTerminationGlAccountId: string | null;
-    achReturnFeeGlAccountId: string | null;
-  };
+  // The API returns one nullable id per spec field in POSTING_ACCOUNT_SPECS
+  // (18 today). Keep this loose so we don't have to keep this in lockstep
+  // with the spec — the spec itself drives rendering below.
+  accounts: Record<string, string | null>;
   candidates: Array<{
     id: string;
     accountNumber: string;
@@ -531,72 +527,101 @@ export default function QuickBooksSetup() {
                     first.
                   </div>
                 ) : (
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                      gap: '12px',
-                    }}
-                  >
-                    {(
-                      [
-                        { key: 'arGlAccountId', label: 'Accounts Receivable', types: null, system: false },
-                        { key: 'undepositedFundsGlAccountId', label: 'Cash / Undeposited Funds', types: null, system: false },
-                        { key: 'deferredRevenueGlAccountId', label: 'Deferred Revenue', types: null, system: false },
-                        { key: 'defaultRevenueGlAccountId', label: 'Default Revenue (4500)', types: ['REVENUE'] as const, system: true },
-                        { key: 'salesTaxGlAccountId', label: 'Sales Tax Payable (2400)', types: ['LIABILITY'] as const, system: true },
-                        { key: 'earlyTerminationGlAccountId', label: 'Early Termination Income (4700)', types: ['REVENUE'] as const, system: true },
-                        { key: 'achReturnFeeGlAccountId', label: 'ACH Return Fee Revenue (4600)', types: ['REVENUE'] as const, system: true },
-                      ] as const
-                    ).map(({ key, label, types, system }) => {
-                      const filtered = types
-                        ? posting.candidates.filter((c) =>
-                            (types as ReadonlyArray<string>).includes(c.type),
-                          )
-                        : posting.candidates;
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {POSTING_ACCOUNT_GROUPS.map((group) => {
+                      const specsInGroup = POSTING_ACCOUNT_SPECS.filter(
+                        (s) => s.group === group,
+                      );
+                      if (specsInGroup.length === 0) return null;
                       return (
-                        <label
-                          key={key}
-                          style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
-                        >
-                          <span style={{ fontSize: '12px', color: '#475569' }}>
-                            {label}
-                          </span>
-                          <select
-                            value={posting.accounts[key] ?? ''}
-                            disabled={savingPostingLoc === l.locationId}
-                            onChange={(e) =>
-                              savePostingAccounts(l.locationId, {
-                                [key]: e.target.value === '' ? null : e.target.value,
-                              } as Partial<PostingAccountsResponse['accounts']>)
-                            }
+                        <div key={group}>
+                          <div
                             style={{
-                              padding: '6px 8px',
-                              fontSize: '13px',
-                              border: '1px solid #CBD5E1',
-                              borderRadius: '4px',
-                              backgroundColor: '#FFFFFF',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.5px',
+                              color: '#64748B',
+                              marginBottom: '6px',
                             }}
                           >
-                            <option value="">
-                              {system && posting.qboConnected
-                                ? '— Required: pin an account —'
-                                : '— Use tenant default —'}
-                            </option>
-                            {filtered.length === 0 ? (
-                              <option value="" disabled>
-                                No matching {types ? types.join('/') : ''} accounts in chart
-                              </option>
-                            ) : (
-                              filtered.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                  {c.accountNumber} · {c.name}
-                                  {c.qboAccountId ? ' · QBO' : ''}
-                                </option>
-                              ))
-                            )}
-                          </select>
-                        </label>
+                            {group}
+                          </div>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns:
+                                'repeat(auto-fit, minmax(240px, 1fr))',
+                              gap: '12px',
+                            }}
+                          >
+                            {specsInGroup.map((spec) => {
+                              const filtered = posting.candidates.filter((c) =>
+                                spec.typeFilter.includes(c.type as never),
+                              );
+                              const required = spec.required && posting.qboConnected;
+                              return (
+                                <label
+                                  key={spec.field}
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: '12px',
+                                      color: '#475569',
+                                    }}
+                                    title={spec.description}
+                                  >
+                                    {spec.label}
+                                    {required && (
+                                      <span style={{ color: '#B91C1C' }}> *</span>
+                                    )}
+                                  </span>
+                                  <select
+                                    value={posting.accounts[spec.field] ?? ''}
+                                    disabled={savingPostingLoc === l.locationId}
+                                    onChange={(e) =>
+                                      savePostingAccounts(l.locationId, {
+                                        [spec.field]:
+                                          e.target.value === '' ? null : e.target.value,
+                                      } as Partial<PostingAccountsResponse['accounts']>)
+                                    }
+                                    style={{
+                                      padding: '6px 8px',
+                                      fontSize: '13px',
+                                      border: '1px solid #CBD5E1',
+                                      borderRadius: '4px',
+                                      backgroundColor: '#FFFFFF',
+                                    }}
+                                  >
+                                    <option value="">
+                                      {required
+                                        ? '— Required: pin an account —'
+                                        : '— Not pinned —'}
+                                    </option>
+                                    {filtered.length === 0 ? (
+                                      <option value="" disabled>
+                                        No matching {spec.typeFilter.join('/')} accounts
+                                        in chart
+                                      </option>
+                                    ) : (
+                                      filtered.map((c) => (
+                                        <option key={c.id} value={c.id}>
+                                          {c.accountNumber} · {c.name}
+                                          {c.qboAccountId ? ' · QBO' : ''}
+                                        </option>
+                                      ))
+                                    )}
+                                  </select>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
