@@ -158,7 +158,7 @@ describe('POST /api/pos/shifts/open', () => {
 
     const res = await request(app)
       .post('/api/pos/shifts/open')
-      .send({ openingFloatCents: 20000 });
+      .send({ openingFloatCents: 20000, locationId: 'loc-1' });
 
     expect(res.status).toBe(201);
     expect(res.body).toHaveProperty('status', 'OPEN');
@@ -171,7 +171,7 @@ describe('POST /api/pos/shifts/open', () => {
 
     const res = await request(app)
       .post('/api/pos/shifts/open')
-      .send({ openingFloatCents: 20000 });
+      .send({ openingFloatCents: 20000, locationId: 'loc-1' });
 
     expect(res.status).toBe(400);
   });
