@@ -32,11 +32,6 @@ import {
   LogOut,
 } from 'lucide-react';
 
-const LOCATIONS = [
-  { id: 'main', name: 'Bayshore Marina - Main Dock' },
-  { id: 'fuel', name: 'Bayshore Marina - Fuel Dock' },
-  { id: 'rental', name: 'Bayshore Marina - Rental Center' },
-];
 
 const NAV_SECTIONS = [
   {
@@ -216,7 +211,6 @@ function getPageTitle(pathname: string): string {
     '/inventory': 'Inventory',
     '/audit-log': 'Audit Log',
     '/rent-roll': 'Rent Roll',
-    '/portfolio': 'Portfolio',
     '/billing/ar-aging': 'A/R Aging',
     '/billing/chart-of-accounts': 'Chart of Accounts',
   };
@@ -234,10 +228,7 @@ export default function AppLayout() {
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
     : 'H';
-  const [currentLocation, setCurrentLocation] = useState(LOCATIONS[0].id);
-  const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const selectedLocation = LOCATIONS.find((l) => l.id === currentLocation) || LOCATIONS[0];
 
   // Close sidebar on route change (mobile)
   const closeSidebar = () => setSidebarOpen(false);
@@ -302,78 +293,7 @@ export default function AppLayout() {
             </div>
           </div>
           <div style={styles.topRight}>
-            <div style={{ position: 'relative' }} className="helm-location-picker">
-              <button
-                onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '6px 14px',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  color: '#0A2342',
-                  backgroundColor: '#F1F5F9',
-                  border: '1px solid #E2E8F0',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap' as const,
-                }}
-              >
-                <MapPin size={14} style={{ color: '#00D4FF' }} />
-                {selectedLocation.name}
-                <ChevronDown size={14} style={{ color: '#64748B' }} />
-              </button>
-              {locationDropdownOpen && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '100%',
-                    right: 0,
-                    marginTop: '4px',
-                    background: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                    zIndex: 999,
-                    minWidth: '260px',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
-                    Switch Location
-                  </div>
-                  {LOCATIONS.map((loc) => (
-                    <button
-                      key={loc.id}
-                      onClick={() => { setCurrentLocation(loc.id); setLocationDropdownOpen(false); }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        width: '100%',
-                        padding: '10px 12px',
-                        fontSize: '14px',
-                        color: '#0A2342',
-                        background: loc.id === currentLocation ? '#F0FAFF' : '#FFFFFF',
-                        border: 'none',
-                        borderBottom: '1px solid #F2F4F6',
-                        cursor: 'pointer',
-                        textAlign: 'left' as const,
-                        fontWeight: loc.id === currentLocation ? 600 : 400,
-                      }}
-                    >
-                      <MapPin size={14} style={{ color: loc.id === currentLocation ? '#00D4FF' : '#94A3B8' }} />
-                      {loc.name}
-                      {loc.id === currentLocation && <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Current</span>}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button style={styles.helpBtn} title="Help">
-              <HelpCircle size={16} />
-            </button>
+            {/* TODO: location switcher, backed by tenant locations, once the API exposes them to staff. */}
             <div style={styles.avatar} title={user?.primaryEmailAddress?.emailAddress ?? undefined}>{initials}</div>
             <button
               style={{ ...styles.helpBtn, width: 'auto', borderRadius: 6, padding: '0 10px', gap: 6, fontSize: 13 }}

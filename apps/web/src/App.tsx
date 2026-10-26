@@ -23,7 +23,6 @@ import Ramp from './pages/Ramp';
 import Concierge from './pages/Concierge';
 import AuditLog from './pages/AuditLog';
 import Fuel from './pages/Fuel';
-import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
 import NotFound from './pages/NotFound';
@@ -66,7 +65,6 @@ function AppRoutes() {
           <Route path="/concierge" element={<Concierge />} />
           <Route path="/audit-log" element={<AuditLog />} />
           <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
-          <Route path="/portfolio" element={<PortfolioDashboard />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>

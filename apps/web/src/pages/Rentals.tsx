@@ -8,7 +8,7 @@ import { useResource } from '../hooks/useApi';
  * 503 MODULE_DISABLED for /api/rentals while the module is rebuilt.
  *
  * The old UI (availability grid, pricing calendar, price simulator) is in git
- * history; PricingCalendar.tsx and PriceSimulator.tsx are kept but unused.
+ * history (as are the PricingCalendar and PriceSimulator components).
  */
 export default function Rentals() {
   // Probe the API so the notice states what the server says, not a guess.
