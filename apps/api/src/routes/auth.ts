@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { Webhook } from "svix";
 import { clerkAuth } from "../middleware/auth.js";
-import { prisma } from "../lib/prisma.js";
+import { prisma, tenantStore } from "../lib/prisma.js";
 import { getAuth } from "@clerk/express";
 
 const router = Router();
@@ -333,14 +333,19 @@ router.post(
         return;
       }
 
-      // Verify user has an active membership in the target tenant
-      const membership = await prisma.user.findFirst({
-        where: {
-          clerkUserId,
-          tenantId: targetTenantId,
-          active: true,
-        },
-      });
+      // Verify user has an active membership in the target tenant. This is a
+      // deliberate cross-tenant lookup, so it runs outside the request's
+      // tenant scope (the Prisma extension would otherwise reject it).
+      const membership = await tenantStore.exit(() =>
+        prisma.user.findFirst({
+          where: {
+            clerkUserId,
+            tenantId: targetTenantId,
+            active: true,
+            role: { not: "PORTAL_USER" },
+          },
+        }),
+      );
 
       if (!membership) {
         res.status(403).json({
