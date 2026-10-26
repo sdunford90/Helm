@@ -12,6 +12,23 @@ import { stripe } from "../lib/stripe.js";
 // credit application, and auto-charge via Stripe.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether the tenant has opted in to automatic card/ACH charging of recurring
+ * invoices. Stored by PUT /api/settings/billing (routes/settings.ts) as
+ * `Tenant.invoiceTemplateJson.autoChargeEnabled`. Defaults to OFF: anything
+ * other than an explicit boolean `true` means "do not charge".
+ */
+export function isAutoChargeEnabled(invoiceTemplateJson: unknown): boolean {
+  if (
+    !invoiceTemplateJson ||
+    typeof invoiceTemplateJson !== "object" ||
+    Array.isArray(invoiceTemplateJson)
+  ) {
+    return false;
+  }
+  return (invoiceTemplateJson as Record<string, unknown>).autoChargeEnabled === true;
+}
+
 interface GeneratedInvoice {
   invoiceId: string;
   customerId: string;
@@ -36,6 +53,13 @@ export async function generateRecurringInvoices(
 ): Promise<GeneratedInvoice[]> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  // Tenant-level auto-charge opt-in (default OFF) and Connect account.
+  const tenantConfig = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { stripeAccountId: true, invoiceTemplateJson: true },
+  });
+  const autoChargeEnabled = isAutoChargeEnabled(tenantConfig?.invoiceTemplateJson);
 
   // Find active contracts with billingAnchor <= today's day-of-month
   // In production this would use a dedicated next_billing_date column;
@@ -265,14 +289,13 @@ export async function generateRecurringInvoices(
       let autoChargeResult: "SUCCESS" | "FAILED" | "SKIPPED" = "SKIPPED";
 
       if (
+        autoChargeEnabled &&
+        stripe &&
         contract.customer.stripeCustomerId &&
         !contract.customer.achBlocked
       ) {
         try {
-          const tenant = await prisma.tenant.findUnique({
-            where: { id: tenantId },
-            select: { stripeAccountId: true },
-          });
+          const tenant = tenantConfig;
 
           if (tenant?.stripeAccountId) {
             // Reload invoice balance after credits
