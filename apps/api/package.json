@@ -7,8 +7,15 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "worker": "node dist/worker.js",
+    "worker:dev": "tsx watch src/worker.ts",
+    "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
-    "db:seed": "npx prisma db seed"
+    "generate": "prisma generate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status",
+    "db:seed": "prisma db seed"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.1",

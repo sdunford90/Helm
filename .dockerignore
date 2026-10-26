@@ -1,45 +1,46 @@
-# Dependencies
+# Keep the build context small and free of host artefacts. Both Dockerfiles
+# install from pnpm-lock.yaml inside the image, so nothing from the host's
+# node_modules or build output may leak in.
+
+# Dependencies / build output (host-built, wrong platform, or stale)
 node_modules
 **/node_modules
-
-# Build output
 dist
 **/dist
+.turbo
+**/.turbo
+coverage
+**/coverage
+.nyc_output
+**/*.tsbuildinfo
+.prisma
+**/.prisma
 
-# Git
+# VCS / tooling
 .git
 .gitignore
+.github
+.claude
+.vscode
+.idea
+.replit
+*.swp
+*.swo
 
-# Environment files
+# Secrets: never bake env files into an image
 .env
 .env.*
 !.env.example
 
-# Logs
-*.log
-npm-debug.log*
-
-# IDE
-.vscode
-.idea
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker
+# Docs and Docker files themselves
+docs
+*.md
 Dockerfile*
 docker-compose*
 .dockerignore
 
-# CI/CD
-.github
-
-# Misc
-*.md
-LICENSE
-.turbo
-coverage
-.nyc_output
+# Logs / OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

@@ -14,7 +14,7 @@ Helm is a full-stack marina management platform built as a TypeScript monorepo u
 - **packages/shared-types** — Shared TypeScript types across apps
 - **packages/ui-kit** — Shared React UI component library
 - **packages/database** — Prisma schema and database utilities
-- **tools** — Turborepo utilities including multi-DB migration tooling
+- **tools** — Turborepo utilities. `tools/migrate-all.ts` (per-schema multi-DB migration) is **deprecated**: Helm uses one shared database with row-level tenant isolation (see `docs/DEPLOYMENT.md`)
 
 ### Tech Stack
 - **Frontend**: React 18, Vite, React Router, Clerk (auth), lucide-react icons
@@ -39,7 +39,7 @@ See `.env.example` for the full list. Key variables:
 1. Install dependencies: `pnpm install`
 2. Build shared packages: `pnpm --filter @helm/shared-types build && pnpm --filter @helm/ui-kit build`
 3. Generate Prisma client: `cd apps/api && npx prisma generate`
-4. Push DB schema: `cd apps/api && npx prisma db push`
+4. Apply DB migrations: `pnpm db:migrate:deploy` (to change the schema, edit `schema.prisma` and run `pnpm db:migrate:dev --name <change>`)
 5. Start web app: `pnpm --filter @helm/web dev` (port 5000)
 6. Start API: `pnpm --filter @helm/api dev` (port 3001)
 
@@ -51,7 +51,7 @@ See `.env.example` for the full list. Key variables:
 ## Notes
 - The `workspace:*` protocol requires pnpm (not npm)
 - Prisma is at v6.x — uses `$extends` query extensions (NOT deprecated `$use` middleware)
-- Prisma schema lives in `apps/api/prisma/schema.prisma`; use `npx prisma db push` (not migrations)
+- Prisma schema lives in `apps/api/prisma/schema.prisma`; schema changes go through **Prisma migrations** in `apps/api/prisma/migrations` (`pnpm db:migrate:dev` locally, `pnpm db:migrate:deploy` in deployed environments). Do **not** use `prisma db push` against any shared or production database. See `docs/DEPLOYMENT.md`.
 - `apps/api/src/lib/stripe.ts` exports `stripe` as `Stripe | null` — guard with `requireStripe()` helper
 - Redis/BullMQ is optional — null when `REDIS_URL` is not set; API starts fine without it
 - `requirePlatformAdmin()` middleware skips Clerk auth in `NODE_ENV !== "production"` (dev bypass)

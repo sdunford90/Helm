@@ -1,20 +1,33 @@
 {
-  "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": [".env"],
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": [".env", "tsconfig.base.json"],
+  "globalPassThroughEnv": ["CI"],
   "tasks": {
+    "generate": {
+      "cache": false
+    },
     "build": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["dist/**"],
+      "env": ["VITE_*"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": []
+    },
+    "lint": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["coverage/**"],
+      "env": ["NODE_ENV"],
+      "passThroughEnv": ["DATABASE_URL", "REDIS_URL", "HELM_*"]
     },
     "dev": {
       "cache": false,
       "persistent": true
-    },
-    "lint": {
-      "dependsOn": ["^build"]
-    },
-    "test": {
-      "dependsOn": ["build"]
     }
   }
 }
