@@ -1,8 +1,35 @@
 name: Deploy
 
+# main push:  CI -> build & push images to GHCR -> deploy staging
+#             -> (manual approval) deploy production
+# manual run: redeploy an existing image tag (rollback / hotfix) to one
+#             environment without rebuilding.
+#
+# The deploy jobs are DISABLED until the repository variable
+# DEPLOY_ENABLED is "true" and the per-environment secrets exist. Until then
+# this workflow stops after pushing images. See docs/DEPLOYMENT.md
+# ("CI/CD" and "Rollback") for the secrets and the one-time setup.
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_tag:
+        description: >-
+          Existing image tag (full 40-char commit SHA) to deploy. Leave empty
+          to build and deploy the selected ref.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -10,71 +37,123 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  API_IMAGE: ghcr.io/${{ github.repository }}/api
-  WEB_IMAGE: ghcr.io/${{ github.repository }}/web
 
 jobs:
   ci:
-    name: CI Check
+    name: CI
+    if: inputs.image_tag == ''
     uses: ./.github/workflows/ci.yml
 
   build-and-push:
-    name: Build & Push Images
-    runs-on: ubuntu-latest
+    name: Build & push images
     needs: [ci]
+    if: inputs.image_tag == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: [api, web]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for API
-        id: meta-api
+      - name: Image metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.API_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}
+          # The full commit SHA is the immutable deploy tag. "main" is a
+          # moving convenience tag and must never be deployed by name.
           tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+            type=sha,format=long,prefix=
+            type=raw,value=main,enable={{is_default_branch}}
 
-      - name: Build and push API image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.api
+          file: Dockerfile.${{ matrix.image }}
           push: true
-          tags: ${{ steps.meta-api.outputs.tags }}
-          labels: ${{ steps.meta-api.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Public, build-time values only (compiled into the web bundle).
+          build-args: |
+            VITE_CLERK_PUBLISHABLE_KEY=${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
-      - name: Extract metadata for Web
-        id: meta-web
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.WEB_IMAGE }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+  resolve:
+    name: Resolve image tag
+    needs: [build-and-push]
+    # Runs after a successful build, or straight away for a manual redeploy.
+    if: >-
+      always() &&
+      (needs.build-and-push.result == 'success' ||
+       (needs.build-and-push.result == 'skipped' && inputs.image_tag != ''))
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_SHA}"
+          if ! [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::image_tag must be a full 40-character commit SHA"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.web
-          push: true
-          tags: ${{ steps.meta-web.outputs.tags }}
-          labels: ${{ steps.meta-web.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  deploy-staging:
+    name: Deploy staging
+    needs: [resolve]
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'push' || inputs.environment == 'staging')
+    uses: ./.github/workflows/deploy-compose.yml
+    with:
+      environment: staging
+      image_tag: ${{ needs.resolve.outputs.tag }}
+    permissions:
+      contents: read
+      packages: read
+    secrets: inherit
+
+  deploy-production:
+    name: Deploy production
+    needs: [resolve, deploy-staging]
+    # Pushes to main reach production only after staging succeeded. A manual
+    # run can target production directly (rollback). Either way the
+    # "production" environment's required reviewers must approve first.
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      vars.DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'push' && needs.deploy-staging.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.environment == 'production'))
+    uses: ./.github/workflows/deploy-compose.yml
+    with:
+      environment: production
+      image_tag: ${{ needs.resolve.outputs.tag }}
+    permissions:
+      contents: read
+      packages: read
+    secrets: inherit

@@ -1,0 +1,131 @@
+name: Deploy (compose over SSH)
+
+# Reusable deploy TEMPLATE, called by deploy.yml once per environment.
+#
+# Target: one Linux host per environment with Docker Engine + the Compose
+# plugin, a deploy user in the "docker" group, and a directory
+# (DEPLOY_PATH, e.g. /opt/helm) containing the environment's .env file.
+# Every run copies docker-compose.yml there, then pulls the commit-SHA images
+# from GHCR and runs `docker compose up --wait`. That runs the one-shot
+# `migrate` service (prisma migrate deploy) before api/worker start, and the
+# job fails if any service doesn't become healthy.
+#
+# To move to Fly.io / Render / ECS later, swap the "Deploy" step. Keep the
+# same order: migrate -> api + worker -> web -> health check.
+#
+# Required per GitHub Environment (staging, production). See
+# docs/DEPLOYMENT.md, "CI/CD":
+#   secrets: DEPLOY_SSH_HOST, DEPLOY_SSH_USER, DEPLOY_SSH_PRIVATE_KEY,
+#            DEPLOY_SSH_KNOWN_HOSTS
+#   vars:    DEPLOY_PATH (default /opt/helm), DEPLOY_HEALTHCHECK_URL (optional,
+#            e.g. https://staging.gethelm.com/api/health)
+# production must have "Required reviewers" set: that is the manual approval.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.DEPLOY_HEALTHCHECK_URL }}
+    concurrency:
+      group: deploy-env-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+      SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/helm' }}
+      HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTHCHECK_URL }}
+    steps:
+      - name: Checkout (for docker-compose.yml)
+        uses: actions/checkout@v5
+
+      - name: Check configuration
+        run: |
+          missing=0
+          for v in SSH_HOST SSH_USER; do
+            if [ -z "${!v}" ]; then echo "::error::secret DEPLOY_${v} is not set for this environment"; missing=1; fi
+          done
+          [[ "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad image tag"; missing=1; }
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "::error::DEPLOY_PATH must be an absolute path"; missing=1; }
+          exit $missing
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key: never use StrictHostKeyChecking=no.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName ${SSH_HOST}
+            User ${SSH_USER}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload docker-compose.yml
+        run: scp docker-compose.yml "deploy-target:${DEPLOY_PATH}/docker-compose.yml"
+
+      - name: Deploy (pull, migrate, roll services)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"   # GHCR paths must be lowercase
+          api_image="ghcr.io/${repo}/api:${IMAGE_TAG}"
+          web_image="ghcr.io/${repo}/web:${IMAGE_TAG}"
+          echo "Deploying ${api_image} and ${web_image}"
+
+          # Short-lived login, using this job's GITHUB_TOKEN (packages: read).
+          printf '%s' "$GHCR_TOKEN" | ssh deploy-target \
+            "docker login ghcr.io -u '${GITHUB_ACTOR}' --password-stdin"
+
+          ssh deploy-target bash -se <<EOF
+          set -euo pipefail
+          cd '${DEPLOY_PATH}'
+          export HELM_API_IMAGE='${api_image}' HELM_WEB_IMAGE='${web_image}'
+          # Append-only log of attempted deploys. The previous line is the
+          # rollback candidate (see docs/DEPLOYMENT.md, "Rollback").
+          echo "\$(date -u +%FT%TZ) ${IMAGE_TAG}" >> deploy-history.log
+          docker compose -p helm pull migrate api worker web
+          # migrate runs first (depends_on: service_completed_successfully).
+          # --wait fails the job if a service doesn't become healthy/running.
+          docker compose -p helm up -d --no-build --remove-orphans --wait --wait-timeout 300
+          docker compose -p helm ps
+          docker image prune -f
+          EOF
+
+      - name: Log out of GHCR on the host
+        if: always()
+        run: ssh deploy-target "docker logout ghcr.io" || true
+
+      - name: External health check
+        if: env.HEALTHCHECK_URL != ''
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 5 "$HEALTHCHECK_URL"; then echo; exit 0; fi
+            sleep 6
+          done
+          echo "::error::$HEALTHCHECK_URL did not become healthy"
+          exit 1
