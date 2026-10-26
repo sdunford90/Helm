@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { clerkAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail, enqueueSms } from "../lib/queue.js";
 
 const router = Router();
 
@@ -401,25 +401,35 @@ router.post(
           for (const recipient of recipients) {
             if (data.channel === "EMAIL" || data.channel === "BOTH") {
               if (recipient.email) {
-                await queues.email.add("announcement-email", {
-                  announcementId: announcement.id,
-                  customerId: recipient.id,
-                  email: recipient.email,
-                  subject: data.title,
-                  body: data.body,
-                  tenantId,
-                });
+                await enqueueEmail(
+                  "announcement-email",
+                  {
+                    type: "announcement",
+                    tenantId,
+                    to: recipient.email,
+                    announcementId: announcement.id,
+                    customerId: recipient.id,
+                    subject: data.title,
+                    body: data.body,
+                    marinaName: req.tenant?.name,
+                  },
+                  { jobId: `announcement-${announcement.id}-${recipient.id}-email` },
+                );
               }
             }
             if (data.channel === "SMS" || data.channel === "BOTH") {
               if (recipient.phone) {
-                await queues.sms.add("announcement-sms", {
-                  announcementId: announcement.id,
-                  customerId: recipient.id,
-                  phone: recipient.phone,
-                  body: data.body,
-                  tenantId,
-                });
+                await enqueueSms(
+                  "announcement-sms",
+                  {
+                    tenantId,
+                    to: recipient.phone,
+                    body: data.body,
+                    announcementId: announcement.id,
+                    customerId: recipient.id,
+                  },
+                  { jobId: `announcement-${announcement.id}-${recipient.id}-sms` },
+                );
               }
             }
           }
@@ -605,25 +615,35 @@ router.post(
       for (const recipient of recipients) {
         if (channel === "EMAIL" || channel === "BOTH") {
           if (recipient.email) {
-            await queues.email.add("announcement-email", {
-              announcementId: announcement.id,
-              customerId: recipient.id,
-              email: recipient.email,
-              subject: announcement.subject,
-              body: announcement.body,
-              tenantId,
-            });
+            await enqueueEmail(
+              "announcement-email",
+              {
+                type: "announcement",
+                tenantId,
+                to: recipient.email,
+                announcementId: announcement.id,
+                customerId: recipient.id,
+                subject: announcement.subject,
+                body: announcement.body,
+                marinaName: req.tenant?.name,
+              },
+              { jobId: `announcement-${announcement.id}-${recipient.id}-email` },
+            );
           }
         }
         if (channel === "SMS" || channel === "BOTH") {
           if (recipient.phone) {
-            await queues.sms.add("announcement-sms", {
-              announcementId: announcement.id,
-              customerId: recipient.id,
-              phone: recipient.phone,
-              body: announcement.body,
-              tenantId,
-            });
+            await enqueueSms(
+              "announcement-sms",
+              {
+                tenantId,
+                to: recipient.phone,
+                body: announcement.body,
+                announcementId: announcement.id,
+                customerId: recipient.id,
+              },
+              { jobId: `announcement-${announcement.id}-${recipient.id}-sms` },
+            );
           }
         }
       }

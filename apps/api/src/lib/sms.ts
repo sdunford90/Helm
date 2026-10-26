@@ -4,12 +4,45 @@ import twilio from "twilio";
 // Twilio client
 // --------------------------------------------------------------------------
 
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN,
-);
+// Lazy: twilio() throws at construction time when credentials are missing,
+// and this module is imported by the worker and by tests.
+type TwilioClient = ReturnType<typeof twilio>;
+let client: TwilioClient | null = null;
 
-const DEFAULT_FROM = process.env.TWILIO_DEFAULT_NUMBER ?? "";
+function getClient(): TwilioClient {
+  if (!client) {
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+      throw new SmsSendError("Twilio credentials are not configured", { permanent: true });
+    }
+    client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  }
+  return client;
+}
+
+/** Test hook: inject a fake Twilio client (or reset with null). */
+export function __setTwilioClientForTests(fake: unknown): void {
+  client = fake as TwilioClient | null;
+}
+
+/**
+ * Thrown when an SMS cannot be sent. `permanent` errors (missing config,
+ * invalid number, recipient opted out via STOP) must not be retried.
+ */
+export class SmsSendError extends Error {
+  readonly permanent: boolean;
+  readonly cause?: unknown;
+  constructor(message: string, opts: { permanent?: boolean; cause?: unknown } = {}) {
+    super(message);
+    this.name = "SmsSendError";
+    this.permanent = opts.permanent ?? false;
+    this.cause = opts.cause;
+  }
+}
+
+// Twilio error codes that will never succeed on retry:
+// 21211 invalid 'To', 21408 region not enabled, 21610 unsubscribed (STOP),
+// 21612 cannot route, 21614 not a mobile number.
+const PERMANENT_TWILIO_CODES = new Set([21211, 21408, 21610, 21612, 21614]);
 
 // --------------------------------------------------------------------------
 // Send SMS
@@ -19,32 +52,35 @@ const DEFAULT_FROM = process.env.TWILIO_DEFAULT_NUMBER ?? "";
  * Send an SMS message via Twilio.  Uses the marina's 10DLC number when
  * provided, otherwise falls back to the platform default.
  *
- * Returns the Twilio message SID on success, or null on failure (error is
- * logged but not thrown so background workers don't crash).
+ * Returns the Twilio message SID. Throws SmsSendError on failure so that a
+ * BullMQ job fails and is retried instead of the error being swallowed.
  */
 export async function sendSms(
   to: string,
   body: string,
   fromNumber?: string,
-): Promise<string | null> {
-  const from = fromNumber || DEFAULT_FROM;
+): Promise<string> {
+  const from = fromNumber || process.env.TWILIO_DEFAULT_NUMBER || "";
 
   if (!from) {
-    console.error("[sms] No from number configured — skipping send");
-    return null;
+    throw new SmsSendError("No SMS from-number configured", { permanent: true });
+  }
+  if (!to) {
+    throw new SmsSendError("No SMS recipient", { permanent: true });
   }
 
+  const twilioClient = getClient();
   try {
-    const message = await client.messages.create({
-      to,
-      from,
-      body,
-    });
-
+    const message = await twilioClient.messages.create({ to, from, body });
     return message.sid;
   } catch (err) {
-    console.error("[sms] Failed to send:", err);
-    return null;
+    const code = Number((err as { code?: unknown }).code);
+    throw new SmsSendError(
+      `Twilio send failed${Number.isFinite(code) ? ` (${code})` : ""}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { permanent: PERMANENT_TWILIO_CODES.has(code), cause: err },
+    );
   }
 }
 
@@ -69,7 +105,8 @@ export async function provisionPhoneNumber(
     searchParams.areaCode = areaCode;
   }
 
-  const available = await client
+  const twilioClient = getClient();
+  const available = await twilioClient
     .availablePhoneNumbers("US")
     .local.list(searchParams as any);
 
@@ -79,7 +116,7 @@ export async function provisionPhoneNumber(
     );
   }
 
-  const purchased = await client.incomingPhoneNumbers.create({
+  const purchased = await twilioClient.incomingPhoneNumbers.create({
     phoneNumber: available[0].phoneNumber,
   });
 

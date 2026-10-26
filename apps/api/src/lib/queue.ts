@@ -145,8 +145,13 @@ export interface TenantLifecycleEmailJob extends EmailJobBase {
 export interface AutomationEmailJob extends EmailJobBase {
   type: "automation";
   subject: string;
-  /** Plain-text body after merge-field substitution. Escaped by the worker. */
-  body: string;
+  /**
+   * Tenant-authored template HTML after merge-field substitution. This is the
+   * one payload the worker sends as HTML: the template markup is authored by
+   * marina staff, and every merged {{variable}} value must already be
+   * HTML-escaped (services/email-automation.ts mergeTemplate does this).
+   */
+  templateHtml: string;
   ruleId?: string;
   customerId?: string;
 }

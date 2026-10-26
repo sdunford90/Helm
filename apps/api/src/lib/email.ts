@@ -1,10 +1,105 @@
 import { Resend } from "resend";
 
 // --------------------------------------------------------------------------
-// Resend client
+// Resend client (lazy: the Resend constructor throws without an API key, and
+// this module is imported by the worker and by tests)
 // --------------------------------------------------------------------------
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendClient: Resend | null = null;
+
+function getResend(): Resend {
+  if (!resendClient) {
+    const key = process.env.RESEND_API_KEY;
+    if (!key) {
+      throw new EmailSendError("RESEND_API_KEY is not configured", { permanent: true });
+    }
+    resendClient = new Resend(key);
+  }
+  return resendClient;
+}
+
+/** Test hook: inject a fake Resend client (or reset with null). */
+export function __setResendClientForTests(client: unknown): void {
+  resendClient = client as Resend | null;
+}
+
+/**
+ * Thrown when an email cannot be sent. `permanent` errors (bad configuration,
+ * invalid recipient) should not be retried; everything else should be, so
+ * BullMQ's retry/backoff applies.
+ */
+export class EmailSendError extends Error {
+  readonly permanent: boolean;
+  readonly cause?: unknown;
+  constructor(message: string, opts: { permanent?: boolean; cause?: unknown } = {}) {
+    super(message);
+    this.name = "EmailSendError";
+    this.permanent = opts.permanent ?? false;
+    this.cause = opts.cause;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Escaping helpers
+//
+// The templates below interpolate their params verbatim. Callers that pass
+// user- or tenant-controlled values (names, invoice numbers, announcement
+// bodies, ...) MUST escape them first; the email worker does this with
+// escapeTemplateParams().
+// --------------------------------------------------------------------------
+
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+  "`": "&#96;",
+};
+
+export function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"'`]/g, (ch) => HTML_ESCAPES[ch]);
+}
+
+/** Escape plain text and keep its line breaks. */
+export function textToHtml(value: unknown): string {
+  return escapeHtml(value).replace(/\r?\n/g, "<br>");
+}
+
+/** Only allow http(s) links in hrefs; anything else becomes "#". Escaped. */
+export function safeUrl(value: unknown): string {
+  if (typeof value !== "string") return "#";
+  try {
+    const u = new URL(value);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return "#";
+    return escapeHtml(u.toString());
+  } catch {
+    return "#";
+  }
+}
+
+/**
+ * Return a copy of `params` with every string value HTML-escaped. Keys listed
+ * in `urlKeys` are validated as http(s) URLs instead.
+ */
+export function escapeTemplateParams<T extends object>(
+  params: T,
+  urlKeys: readonly (keyof T & string)[] = [],
+): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if ((urlKeys as readonly string[]).includes(k)) out[k] = safeUrl(v);
+    else if (typeof v === "string") out[k] = escapeHtml(v);
+    else out[k] = v;
+  }
+  return out as T;
+}
+
+/** Subjects are plain-text headers: strip CR/LF (header injection) and trim. */
+export function sanitizeSubject(value: unknown): string {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 250);
+}
 
 // --------------------------------------------------------------------------
 // Core send helper
@@ -20,38 +115,53 @@ interface EmailOptions {
 }
 
 /**
- * Send an email via Resend.  Returns the Resend message id on success, or
- * null when the send fails (error is logged but not thrown so callers in
- * background workers don't crash the process).
+ * Send an email via Resend and return the Resend message id.
+ *
+ * Throws EmailSendError on any failure (missing config, API error, network
+ * error) so that a BullMQ job fails and is retried, instead of the error
+ * being logged and swallowed.
  */
 export async function sendEmail(
   options: EmailOptions,
   marinaDomain?: string,
-): Promise<string | null> {
+): Promise<string> {
   const from =
     options.from ||
     (marinaDomain ? `billing@${marinaDomain}` : "noreply@gethelm.com");
 
+  const client = getResend();
+
+  let result: Awaited<ReturnType<Resend["emails"]["send"]>>;
   try {
-    const { data, error } = await resend.emails.send({
+    result = await client.emails.send({
       from,
       to: Array.isArray(options.to) ? options.to : [options.to],
-      subject: options.subject,
+      subject: sanitizeSubject(options.subject),
       html: options.html,
       ...(options.replyTo ? { replyTo: options.replyTo } : {}),
       ...(options.tags ? { tags: options.tags } : {}),
     });
-
-    if (error) {
-      console.error("[email] Resend API error:", error);
-      return null;
-    }
-
-    return data?.id ?? null;
   } catch (err) {
-    console.error("[email] Failed to send:", err);
-    return null;
+    throw new EmailSendError(
+      `Resend request failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
+
+  const { data, error } = result;
+  if (error) {
+    // Validation-type errors will never succeed on retry.
+    const name = String((error as { name?: string }).name ?? "");
+    const permanent = /validation|missing_required|invalid_|restricted/i.test(name);
+    throw new EmailSendError(`Resend API error (${name}): ${error.message}`, {
+      permanent,
+      cause: error,
+    });
+  }
+  if (!data?.id) {
+    throw new EmailSendError("Resend returned no message id");
+  }
+  return data.id;
 }
 
 // --------------------------------------------------------------------------
@@ -181,6 +291,23 @@ export function expiryReminderHtml(params: {
     <p>Your <strong>${params.documentType}</strong> is set to expire on <strong>${params.expiryDate}</strong>.</p>
     <p>Please upload a renewed document to keep your records current and avoid any service interruptions.</p>
     <p style="text-align:center;">${btn(params.portalUrl, "Upload Document")}</p>
+  `);
+}
+
+/**
+ * Generic message template. `heading` and `greetingName` are interpolated
+ * verbatim and `bodyHtml` is inserted as HTML, so callers must escape them
+ * first (escapeHtml / textToHtml).
+ */
+export function simpleMessageHtml(params: {
+  heading: string;
+  greetingName?: string;
+  bodyHtml: string;
+}): string {
+  return layout(`
+    <h2 style="margin:0 0 8px;">${params.heading}</h2>
+    ${params.greetingName ? `<p>Hi ${params.greetingName},</p>` : ""}
+    <p>${params.bodyHtml}</p>
   `);
 }
 

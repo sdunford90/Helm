@@ -107,18 +107,31 @@ vi.mock('../src/lib/stripe.js', () => ({
 }));
 
 // Mock BullMQ queues
-vi.mock('../src/lib/queue.js', () => ({
-  queues: {
-    billing: { add: vi.fn() },
-    'deferred-revenue': { add: vi.fn() },
-    'qbo-sync': { add: vi.fn() },
-    email: { add: vi.fn() },
-    sms: { add: vi.fn() },
-    renewals: { add: vi.fn() },
-    automation: { add: vi.fn() },
-  },
-  redisConnection: { quit: vi.fn() },
-}));
+vi.mock('../src/lib/queue.js', () => {
+  const mkQueue = () => ({
+    add: vi.fn(),
+    upsertJobScheduler: vi.fn().mockResolvedValue(undefined),
+    removeJobScheduler: vi.fn().mockResolvedValue(true),
+  });
+  const queues = {
+    billing: mkQueue(),
+    'deferred-revenue': mkQueue(),
+    'qbo-sync': mkQueue(),
+    email: mkQueue(),
+    sms: mkQueue(),
+    renewals: mkQueue(),
+    automation: mkQueue(),
+  };
+  return {
+    queues,
+    redisConnection: { quit: vi.fn() },
+    NOTIFICATION_JOB_OPTS: {},
+    // Typed producers delegate to the queue mocks so tests can assert on
+    // queues.email.add / queues.sms.add.
+    enqueueEmail: vi.fn((name: string, data: unknown, opts?: unknown) => queues.email.add(name, data, opts)),
+    enqueueSms: vi.fn((name: string, data: unknown, opts?: unknown) => queues.sms.add(name, data, opts)),
+  };
+});
 
 // Mock services used by invoice routes
 vi.mock('../src/services/tax-engine.js', () => ({

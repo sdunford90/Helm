@@ -1,282 +1,199 @@
-import { Worker } from "bullmq";
-import { redisConnection } from "../lib/queue.js";
-import {
-  sendEmail,
-  invoiceEmailHtml,
-  paymentReceiptHtml,
-  achReturnHtml,
-  expiryReminderHtml,
-  announcementHtml,
-} from "../lib/email.js";
-import { sendSms } from "../lib/sms.js";
+import { Worker, type Job } from "bullmq";
+import { redisConnection, type EmailJobData, type SmsJobData } from "../lib/queue.js";
 import { prisma } from "../lib/prisma.js";
 import { runAlgorithmicPricing } from "../jobs/algorithmic-pricing.js";
 import { runTenantLifecycleCheck } from "../jobs/tenant-lifecycle.js";
+import { startRenewalWorker } from "../jobs/renewal-job.js";
+import { generateRecurringInvoices } from "../services/billing.js";
+import {
+  processEmailJob,
+  processSmsJob,
+  processRentalAutomationJob,
+  onEmailJobFinallyFailed,
+  onSmsJobFinallyFailed,
+  type RentalAutomationJobData,
+} from "./processors.js";
 
-// --------------------------------------------------------------------------
-// Email worker
-// --------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// BullMQ workers
+//
+// Importing this module has no side effects. Call startWorkers() from the
+// worker entrypoint (src/worker.ts). Job processing logic lives in
+// ./processors.ts; recurring schedules live in ./schedulers.ts.
+// ---------------------------------------------------------------------------
 
-const emailWorker = new Worker(
-  "email",
-  async (job) => {
-    const { type, to, data, marinaDomain } = job.data;
-
-    let subject: string;
-    let html: string;
-
-    switch (type) {
-      case "invoice":
-        subject = `Invoice ${data.invoiceNumber} — ${data.amount} due ${data.dueDate}`;
-        html = invoiceEmailHtml(data);
-        break;
-      case "payment_receipt":
-        subject = `Payment received — ${data.amount}`;
-        html = paymentReceiptHtml(data);
-        break;
-      case "ach_return":
-        subject = "ACH Payment Returned — Action Required";
-        html = achReturnHtml(data);
-        break;
-      case "expiry_reminder":
-        subject = `Your ${data.documentType} expires on ${data.expiryDate}`;
-        html = expiryReminderHtml(data);
-        break;
-      case "announcement":
-        subject = data.subject;
-        html = announcementHtml(data);
-        break;
-      default:
-        console.error(`[email-worker] Unknown email type: ${type}`);
-        return;
-    }
-
-    const messageId = await sendEmail({ to, subject, html }, marinaDomain);
-    if (messageId) {
-      console.log(`[email-worker] Sent ${type} email to ${to} (${messageId})`);
-    }
-  },
-  { connection: redisConnection, concurrency: 10 },
-);
-
-emailWorker.on("failed", (job, err) => {
-  console.error(`[email-worker] Job ${job?.id} failed:`, err.message);
-});
-
-// --------------------------------------------------------------------------
-// SMS worker
-// --------------------------------------------------------------------------
-
-const smsWorker = new Worker(
-  "sms",
-  async (job) => {
-    const { to, body, fromNumber } = job.data;
-    const sid = await sendSms(to, body, fromNumber);
-    if (sid) {
-      console.log(`[sms-worker] Sent SMS to ${to} (${sid})`);
-    }
-  },
-  { connection: redisConnection, concurrency: 5 },
-);
-
-smsWorker.on("failed", (job, err) => {
-  console.error(`[sms-worker] Job ${job?.id} failed:`, err.message);
-});
-
-// --------------------------------------------------------------------------
-// Automation worker (marketing sequences)
-// --------------------------------------------------------------------------
-
-const automationWorker = new Worker(
-  "automation",
-  async (job) => {
-    // Handle algorithmic pricing job (recurring)
-    if (job.name === "algorithmic-pricing") {
-      const tenantId = job.data.tenantId;
-      if (tenantId) {
-        const result = await runAlgorithmicPricing(tenantId);
-        console.log(`[automation-worker] Algorithmic pricing complete: ${result.suggestionsCreated} suggestions created`);
-      } else {
-        // If no specific tenant, run for all active tenants
-        const tenants = await prisma.tenant.findMany({ where: { active: true }, select: { id: true } });
-        let totalSuggestions = 0;
-        for (const tenant of tenants) {
-          const result = await runAlgorithmicPricing(tenant.id);
-          totalSuggestions += result.suggestionsCreated;
-        }
-        console.log(`[automation-worker] Algorithmic pricing complete for ${tenants.length} tenants: ${totalSuggestions} total suggestions`);
-      }
-      return;
-    }
-
-    const { type, reservationId, customerId, tenantId } = job.data;
-
-    // Look up customer contact info
-    const customer = await prisma.customer.findFirst({
-      where: { id: customerId, tenant_id: tenantId },
-      select: { id: true, first_name: true, last_name: true, email: true, phone: true },
-    });
-
-    if (!customer) {
-      console.warn(`[automation-worker] Customer ${customerId} not found — skipping ${type}`);
-      return;
-    }
-
-    const name = [customer.first_name, customer.last_name].filter(Boolean).join(" ");
-
-    switch (type) {
-      case "ABANDONED_CART_1":
-        // 1 hour after abandonment — gentle reminder
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Still interested? Your reservation is waiting",
-            html: `<p>Hi ${name},</p><p>Looks like you didn't finish your reservation. Your spot is still available — complete your booking before it's gone!</p>`,
-          });
-        }
-        break;
-
-      case "ABANDONED_CART_2":
-        // 24 hours — follow-up with urgency
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Your reservation is about to expire",
-            html: `<p>Hi ${name},</p><p>Just a heads-up — the spot you were looking at is in high demand. Complete your reservation soon to lock in your rate.</p>`,
-          });
-        }
-        break;
-
-      case "ABANDONED_CART_3":
-        // 72 hours — final nudge via SMS if available
-        if (customer.phone) {
-          await sendSms(
-            customer.phone,
-            `Hi ${name}, your reservation is still waiting! Complete your booking before availability changes.`,
-          );
-        }
-        break;
-
-      case "POST_BOOKING":
-        // Confirmation + what to expect
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Booking confirmed! Here's what to expect",
-            html: `<p>Hi ${name},</p><p>Your reservation has been confirmed. We'll send you arrival details closer to your date. Welcome aboard!</p>`,
-          });
-        }
-        break;
-
-      case "PRE_ARRIVAL":
-        // Day before arrival — logistics + checklist
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Arriving tomorrow — here's everything you need",
-            html: `<p>Hi ${name},</p><p>We're looking forward to seeing you tomorrow! Please have your registration and insurance documents ready upon arrival.</p>`,
-          });
-        }
-        break;
-
-      case "POST_RENTAL":
-        // After departure — thank you + review request
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Thanks for visiting! How was your experience?",
-            html: `<p>Hi ${name},</p><p>We hope you had a great time. We'd love to hear about your experience — your feedback helps us improve.</p>`,
-          });
-        }
-        break;
-
-      case "NPS_SURVEY":
-        // NPS score request
-        if (customer.email) {
-          await sendEmail({
-            to: customer.email,
-            subject: "Quick question — would you recommend us?",
-            html: `<p>Hi ${name},</p><p>On a scale of 0-10, how likely are you to recommend us to a friend? Reply to this email with your score and any comments.</p>`,
-          });
-        }
-        break;
-
-      default:
-        console.warn(`[automation-worker] Unknown automation type: ${type}`);
-    }
-
-    console.log(`[automation-worker] Processed ${type} for customer ${customerId}`);
-  },
-  { connection: redisConnection, concurrency: 5 },
-);
-
-automationWorker.on("failed", (job, err) => {
-  console.error(`[automation-worker] Job ${job?.id} failed:`, err.message);
-});
-
-// --------------------------------------------------------------------------
-// QBO sync worker (stub)
-// --------------------------------------------------------------------------
-
-const qboSyncWorker = new Worker(
-  "qbo-sync",
-  async (job) => {
-    console.log("[qbo-sync] Processing:", job.data.type, job.data);
-    // TODO: Implement OAuth token refresh + entity sync
-    // Supported types will include: invoice, payment, customer, credit_memo
-  },
-  { connection: redisConnection, concurrency: 3 },
-);
-
-qboSyncWorker.on("failed", (job, err) => {
-  console.error(`[qbo-sync] Job ${job?.id} failed:`, err.message);
-});
-
-// --------------------------------------------------------------------------
-// Billing worker (tenant lifecycle)
-// --------------------------------------------------------------------------
-
-const billingWorker = new Worker(
-  "billing",
-  async (job) => {
-    switch (job.name) {
-      case "tenant-lifecycle": {
-        const result = await runTenantLifecycleCheck();
-        console.log(
-          `[billing-worker] Tenant lifecycle check complete: ${result.transitioned} transitions, ${result.notified} notifications`,
-        );
-        break;
-      }
-      default:
-        console.warn(`[billing-worker] Unknown job name: ${job.name}`);
-    }
-  },
-  { connection: redisConnection, concurrency: 1 },
-);
-
-billingWorker.on("failed", (job, err) => {
-  console.error(`[billing-worker] Job ${job?.id} failed:`, err.message);
-});
-
-// --------------------------------------------------------------------------
-// Graceful shutdown
-// --------------------------------------------------------------------------
-
-async function shutdown() {
-  console.log("[helm-workers] Shutting down...");
-  await Promise.all([
-    emailWorker.close(),
-    smsWorker.close(),
-    automationWorker.close(),
-    qboSyncWorker.close(),
-    billingWorker.close(),
-  ]);
-  console.log("[helm-workers] All workers stopped");
-  process.exit(0);
+function isFinalAttempt(job: Job | undefined, err: Error): boolean {
+  if (!job) return false;
+  if (err.name === "UnrecoverableError") return true;
+  return job.attemptsMade >= (job.opts.attempts ?? 1);
 }
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+/** Billing jobs that move money must also be enabled at processing time. */
+function recurringBillingEnabled(): boolean {
+  return process.env.ENABLE_RECURRING_BILLING_SCHEDULER === "true";
+}
 
-// --------------------------------------------------------------------------
-console.log("[helm-workers] All workers started");
+export async function processAutomationQueueJob(job: Job): Promise<unknown> {
+  if (job.name === "algorithmic-pricing") {
+    const tenantId = job.data?.tenantId as string | undefined;
+    if (tenantId) {
+      const result = await runAlgorithmicPricing(tenantId);
+      console.log(
+        `[automation-worker] Algorithmic pricing complete: ${result.suggestionsCreated} suggestions created`,
+      );
+      return result;
+    }
+    const tenants = await prisma.tenant.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true },
+    });
+    let totalSuggestions = 0;
+    for (const tenant of tenants) {
+      try {
+        const result = await runAlgorithmicPricing(tenant.id);
+        totalSuggestions += result.suggestionsCreated;
+      } catch (err) {
+        // One tenant's failure must not abort the rest.
+        console.error(`[automation-worker] Algorithmic pricing failed for tenant ${tenant.id}:`, err);
+      }
+    }
+    console.log(
+      `[automation-worker] Algorithmic pricing complete for ${tenants.length} tenants: ${totalSuggestions} total suggestions`,
+    );
+    return { suggestionsCreated: totalSuggestions };
+  }
+
+  const data = job.data as RentalAutomationJobData;
+  const result = await processRentalAutomationJob(data);
+  console.log(
+    `[automation-worker] ${data.type} for customer ${data.customerId}: ${result.status}${result.reason ? ` (${result.reason})` : ""}`,
+  );
+  return result;
+}
+
+export async function processBillingQueueJob(job: Job): Promise<unknown> {
+  switch (job.name) {
+    case "tenant-lifecycle": {
+      const result = await runTenantLifecycleCheck();
+      console.log(
+        `[billing-worker] Tenant lifecycle check complete: ${result.transitioned} transitions, ${result.notified} notifications`,
+      );
+      return result;
+    }
+    case "recurring-billing": {
+      if (!recurringBillingEnabled()) {
+        console.warn(
+          "[billing-worker] recurring-billing job ignored: ENABLE_RECURRING_BILLING_SCHEDULER is not \"true\"",
+        );
+        return { skipped: true };
+      }
+      const tenants = await prisma.tenant.findMany({
+        where: { status: "ACTIVE" },
+        select: { id: true },
+      });
+      let invoices = 0;
+      for (const tenant of tenants) {
+        try {
+          invoices += (await generateRecurringInvoices(tenant.id)).length;
+        } catch (err) {
+          console.error(`[billing-worker] Recurring billing failed for tenant ${tenant.id}:`, err);
+        }
+      }
+      console.log(`[billing-worker] Recurring billing: ${invoices} invoices for ${tenants.length} tenants`);
+      return { invoices };
+    }
+    default:
+      console.warn(`[billing-worker] Unknown job name: ${job.name}`);
+      return null;
+  }
+}
+
+export interface RunningWorkers {
+  workers: Worker[];
+  close(): Promise<void>;
+}
+
+export function startWorkers(): RunningWorkers {
+  // ── Email ────────────────────────────────────────────────────────────────
+  const emailWorker = new Worker<EmailJobData>(
+    "email",
+    async (job) => processEmailJob(job.data),
+    { connection: redisConnection, concurrency: 10 },
+  );
+  emailWorker.on("failed", (job, err) => {
+    console.error(`[email-worker] Job ${job?.id} (${job?.data?.type}) failed:`, err.message);
+    if (job && isFinalAttempt(job, err)) {
+      onEmailJobFinallyFailed(job.data).catch((e) =>
+        console.error("[email-worker] Failed to record final failure:", e),
+      );
+    }
+  });
+
+  // ── SMS ──────────────────────────────────────────────────────────────────
+  const smsWorker = new Worker<SmsJobData>(
+    "sms",
+    async (job) => processSmsJob(job.data),
+    { connection: redisConnection, concurrency: 5 },
+  );
+  smsWorker.on("failed", (job, err) => {
+    console.error(`[sms-worker] Job ${job?.id} failed:`, err.message);
+    if (job && isFinalAttempt(job, err)) {
+      onSmsJobFinallyFailed(job.data).catch((e) =>
+        console.error("[sms-worker] Failed to record final failure:", e),
+      );
+    }
+  });
+
+  // ── Automation (rental drip, algorithmic pricing) ────────────────────────
+  const automationWorker = new Worker("automation", processAutomationQueueJob, {
+    connection: redisConnection,
+    concurrency: 5,
+  });
+  automationWorker.on("failed", (job, err) => {
+    console.error(`[automation-worker] Job ${job?.id} failed:`, err.message);
+  });
+
+  // ── QBO sync (stub) ──────────────────────────────────────────────────────
+  const qboSyncWorker = new Worker(
+    "qbo-sync",
+    async (job) => {
+      // TODO: Implement OAuth token refresh + entity sync (invoice, payment,
+      // customer, credit_memo). Intentionally a no-op stub in Phase 0.
+      console.log("[qbo-sync] Stub: ignoring job", job.name, job.data?.type);
+    },
+    { connection: redisConnection, concurrency: 3 },
+  );
+  qboSyncWorker.on("failed", (job, err) => {
+    console.error(`[qbo-sync] Job ${job?.id} failed:`, err.message);
+  });
+
+  // ── Billing (tenant lifecycle; recurring billing behind a flag) ──────────
+  const billingWorker = new Worker("billing", processBillingQueueJob, {
+    connection: redisConnection,
+    concurrency: 1,
+  });
+  billingWorker.on("failed", (job, err) => {
+    console.error(`[billing-worker] Job ${job?.id} failed:`, err.message);
+  });
+
+  // ── Renewals (auto-renew batches are DRAFT; execution needs APPROVED) ────
+  const renewalWorker = startRenewalWorker();
+
+  const workers: Worker[] = [
+    emailWorker,
+    smsWorker,
+    automationWorker,
+    qboSyncWorker,
+    billingWorker,
+    renewalWorker as unknown as Worker,
+  ];
+
+  console.log(`[helm-workers] Started ${workers.length} workers`);
+
+  return {
+    workers,
+    async close() {
+      await Promise.all(workers.map((w) => w.close()));
+    },
+  };
+}

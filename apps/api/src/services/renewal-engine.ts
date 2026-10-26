@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail } from "../lib/queue.js";
 
 // ---------------------------------------------------------------------------
 // Renewal Engine Service
@@ -299,6 +299,11 @@ export async function executeBatch(
   const increaseValue = batch.rateIncreaseValue ?? undefined;
 
   const newContractIds: string[] = [];
+  // predecessor contract id -> successor (for the notification emails)
+  const successors = new Map<
+    string,
+    { id: string; startDate: Date; endDate: Date | null; rateCents: number }
+  >();
 
   await prisma.$transaction(async (tx) => {
     for (const contract of contracts) {
@@ -335,6 +340,12 @@ export async function executeBatch(
       });
 
       newContractIds.push(successor.id);
+      successors.set(contract.id, {
+        id: successor.id,
+        startDate: newStartDate,
+        endDate: newEndDate,
+        rateCents: newRate,
+      });
 
       // Mark old contract as RENEWED
       await tx.slipContract.update({
@@ -369,15 +380,26 @@ export async function executeBatch(
 
   // Queue e-signature emails (outside transaction)
   for (const contract of contracts) {
-    if (contract.customer.email) {
-      await queues.email.add("renewal-esign", {
-        tenantId,
-        customerId: contract.customer.id,
-        email: contract.customer.email,
-        customerName: `${contract.customer.firstName} ${contract.customer.lastName}`,
-        slipNumber: contract.slip.slipNumber,
-        batchId,
-      });
+    const successor = successors.get(contract.id);
+    if (contract.customer.email && successor) {
+      await enqueueEmail(
+        "renewal-esign",
+        {
+          type: "renewal_esign",
+          tenantId,
+          to: contract.customer.email,
+          batchId,
+          customerId: contract.customer.id,
+          contractId: successor.id,
+          customerName: `${contract.customer.firstName} ${contract.customer.lastName}`,
+          slipNumber: contract.slip.slipNumber,
+          startDate: successor.startDate.toISOString(),
+          endDate: successor.endDate ? successor.endDate.toISOString() : null,
+          rateCents: successor.rateCents,
+          billingCycle: contract.billingCycle,
+        },
+        { jobId: `renewal-esign-${successor.id}` },
+      );
     }
   }
 
