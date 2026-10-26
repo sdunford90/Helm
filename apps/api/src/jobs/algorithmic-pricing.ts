@@ -1,5 +1,4 @@
 import { prisma } from '../lib/prisma.js';
-import { queues } from '../lib/queue.js';
 
 // --------------------------------------------------------------------------
 // Types
@@ -135,11 +134,13 @@ export async function runAlgorithmicPricing(tenantId: string): Promise<{ suggest
         suggestedPrice = Math.round(suggestedPrice * 0.95);
       }
 
-      // Clamp to floor and ceiling
-      suggestedPrice = Math.max(
-        product.floorPriceCents,
-        Math.min(product.ceilingPriceCents, suggestedPrice),
-      );
+      // Clamp to floor and ceiling (either may be unset)
+      if (product.ceilingPriceCents != null) {
+        suggestedPrice = Math.min(product.ceilingPriceCents, suggestedPrice);
+      }
+      if (product.floorPriceCents != null) {
+        suggestedPrice = Math.max(product.floorPriceCents, suggestedPrice);
+      }
 
       // 5. Only create suggestion if price differs from base by more than 10%
       const diff = Math.abs(suggestedPrice - product.basePriceCents) / product.basePriceCents;
@@ -180,13 +181,6 @@ function getDayName(dow: number): string {
 }
 
 // --------------------------------------------------------------------------
-// BullMQ recurring schedule (runs every Sunday at midnight)
+// Scheduling: see workers/schedulers.ts ("automation-algorithmic-pricing",
+// gated by ENABLE_ALGORITHMIC_PRICING_SCHEDULER, default off).
 // --------------------------------------------------------------------------
-
-export function scheduleAlgorithmicPricing(): void {
-  queues.automation.add('algorithmic-pricing', {}, {
-    repeat: { pattern: '0 0 * * 0' }, // Every Sunday at midnight
-    removeOnComplete: 10,
-    removeOnFail: 5,
-  });
-}

@@ -2,7 +2,34 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The API is an application, not a library: no .d.ts output. With
+    // declarations on (inherited composite/declaration from the base), every
+    // exported Express router fails with TS2742 ("inferred type cannot be
+    // named") once the semantic errors are gone.
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Dead code excluded from compilation (and from dist/) until it is rebuilt.
+  // Each file was verified with grep to have no importers in src/ or tests/.
+  "exclude": [
+    // Never mounted in src/index.ts; targets AutomationRule, EmailTemplate and
+    // EmailAutomationLog models that do not exist in schema.prisma.
+    "src/routes/email-automation.ts",
+    // Only imported by routes/email-automation.ts; same missing models.
+    "src/services/email-automation.ts",
+    // Never imported; targets nonexistent models (prisma.contract,
+    // prisma.notification, AuditLog.entityType). Real e-sign arrives in
+    // Phase 4 (audit 05 ES-03/ES-04).
+    "src/services/esign.ts",
+    // Never imported; Stripe Terminal is not wired to any route yet and the
+    // code does not match the schema or the Stripe SDK types.
+    "src/services/stripe-terminal.ts",
+    // Rentals is being rebuilt in Phase 3. index.ts mounts
+    // routes/rentals-disabled.ts (503 MODULE_DISABLED) instead; this file is
+    // kept only as the rebuild reference.
+    "src/routes/rentals.ts"
+  ]
 }

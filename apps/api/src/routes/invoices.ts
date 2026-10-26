@@ -5,7 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
 import { postInvoice, postVoid } from "../services/gl-posting.js";
 import { createDeferredSchedule } from "../services/deferred-revenue.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail } from "../lib/queue.js";
 import { v4 as uuid } from "uuid";
 
 const router = Router();
@@ -617,16 +617,15 @@ router.post(
       }
 
       // Queue email
-      await queues.email.add("send-invoice", {
+      await enqueueEmail("send-invoice", {
+        type: "invoice",
         tenantId,
+        to: invoice.customer.email,
         invoiceId: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
-        customerId: invoice.customer.id,
-        customerEmail: invoice.customer.email,
         customerName: `${invoice.customer.firstName} ${invoice.customer.lastName}`,
-        totalCents: invoice.totalCents,
+        amountDueCents: invoice.balanceCents,
         dueDate: invoice.dueDate.toISOString(),
-        pdfUrl: invoice.pdfUrl,
       });
 
       // Audit log

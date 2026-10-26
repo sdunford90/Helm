@@ -22,7 +22,7 @@ import waitlistRouter from "./routes/waitlist.js";
 import boatsRouter from "./routes/boats.js";
 import dockWalksRouter from "./routes/dock-walks.js";
 import posRouter from "./routes/pos.js";
-import rentalsRouter from "./routes/rentals.js";
+import rentalsRouter from "./routes/rentals-disabled.js";
 import reportsRouter from "./routes/reports.js";
 import announcementsRouter from "./routes/announcements.js";
 import adminRouter from "./routes/admin.js";

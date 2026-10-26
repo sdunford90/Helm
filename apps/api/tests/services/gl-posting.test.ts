@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockPrisma } from '../setup.js';
 
+// tests/setup.ts mocks gl-posting for route tests; this suite tests the real module.
+vi.unmock('../../src/services/gl-posting.js');
+
 let postInvoice: typeof import('../../src/services/gl-posting.js').postInvoice;
 let postPayment: typeof import('../../src/services/gl-posting.js').postPayment;
 let postManualJournalEntry: typeof import('../../src/services/gl-posting.js').postManualJournalEntry;

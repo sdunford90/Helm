@@ -1,7 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { v4 as uuid } from "uuid";
 import { postAchReturn } from "./gl-posting.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail } from "../lib/queue.js";
 import type Stripe from "stripe";
 
 // ---------------------------------------------------------------------------
@@ -199,28 +199,30 @@ export async function handleAchReturn(
     return reversalJournalId;
   });
 
-  // 8. Queue customer notification (async, outside transaction)
-  try {
-    await queues.email.add("ach-return-notification", {
-      tenantId,
-      customerId: payment.customerId,
-      customerEmail: payment.customer.email,
-      customerName: `${payment.customer.firstName} ${payment.customer.lastName}`,
-      rCode,
-      rCodeDescription: R_CODE_DESCRIPTIONS[rCode] ?? "Unknown",
-      amountCents: payment.amountCents,
-      returnFeeCents,
-      achBlocked: shouldBlock,
-    });
-  } catch (err) {
-    console.error("Failed to queue ACH return notification:", err);
+  // 8. Queue customer notification (async, outside transaction).
+  // AchReturn.customerNotifiedAt is set by the email worker only after the
+  // provider accepts the message (it used to be set here unconditionally).
+  if (payment.customer.email) {
+    try {
+      await enqueueEmail(
+        "ach-return-notification",
+        {
+          type: "ach_return",
+          tenantId,
+          to: payment.customer.email,
+          achReturnId,
+          customerName: `${payment.customer.firstName} ${payment.customer.lastName}`,
+          amountCents: payment.amountCents,
+          returnFeeCents,
+          rCode,
+          reason: R_CODE_DESCRIPTIONS[rCode] ?? "Unknown",
+        },
+        { jobId: `ach-return-${achReturnId}` },
+      );
+    } catch (err) {
+      console.error("Failed to queue ACH return notification:", err);
+    }
   }
-
-  // 9. Update notification timestamp
-  await prisma.achReturn.update({
-    where: { id: achReturnId },
-    data: { customerNotifiedAt: new Date() },
-  });
 
   return {
     achReturnId,

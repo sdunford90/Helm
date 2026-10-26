@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "../lib/prisma.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail } from "../lib/queue.js";
 
 // --------------------------------------------------------------------------
 // Claude API client
@@ -329,27 +329,28 @@ export async function processInsuranceUpload(
     sevenDaysBefore.setDate(sevenDaysBefore.getDate() - 7);
 
     const reminders = [
-      { date: thirtyDaysBefore, label: "30-day" },
-      { date: sevenDaysBefore, label: "7-day" },
+      { date: thirtyDaysBefore, label: "30-day" as const },
+      { date: sevenDaysBefore, label: "7-day" as const },
     ];
 
     for (const reminder of reminders) {
       if (reminder.date > now) {
         try {
-          await queues.email.add(
+          // The worker re-reads the InsuranceRecord at send time and drops
+          // the reminder if the record or its expiry date changed.
+          await enqueueEmail(
             `insurance-expiry-${reminder.label}`,
             {
               type: "insurance_expiry_reminder",
               tenantId,
               customerId,
               insuranceRecordId: record.id,
-              expiryDate: extraction.expiryDate,
+              expiryDate: new Date(extraction.expiryDate).toISOString(),
               reminderType: reminder.label,
             },
             {
               delay: reminder.date.getTime() - now.getTime(),
-              attempts: 3,
-              backoff: { type: "exponential", delay: 60_000 },
+              jobId: `insurance-expiry-${record.id}-${reminder.label}`,
             },
           );
         } catch (err) {

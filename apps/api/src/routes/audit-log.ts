@@ -32,7 +32,9 @@ const PaginationQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-// ─── Auth: admin or manager ─────────────────────────────────────────────────
+// ─── Auth: marina owner or manager ──────────────────────────────────────────
+// Roles are the UserRole enum values; the old "admin"/"manager" strings never
+// matched a stored role, so every request was 403.
 
 router.use(...clerkAuth());
 router.use(requireRole("MARINA_OWNER", "MARINA_MANAGER"));
@@ -57,10 +59,13 @@ function buildWhere(tenantId: string, filters: z.infer<typeof ListAuditLogQueryS
   return where;
 }
 
-function escapeCSV(value: unknown): string {
+export function escapeCSV(value: unknown): string {
   if (value === null || value === undefined) return "";
-  const str = typeof value === "object" ? JSON.stringify(value) : String(value);
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+  let str = typeof value === "object" ? JSON.stringify(value) : String(value);
+  // Neutralise spreadsheet formula injection (=, +, -, @, tab, CR).
+  // Plain numbers (e.g. "-500") are left alone.
+  if (/^[=+\-@\t\r]/.test(str) && !/^-?\d+(\.\d+)?$/.test(str)) str = `'${str}`;
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -91,7 +96,7 @@ router.get(
       const users =
         userIds.length > 0
           ? await prisma.user.findMany({
-              where: { id: { in: userIds }, tenant_id: tenantId },
+              where: { id: { in: userIds }, tenantId },
               select: { id: true, email: true, role: true },
             })
           : [];

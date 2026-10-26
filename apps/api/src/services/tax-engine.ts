@@ -39,36 +39,100 @@ export interface TaxResult {
 // Default tax rate when no tenant-specific config is found (0%)
 const DEFAULT_TAX_RATE = 0;
 
+export interface TaxRateConfig {
+  jurisdiction: string;
+  category: string;
+  /** Fraction, e.g. 0.07 for 7%. */
+  rate: number;
+}
+
 /**
- * Retrieve configured tax rates for a tenant.
- *
- * In a production system these would come from a `tax_rates` table with
- * jurisdiction, category, effective dates, etc.  For now we look for a JSON
- * column on the tenant or fall back to a sensible default.
+ * Convert a configured PERCENT (0-100, as saved by PUT /api/settings/billing
+ * into `invoiceTemplateJson.taxRate`) to a fraction. Invalid, negative or
+ * >100 values are rejected (returns null) rather than guessed.
  */
-export async function getTaxRates(
-  tenantId: string,
-): Promise<{ jurisdiction: string; category: string; rate: number }[]> {
+export function percentToFraction(percent: unknown): number | null {
+  const n = typeof percent === "string" ? Number(percent) : percent;
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 100) return null;
+  return n / 100;
+}
+
+/**
+ * Normalise a rate from the legacy `taxRates[]` array, which is documented as
+ * a fraction. A value > 1 can only be a percentage typed by hand (e.g. 7
+ * meaning 7%); treating it as a fraction would tax at 700%. Such values are
+ * converted from percent, with a warning. Anything invalid returns null.
+ */
+export function normalizeFractionalRate(rate: unknown): number | null {
+  const n = typeof rate === "string" ? Number(rate) : rate;
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return null;
+  if (n > 1) {
+    console.warn(
+      `[tax-engine] taxRates[].rate=${n} is > 1; treating it as a percentage (${n}%), not a fraction`,
+    );
+    return percentToFraction(n);
+  }
+  return n;
+}
+
+/**
+ * Resolve tax rates from a tenant's invoiceTemplateJson.
+ *
+ * Source of truth is `taxRate` (PERCENT) written by routes/settings.ts
+ * (PUT /api/settings/billing). It becomes the "general" rate. An optional
+ * legacy `taxRates[]` array can still add per-category overrides.
+ */
+export function resolveTaxRates(invoiceTemplateJson: unknown): TaxRateConfig[] {
+  const cfg =
+    invoiceTemplateJson && typeof invoiceTemplateJson === "object" && !Array.isArray(invoiceTemplateJson)
+      ? (invoiceTemplateJson as Record<string, unknown>)
+      : {};
+
+  const rates: TaxRateConfig[] = [];
+
+  if (Array.isArray(cfg.taxRates)) {
+    for (const raw of cfg.taxRates as unknown[]) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      const rate = normalizeFractionalRate(r.rate);
+      if (rate === null) continue;
+      rates.push({
+        jurisdiction: typeof r.jurisdiction === "string" ? r.jurisdiction : "default",
+        category: typeof r.category === "string" ? r.category : "general",
+        rate,
+      });
+    }
+  }
+
+  // The settings value is the general rate and takes precedence over any
+  // legacy "general" entry.
+  const general = cfg.taxRate === undefined ? null : percentToFraction(cfg.taxRate);
+  if (cfg.taxRate !== undefined && general === null) {
+    console.warn(`[tax-engine] Ignoring invalid taxRate setting: ${String(cfg.taxRate)}`);
+  }
+  if (general !== null) {
+    const withoutGeneral = rates.filter((r) => r.category !== "general");
+    return [{ jurisdiction: "default", category: "general", rate: general }, ...withoutGeneral];
+  }
+
+  if (rates.length > 0) return rates;
+
+  // Fallback — no configured rates, everything at 0%
+  return [{ jurisdiction: "default", category: "general", rate: DEFAULT_TAX_RATE }];
+}
+
+/**
+ * Retrieve configured tax rates for a tenant (rates are fractions).
+ *
+ * TODO(F-TAX-1): replace with a real TaxRate model (jurisdiction, category,
+ * effective dates) shared by invoices and POS.
+ */
+export async function getTaxRates(tenantId: string): Promise<TaxRateConfig[]> {
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
     select: { invoiceTemplateJson: true },
   });
-
-  // Convention: tenant.invoiceTemplateJson.taxRates is an array of
-  // { jurisdiction, category, rate } objects.
-  const cfg = tenant?.invoiceTemplateJson as Record<string, unknown> | null;
-  if (cfg && Array.isArray(cfg.taxRates)) {
-    return cfg.taxRates as {
-      jurisdiction: string;
-      category: string;
-      rate: number;
-    }[];
-  }
-
-  // Fallback — no configured rates, everything at 0%
-  return [
-    { jurisdiction: "default", category: "general", rate: DEFAULT_TAX_RATE },
-  ];
+  return resolveTaxRates(tenant?.invoiceTemplateJson);
 }
 
 /**

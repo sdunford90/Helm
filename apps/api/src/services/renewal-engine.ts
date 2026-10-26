@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { queues } from "../lib/queue.js";
+import { enqueueEmail } from "../lib/queue.js";
 
 // ---------------------------------------------------------------------------
 // Renewal Engine Service
@@ -19,6 +19,10 @@ export interface RenewalFilters {
   slipType?: string;
   billingCycle?: string;
   status?: string[];
+  /** Restrict the batch to exactly these contract ids (still tenant-scoped). */
+  contractIds?: string[];
+  /** Only include contracts with autoRenew=true. */
+  autoRenewOnly?: boolean;
 }
 
 export interface RateIncreaseConfig {
@@ -103,7 +107,17 @@ export async function createBatch(
   const where: Record<string, unknown> = {
     tenantId,
     status: { in: filters.status ?? ["ACTIVE", "EXPIRING"] },
+    // Never pull a contract out of another (e.g. manual rate-increase) batch.
+    renewalBatchId: null,
   };
+
+  if (filters.contractIds) {
+    where.id = { in: filters.contractIds };
+  }
+
+  if (filters.autoRenewOnly) {
+    where.autoRenew = true;
+  }
 
   if (filters.expiryDateFrom || filters.expiryDateTo) {
     where.endDate = {
@@ -263,7 +277,10 @@ export async function executeBatch(
     });
   }
 
-  if (batch.status !== "APPROVED" && batch.status !== "DRAFT") {
+  // A batch must be explicitly approved by a person before it renews (and
+  // later bills) anyone. DRAFT batches, including auto-renew batches, cannot
+  // be executed.
+  if (batch.status !== "APPROVED") {
     throw Object.assign(
       new Error(`Cannot execute batch with status "${batch.status}"`),
       { statusCode: 400, code: "INVALID_BATCH_STATUS" },
@@ -282,6 +299,11 @@ export async function executeBatch(
   const increaseValue = batch.rateIncreaseValue ?? undefined;
 
   const newContractIds: string[] = [];
+  // predecessor contract id -> successor (for the notification emails)
+  const successors = new Map<
+    string,
+    { id: string; startDate: Date; endDate: Date | null; rateCents: number }
+  >();
 
   await prisma.$transaction(async (tx) => {
     for (const contract of contracts) {
@@ -311,11 +333,19 @@ export async function executeBatch(
           earlyTerminationType: contract.earlyTerminationType,
           earlyTerminationValue: contract.earlyTerminationValue,
           qboItemId: contract.qboItemId,
-          renewalBatchId: batchId,
+          // The successor must be eligible for next term's renewal batch;
+          // the link to this batch is kept on the predecessor + audit log.
+          renewalBatchId: null,
         },
       });
 
       newContractIds.push(successor.id);
+      successors.set(contract.id, {
+        id: successor.id,
+        startDate: newStartDate,
+        endDate: newEndDate,
+        rateCents: newRate,
+      });
 
       // Mark old contract as RENEWED
       await tx.slipContract.update({
@@ -350,15 +380,26 @@ export async function executeBatch(
 
   // Queue e-signature emails (outside transaction)
   for (const contract of contracts) {
-    if (contract.customer.email) {
-      await queues.email.add("renewal-esign", {
-        tenantId,
-        customerId: contract.customer.id,
-        email: contract.customer.email,
-        customerName: `${contract.customer.firstName} ${contract.customer.lastName}`,
-        slipNumber: contract.slip.slipNumber,
-        batchId,
-      });
+    const successor = successors.get(contract.id);
+    if (contract.customer.email && successor) {
+      await enqueueEmail(
+        "renewal-esign",
+        {
+          type: "renewal_esign",
+          tenantId,
+          to: contract.customer.email,
+          batchId,
+          customerId: contract.customer.id,
+          contractId: successor.id,
+          customerName: `${contract.customer.firstName} ${contract.customer.lastName}`,
+          slipNumber: contract.slip.slipNumber,
+          startDate: successor.startDate.toISOString(),
+          endDate: successor.endDate ? successor.endDate.toISOString() : null,
+          rateCents: successor.rateCents,
+          billingCycle: contract.billingCycle,
+        },
+        { jobId: `renewal-esign-${successor.id}` },
+      );
     }
   }
 
@@ -393,10 +434,15 @@ export async function autoRenewCheck(tenantId: string): Promise<{
     return { batchId: null, contractCount: 0 };
   }
 
+  // Pass the eligible ids explicitly (and re-assert autoRenew / not-batched
+  // inside createBatch) so the batch can never include contracts that opted
+  // out of auto-renew or that belong to another batch.
   const result = await createBatch(
     tenantId,
     "system:auto-renew",
     {
+      contractIds: eligibleContracts.map((c) => c.id),
+      autoRenewOnly: true,
       expiryDateFrom: now,
       expiryDateTo: cutoff,
       status: ["ACTIVE", "EXPIRING"],
@@ -404,15 +450,7 @@ export async function autoRenewCheck(tenantId: string): Promise<{
     { type: "none" },
   );
 
-  // Auto-approve auto-renewal batches
-  await prisma.renewalBatch.update({
-    where: { id: result.batchId },
-    data: {
-      status: "APPROVED",
-      approvedBy: "system:auto-renew",
-      approvedAt: new Date(),
-    },
-  });
-
+  // The batch is left in DRAFT. It is NOT auto-approved: a staff member must
+  // review and approve it before executeBatch will run (audit F-REN-1/RW-03).
   return { batchId: result.batchId, contractCount: result.contractCount };
 }

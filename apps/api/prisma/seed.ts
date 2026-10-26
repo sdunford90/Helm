@@ -10,6 +10,16 @@ import { seedLeadsAndWaitlist } from './seed/leads.js';
 import { seedRentals } from './seed/rentals.js';
 import { seedPosAndInventory } from './seed/pos.js';
 import { seedOperations } from './seed/operations.js';
+import { assertSeedAllowed } from './seed/guard.js';
+
+// Refuse to run against production / non-local databases BEFORE connecting.
+// The seed deleteMany()s all tenants and SaaS tiers.
+try {
+  assertSeedAllowed();
+} catch (e) {
+  console.error(`❌ ${(e as Error).message}`);
+  process.exit(1);
+}
 
 const prisma = new PrismaClient();
 

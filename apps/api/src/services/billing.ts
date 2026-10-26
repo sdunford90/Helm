@@ -12,6 +12,23 @@ import { stripe } from "../lib/stripe.js";
 // credit application, and auto-charge via Stripe.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether the tenant has opted in to automatic card/ACH charging of recurring
+ * invoices. Stored by PUT /api/settings/billing (routes/settings.ts) as
+ * `Tenant.invoiceTemplateJson.autoChargeEnabled`. Defaults to OFF: anything
+ * other than an explicit boolean `true` means "do not charge".
+ */
+export function isAutoChargeEnabled(invoiceTemplateJson: unknown): boolean {
+  if (
+    !invoiceTemplateJson ||
+    typeof invoiceTemplateJson !== "object" ||
+    Array.isArray(invoiceTemplateJson)
+  ) {
+    return false;
+  }
+  return (invoiceTemplateJson as Record<string, unknown>).autoChargeEnabled === true;
+}
+
 interface GeneratedInvoice {
   invoiceId: string;
   customerId: string;
@@ -36,6 +53,13 @@ export async function generateRecurringInvoices(
 ): Promise<GeneratedInvoice[]> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  // Tenant-level auto-charge opt-in (default OFF) and Connect account.
+  const tenantConfig = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { stripeAccountId: true, invoiceTemplateJson: true },
+  });
+  const autoChargeEnabled = isAutoChargeEnabled(tenantConfig?.invoiceTemplateJson);
 
   // Find active contracts with billingAnchor <= today's day-of-month
   // In production this would use a dedicated next_billing_date column;
@@ -265,14 +289,13 @@ export async function generateRecurringInvoices(
       let autoChargeResult: "SUCCESS" | "FAILED" | "SKIPPED" = "SKIPPED";
 
       if (
+        autoChargeEnabled &&
+        stripe &&
         contract.customer.stripeCustomerId &&
         !contract.customer.achBlocked
       ) {
         try {
-          const tenant = await prisma.tenant.findUnique({
-            where: { id: tenantId },
-            select: { stripeAccountId: true },
-          });
+          const tenant = tenantConfig;
 
           if (tenant?.stripeAccountId) {
             // Reload invoice balance after credits
@@ -455,58 +478,124 @@ export function calculateProration(
 /**
  * Apply outstanding customer credits (unapplied payments) to an invoice balance.
  *
- * Credits are payments with status=COMPLETED and no invoiceId (overpayments, manual credits).
+ * Credits are payments with status=COMPLETED and no invoiceId (overpayments,
+ * manual credits). They are applied oldest first, all in ONE transaction.
+ *
+ * Partial use: when a credit is larger than the remaining invoice balance,
+ * the credit payment is split. The original row is reduced to the applied
+ * amount and linked to the invoice, and a new unapplied COMPLETED payment
+ * holds the remainder, so the leftover stays available to the customer.
+ * (Previously the whole credit was linked to the invoice and the remainder
+ * vanished from the customer's credit balance: audit 02 F-BIL-7 / 10 W-4.)
+ *
+ * The invoice balance is decremented atomically (not overwritten), and each
+ * credit is claimed with a guarded updateMany so two concurrent runs cannot
+ * spend the same credit twice.
+ *
+ * TODO(DM-5): replace splitting with a PaymentAllocation table; post GL for
+ * credit application.
+ *
+ * @returns total cents applied to the invoice
  */
 export async function applyCredits(
   invoiceId: string,
   tenantId: string,
 ): Promise<number> {
-  const invoice = await prisma.invoice.findFirst({
-    where: { id: invoiceId, tenantId },
-    select: { id: true, customerId: true, balanceCents: true, status: true },
-  });
+  return prisma.$transaction(async (tx) => {
+    const invoice = await tx.invoice.findFirst({
+      where: { id: invoiceId, tenantId },
+      select: { id: true, customerId: true, balanceCents: true, status: true },
+    });
 
-  if (!invoice || invoice.balanceCents <= 0) return 0;
+    if (!invoice || invoice.balanceCents <= 0) return 0;
+    if (invoice.status === "VOID" || invoice.status === "DRAFT") return 0;
 
-  // Find unapplied credit payments
-  const credits = await prisma.payment.findMany({
-    where: {
-      tenantId,
-      customerId: invoice.customerId,
-      invoiceId: null,
-      status: "COMPLETED",
-    },
-    orderBy: { createdAt: "asc" },
-  });
+    const credits = await tx.payment.findMany({
+      where: {
+        tenantId,
+        customerId: invoice.customerId,
+        invoiceId: null,
+        status: "COMPLETED",
+        amountCents: { gt: 0 },
+      },
+      orderBy: { createdAt: "asc" },
+    });
 
-  let totalApplied = 0;
-  let remainingBalance = invoice.balanceCents;
+    let remainingBalance = invoice.balanceCents;
+    let totalApplied = 0;
 
-  for (const credit of credits) {
-    if (remainingBalance <= 0) break;
+    for (const credit of credits) {
+      if (remainingBalance <= 0) break;
 
-    const applyAmount = Math.min(credit.amountCents, remainingBalance);
+      const applyAmount = Math.min(credit.amountCents, remainingBalance);
+      if (applyAmount <= 0) continue;
+      const remainderCents = credit.amountCents - applyAmount;
 
-    await prisma.$transaction(async (tx) => {
-      // Link credit payment to this invoice
-      await tx.payment.update({
-        where: { id: credit.id },
-        data: { invoiceId: invoice.id },
+      // Claim the credit only if it is still unapplied and unchanged.
+      const claimed = await tx.payment.updateMany({
+        where: {
+          id: credit.id,
+          tenantId,
+          invoiceId: null,
+          amountCents: credit.amountCents,
+        },
+        data: { invoiceId: invoice.id, amountCents: applyAmount },
       });
+      if (claimed.count !== 1) continue; // spent concurrently; skip
+
+      if (remainderCents > 0) {
+        const remainder = await tx.payment.create({
+          data: {
+            tenantId,
+            customerId: credit.customerId,
+            invoiceId: null,
+            amountCents: remainderCents,
+            method: credit.method,
+            postedDate: credit.postedDate,
+            status: "COMPLETED",
+            // Not copied: the Stripe/QBO ids stay on the original row so a
+            // later refund/ACH return still finds exactly one payment.
+            stripePaymentId: null,
+            qboPaymentId: null,
+          },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userName: "system:billing",
+            recordType: "Payment",
+            recordId: credit.id,
+            action: "CREDIT_SPLIT",
+            changedFieldsJson: {
+              invoiceId: invoice.id,
+              originalAmountCents: credit.amountCents,
+              appliedCents: applyAmount,
+              remainderCents,
+              remainderPaymentId: remainder.id,
+            },
+          },
+        });
+      }
 
       remainingBalance -= applyAmount;
       totalApplied += applyAmount;
+    }
 
-      // Update invoice balance
-      await tx.invoice.update({
+    if (totalApplied > 0) {
+      const updated = await tx.invoice.update({
         where: { id: invoice.id },
-        data: {
-          balanceCents: remainingBalance,
-          status: remainingBalance <= 0 ? "PAID" : undefined,
-        },
+        data: { balanceCents: { decrement: totalApplied } },
+        select: { balanceCents: true },
       });
-    });
-  }
+      if (updated.balanceCents <= 0) {
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: { status: "PAID" },
+        });
+      }
+    }
 
-  return totalApplied;
+    return totalApplied;
+  });
 }

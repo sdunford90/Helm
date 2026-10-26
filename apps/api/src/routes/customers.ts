@@ -1,10 +1,25 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { clerkAuth, requireRole, MANAGER_ROLES } from "../middleware/auth.js";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { mergeCustomers, undoMerge } from "../services/customer-merge.js";
 
 const router = Router();
+
+/**
+ * Zod gives `null` for "clear this JSON field"; Prisma needs Prisma.DbNull
+ * for a nullable Json column (plain null is a type error).
+ */
+function jsonFields<T extends { addressJson?: unknown; emergencyContactJson?: unknown }>(data: T) {
+  const toJson = (v: unknown) =>
+    v === null ? Prisma.DbNull : (v as Prisma.InputJsonValue | undefined);
+  return {
+    ...data,
+    addressJson: toJson(data.addressJson),
+    emergencyContactJson: toJson(data.emergencyContactJson),
+  };
+}
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -289,7 +304,7 @@ router.post(
       const customer = await prisma.customer.create({
         data: {
           tenantId,
-          ...data,
+          ...jsonFields(data),
         },
       });
 
@@ -329,7 +344,7 @@ router.put(
 
       const updated = await prisma.customer.update({
         where: { id: req.params.id },
-        data,
+        data: jsonFields(data),
       });
 
       // Audit changed fields

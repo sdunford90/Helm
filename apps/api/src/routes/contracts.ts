@@ -178,7 +178,7 @@ router.get(
 
       const where = {
         tenantId,
-        status: { in: ["ACTIVE", "EXPIRING"] as const },
+        status: { in: ["ACTIVE", "EXPIRING"] as Array<"ACTIVE" | "EXPIRING"> },
         endDate: { gte: now, lte: cutoff },
       };
 

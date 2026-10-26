@@ -1,6 +1,6 @@
 import { prisma } from "../lib/prisma.js";
-import { queues } from "../lib/queue.js";
-import { sendEmail } from "../lib/email.js";
+import { enqueueEmail, enqueueSms } from "../lib/queue.js";
+import { sendEmail, escapeHtml } from "../lib/email.js";
 
 // --------------------------------------------------------------------------
 // Trigger types that fire automation rules
@@ -496,9 +496,13 @@ export function getAvailableVariables(trigger: AutomationTrigger): string[] {
 export function mergeTemplate(
   html: string,
   variables: Record<string, string>,
+  opts: { escape?: boolean } = { escape: true },
 ): string {
   return html.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
-    return variables[key] ?? "";
+    const value = variables[key] ?? "";
+    // Merge values are customer/tenant data: escape them when merging into
+    // HTML so they cannot inject markup.
+    return opts.escape === false ? value : escapeHtml(value);
   });
 }
 
@@ -594,7 +598,8 @@ async function processRule(
     }
   }
 
-  const mergedSubject = mergeTemplate(template.subject, variables);
+  // Subjects are plain text (no escaping); bodies are HTML (escaped values).
+  const mergedSubject = mergeTemplate(template.subject, variables, { escape: false });
   const mergedHtml = mergeTemplate(template.htmlBody, variables);
 
   // Resolve customer email
@@ -614,16 +619,15 @@ async function processRule(
   // 4. Queue email and/or SMS
   for (const channel of channels) {
     if (channel === "email") {
-      await queues.email.add(
+      await enqueueEmail(
         "automation-email",
         {
+          type: "automation",
           tenantId,
           ruleId: rule.id,
-          templateId: template.id,
-          trigger,
           to: customerEmail,
           subject: mergedSubject,
-          html: mergedHtml,
+          templateHtml: mergedHtml,
           customerId: context.customerId,
         },
         delayMs > 0 ? { delay: delayMs } : undefined,
@@ -631,13 +635,10 @@ async function processRule(
     }
 
     if (channel === "sms" && context.customerPhone) {
-      await queues.sms.add(
+      await enqueueSms(
         "automation-sms",
         {
           tenantId,
-          ruleId: rule.id,
-          templateId: template.id,
-          trigger,
           to: context.customerPhone,
           body: mergedSubject, // Use subject as SMS text
           customerId: context.customerId,

@@ -73,47 +73,46 @@ async function auditLog(
 // Token management helpers
 // --------------------------------------------------------------------------
 
-async function getTokens(tenantId: string): Promise<QboTokens> {
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: tenantId },
-    select: {
-      qboAccessToken: true,
-      qboRefreshToken: true,
-      qboRealmId: true,
-      qboTokenExpiresAt: true,
-    },
-  });
-
-  if (!tenant?.qboAccessToken || !tenant?.qboRefreshToken || !tenant?.qboRealmId) {
-    throw new Error("QuickBooks Online is not connected for this tenant");
+// QBO OAuth tokens have no home in schema.prisma: Tenant only has qboRealmId
+// (the code used to read/write qboAccessToken, qboRefreshToken,
+// qboTokenExpiresAt, qboConnectedAt, qboLastSyncAt, none of which exist, so
+// every QBO call failed at runtime with a Prisma "Unknown argument" error).
+// Until a QboConnection model with ENCRYPTED token columns is added (schema
+// change owned by the platform/security track), token persistence fails fast
+// with a clear error instead.
+export class QboTokenStorageUnavailableError extends Error {
+  readonly code = "QBO_TOKEN_STORAGE_UNAVAILABLE";
+  constructor() {
+    super(
+      "QuickBooks Online token storage is not available yet (no token columns in the schema). " +
+        "QBO sync is disabled until the QboConnection model lands.",
+    );
+    this.name = "QboTokenStorageUnavailableError";
   }
+}
 
-  return {
-    accessToken: tenant.qboAccessToken,
-    refreshToken: tenant.qboRefreshToken,
-    realmId: tenant.qboRealmId,
-    expiresAt: tenant.qboTokenExpiresAt ?? new Date(0),
-  };
+interface QboTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}
+
+async function getTokens(_tenantId: string): Promise<QboTokens> {
+  throw new QboTokenStorageUnavailableError();
 }
 
 async function storeTokens(
-  tenantId: string,
-  accessToken: string,
-  refreshToken: string,
-  realmId: string,
-  expiresIn: number,
+  _tenantId: string,
+  _accessToken: string,
+  _refreshToken: string,
+  _realmId: string,
+  _expiresIn: number,
 ): Promise<void> {
-  const expiresAt = new Date(Date.now() + expiresIn * 1000);
-  await prisma.tenant.update({
-    where: { id: tenantId },
-    data: {
-      qboAccessToken: accessToken,
-      qboRefreshToken: refreshToken,
-      qboRealmId: realmId,
-      qboTokenExpiresAt: expiresAt,
-      qboConnectedAt: new Date(),
-    },
-  });
+  throw new QboTokenStorageUnavailableError();
+}
+
+async function clearTokens(_tenantId: string): Promise<void> {
+  // Nothing persisted to clear (see QboTokenStorageUnavailableError).
 }
 
 async function getValidAccessToken(tenantId: string): Promise<{ accessToken: string; realmId: string }> {
@@ -216,7 +215,7 @@ export async function handleCallback(
     throw new Error(`QBO token exchange failed: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as QboTokenResponse;
 
   await storeTokens(
     tenantId,
@@ -257,21 +256,14 @@ export async function refreshToken(tenantId: string): Promise<string> {
 
     // If refresh token is invalid, mark as disconnected
     if (response.status === 400 || response.status === 401) {
-      await prisma.tenant.update({
-        where: { id: tenantId },
-        data: {
-          qboAccessToken: null,
-          qboRefreshToken: null,
-          qboTokenExpiresAt: null,
-        },
-      });
+      await clearTokens(tenantId);
       await auditLog(tenantId, "QBO_DISCONNECTED", { reason: "refresh_token_expired" });
     }
 
     throw new Error(`QBO token refresh failed: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as QboTokenResponse;
 
   await storeTokens(
     tenantId,
@@ -800,14 +792,10 @@ export async function handleQboWebhook(
 // --------------------------------------------------------------------------
 
 export async function disconnect(tenantId: string): Promise<void> {
+  await clearTokens(tenantId);
   await prisma.tenant.update({
     where: { id: tenantId },
-    data: {
-      qboAccessToken: null,
-      qboRefreshToken: null,
-      qboRealmId: null,
-      qboTokenExpiresAt: null,
-    } as any,
+    data: { qboRealmId: null },
   });
 
   await auditLog(tenantId, "QBO_DISCONNECTED", { reason: "manual_disconnect" });
@@ -827,18 +815,15 @@ export async function getStatus(
 }> {
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: {
-      qboRealmId: true,
-      qboTokenExpiresAt: true,
-      qboLastSyncAt: true,
-      qboAccessToken: true,
-    } as any,
+    select: { qboRealmId: true },
   });
 
+  // No token storage yet (see QboTokenStorageUnavailableError), so a tenant
+  // can never be "connected"; lastSyncAt/tokenExpiresAt have no columns.
   return {
-    connected: !!(tenant as any)?.qboAccessToken,
-    realmId: (tenant as any)?.qboRealmId || null,
-    lastSyncAt: (tenant as any)?.qboLastSyncAt || null,
-    tokenExpiresAt: (tenant as any)?.qboTokenExpiresAt || null,
+    connected: false,
+    realmId: tenant?.qboRealmId ?? null,
+    lastSyncAt: null,
+    tokenExpiresAt: null,
   };
 }

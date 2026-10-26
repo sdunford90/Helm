@@ -350,7 +350,7 @@ router.post(
           status: data.status,
           notes: data.notes ?? null,
           violationType: data.violationType ?? null,
-          photoUrls: data.photoUrls ?? null,
+          photoUrls: data.photoUrls ?? undefined,
           feeCents: data.feeCents ?? null,
         },
       });

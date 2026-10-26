@@ -25,12 +25,22 @@ interface ExecuteBatchPayload {
   executedBy: string;
 }
 
-type RenewalJobPayload = AutoRenewPayload | ExecuteBatchPayload;
+/** Emitted by the (env-gated) scheduler in workers/schedulers.ts. */
+interface AutoRenewFanoutPayload {
+  type: "auto-renew-fanout";
+}
+
+type RenewalJobPayload = AutoRenewPayload | ExecuteBatchPayload | AutoRenewFanoutPayload;
 
 async function processRenewalJob(job: Job<RenewalJobPayload>): Promise<unknown> {
   const { data } = job;
 
   switch (data.type) {
+    case "auto-renew-fanout": {
+      await scheduleAutoRenewChecks();
+      return null;
+    }
+
     case "auto-renew-check": {
       console.log(`[renewal-job] Running auto-renew check for tenant ${data.tenantId}`);
       const result = await autoRenewCheck(data.tenantId);
@@ -96,7 +106,7 @@ export async function scheduleAutoRenewChecks(): Promise<void> {
       "auto-renew-check",
       { type: "auto-renew-check", tenantId: tenant.id },
       {
-        jobId: `auto-renew-${tenant.id}-${new Date().toISOString().slice(0, 10)}`,
+        jobId: `auto-renew-${tenant.id}-${new Date().toISOString().slice(0, 10)}`, // one per tenant per day
         removeOnComplete: 100,
         removeOnFail: 50,
       },
