@@ -182,13 +182,13 @@ export default function Settings() {
         <div style={st.card}>
           <h3 style={st.sectionTitle}><ToggleRight size={20} /> Module Management</h3>
           <p style={{ color: '#64748B', fontSize: '14px', marginBottom: '24px', lineHeight: 1.6 }}>
-            Enable or disable optional modules for this marina. Disabled modules are hidden from the navigation and inaccessible to all users.
+            Show or hide optional modules in the navigation. This setting is stored in this browser only; it is not yet shared with other users of the marina.
           </p>
           {([
             {
               key: 'rentals' as const,
               label: 'Rentals',
-              description: 'Boat, kayak, jet ski and equipment rentals — includes availability calendar, reservation management, pricing rules, promo codes, and the Rentals dashboard.',
+              description: 'Boat, kayak, jet ski and equipment rentals. Being rebuilt in Phase 0: the page shows a notice until the new reservation API ships.',
             },
           ] as { key: keyof typeof modules; label: string; description: string }[]).map((mod) => (
             <div

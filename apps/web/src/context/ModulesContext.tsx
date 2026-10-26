@@ -1,5 +1,13 @@
 import { createContext, useContext, useState, ReactNode } from 'react';
 
+// TODO(phase-1): module toggles are per-browser (localStorage), so one user
+// turning a module off does not affect colleagues. There is no tenant-level
+// modules endpoint yet (apps/api/src/routes/settings.ts has marina, branding,
+// billing, stripe, qbo, team and notifications only). When one exists (e.g.
+// GET/PUT /settings/modules), load the initial state from it here and keep
+// localStorage only as a cache. The API already enforces some modules on its
+// side (e.g. /api/rentals returns 503 MODULE_DISABLED in Phase 0), and pages
+// must handle that response regardless of this toggle.
 const STORAGE_KEY = 'helm_modules';
 
 export interface ModulesConfig {
@@ -19,7 +27,11 @@ function load(): ModulesConfig {
 }
 
 function save(config: ModulesConfig) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    /* storage unavailable (private mode); keep in-memory state */
+  }
 }
 
 interface ModulesContextValue {
