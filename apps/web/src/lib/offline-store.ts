@@ -1,3 +1,4 @@
+import { apiUrl } from './api';
 /**
  * IndexedDB wrapper for offline dock walk data.
  *
@@ -226,7 +227,7 @@ export async function isOnline(): Promise<boolean> {
 
   // navigator.onLine can lie – do a lightweight fetch to confirm
   try {
-    const response = await fetch('/api/health', {
+    const response = await fetch(apiUrl('/health'), {
       method: 'HEAD',
       cache: 'no-store',
     });

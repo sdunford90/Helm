@@ -261,11 +261,11 @@ export default function Settings() {
   const [tab, setTab] = useState<'profile' | 'branding' | 'billing' | 'catalog' | 'integrations' | 'team' | 'advanced' | 'modules'>('profile');
 
   // API calls
-  const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/api/settings', { immediate: true });
-  const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/api/settings');
+  const { data: apiSettings, loading: settingsLoading } = useApi<any>('get', '/settings', { immediate: true });
+  const { execute: updateSettings, loading: savingSettings } = useApi<any>('put', '/settings');
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const handleSave = async (section: string) => { await updateSettings({ tab: section }); setSavedMsg('Settings saved successfully!'); setTimeout(() => setSavedMsg(null), 2000); };
-  const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/api/settings/team', { immediate: true });
+  const { data: apiTeam, loading: teamLoading } = useApi<TeamMember[]>('get', '/settings/team', { immediate: true });
 
   // Use API data when available, fall back to mock
   const teamMembers = apiTeam ?? TEAM;

@@ -358,8 +358,8 @@ export default function Waitlist() {
   const [addSaved, setAddSaved] = useState(false);
 
   // API calls
-  const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/api/waitlist', { immediate: true });
-  const addToWaitlistApi = useApi<WaitlistEntry>('post', '/api/waitlist');
+  const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/waitlist', { immediate: true });
+  const addToWaitlistApi = useApi<WaitlistEntry>('post', '/waitlist');
 
   useEffect(() => {
     if (apiEntries) {

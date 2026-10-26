@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { FileText, Search, Plus, X, Calendar, ToggleLeft, ToggleRight, Ship, ArrowRight, Edit2, Repeat, Send, CheckSquare, Square, PenTool } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApi, useApiClient } from '../hooks/useApi';
 import ESignatureFlow from '../components/ESignatureFlow';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -755,6 +755,7 @@ function ContractDetailModal({
 /* ── Main Component ──────────────────────────────────────── */
 
 export default function Contracts() {
+  const client = useApiClient();
   const [statusFilter, setStatusFilter] = useState('All');
   const [cycleFilter, setCycleFilter] = useState('All');
   const [expiringFilter, setExpiringFilter] = useState('All');
@@ -766,10 +767,10 @@ export default function Contracts() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchSending, setBatchSending] = useState(false);
 
-  const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/api/contracts', { immediate: true });
-  const createContract = useApi<Contract>('post', '/api/contracts');
-  const updateContractApi = useApi<Contract>('put', '/api/contracts/update');
-  const transferContractApi = useApi<Contract>('post', '/api/contracts/transfer');
+  const { data: apiContracts, loading, error } = useApi<Contract[]>('get', '/contracts', { immediate: true });
+  const createContract = useApi<Contract>('post', '/contracts');
+  const updateContractApi = useApi<Contract>('put', '/contracts/update');
+  const transferContractApi = useApi<Contract>('post', '/contracts/transfer');
 
   const contracts = localContracts.length > 0 ? localContracts : (apiContracts || MOCK_CONTRACTS);
 
@@ -811,12 +812,8 @@ export default function Contracts() {
     if (selectedIds.size === 0) return;
     setBatchSending(true);
     try {
-      const res = await fetch('/api/contracts/bulk-send-for-signature', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contractIds: Array.from(selectedIds) }),
-      });
-      if (res.ok) {
+      await client.post('/contracts/bulk-send-for-signature', { contractIds: Array.from(selectedIds) });
+      {
         const updated = contracts.map((c) =>
           selectedIds.has(c.id) ? { ...c, signatureStatus: 'pending' as SignatureStatus } : c
         );

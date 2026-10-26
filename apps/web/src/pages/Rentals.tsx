@@ -883,11 +883,11 @@ export default function Rentals() {
   const [localProducts, setLocalProducts] = useState<RentalProduct[]>([]);
 
   // API calls with fallback to mock data
-  const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/api/rentals/products', { immediate: true });
-  const { data: apiReservations, loading: loadingRes } = useApi<Reservation[]>('get', '/api/rentals/reservations', { immediate: true });
-  const { data: apiPricingRules } = useApi<PricingRule[]>('get', '/api/rentals/pricing-rules', { immediate: true });
-  const { data: apiPromoCodes } = useApi<PromoCode[]>('get', '/api/rentals/promo-codes', { immediate: true });
-  const createProduct = useApi<RentalProduct>('post', '/api/rentals/products');
+  const { data: apiProducts, loading: loadingProducts } = useApi<RentalProduct[]>('get', '/rentals/products', { immediate: true });
+  const { data: apiReservations, loading: loadingRes } = useApi<Reservation[]>('get', '/rentals/reservations', { immediate: true });
+  const { data: apiPricingRules } = useApi<PricingRule[]>('get', '/rentals/pricing-rules', { immediate: true });
+  const { data: apiPromoCodes } = useApi<PromoCode[]>('get', '/rentals/promo-codes', { immediate: true });
+  const createProduct = useApi<RentalProduct>('post', '/rentals/products');
 
   const handleAddProduct = (p: RentalProduct) => {
     setLocalProducts((prev) => [p, ...(prev.length > 0 ? prev : (apiProducts ?? PRODUCTS))]);

@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { apiUrl } from '../lib/api';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+// Same-origin by default; VITE_API_URL overrides (handled in lib/api).
 
 // ---------------------------------------------------------------------------
 // Types
@@ -328,7 +329,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/start`, {
+      const res = await fetch(apiUrl(`/onboarding/start`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -360,7 +361,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/branding`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/branding`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -391,7 +392,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/stripe`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/stripe`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -415,7 +416,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/qbo`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/qbo`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -439,7 +440,7 @@ export default function Onboarding() {
     setLoading(true);
     try {
       // Seed chart of accounts
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/chart-of-accounts`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/chart-of-accounts`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
-import { useApi } from '../hooks/useApi';
+import { useApi, useApiClient } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -578,6 +578,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
   onClose: () => void;
   onAssigned: (slipId: string, occupantName: string) => void;
 }) {
+  const client = useApiClient();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Customer | null>(null);
@@ -590,8 +591,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
 
   useEffect(() => {
     setLoading(true);
-    fetch('/api/customers?limit=200')
-      .then((r) => r.ok ? r.json() : { data: [] })
+    client.get<any>('/customers?take=100')
       .then((res) => { setCustomers(res.data || res || []); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
@@ -707,11 +707,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
               if (!selected) return;
               setSaving(true);
               try {
-                await fetch(`/api/slips/${slip.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ status: 'OCCUPIED' }),
-                });
+                await client.put(`/slips/${slip.id}`, { status: 'OCCUPIED' });
               } catch { /* best-effort */ }
               const name = displayName(selected);
               onAssigned(slip.id, name);
@@ -742,8 +738,8 @@ export default function Slips() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
 
-  const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
-  const createSlip = useApi<Slip>('post', '/api/slips');
+  const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/slips', { immediate: true });
+  const createSlip = useApi<Slip>('post', '/slips');
   const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
 
   const slips = (apiSlips || MOCK_SLIPS).map((s) => ({ ...s, ...localOverrides[s.id] }));

@@ -109,7 +109,7 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
   const [method, setMethod] = useState<PaymentMethod>('Card');
   const [amount, setAmount] = useState((balanceDue / 100).toFixed(2));
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const recordPayment = useApi<unknown>('post', '/api/payments');
+  const recordPayment = useApi<unknown>('post', '/payments');
 
   const handleProcess = async () => {
     setStatus('processing');

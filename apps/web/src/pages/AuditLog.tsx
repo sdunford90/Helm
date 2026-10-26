@@ -95,7 +95,7 @@ export default function AuditLog() {
   const perPage = 10;
 
   // API call with fallback to mock
-  const { data: apiEntries, loading: entriesLoading } = useApi<AuditEntry[]>('get', '/api/audit-log', { immediate: true });
+  const { data: apiEntries, loading: entriesLoading } = useApi<AuditEntry[]>('get', '/audit-log', { immediate: true });
   const entries = apiEntries ?? ENTRIES;
 
   const filtered = entries.filter((e) => {

@@ -179,8 +179,8 @@ export default function Customers() {
   const [showForm, setShowForm] = useState(false);
 
   // API calls
-  const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/api/customers', { immediate: true });
-  const createCustomerApi = useApi<Customer>('post', '/api/customers');
+  const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/customers', { immediate: true });
+  const createCustomerApi = useApi<Customer>('post', '/customers');
 
   const customers = apiCustomers || MOCK_CUSTOMERS;
 

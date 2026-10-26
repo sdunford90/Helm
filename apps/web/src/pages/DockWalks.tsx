@@ -4,7 +4,7 @@ import {
   Eye, CheckCircle2, Clock, MapPin, Camera, Droplets,
   Shield,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApi, useApiClient } from '../hooks/useApi';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -145,6 +145,7 @@ const INSPECTORS = [
 const DOCKS = ['A', 'B', 'C', 'D', 'Fuel'];
 
 function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (walk: DockWalk) => void }) {
+  const client = useApiClient();
   const [inspector, setInspector] = useState(INSPECTORS[0].id);
   const [selectedDocks, setSelectedDocks] = useState<string[]>(['A', 'B', 'C']);
   const [notes, setNotes] = useState('');
@@ -157,11 +158,10 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (wa
     if (!inspector || selectedDocks.length === 0) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/dock-walks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inspectorId: inspector, dockId: selectedDocks[0], notes }),
-      });
+      const res = await client.post<DockWalk>('/dock-walks', { inspectorId: inspector, dockId: selectedDocks[0], notes }).then(
+        (body) => ({ ok: true as const, json: async () => body }),
+        () => ({ ok: false as const, json: async () => null as unknown as DockWalk }),
+      );
       const inspectorName = INSPECTORS.find((i) => i.id === inspector)?.name ?? inspector;
       const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       const newWalk: DockWalk = res.ok
@@ -232,6 +232,7 @@ function ViolationDetail({ violation, onClose, onResolved }: {
   onClose: () => void;
   onResolved?: (id: string) => void;
 }) {
+  const client = useApiClient();
   const sc = severityColors[violation.severity];
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [resolving, setResolving] = useState(false);
@@ -241,11 +242,7 @@ function ViolationDetail({ violation, onClose, onResolved }: {
     if (resolving) return;
     setResolving(true);
     try {
-      await fetch(`/api/dock-walks/violations/${violation.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'RESOLVED', resolutionNotes }),
-      });
+      await client.put(`/dock-walks/violations/${violation.id}`, { status: 'RESOLVED', resolutionNotes });
       setResolved(true);
       onResolved?.(violation.id);
     } finally {
@@ -325,8 +322,8 @@ export default function DockWalks() {
   const [showStartWalk, setShowStartWalk] = useState(false);
   const [selectedViolation, setSelectedViolation] = useState<Violation | null>(null);
 
-  const { data: apiWalks, loading: walksLoading } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
-  const { data: apiViolations, loading: violationsLoading } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
+  const { data: apiWalks, loading: walksLoading } = useApi<DockWalk[]>('get', '/dock-walks', { immediate: true });
+  const { data: apiViolations, loading: violationsLoading } = useApi<Violation[]>('get', '/dock-walks/violations', { immediate: true });
 
   const [localWalks, setLocalWalks] = useState<DockWalk[]>([]);
   const [localViolations, setLocalViolations] = useState<Violation[] | null>(null);

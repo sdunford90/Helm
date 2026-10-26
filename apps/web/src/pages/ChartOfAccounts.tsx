@@ -126,7 +126,7 @@ const s: Record<string, React.CSSProperties> = {
 
 export default function ChartOfAccounts() {
   // API call with fallback to mock data
-  const { data: apiAccounts, loading } = useApi<GLAccount[]>('get', '/api/reports/gl-summary', { immediate: true });
+  const { data: apiAccounts, loading } = useApi<GLAccount[]>('get', '/reports/gl-summary', { immediate: true });
   const [accounts, setAccounts] = useState<GLAccount[]>(mockAccounts);
 
   useEffect(() => {

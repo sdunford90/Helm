@@ -274,9 +274,9 @@ export default function InvoiceDetail() {
   const [showPayment, setShowPayment] = useState(false);
 
   // API calls with fallback to mock data
-  const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/api/invoices/${id}`, { immediate: true });
-  const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/api/payments?invoiceId=${id}`, { immediate: true });
-  const recordPayment = useApi<Payment>('post', '/api/payments');
+  const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/invoices/${id}`, { immediate: true });
+  const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/payments?invoiceId=${id}`, { immediate: true });
+  const recordPayment = useApi<Payment>('post', '/payments');
 
   const fallbackInvoice = mockInvoices[id || ''] || getDefaultInvoice(id || '0');
   const invoice = apiInvoice

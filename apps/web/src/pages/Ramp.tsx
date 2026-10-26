@@ -155,8 +155,8 @@ export default function Ramp() {
   const [ticketTypeField, setTicketTypeField] = useState<TicketType>('Single Launch');
 
   // API calls with fallback to mock
-  const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/api/ramp', { immediate: true });
-  const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/api/ramp');
+  const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/ramp', { immediate: true });
+  const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/ramp');
   const tickets = apiTickets ?? MOCK_TICKETS;
 
   const todayTickets = tickets.filter((t) => t.date === '2026-03-25');

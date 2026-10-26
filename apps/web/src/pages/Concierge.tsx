@@ -180,8 +180,8 @@ export default function Concierge() {
   const [showModal, setShowModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null);
 
-  const { data: apiRequests, loading: requestsLoading } = useApi<ServiceRequest[]>('get', '/api/concierge', { immediate: true });
-  const { data: apiVendors, loading: vendorsLoading } = useApi<Vendor[]>('get', '/api/concierge/vendors', { immediate: true });
+  const { data: apiRequests, loading: requestsLoading } = useApi<ServiceRequest[]>('get', '/concierge', { immediate: true });
+  const { data: apiVendors, loading: vendorsLoading } = useApi<Vendor[]>('get', '/concierge/vendors', { immediate: true });
 
   const [localRequests, setLocalRequests] = useState<ServiceRequest[]>([]);
   const requests = localRequests.length > 0 ? localRequests : (apiRequests || MOCK_REQUESTS);

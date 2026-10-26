@@ -129,7 +129,7 @@ const s: Record<string, React.CSSProperties> = {
 const SLIP_OPTIONS = ['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'];
 
 export default function Transient() {
-  const { data: apiBookings, loading } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
+  const { data: apiBookings, loading } = useApi<Booking[]>('get', '/transient', { immediate: true });
 
   const [localBookings, setLocalBookings] = useState<Booking[]>([]);
   const [tab, setTab] = useState<TabKey>('current');

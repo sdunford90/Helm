@@ -41,10 +41,10 @@ const Dashboard: React.FC = () => {
   const [taskDrawer, setTaskDrawer] = useState<{ title: string; items: { label: string; sub: string; urgent: boolean }[] } | null>(null);
 
   // --- API Calls ---
-  const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/api/reports/occupancy', { immediate: true });
-  const { data: revenueApiData, loading: revenueLoading } = useApi<any>('get', '/api/reports/revenue', { immediate: true });
-  const { data: arData, loading: arLoading } = useApi<any>('get', '/api/reports/ar-aging', { immediate: true });
-  const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/api/reports/compliance', { immediate: true });
+  const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/reports/occupancy', { immediate: true });
+  const { data: revenueApiData, loading: revenueLoading } = useApi<any>('get', '/reports/revenue', { immediate: true });
+  const { data: arData, loading: arLoading } = useApi<any>('get', '/reports/ar-aging', { immediate: true });
+  const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/reports/compliance', { immediate: true });
 
   const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading;
 

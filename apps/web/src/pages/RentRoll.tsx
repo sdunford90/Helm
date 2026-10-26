@@ -94,7 +94,7 @@ export default function RentRoll() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
-  const { data: apiData } = useApi<RentRollEntry[]>('get', '/api/reports/rent-roll', { immediate: true });
+  const { data: apiData } = useApi<RentRollEntry[]>('get', '/reports/rent-roll', { immediate: true });
   const entries = apiData || MOCK_RENT_ROLL;
 
   const filtered = entries.filter((e) => {

@@ -8,7 +8,7 @@ import {
 import CustomerForm from '../components/CustomerForm';
 import CustomerMerge from '../components/CustomerMerge';
 import CommunicationPrefs from '../components/CommunicationPrefs';
-import { useApi } from '../hooks/useApi';
+import { useApi, useApiClient } from '../hooks/useApi';
 
 /* ── Mock Data ─────────────────────────────────────────── */
 
@@ -565,7 +565,7 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
   const [autoRenew, setAutoRenew] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  const createContract = useApi('post', '/api/contracts');
+  const createContract = useApi('post', '/contracts');
 
   const handleSave = async () => {
     if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
@@ -651,6 +651,7 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
 type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
 
 export default function CustomerDetailPage() {
+  const client = useApiClient();
   const { id } = useParams();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('overview');
@@ -662,12 +663,12 @@ export default function CustomerDetailPage() {
   const [localBoats, setLocalBoats] = useState<Boat[]>([]);
 
   // API calls
-  const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
-  const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
-  const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
-  const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
-  const updateBoatApi = useApi('put', '/api/boats/update');
-  const addBoatApi = useApi('post', '/api/boats');
+  const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/customers/${id}`, { immediate: true });
+  const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/boats?customerId=${id}`, { immediate: true });
+  const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/invoices?customerId=${id}`, { immediate: true });
+  const updateCustomerApi = useApi<CustomerDetail>('put', `/customers/${id}`);
+  const updateBoatApi = useApi('put', '/boats/update');
+  const addBoatApi = useApi('post', '/boats');
 
   const c = apiCustomer || CUSTOMER; // Fallback to mock data
   const rawBoats = apiBoats || BOATS;
@@ -1039,11 +1040,7 @@ export default function CustomerDetailPage() {
           onClose={() => setShowMerge(false)}
           onMerge={async (targetId, selections) => {
             try {
-              await fetch(`/api/customers/${targetId}/merge`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sourceCustomerId: id, selections }),
-              });
+              await client.post(`/customers/${targetId}/merge`, { sourceCustomerId: id, selections });
             } catch { /* API unavailable — merge will execute when connected */ }
             setShowMerge(false);
           }}

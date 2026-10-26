@@ -101,8 +101,8 @@ export default function Billing() {
   const [showForm, setShowForm] = useState(false);
 
   // API calls with fallback to mock data
-  const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
-  const createInvoiceApi = useApi<Invoice>('post', '/api/invoices');
+  const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/invoices', { immediate: true });
+  const createInvoiceApi = useApi<Invoice>('post', '/invoices');
   const invoices = useMemo(() => apiInvoices ?? mockInvoices, [apiInvoices]);
 
   const filtered = invoices.filter((inv) => {

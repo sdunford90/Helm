@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { X, FileText, Send, Eye, CheckCircle, Clock, AlertCircle, ChevronRight } from 'lucide-react';
+import { useApiClient } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
 
 /* ── Types ──────────────────────────────────────────────── */
 
@@ -321,6 +323,7 @@ export default function ESignatureFlow({
   const [signatureStatus, setSignatureStatus] = useState<SignatureStatus>('draft');
   const [requestId, setRequestId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const client = useApiClient();
 
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
@@ -338,22 +341,11 @@ export default function ESignatureFlow({
     setSending(true);
 
     try {
-      const res = await fetch(`/api/contracts/${contractId}/send-for-signature`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          signerName: signerName.trim(),
-          signerEmail: signerEmail.trim(),
-          message: message.trim() || undefined,
-        }),
+      const data = await client.post<{ requestId: string }>(`/contracts/${contractId}/send-for-signature`, {
+        signerName: signerName.trim(),
+        signerEmail: signerEmail.trim(),
+        message: message.trim() || undefined,
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed to send for signature');
-      }
-
-      const data = await res.json();
       setRequestId(data.requestId);
       setSignatureStatus('sent');
       setSent(true);
@@ -369,15 +361,12 @@ export default function ESignatureFlow({
   const handleCheckStatus = async () => {
     if (!requestId) return;
     try {
-      const res = await fetch(`/api/contracts/${contractId}/signature-status`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status) {
-          setSignatureStatus(data.status);
-        }
+      const data = await client.get<{ status?: SignatureStatus }>(`/contracts/${contractId}/signature-status`);
+      if (data.status) {
+        setSignatureStatus(data.status);
       }
-    } catch {
-      // silently fail status check
+    } catch (err) {
+      setError(errorMessage(err));
     }
   };
 

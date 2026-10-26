@@ -315,8 +315,8 @@ export default function Announcements() {
   const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<string>('All');
 
   // API calls
-  const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/api/announcements', { immediate: true });
-  const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/api/announcements');
+  const { data: apiAnnouncements, loading: announcementsLoading } = useApi<Announcement[]>('get', '/announcements', { immediate: true });
+  const { execute: createAnnouncement, loading: createLoading } = useApi<Announcement>('post', '/announcements');
 
   // Use API data when available, fall back to mock
   const announcements = apiAnnouncements ?? mockAnnouncements;

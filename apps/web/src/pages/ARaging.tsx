@@ -91,7 +91,7 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 
 export default function ARaging() {
   // API call with fallback to mock data
-  const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/api/reports/ar-aging', { immediate: true });
+  const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/reports/ar-aging', { immediate: true });
   const agingData = apiAgingData ?? mockAgingData;
 
   const grandTotal = agingData.reduce((s, r) => s + rowTotal(r), 0);

@@ -300,9 +300,9 @@ export default function POS() {
     } catch { /* ignore */ }
   }, []);
 
-  const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/api/pos/products', { immediate: true });
-  const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/api/pos/transactions', { immediate: true });
-  const createTransaction = useApi<Transaction>('post', '/api/pos/transactions');
+  const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/pos/products', { immediate: true });
+  const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/pos/transactions', { immediate: true });
+  const createTransaction = useApi<Transaction>('post', '/pos/transactions');
 
   const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
   const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);

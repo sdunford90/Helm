@@ -257,10 +257,10 @@ export default function Fuel() {
   const [tab, setTab] = useState<'sales' | 'pricing' | 'deliveries' | 'tanks'>('sales');
   const [modal, setModal] = useState<'recordSale' | 'logDelivery' | { updatePrice: FuelType } | null>(null);
 
-  const { data: apiFuelTypes, loading: loadingTypes } = useApi<FuelType[]>('get', '/api/fuel/types', { immediate: true });
-  const { data: apiSales, loading: loadingSales } = useApi<FuelSale[]>('get', '/api/fuel/sales', { immediate: true });
-  const { data: apiDeliveries, loading: loadingDeliveries } = useApi<Delivery[]>('get', '/api/fuel/deliveries', { immediate: true });
-  const { data: apiTankLevels } = useApi<FuelType[]>('get', '/api/fuel/tank-levels', { immediate: true });
+  const { data: apiFuelTypes, loading: loadingTypes } = useApi<FuelType[]>('get', '/fuel/types', { immediate: true });
+  const { data: apiSales, loading: loadingSales } = useApi<FuelSale[]>('get', '/fuel/sales', { immediate: true });
+  const { data: apiDeliveries, loading: loadingDeliveries } = useApi<Delivery[]>('get', '/fuel/deliveries', { immediate: true });
+  const { data: apiTankLevels } = useApi<FuelType[]>('get', '/fuel/tank-levels', { immediate: true });
 
   const [localFuelTypes, setLocalFuelTypes] = useState<FuelType[]>([]);
   const [localSales, setLocalSales] = useState<FuelSale[]>([]);

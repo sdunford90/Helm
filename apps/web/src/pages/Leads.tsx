@@ -304,9 +304,9 @@ export default function Leads() {
   const [localLeads, setLocalLeads] = useState<Lead[]>(MOCK_LEADS);
 
   // API calls
-  const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/api/leads', { immediate: true });
-  const createLeadApi = useApi<Lead>('post', '/api/leads');
-  const updateLeadApi = useApi<Lead>('put', '/api/leads');
+  const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/leads', { immediate: true });
+  const createLeadApi = useApi<Lead>('post', '/leads');
+  const updateLeadApi = useApi<Lead>('put', '/leads');
 
   const leads = apiLeads || localLeads;
 
