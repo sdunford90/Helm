@@ -1,4 +1,5 @@
 import React from "react";
+import BookingUnavailable from "../shared/BookingUnavailable";
 import ReactDOM from "react-dom/client";
 import RentalBookingWidget from "./RentalBookingWidget";
 
@@ -25,15 +26,15 @@ function mountAll() {
     if (el.dataset.helmMounted === "true") return;
     el.dataset.helmMounted = "true";
 
-    const tenantId = el.dataset.helmTenantId ?? "";
     const primaryColor = el.dataset.helmPrimaryColor;
 
     const root = ReactDOM.createRoot(el);
     root.render(
-      React.createElement(RentalBookingWidget, {
-        tenantId,
+      React.createElement(BookingUnavailable, {
+        // Public availability/booking endpoints don't exist yet (transient: Phase 2,
+        // rentals: Phase 3), so show an honest notice instead of the booking flow.
+        title: "Book a boat rental",
         primaryColor,
-        hostElement: el,
       })
     );
   });
