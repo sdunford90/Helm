@@ -7,6 +7,7 @@ import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
 import { useApi, useApiClient } from '../hooks/useApi';
 import { useToast } from '../components/Toast';
+import { todayKey } from '../lib/format';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -583,7 +584,7 @@ function AssignSlipModal({ slip, onClose, onAssigned }: {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Customer | null>(null);
   const [contractType, setContractType] = useState<'Annual' | 'Monthly' | 'Transient'>('Annual');
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [startDate, setStartDate] = useState(todayKey());
   const [rate, setRate] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

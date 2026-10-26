@@ -1,3 +1,4 @@
+import { toDateKey } from '../lib/format';
 import React, { useState, useMemo, useCallback } from 'react';
 import {
   ChevronLeft, ChevronRight, Copy, Info, Edit3, X, Check,
@@ -258,7 +259,7 @@ export default function PricingCalendar({ products, onOverrideChange }: PricingC
       const endD = new Date(end + 'T12:00:00');
       const newOvr = { ...(localOverrides[product.id] || {}) };
       while (cur <= endD) {
-        const ds = cur.toISOString().slice(0, 10);
+        const ds = toDateKey(cur);
         newOvr[ds] = cents;
         onOverrideChange?.(product.id, ds, cents);
         cur.setDate(cur.getDate() + 1);
@@ -287,8 +288,8 @@ export default function PricingCalendar({ products, onOverrideChange }: PricingC
       srcDate.setDate(srcDate.getDate() + i);
       const dstDate = new Date(srcDate);
       dstDate.setDate(dstDate.getDate() + 7);
-      const srcStr = srcDate.toISOString().slice(0, 10);
-      const dstStr = dstDate.toISOString().slice(0, 10);
+      const srcStr = toDateKey(srcDate);
+      const dstStr = toDateKey(dstDate);
       const dp = calendarDays.find((dd) => dd?.date === srcStr);
       if (dp) {
         newOvr[dstStr] = dp.priceCents;

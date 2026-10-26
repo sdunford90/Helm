@@ -1,3 +1,4 @@
+import { toDateKey } from '../lib/format';
 import React, { useState, useMemo } from 'react';
 import {
   Play, Columns, CalendarRange, ChevronDown, ChevronUp, RotateCcw,
@@ -254,7 +255,7 @@ export default function PriceSimulator() {
     const cur = new Date(batchStart + 'T12:00:00');
     const end = new Date(batchEnd + 'T12:00:00');
     while (cur <= end) {
-      const ds = cur.toISOString().slice(0, 10);
+      const ds = toDateKey(cur);
       results.push(simulate(DEFAULT_PRODUCTS, { productId: batchProduct, date: ds, duration: batchDuration, multiDays: 1, promoCode: '', leadDays: 7 }));
       cur.setDate(cur.getDate() + 1);
     }
