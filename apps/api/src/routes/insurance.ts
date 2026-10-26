@@ -356,7 +356,7 @@ router.get(
       }
 
       // Parse confidence data
-      let confidence: Record<string, string> = {};
+      let confidence: Record<string, "high" | "medium" | "low"> = {};
       try {
         confidence = record.extractionConfidence
           ? JSON.parse(record.extractionConfidence)

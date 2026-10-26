@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/node";
+import type { RequestHandler } from "express";
 
 export function initSentry(): void {
   if (!process.env.SENTRY_DSN) return;
@@ -25,8 +26,14 @@ export function initSentry(): void {
   });
 }
 
-export function sentryRequestHandler() {
-  return Sentry.expressRequestHandler();
+/**
+ * Sentry v8 instruments Express automatically via expressIntegration() in
+ * Sentry.init(); there is no request handler middleware any more
+ * (Sentry.expressRequestHandler was removed in v8). Kept as a no-op so
+ * existing call sites keep working.
+ */
+export function sentryRequestHandler(): RequestHandler {
+  return (_req, _res, next) => next();
 }
 
 export function sentryErrorHandler() {

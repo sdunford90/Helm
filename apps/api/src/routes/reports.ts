@@ -5,7 +5,7 @@ import { prisma } from "../lib/prisma.js";
 const router = Router();
 
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager", "accounting"));
+router.use(requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,21 +32,21 @@ router.get("/occupancy", async (req: Request, res: Response, next: NextFunction)
     const reserved = await prisma.slip.count({ where: { tenantId, status: "RESERVED" } });
 
     const byDock = await prisma.slip.groupBy({
-      by: ["dock"],
+      by: ["dockId"],
       where: { tenantId },
       _count: { id: true },
     });
 
     const occupiedByDock = await prisma.slip.groupBy({
-      by: ["dock"],
+      by: ["dockId"],
       where: { tenantId, status: "OCCUPIED" },
       _count: { id: true },
     });
 
     const docks = byDock.map((d) => {
-      const occ = occupiedByDock.find((o) => o.dock === d.dock);
+      const occ = occupiedByDock.find((o) => o.dockId === d.dockId);
       return {
-        dock: d.dock,
+        dock: d.dockId,
         total: d._count.id,
         occupied: occ?._count.id ?? 0,
         rate: d._count.id > 0 ? ((occ?._count.id ?? 0) / d._count.id * 100).toFixed(1) : "0.0",
@@ -372,8 +372,8 @@ router.get("/inventory", async (req: Request, res: Response, next: NextFunction)
         costCents: p.costCents, priceCents: p.priceCents,
         qtyOnHand: inv?.qtyOnHand ?? 0, qtyOnOrder: inv?.qtyOnOrder ?? 0,
         reorderQty: p.reorderQty,
-        valueCents: (inv?.qtyOnHand ?? 0) * p.costCents,
-        needsReorder: (inv?.qtyOnHand ?? 0) <= p.reorderQty,
+        valueCents: (inv?.qtyOnHand ?? 0) * (p.costCents ?? 0),
+        needsReorder: p.reorderQty != null && (inv?.qtyOnHand ?? 0) <= p.reorderQty,
       };
     });
 
@@ -407,7 +407,8 @@ router.get("/transient", async (req: Request, res: Response, next: NextFunction)
     const { startDate, endDate } = dateFilters(req);
     const bookings = await prisma.transientBooking.findMany({ where: { tenantId, checkIn: { gte: startDate, lte: endDate } } });
     const totalRevenue = bookings.reduce((s, b) => s + b.totalCents, 0);
-    const avgStay = bookings.length > 0 ? bookings.reduce((s, b) => { const nights = Math.ceil((new Date(b.checkOut).getTime() - new Date(b.checkIn).getTime()) / 86400000); return s + nights; }, 0) / bookings.length : 0;
+    const stays = bookings.filter((b) => b.checkOut);
+    const avgStay = stays.length > 0 ? stays.reduce((s, b) => { const nights = Math.ceil((new Date(b.checkOut!).getTime() - new Date(b.checkIn).getTime()) / 86400000); return s + nights; }, 0) / stays.length : 0;
     const byStatus = bookings.reduce((acc, b) => { acc[b.status] = (acc[b.status] || 0) + 1; return acc; }, {} as Record<string, number>);
     res.json({ period: { startDate, endDate }, bookingCount: bookings.length, totalRevenueCents: totalRevenue, avgStayNights: avgStay.toFixed(1), byStatus });
   } catch (err) { next(err); }
@@ -420,7 +421,7 @@ router.get("/rental-marketing", async (req: Request, res: Response, next: NextFu
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
     const surveys = await prisma.npsSurvey.findMany({ where: { tenantId, sentAt: { gte: startDate, lte: endDate } } });
-    const responded = surveys.filter((s) => s.respondedAt);
+    const responded = surveys.filter((s): s is typeof s & { score: number } => s.respondedAt != null && s.score != null);
     const avgNps = responded.length > 0 ? responded.reduce((s, r) => s + r.score, 0) / responded.length : 0;
     const promoters = responded.filter((s) => s.score >= 9).length;
     const detractors = responded.filter((s) => s.score <= 6).length;
@@ -452,7 +453,7 @@ router.get("/fuel", async (req: Request, res: Response, next: NextFunction) => {
     // Fuel data is in-memory in the fuel route; return summary from POS fuel sales
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
-    const fuelSales = await prisma.posLineItem.findMany({ where: { transaction: { tenantId, createdAt: { gte: startDate, lte: endDate } }, product: { department: "FUEL" } }, include: { product: true } });
+    const fuelSales = await prisma.posLineItem.findMany({ where: { transaction: { tenantId, createdAt: { gte: startDate, lte: endDate } }, product: { departmentId: "FUEL" } }, include: { product: true } });
     const totalRevenue = fuelSales.reduce((s, li) => s + li.extendedCents, 0);
     res.json({ period: { startDate, endDate }, fuelLineItems: fuelSales.length, totalRevenueCents: totalRevenue });
   } catch (err) { next(err); }
@@ -477,7 +478,9 @@ router.get("/concierge", async (req: Request, res: Response, next: NextFunction)
   try {
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
-    const requests = await prisma.conciergeRequest.findMany({ where: { tenantId, createdAt: { gte: startDate, lte: endDate } } });
+    // NOTE: ConciergeRequest has no createdAt column (schema gap); use the
+    // service dates that exist.
+    const requests = await prisma.conciergeRequest.findMany({ where: { tenantId, OR: [{ preferredDate: { gte: startDate, lte: endDate } }, { completedAt: { gte: startDate, lte: endDate } }] } });
     const byType = requests.reduce((acc, r) => { acc[r.serviceType] = (acc[r.serviceType] || 0) + 1; return acc; }, {} as Record<string, number>);
     const byStatus = requests.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {} as Record<string, number>);
     const completed = requests.filter((r) => r.status === "COMPLETED" || r.status === "INVOICED");
@@ -506,7 +509,7 @@ router.get("/tips", async (req: Request, res: Response, next: NextFunction) => {
     const { startDate, endDate } = dateFilters(req);
     const transactions = await prisma.posTransaction.findMany({ where: { tenantId, createdAt: { gte: startDate, lte: endDate }, tipCents: { gt: 0 } }, include: { shift: true } });
     const totalTips = transactions.reduce((s, t) => s + t.tipCents, 0);
-    const byCashier = transactions.reduce((acc, t) => { const key = t.cashierId; acc[key] = (acc[key] || 0) + t.tipCents; return acc; }, {} as Record<string, number>);
+    const byCashier = transactions.reduce((acc, t) => { const key = t.cashierId ?? "unassigned"; acc[key] = (acc[key] || 0) + t.tipCents; return acc; }, {} as Record<string, number>);
     res.json({ period: { startDate, endDate }, totalTipsCents: totalTips, transactionsWithTips: transactions.length, byCashier });
   } catch (err) { next(err); }
 });
@@ -599,8 +602,8 @@ router.get("/pnl", async (req: Request, res: Response, next: NextFunction) => {
     const tenantId = (req as any).tenantId;
     const { startDate, endDate } = dateFilters(req);
     const revenue = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "REVENUE" } }, _sum: { creditCents: true, debitCents: true } });
-    const expenses = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "EXPENSE" } }, _sum: { debitCents: true, creditCents: true } });
-    const cogs = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "COGS" } }, _sum: { debitCents: true, creditCents: true } });
+    const expenses = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "EXPENSE", OR: [{ subType: null }, { subType: { not: "cogs" } }] } }, _sum: { debitCents: true, creditCents: true } });
+    const cogs = await prisma.glEntry.aggregate({ where: { tenantId, postedAt: { gte: startDate, lte: endDate }, account: { type: "EXPENSE", subType: "cogs" } }, _sum: { debitCents: true, creditCents: true } });
     const totalRevenue = (revenue._sum.creditCents ?? 0) - (revenue._sum.debitCents ?? 0);
     const totalExpenses = (expenses._sum.debitCents ?? 0) - (expenses._sum.creditCents ?? 0);
     const totalCogs = (cogs._sum.debitCents ?? 0) - (cogs._sum.creditCents ?? 0);
@@ -651,9 +654,9 @@ router.get("/cash-flow", async (req: Request, res: Response, next: NextFunction)
 router.get("/vacancy-history", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
-    const slips = await prisma.slip.findMany({ where: { tenantId }, select: { id: true, slipNumber: true, dock: true, status: true } });
+    const slips = await prisma.slip.findMany({ where: { tenantId }, select: { id: true, slipNumber: true, dockId: true, status: true } });
     const vacant = slips.filter((s) => s.status === "VACANT");
-    res.json({ totalSlips: slips.length, currentlyVacant: vacant.length, vacancyRate: slips.length > 0 ? (vacant.length / slips.length * 100).toFixed(1) : "0.0", vacantSlips: vacant.map((s) => ({ id: s.id, number: s.slipNumber, dock: s.dock })) });
+    res.json({ totalSlips: slips.length, currentlyVacant: vacant.length, vacancyRate: slips.length > 0 ? (vacant.length / slips.length * 100).toFixed(1) : "0.0", vacantSlips: vacant.map((s) => ({ id: s.id, number: s.slipNumber, dock: s.dockId })) });
   } catch (err) { next(err); }
 });
 
@@ -663,7 +666,7 @@ router.get("/contract-expiry-calendar", async (req: Request, res: Response, next
   try {
     const tenantId = (req as any).tenantId;
     const contracts = await prisma.slipContract.findMany({ where: { tenantId, status: { in: ["ACTIVE", "EXPIRING"] } }, select: { id: true, endDate: true, status: true, rateCents: true, customerId: true }, orderBy: { endDate: "asc" } });
-    const byMonth = contracts.reduce((acc, c) => { const month = new Date(c.endDate).toISOString().slice(0, 7); if (!acc[month]) acc[month] = []; acc[month].push(c); return acc; }, {} as Record<string, typeof contracts>);
+    const byMonth = contracts.reduce((acc, c) => { const month = c.endDate ? new Date(c.endDate).toISOString().slice(0, 7) : "open-ended"; if (!acc[month]) acc[month] = []; acc[month].push(c); return acc; }, {} as Record<string, typeof contracts>);
     res.json({ totalExpiring: contracts.length, byMonth: Object.entries(byMonth).map(([month, contracts]) => ({ month, count: contracts.length, totalRateCents: contracts.reduce((s, c) => s + c.rateCents, 0) })) });
   } catch (err) { next(err); }
 });
@@ -699,7 +702,7 @@ router.get("/dock-walk-violations", async (req: Request, res: Response, next: Ne
     const { startDate, endDate } = dateFilters(req);
     const violations = await prisma.dockWalkItem.findMany({ where: { dockWalk: { tenantId, startedAt: { gte: startDate, lte: endDate } }, violationType: { not: null } }, include: { dockWalk: { select: { startedAt: true } } } });
     const byType = violations.reduce((acc, v) => { const t = v.violationType || "Unknown"; acc[t] = (acc[t] || 0) + 1; return acc; }, {} as Record<string, number>);
-    const bySlip = violations.reduce((acc, v) => { acc[v.slipId] = (acc[v.slipId] || 0) + 1; return acc; }, {} as Record<string, number>);
+    const bySlip = violations.reduce((acc, v) => { const k = v.slipId ?? "unknown"; acc[k] = (acc[k] || 0) + 1; return acc; }, {} as Record<string, number>);
     const repeatOffenders = Object.entries(bySlip).filter(([, count]) => count > 1).sort(([, a], [, b]) => b - a);
     res.json({ period: { startDate, endDate }, totalViolations: violations.length, byType, repeatOffenders: repeatOffenders.map(([slipId, count]) => ({ slipId, violationCount: count })) });
   } catch (err) { next(err); }
@@ -732,7 +735,7 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
           take: 1,
         },
       },
-      orderBy: [{ dock: "asc" }, { number: "asc" }],
+      orderBy: [{ dockId: "asc" }, { slipNumber: "asc" }],
     });
 
     const rows = [];
@@ -750,8 +753,8 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
         vacantCount++;
         rows.push({
           slipId: slip.id,
-          slipNumber: slip.number,
-          dock: slip.dock,
+          slipNumber: slip.slipNumber,
+          dock: slip.dockId,
           tenant: null,
           boatName: null,
           boatLength: null,
@@ -783,7 +786,10 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
       } else if (cycle === "QUARTERLY") {
         annualRateCents = monthlyRateCents * 4;
         monthlyRateCents = Math.round(annualRateCents / 12);
-      } else if (cycle === "ANNUAL" || cycle === "ANNUALLY") {
+      } else if (cycle === "SEMI_ANNUAL") {
+        annualRateCents = monthlyRateCents * 2;
+        monthlyRateCents = Math.round(annualRateCents / 12);
+      } else if (cycle === "ANNUAL") {
         annualRateCents = monthlyRateCents;
         monthlyRateCents = Math.round(annualRateCents / 12);
       }
@@ -836,10 +842,10 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
       let outstandingBalanceCents = 0;
       try {
         const openInvoices = await prisma.invoice.aggregate({
-          where: { tenantId, customerId: contract.customerId, status: { in: ["SENT", "OVERDUE"] } },
-          _sum: { totalCents: true },
+          where: { tenantId, customerId: contract.customerId, status: { in: ["ISSUED", "PAST_DUE", "COLLECTIONS"] } },
+          _sum: { balanceCents: true },
         });
-        outstandingBalanceCents = openInvoices._sum.totalCents ?? 0;
+        outstandingBalanceCents = openInvoices._sum?.balanceCents ?? 0;
       } catch { /* invoices may not exist */ }
 
       totalMonthlyRentCents += monthlyRateCents;
@@ -849,8 +855,8 @@ router.get("/rent-roll", async (req: Request, res: Response, next: NextFunction)
 
       rows.push({
         slipId: slip.id,
-        slipNumber: slip.number,
-        dock: slip.dock,
+        slipNumber: slip.slipNumber,
+        dock: slip.dockId,
         tenant: contract.customer ? `${contract.customer.firstName} ${contract.customer.lastName}` : null,
         boatName: contract.boat?.name || null,
         boatLength: contract.boat?.lengthFt || null,
