@@ -10,3 +10,6 @@ coverage/
 .prisma/
 prisma/*.db
 tsconfig.tsbuildinfo
+
+# Claude Code agent worktrees
+.claude/worktrees/
