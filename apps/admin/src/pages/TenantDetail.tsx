@@ -1,17 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 
-const API = '/api/admin';
-
-async function apiFetch(path: string, opts?: RequestInit) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...opts?.headers },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  if (res.status === 204) return null;
-  return res.json();
-}
+import { adminFetch, errorMessage } from '../lib/api';
 
 interface Location {
   id: string;
@@ -262,6 +252,7 @@ const TenantDetail: React.FC = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [locLoading, setLocLoading] = useState(false);
+  const [locError, setLocError] = useState('');
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
   const [showLocModal, setShowLocModal] = useState(false);
@@ -272,10 +263,10 @@ const TenantDetail: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      const data = await apiFetch(`${API}/tenants/${id}`);
+      const data = await adminFetch<TenantData>(`/tenants/${id}`);
       setTenant(data);
     } catch (e: unknown) {
-      setError((e as Error).message || 'Failed to load tenant');
+      setError(errorMessage(e) || 'Failed to load tenant');
     } finally {
       setLoading(false);
     }
@@ -284,9 +275,12 @@ const TenantDetail: React.FC = () => {
   const fetchLocations = useCallback(async () => {
     if (!id) return;
     setLocLoading(true);
+    setLocError('');
     try {
-      const data = await apiFetch(`${API}/tenants/${id}/locations`);
-      setLocations(Array.isArray(data) ? data : []);
+      const data = await adminFetch<Location[] | { data?: Location[] }>(`/tenants/${id}/locations`);
+      setLocations(Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : []);
+    } catch (e: unknown) {
+      setLocError(errorMessage(e));
     } finally {
       setLocLoading(false);
     }
@@ -297,11 +291,11 @@ const TenantDetail: React.FC = () => {
 
   const handleSaveLocation = async (form: typeof BLANK_LOC) => {
     if (editingLoc) {
-      await apiFetch(`${API}/tenants/${id}/locations/${editingLoc.id}`, {
+      await adminFetch(`/tenants/${id}/locations/${editingLoc.id}`, {
         method: 'PUT', body: JSON.stringify(form),
       });
     } else {
-      await apiFetch(`${API}/tenants/${id}/locations`, {
+      await adminFetch(`/tenants/${id}/locations`, {
         method: 'POST', body: JSON.stringify(form),
       });
     }
@@ -310,8 +304,12 @@ const TenantDetail: React.FC = () => {
 
   const handleDeleteLocation = async (locId: string) => {
     if (!window.confirm('Delete this location? This cannot be undone.')) return;
-    await apiFetch(`${API}/tenants/${id}/locations/${locId}`, { method: 'DELETE' });
-    setLocations((prev) => prev.filter((l) => l.id !== locId));
+    try {
+      await adminFetch(`/tenants/${id}/locations/${locId}`, { method: 'DELETE' });
+      setLocations((prev) => prev.filter((l) => l.id !== locId));
+    } catch (e: unknown) {
+      window.alert(`Failed to delete location: ${errorMessage(e)}`);
+    }
   };
 
   if (loading) return (
@@ -365,9 +363,9 @@ const TenantDetail: React.FC = () => {
             <button onClick={async () => {
               if (!window.confirm('Lock this tenant? They will lose access.')) return;
               try {
-                await apiFetch(`${API}/tenants/${id}/lock`, { method: 'POST' });
+                await adminFetch(`/tenants/${id}/lock`, { method: 'POST' });
                 fetchTenant();
-              } catch { window.alert('Failed to lock tenant'); }
+              } catch (e) { window.alert(`Failed to lock tenant: ${errorMessage(e)}`); }
             }} style={{
               padding: '8px 16px', background: 'transparent', border: '1px solid #F44336',
               borderRadius: 6, color: '#F44336', cursor: 'pointer', fontSize: 13,
@@ -375,9 +373,9 @@ const TenantDetail: React.FC = () => {
           ) : (
             <button onClick={async () => {
               try {
-                await apiFetch(`${API}/tenants/${id}/unlock`, { method: 'POST' });
+                await adminFetch(`/tenants/${id}/unlock`, { method: 'POST' });
                 fetchTenant();
-              } catch { window.alert('Failed to unlock tenant'); }
+              } catch (e) { window.alert(`Failed to unlock tenant: ${errorMessage(e)}`); }
             }} style={{
               padding: '8px 16px', background: '#4CAF50', border: 'none',
               borderRadius: 6, color: '#FFF', cursor: 'pointer', fontSize: 13, fontWeight: 600,
@@ -498,6 +496,11 @@ const TenantDetail: React.FC = () => {
 
           {locLoading ? (
             <div style={{ color: 'rgba(255,255,255,0.3)', padding: 20, textAlign: 'center' }}>Loading locations…</div>
+          ) : locError ? (
+            <div role="alert" style={{ ...card, color: '#F44336', fontSize: 13 }}>
+              Could not load locations: {locError}{' '}
+              <button onClick={fetchLocations} style={{ background: 'none', border: 'none', color: '#00D4FF', cursor: 'pointer', fontSize: 13 }}>Retry</button>
+            </div>
           ) : locations.length === 0 ? (
             <div style={{ ...card, textAlign: 'center', padding: 48 }}>
               <div style={{ fontSize: 36, marginBottom: 12 }}>📍</div>
