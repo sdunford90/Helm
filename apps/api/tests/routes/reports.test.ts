@@ -281,3 +281,32 @@ describe('GET /api/reports/compliance', () => {
     expect(res.body.registration.total).toBe(0);
   });
 });
+
+describe('reports role guard (audit F-RPT-1)', () => {
+  it.each(['MARINA_OWNER', 'MARINA_MANAGER', 'ACCOUNTING'])('allows %s', async (role) => {
+    const { testAuth } = await import('../setup.js');
+    testAuth.role = role;
+    mockPrisma.slip.count.mockResolvedValue(0);
+    mockPrisma.slip.groupBy.mockResolvedValue([]);
+    const res = await request(app).get('/api/reports/occupancy');
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['DOCK_STAFF', 'POS_CASHIER', 'PORTAL_USER'])('forbids %s', async (role) => {
+    const { testAuth } = await import('../setup.js');
+    testAuth.role = role;
+    const res = await request(app).get('/api/reports/occupancy');
+    expect(res.status).toBe(403);
+  });
+
+  it('groups occupancy by Slip.dockId', async () => {
+    mockPrisma.slip.count.mockResolvedValue(2);
+    mockPrisma.slip.groupBy
+      .mockResolvedValueOnce([{ dockId: 'dock-a', _count: { id: 2 } }])
+      .mockResolvedValueOnce([{ dockId: 'dock-a', _count: { id: 1 } }]);
+    const res = await request(app).get('/api/reports/occupancy');
+    expect(res.status).toBe(200);
+    expect(mockPrisma.slip.groupBy.mock.calls[0][0].by).toEqual(['dockId']);
+    expect(res.body.byDock).toEqual([{ dock: 'dock-a', total: 2, occupied: 1, rate: '50.0' }]);
+  });
+});
