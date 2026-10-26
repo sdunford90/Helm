@@ -4,7 +4,12 @@ import {
   Banknote, Building2, DollarSign, Clock, Package,
   AlertTriangle, Trash2, RotateCcw,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { formatDateTime, humanizeEnum, todayKey, dateKey } from '../lib/format';
+import type { CustomerRef } from '../lib/dto';
+import CustomerPicker from '../components/CustomerPicker';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -38,35 +43,73 @@ interface Transaction {
   cartItems?: CartItem[];
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const PRODUCTS: Product[] = [
-  { id: '1', sku: 'FUEL-REG', name: 'Regular Gas (gal)', category: 'Fuel', price: 4.29, taxRate: 0, inStock: 2400, reorderPoint: 500 },
-  { id: '2', sku: 'FUEL-DSL', name: 'Diesel (gal)', category: 'Fuel', price: 4.89, taxRate: 0, inStock: 1800, reorderPoint: 400 },
-  { id: '3', sku: 'ICE-BAG', name: 'Bag of Ice (10lb)', category: 'Provisions', price: 3.99, taxRate: 7, inStock: 85, reorderPoint: 20 },
-  { id: '4', sku: 'BAIT-SHP', name: 'Live Shrimp (dz)', category: 'Bait & Tackle', price: 8.99, taxRate: 7, inStock: 24, reorderPoint: 10 },
-  { id: '5', sku: 'BAIT-MIN', name: 'Minnows (dz)', category: 'Bait & Tackle', price: 5.99, taxRate: 7, inStock: 18, reorderPoint: 8 },
-  { id: '6', sku: 'SNK-WTER', name: 'Bottled Water', category: 'Provisions', price: 2.49, taxRate: 7, inStock: 144, reorderPoint: 48 },
-  { id: '7', sku: 'SNK-SODA', name: 'Soft Drink (can)', category: 'Provisions', price: 1.99, taxRate: 7, inStock: 200, reorderPoint: 60 },
-  { id: '8', sku: 'SUN-SPF', name: 'Sunscreen SPF 50', category: 'Marine Supplies', price: 12.99, taxRate: 7, inStock: 32, reorderPoint: 10 },
-  { id: '9', sku: 'MRN-LINE', name: 'Dock Line 3/8" 15\'', category: 'Marine Supplies', price: 18.99, taxRate: 7, inStock: 15, reorderPoint: 5 },
-  { id: '10', sku: 'MRN-FEND', name: 'Boat Fender', category: 'Marine Supplies', price: 24.99, taxRate: 7, inStock: 12, reorderPoint: 4 },
-  { id: '11', sku: 'APR-HAT', name: 'Marina Cap', category: 'Apparel', price: 22.00, taxRate: 7, inStock: 48, reorderPoint: 12 },
-  { id: '12', sku: 'APR-TEE', name: 'Marina T-Shirt', category: 'Apparel', price: 28.00, taxRate: 7, inStock: 36, reorderPoint: 10 },
-];
+interface ProductDTO {
+  id: string;
+  name: string;
+  sku?: string | null;
+  departmentId?: string | null;
+  priceCents: number;
+  trackInventory: boolean;
+  reorderQty?: number | null;
+  inventory?: { qtyOnHand: number }[];
+}
 
-const TRANSACTIONS: Transaction[] = [
-  { id: '1', number: 'TXN-3042', date: '2026-03-25 11:32 AM', items: 3, subtotal: 12.47, tax: 0.87, total: 13.34, method: 'Card', cashier: 'Jake M.' },
-  { id: '2', number: 'TXN-3041', date: '2026-03-25 10:45 AM', items: 1, subtotal: 85.80, tax: 0.00, total: 85.80, method: 'Card', cashier: 'Jake M.' },
-  { id: '3', number: 'TXN-3040', date: '2026-03-25 9:18 AM', items: 5, subtotal: 48.94, tax: 3.43, total: 52.37, method: 'Cash', cashier: 'Jake M.' },
-  { id: '4', number: 'TXN-3039', date: '2026-03-24 4:52 PM', items: 2, subtotal: 27.98, tax: 1.96, total: 29.94, method: 'Charge to Slip', cashier: 'Maria S.' },
-  { id: '5', number: 'TXN-3038', date: '2026-03-24 3:30 PM', items: 1, subtotal: 22.00, tax: 1.54, total: 23.54, method: 'Card', cashier: 'Maria S.' },
-  { id: '6', number: 'TXN-3037', date: '2026-03-24 1:15 PM', items: 4, subtotal: 35.96, tax: 2.52, total: 38.48, method: 'Cash', cashier: 'Maria S.' },
-  { id: '7', number: 'TXN-3036', date: '2026-03-24 11:00 AM', items: 2, subtotal: 42.58, tax: 0.00, total: 42.58, method: 'Card', cashier: 'Jake M.' },
-  { id: '8', number: 'TXN-3035', date: '2026-03-24 9:05 AM', items: 6, subtotal: 62.44, tax: 4.37, total: 66.81, method: 'Card', cashier: 'Jake M.' },
-  { id: '9', number: 'TXN-3034', date: '2026-03-23 5:10 PM', items: 1, subtotal: 97.80, tax: 0.00, total: 97.80, method: 'Cash', cashier: 'Maria S.' },
-  { id: '10', number: 'TXN-3033', date: '2026-03-23 2:42 PM', items: 3, subtotal: 54.97, tax: 3.85, total: 58.82, method: 'Card', cashier: 'Maria S.' },
-];
+interface ShiftDTO {
+  id: string;
+  cashierId: string;
+  openedAt: string;
+  openingFloatCents: number;
+  status: 'OPEN' | 'CLOSED' | 'RECONCILED';
+}
+
+interface TransactionDTO {
+  id: string;
+  cashierId?: string | null;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  status: string; // the API stores the payment method here (CASH/CARD/...)
+  createdAt: string;
+  lineItems?: { productId?: string | null; quantity: number; unitPriceCents: number; product?: ProductDTO | null }[];
+}
+
+function toProduct(p: ProductDTO): Product {
+  return {
+    id: p.id,
+    sku: p.sku ?? '',
+    name: p.name,
+    category: p.departmentId ?? 'General',
+    price: p.priceCents / 100,
+    // Tax is calculated by the server per tax class when the sale is saved.
+    taxRate: 0,
+    inStock: p.trackInventory ? (p.inventory ?? []).reduce((sum, i) => sum + i.qtyOnHand, 0) : Number.POSITIVE_INFINITY,
+    reorderPoint: p.reorderQty ?? 0,
+  };
+}
+
+function toTransaction(t: TransactionDTO): Transaction {
+  return {
+    id: t.id,
+    number: t.id.slice(0, 8).toUpperCase(),
+    date: t.createdAt,
+    items: (t.lineItems ?? []).reduce((sum, li) => sum + li.quantity, 0),
+    subtotal: t.subtotalCents / 100,
+    tax: t.taxCents / 100,
+    total: t.totalCents / 100,
+    method: humanizeEnum(t.status),
+    cashier: '—',
+    cartItems: (t.lineItems ?? [])
+      .filter((li) => li.product)
+      .map((li) => ({ product: toProduct(li.product as ProductDTO), quantity: li.quantity })),
+  };
+}
+
+const METHOD_ENUM: Record<string, 'CASH' | 'CARD' | 'ACH' | 'CHARGE_TO_ACCOUNT'> = {
+  Cash: 'CASH', Card: 'CARD', ACH: 'ACH', 'Charge to Slip': 'CHARGE_TO_ACCOUNT',
+};
+
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -135,29 +178,44 @@ const stockStatus = (product: Product): { label: string; bg: string; color: stri
 
 /* ── Shift Modal ───────────────────────────────────────── */
 
-function OpenShiftModal({ onClose, onOpen }: { onClose: () => void; onOpen: (name: string, float: number) => void }) {
-  const [name, setName] = useState('');
+function OpenShiftModal({ onClose, onOpened }: { onClose: () => void; onOpened: () => void }) {
+  const client = useApiClient();
   const [float, setFloat] = useState('100.00');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = async () => {
+    const cents = Math.round(Number(float) * 100);
+    if (!(cents >= 0)) { setError('Enter the opening float.'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await client.post('/pos/shifts/open', { openingFloatCents: cents });
+      onOpened();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={() => { if (!saving) onClose(); }}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Open Shift</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
-          <div style={st.field}>
-            <label style={st.label}>Cashier Name *</label>
-            <input style={st.input} placeholder="e.g. Jake M." value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
+          {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
+          <p style={{ fontSize: 13, color: '#64748B', marginBottom: 12 }}>The shift is opened for the signed-in user.</p>
           <div style={st.field}>
             <label style={st.label}>Opening Float ($)</label>
-            <input style={st.input} type="number" value={float} onChange={(e) => setFloat(e.target.value)} />
+            <input style={st.input} type="number" step="0.01" value={float} onChange={(e) => setFloat(e.target.value)} />
           </div>
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={() => { onOpen(name || 'Jake M.', parseFloat(float) || 100); onClose(); }}>Open Shift</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} disabled={saving} onClick={open}>{saving ? 'Opening…' : 'Open Shift'}</button>
         </div>
       </div>
     </div>
@@ -172,22 +230,35 @@ function PaymentModal({
   total: number;
   method: string;
   onClose: () => void;
-  onComplete: (method: string, tendered: number) => void;
+  /** Must resolve only when the server saved the sale; throws otherwise. */
+  onComplete: (method: string, customer: CustomerRef | null) => Promise<{ total: number }>;
 }) {
   const [tendered, setTendered] = useState(method === 'Cash' ? '' : total.toFixed(2));
-  const [slip, setSlip] = useState('');
+  const [customer, setCustomer] = useState<CustomerRef | null>(null);
   const [done, setDone] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedTotal, setSavedTotal] = useState(total);
   const change = method === 'Cash' ? Math.max(0, (parseFloat(tendered) || 0) - total) : 0;
 
-  const handleComplete = () => {
-    if (method === 'Cash' && parseFloat(tendered) < total) return;
-    setDone(true);
-    onComplete(method, parseFloat(tendered) || total);
-    setTimeout(() => onClose(), 1200);
+  const blocked = (method === 'Cash' && !(parseFloat(tendered) >= total)) || (method === 'Charge to Slip' && !customer);
+  const handleComplete = async () => {
+    if (blocked || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await onComplete(method, customer);
+      setSavedTotal(result.total);
+      setDone(true);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div style={st.overlay} onClick={done ? undefined : onClose}>
+    <div style={st.overlay} onClick={done || saving ? undefined : onClose}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Payment — {method}</h2>
@@ -197,16 +268,17 @@ function PaymentModal({
           {done ? (
             <div style={{ textAlign: 'center', padding: '32px 0' }}>
               <div style={{ fontSize: '48px', marginBottom: '16px' }}>✓</div>
-              <div style={{ fontSize: '20px', fontWeight: 700, color: '#03543F' }}>Payment Complete</div>
-              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${total.toFixed(2)} charged via {method}</div>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#03543F' }}>Sale Recorded</div>
+              <div style={{ fontSize: '14px', color: '#64748B', marginTop: '8px' }}>${savedTotal.toFixed(2)} recorded as {method} (total includes server-calculated tax)</div>
               {method === 'Cash' && change > 0 && (
                 <div style={{ fontSize: '16px', fontWeight: 600, color: '#0A2342', marginTop: '12px' }}>Change: ${change.toFixed(2)}</div>
               )}
             </div>
           ) : (
             <>
+              {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
               <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-                <div style={{ fontSize: '14px', color: '#64748B', marginBottom: '4px' }}>Total Due</div>
+                <div style={{ fontSize: '14px', color: '#64748B', marginBottom: '4px' }}>Subtotal (tax added by the server)</div>
                 <div style={{ fontSize: '36px', fontWeight: 700, color: '#0A2342', fontFamily: '"JetBrains Mono", monospace' }}>${total.toFixed(2)}</div>
               </div>
               {method === 'Cash' && (
@@ -230,32 +302,37 @@ function PaymentModal({
               {method === 'Card' && (
                 <div style={{ textAlign: 'center', padding: '24px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
                   <CreditCard size={32} style={{ color: '#2E4A6B', marginBottom: '8px' }} />
-                  <div style={{ color: '#64748B', fontSize: '14px' }}>Tap, insert, or swipe card to proceed</div>
+                  <div style={{ color: '#64748B', fontSize: '14px' }}>Take the card payment on your card terminal, then record it here. Helm does not process this card.</div>
                 </div>
               )}
               {method === 'ACH' && (
                 <div style={{ textAlign: 'center', padding: '24px', background: '#F8FAFC', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ color: '#64748B', fontSize: '14px' }}>ACH payment will be initiated on confirmation</div>
+                  <div style={{ color: '#64748B', fontSize: '14px' }}>Records an ACH sale. Helm does not initiate the bank transfer from this screen.</div>
                 </div>
               )}
               {method === 'Charge to Slip' && (
                 <div style={st.field}>
-                  <label style={st.label}>Slip Number</label>
-                  <input style={st.input} placeholder="e.g. A-01" value={slip} onChange={(e) => setSlip(e.target.value)} autoFocus />
+                  <label style={st.label}>Charge to Customer Account</label>
+                  <CustomerPicker value={customer} onChange={setCustomer} inputStyle={st.input} />
                 </div>
               )}
             </>
           )}
         </div>
+        {done && (
+          <div style={st.modalFooter}>
+            <button style={st.saveBtn} onClick={onClose}>Done</button>
+          </div>
+        )}
         {!done && (
           <div style={st.modalFooter}>
-            <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
+            <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
             <button
-              style={{ ...st.saveBtn, opacity: (method === 'Cash' && parseFloat(tendered) < total) ? 0.5 : 1 }}
+              style={{ ...st.saveBtn, opacity: blocked || saving ? 0.5 : 1 }}
               onClick={handleComplete}
-              disabled={method === 'Cash' && parseFloat(tendered) < total}
+              disabled={blocked || saving}
             >
-              Complete Payment
+              {saving ? 'Saving sale…' : 'Complete Sale'}
             </button>
           </div>
         )}
@@ -282,9 +359,10 @@ export default function POS() {
   const [tab, setTab] = useState<'sale' | 'transactions'>('sale');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [shiftOpen, setShiftOpen] = useState(true);
-  const [shiftCashier] = useState('Jake M.');
-  const [shiftFloat] = useState(100);
+  const [txnFrom, setTxnFrom] = useState(todayKey());
+  const [txnTo, setTxnTo] = useState(todayKey());
+  const [pageError, setPageError] = useState<string | null>(null);
+  const client = useApiClient();
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [paymentModal, setPaymentModal] = useState<{ method: string } | null>(null);
   const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
@@ -300,39 +378,45 @@ export default function POS() {
     } catch { /* ignore */ }
   }, []);
 
-  const { data: apiProducts, loading: loadingProducts } = useApi<Product[]>('get', '/pos/products', { immediate: true });
-  const { data: apiTransactions, loading: loadingTxns } = useApi<Transaction[]>('get', '/pos/transactions', { immediate: true });
-  const createTransaction = useApi<Transaction>('post', '/pos/transactions');
+  const productsList = useList<Product, ProductDTO>('/pos/products?take=100', { map: toProduct });
+  const txnList = useList<Transaction, TransactionDTO>(`/pos/transactions?take=100&dateFrom=${txnFrom}&dateTo=${txnTo}`, { map: toTransaction });
+  const todayTxns = useList<Transaction, TransactionDTO>(`/pos/transactions?take=100&dateFrom=${todayKey()}&dateTo=${todayKey()}`, { map: toTransaction });
+  const shifts = useList<ShiftDTO>('/pos/shifts');
+  const posProducts = productsList.items;
+  const transactions = txnList.items;
+  // NOTE: /pos/shifts lists all shifts for the tenant; the API only allows one open shift per cashier.
+  const openShift = shifts.items.find((sh) => sh.status === 'OPEN') ?? null;
+  const shiftOpen = !!openShift;
 
-  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
-  const posProducts = useMemo(() => apiProducts ?? PRODUCTS, [apiProducts]);
-  const transactions = useMemo(
-    () => localTransactions.length > 0 ? localTransactions : (apiTransactions ?? TRANSACTIONS),
-    [localTransactions, apiTransactions]
-  );
-
-  const handlePaymentComplete = (method: string) => {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${timeStr}`;
-    const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
-    const tax = cart.reduce((s, i) => s + (i.product.price * i.product.taxRate / 100) * i.quantity, 0);
-    const nextNum = `TXN-${3042 + (localTransactions.length + 1)}`;
-    const txn: Transaction = {
-      id: `txn-${Date.now()}`,
-      number: nextNum,
-      date: dateStr,
-      items: cart.reduce((s, i) => s + i.quantity, 0),
-      subtotal: Math.round(subtotal * 100) / 100,
-      tax: Math.round(tax * 100) / 100,
-      total: Math.round((subtotal + tax) * 100) / 100,
-      method,
-      cashier: shiftCashier,
-      cartItems: [...cart],
-    };
-    setLocalTransactions((prev) => [txn, ...(prev.length > 0 ? prev : (apiTransactions ?? TRANSACTIONS))]);
+  const handlePaymentComplete = async (method: string, customer: CustomerRef | null): Promise<{ total: number }> => {
+    const fractional = cart.find((i) => !Number.isInteger(i.quantity));
+    if (fractional) throw new Error(`"${fractional.product.name}" has a fractional quantity; the POS API accepts whole quantities only.`);
+    const saved = await client.post<TransactionDTO>('/pos/transactions', {
+      lineItems: cart.map((i) => ({ productId: i.product.id, quantity: i.quantity, unitPriceCents: Math.round(i.product.price * 100) })),
+      shiftId: openShift?.id ?? null,
+      paymentMethod: METHOD_ENUM[method] ?? 'CASH',
+      customerId: customer?.id ?? null,
+    });
     setCart([]);
     setRecalledTxn(null);
+    txnList.refetch();
+    todayTxns.refetch();
+    return { total: saved.totalCents / 100 };
+  };
+
+  const closeShift = async () => {
+    if (!openShift) return;
+    const cash = window.prompt('Counted cash in drawer ($):');
+    if (cash === null) return;
+    const cents = Math.round(Number(cash) * 100);
+    if (!(cents >= 0)) { setPageError('Enter the counted cash as a number.'); return; }
+    setPageError(null);
+    try {
+      await client.post(`/pos/shifts/${openShift.id}/close`, { closingCashCents: cents });
+      shifts.refetch();
+    } catch (err) {
+      setPageError(errorMessage(err));
+    }
   };
 
   const recallTransaction = (txn: Transaction) => {
@@ -358,7 +442,6 @@ export default function POS() {
     setTab('sale');
   };
 
-  const loading = loadingProducts || loadingTxns;
 
   const addToCart = (product: Product, qty?: number) => {
     const addQty = qty ?? 1;
@@ -393,7 +476,7 @@ export default function POS() {
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.quantity, 0);
   const tax = cart.reduce((s, i) => s + i.product.price * i.quantity * (i.product.taxRate / 100), 0);
   const total = subtotal + tax;
-  const runningTotal = transactions.filter((t) => t.date.includes('2026-03-25')).reduce((s, t) => s + t.total, 0) + total;
+  const runningTotal = todayTxns.items.filter((t) => dateKey(t.date) === todayKey()).reduce((s, t) => s + t.total, 0);
 
   const tabItems: { key: typeof tab; label: string }[] = [
     { key: 'sale', label: 'New Sale' },
@@ -405,18 +488,19 @@ export default function POS() {
       <h1 style={st.title} className="helm-page-title">Point of Sale</h1>
       <hr style={st.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading POS data...</div>}
+      {pageError && <div style={{ marginBottom: 16 }}><InlineError message={pageError} /></div>}
+      {shifts.error && <div style={{ marginBottom: 16 }}><InlineError message={`Could not load shifts: ${shifts.error}`} /></div>}
 
       {/* Shift Banner */}
       {shiftOpen ? (
         <div style={st.shiftBanner}>
           <div style={st.shiftInfo}>
-            <div><div style={st.shiftLabel}>Cashier</div><div style={st.shiftValue}>{shiftCashier}</div></div>
-            <div><div style={st.shiftLabel}>Opened At</div><div style={st.shiftValue}>8:00 AM</div></div>
-            <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${shiftFloat.toFixed(2)}</div></div>
-            <div><div style={st.shiftLabel}>Running Total</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
+            <div><div style={st.shiftLabel}>Shift</div><div style={st.shiftValue}>Open</div></div>
+            <div><div style={st.shiftLabel}>Opened At</div><div style={st.shiftValue}>{formatDateTime(openShift!.openedAt)}</div></div>
+            <div><div style={st.shiftLabel}>Opening Float</div><div style={st.shiftValue}>${(openShift!.openingFloatCents / 100).toFixed(2)}</div></div>
+            <div><div style={st.shiftLabel}>Sales Today</div><div style={{ ...st.shiftValue, color: '#00D4FF' }}>${runningTotal.toFixed(2)}</div></div>
           </div>
-          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={() => setShiftOpen(false)}>Close Shift</button>
+          <button style={{ ...st.addBtn, backgroundColor: '#DC2626' }} onClick={closeShift}>Close Shift</button>
         </div>
       ) : (
         <div style={{ ...st.shiftBanner, background: '#F8FAFC', border: '1px solid #E2E8F0', justifyContent: 'center' }}>
@@ -444,6 +528,11 @@ export default function POS() {
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search or scan product..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
+            {productsList.loading && <LoadingState label="Loading products…" />}
+            {productsList.error && <ErrorState title="Could not load products" message={productsList.error} onRetry={productsList.refetch} />}
+            {!productsList.loading && !productsList.error && posProducts.length === 0 && (
+              <div style={{ padding: 24, color: '#64748B', fontSize: 14 }}>No POS products set up yet.</div>
+            )}
             <div style={st.prodGrid}>
               {posProducts.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.category.toLowerCase().includes(search.toLowerCase())).map((p) => (
                   <div key={p.id} style={st.prodCard}
@@ -513,8 +602,8 @@ export default function POS() {
             )}
             <div style={st.cartFooter}>
               <div style={st.cartRow}><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>
-              <div style={st.cartRow}><span>Tax</span><span>${tax.toFixed(2)}</span></div>
-              <div style={st.cartTotal}><span>Total</span><span>${total.toFixed(2)}</span></div>
+              <div style={st.cartRow}><span>Tax</span><span style={{ fontSize: 12, color: '#64748B' }}>calculated on sale</span></div>
+              <div style={st.cartTotal}><span>Total (before tax)</span><span>${total.toFixed(2)}</span></div>
               <div style={st.payBtns}>
                 <button style={{ ...st.payBtn, ...st.payBtnPrimary }} onClick={() => total > 0 && setPaymentModal({ method: 'Card' })}><CreditCard size={16} /> Card</button>
                 <button style={st.payBtn} onClick={() => total > 0 && setPaymentModal({ method: 'Cash' })}><Banknote size={16} /> Cash</button>
@@ -536,16 +625,17 @@ export default function POS() {
               <Search size={16} style={st.searchIcon} />
               <input style={st.searchInput} placeholder="Search transactions..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <input style={st.input} type="date" defaultValue="2026-03-23" />
+            <input style={st.input} type="date" value={txnFrom} onChange={(e) => setTxnFrom(e.target.value)} aria-label="From date" />
             <span style={{ color: '#64748B' }}>to</span>
-            <input style={st.input} type="date" defaultValue="2026-03-25" />
+            <input style={st.input} type="date" value={txnTo} onChange={(e) => setTxnTo(e.target.value)} aria-label="To date" />
           </div>
           <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '12px' }}>Click a transaction number to recall it to the sale screen.</p>
+          {txnList.loading ? <LoadingState label="Loading transactions…" /> : txnList.error ? <ErrorState title="Could not load transactions" message={txnList.error} onRetry={txnList.refetch} /> : (
           <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
-                  <th style={st.th}>Transaction #</th>
+                  <th style={st.th}>Transaction</th>
                   <th style={st.th}>Date / Time</th>
                   <th style={st.th}>Items</th>
                   <th style={st.th}>Subtotal</th>
@@ -571,7 +661,7 @@ export default function POS() {
                       >
                         {t.number}
                       </td>
-                      <td style={{ ...st.td, fontSize: '13px' }}>{t.date}</td>
+                      <td style={{ ...st.td, fontSize: '13px' }}>{formatDateTime(t.date)}</td>
                       <td style={{ ...st.td, textAlign: 'center' }}>{t.items}</td>
                       <td style={{ ...st.td, ...st.mono }}>${t.subtotal.toFixed(2)}</td>
                       <td style={{ ...st.td, ...st.mono }}>${t.tax.toFixed(2)}</td>
@@ -591,19 +681,23 @@ export default function POS() {
                     </tr>
                   );
                 })}
+                {transactions.length === 0 && (
+                  <tr><td colSpan={9} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No transactions in this date range.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
-      {showShiftModal && <OpenShiftModal onClose={() => setShowShiftModal(false)} onOpen={() => { setShiftOpen(true); }} />}
+      {showShiftModal && <OpenShiftModal onClose={() => setShowShiftModal(false)} onOpened={() => shifts.refetch()} />}
       {paymentModal && (
         <PaymentModal
           total={total}
           method={paymentModal.method}
           onClose={() => setPaymentModal(null)}
-          onComplete={(method) => handlePaymentComplete(method)}
+          onComplete={handlePaymentComplete}
         />
       )}
     </div>
