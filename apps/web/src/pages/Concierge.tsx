@@ -14,7 +14,13 @@ import {
   FileText,
   AlertCircle,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { customerName, type CustomerRef } from '../lib/dto';
+import { formatDate, humanizeEnum } from '../lib/format';
+import CustomerPicker from '../components/CustomerPicker';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -27,13 +33,13 @@ interface ServiceRequest {
   id: string;
   requestNumber: string;
   customer: string;
-  serviceType: ServiceType;
+  serviceType: string;
   boat: string;
   preferredDate: string;
   vendor: string;
   quote: number | null;
   status: RequestStatus;
-  urgency: Urgency;
+  urgency: string;
   notes: string;
   createdAt: string;
   timeline: { date: string; status: string; note: string }[];
@@ -45,7 +51,7 @@ interface Vendor {
   specialty: string;
   phone: string;
   email: string;
-  rating: number;
+  rating: number | null;
   active: boolean;
 }
 
@@ -54,41 +60,60 @@ interface Vendor {
 const SERVICE_TYPES: ServiceType[] = ['Detailing', 'Cleaning', 'Provisioning', 'Pump-Out', 'Mechanic', 'Fueling', 'Winterization'];
 const ALL_STATUSES: RequestStatus[] = ['Submitted', 'Quoted', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Invoiced'];
 
-const MOCK_REQUESTS: ServiceRequest[] = [
-  { id: '1', requestNumber: 'SR-3001', customer: 'James Harborview', serviceType: 'Detailing', boat: 'Sea Breeze (32 ft)', preferredDate: '2026-03-26', vendor: 'Marina Shine Co.', quote: 450, status: 'Scheduled', urgency: 'Normal', notes: 'Full hull and deck detail before season start.', createdAt: '2026-03-20',
-    timeline: [{ date: '2026-03-20', status: 'Submitted', note: 'Request created' }, { date: '2026-03-21', status: 'Quoted', note: 'Quote: $450' }, { date: '2026-03-22', status: 'Approved', note: 'Customer approved quote' }, { date: '2026-03-23', status: 'Scheduled', note: 'Scheduled for Mar 26' }] },
-  { id: '2', requestNumber: 'SR-3002', customer: 'Maria Fontaine', serviceType: 'Provisioning', boat: 'Windward Spirit (28 ft)', preferredDate: '2026-03-27', vendor: 'Harbor Provisions', quote: 320, status: 'Approved', urgency: 'Normal', notes: 'Weekend trip provisions for 6 guests. See attached list.', createdAt: '2026-03-21',
-    timeline: [{ date: '2026-03-21', status: 'Submitted', note: 'Request created' }, { date: '2026-03-22', status: 'Quoted', note: 'Quote: $320' }, { date: '2026-03-23', status: 'Approved', note: 'Customer approved' }] },
-  { id: '3', requestNumber: 'SR-3003', customer: 'Thomas Benavides', serviceType: 'Mechanic', boat: 'Reel Deal (36 ft)', preferredDate: '2026-03-25', vendor: 'Coastal Marine Repair', quote: 850, status: 'In Progress', urgency: 'Urgent', notes: 'Engine stalling at low RPM. Possible fuel injector issue.', createdAt: '2026-03-19',
-    timeline: [{ date: '2026-03-19', status: 'Submitted', note: 'Request created - URGENT' }, { date: '2026-03-19', status: 'Quoted', note: 'Estimate: $850' }, { date: '2026-03-20', status: 'Approved', note: 'Customer approved' }, { date: '2026-03-20', status: 'Scheduled', note: 'Scheduled for Mar 25' }, { date: '2026-03-25', status: 'In Progress', note: 'Technician on-site' }] },
-  { id: '4', requestNumber: 'SR-3004', customer: 'Jennifer Albright', serviceType: 'Cleaning', boat: 'Lady Luck (24 ft)', preferredDate: '2026-03-28', vendor: 'Unassigned', quote: null, status: 'Submitted', urgency: 'Normal', notes: 'Interior cabin deep cleaning before guest arrival.', createdAt: '2026-03-24',
-    timeline: [{ date: '2026-03-24', status: 'Submitted', note: 'Request created' }] },
-  { id: '5', requestNumber: 'SR-3005', customer: 'Daniel Marsh', serviceType: 'Pump-Out', boat: 'Poseidon\'s Trident (42 ft)', preferredDate: '2026-03-25', vendor: 'Bay Area Pump Services', quote: 75, status: 'Completed', urgency: 'Normal', notes: 'Routine pump-out service.', createdAt: '2026-03-22',
-    timeline: [{ date: '2026-03-22', status: 'Submitted', note: 'Request created' }, { date: '2026-03-22', status: 'Quoted', note: 'Quote: $75' }, { date: '2026-03-23', status: 'Approved', note: 'Auto-approved under $100' }, { date: '2026-03-24', status: 'Scheduled', note: 'Scheduled for Mar 25' }, { date: '2026-03-25', status: 'In Progress', note: 'Service started' }, { date: '2026-03-25', status: 'Completed', note: 'Service completed' }] },
-  { id: '6', requestNumber: 'SR-3006', customer: 'Susan Whitaker', serviceType: 'Fueling', boat: 'Calm Waters (30 ft)', preferredDate: '2026-03-24', vendor: 'Dockside Fuel', quote: 520, status: 'Invoiced', urgency: 'Normal', notes: 'Fill both tanks (diesel). Approx 120 gal.', createdAt: '2026-03-20',
-    timeline: [{ date: '2026-03-20', status: 'Submitted', note: 'Request created' }, { date: '2026-03-20', status: 'Quoted', note: 'Est: $520' }, { date: '2026-03-21', status: 'Approved', note: 'Customer approved' }, { date: '2026-03-22', status: 'Scheduled', note: 'Scheduled for Mar 24' }, { date: '2026-03-24', status: 'In Progress', note: 'Fueling started' }, { date: '2026-03-24', status: 'Completed', note: 'Fueling completed - 118 gal' }, { date: '2026-03-25', status: 'Invoiced', note: 'Invoice #INV-7845 sent' }] },
-  { id: '7', requestNumber: 'SR-3007', customer: 'Kevin Okafor', serviceType: 'Detailing', boat: 'African Queen (38 ft)', preferredDate: '2026-03-29', vendor: 'Marina Shine Co.', quote: 550, status: 'Quoted', urgency: 'Normal', notes: 'Full exterior detail plus teak restoration.', createdAt: '2026-03-23',
-    timeline: [{ date: '2026-03-23', status: 'Submitted', note: 'Request created' }, { date: '2026-03-24', status: 'Quoted', note: 'Quote: $550' }] },
-  { id: '8', requestNumber: 'SR-3008', customer: 'Patricia Langley', serviceType: 'Mechanic', boat: 'Blue Horizon (26 ft)', preferredDate: '2026-03-30', vendor: 'Coastal Marine Repair', quote: null, status: 'Submitted', urgency: 'Urgent', notes: 'Bilge pump not functioning. Needs immediate inspection.', createdAt: '2026-03-25',
-    timeline: [{ date: '2026-03-25', status: 'Submitted', note: 'Request created - URGENT' }] },
-  { id: '9', requestNumber: 'SR-3009', customer: 'Andrew Gilmore', serviceType: 'Winterization', boat: 'Wave Dancer (34 ft)', preferredDate: '2026-04-15', vendor: 'Coastal Marine Repair', quote: 1200, status: 'Approved', urgency: 'Normal', notes: 'Full winterization package: engine, plumbing, shrink wrap.', createdAt: '2026-03-18',
-    timeline: [{ date: '2026-03-18', status: 'Submitted', note: 'Request created' }, { date: '2026-03-19', status: 'Quoted', note: 'Quote: $1,200' }, { date: '2026-03-20', status: 'Approved', note: 'Customer approved' }] },
-  { id: '10', requestNumber: 'SR-3010', customer: 'Emily Stafford', serviceType: 'Cleaning', boat: 'Starboard Dream (22 ft)', preferredDate: '2026-03-26', vendor: 'Marina Shine Co.', quote: 180, status: 'Scheduled', urgency: 'Normal', notes: 'Basic interior clean.', createdAt: '2026-03-22',
-    timeline: [{ date: '2026-03-22', status: 'Submitted', note: 'Request created' }, { date: '2026-03-23', status: 'Quoted', note: 'Quote: $180' }, { date: '2026-03-24', status: 'Approved', note: 'Customer approved' }, { date: '2026-03-24', status: 'Scheduled', note: 'Scheduled for Mar 26' }] },
-  { id: '11', requestNumber: 'SR-3011', customer: 'Frank Delaney', serviceType: 'Provisioning', boat: 'Sea Breeze (32 ft)', preferredDate: '2026-03-28', vendor: 'Harbor Provisions', quote: 275, status: 'Quoted', urgency: 'Normal', notes: 'Fishing trip supplies for 4.', createdAt: '2026-03-24',
-    timeline: [{ date: '2026-03-24', status: 'Submitted', note: 'Request created' }, { date: '2026-03-25', status: 'Quoted', note: 'Quote: $275' }] },
-  { id: '12', requestNumber: 'SR-3012', customer: 'Daniel Marsh', serviceType: 'Fueling', boat: 'Poseidon\'s Trident (42 ft)', preferredDate: '2026-03-27', vendor: 'Dockside Fuel', quote: 680, status: 'Approved', urgency: 'Normal', notes: 'Fill main tank, diesel. Approx 160 gal.', createdAt: '2026-03-24',
-    timeline: [{ date: '2026-03-24', status: 'Submitted', note: 'Request created' }, { date: '2026-03-24', status: 'Quoted', note: 'Est: $680' }, { date: '2026-03-25', status: 'Approved', note: 'Customer approved' }] },
-];
+/* ── API mapping ───────────────────────────────────────── */
 
-const MOCK_VENDORS: Vendor[] = [
-  { id: '1', name: 'Marina Shine Co.', specialty: 'Detailing & Cleaning', phone: '(555) 300-1001', email: 'info@marinashine.com', rating: 4.8, active: true },
-  { id: '2', name: 'Coastal Marine Repair', specialty: 'Mechanic & Winterization', phone: '(555) 300-1002', email: 'service@coastalmarine.com', rating: 4.7, active: true },
-  { id: '3', name: 'Harbor Provisions', specialty: 'Provisioning & Catering', phone: '(555) 300-1003', email: 'orders@harborprovisions.com', rating: 4.9, active: true },
-  { id: '4', name: 'Bay Area Pump Services', specialty: 'Pump-Out', phone: '(555) 300-1004', email: 'dispatch@baypump.com', rating: 4.5, active: true },
-  { id: '5', name: 'Dockside Fuel', specialty: 'Fueling', phone: '(555) 300-1005', email: 'fuel@docksidefuel.com', rating: 4.6, active: true },
-  { id: '6', name: 'Seaside Canvas & Upholstery', specialty: 'Upholstery & Canvas', phone: '(555) 300-1006', email: 'quotes@seasidecanvas.com', rating: 4.4, active: false },
-];
+interface RequestDTO {
+  id: string;
+  serviceType: string;
+  preferredDate?: string | null;
+  notes?: string | null;
+  urgency?: string | null;
+  status: 'SUBMITTED' | 'QUOTED' | 'APPROVED' | 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'INVOICED';
+  quoteCents?: number | null;
+  approvedAt?: string | null;
+  completedAt?: string | null;
+  customer?: CustomerRef | null;
+  vendor?: { name?: string | null } | null;
+}
+
+interface VendorDTO {
+  id: string;
+  name: string;
+  specialty?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  active: boolean;
+}
+
+function toRequest(r: RequestDTO): ServiceRequest {
+  const status = humanizeEnum(r.status) as RequestStatus;
+  const timeline: ServiceRequest['timeline'] = [];
+  if (r.approvedAt) timeline.push({ date: formatDate(r.approvedAt), status: 'Approved', note: 'Quote approved' });
+  if (r.completedAt) timeline.push({ date: formatDate(r.completedAt), status: 'Completed', note: 'Work completed' });
+  return {
+    id: r.id,
+    requestNumber: r.id.slice(0, 8).toUpperCase(),
+    customer: customerName(r.customer),
+    serviceType: r.serviceType,
+    boat: '—',
+    preferredDate: r.preferredDate ?? '',
+    vendor: r.vendor?.name ?? 'Unassigned',
+    quote: r.quoteCents != null ? r.quoteCents / 100 : null,
+    status,
+    urgency: r.urgency === 'URGENT' || r.urgency === 'HIGH' ? 'Urgent' : 'Normal',
+    notes: r.notes ?? '',
+    createdAt: '',
+    timeline,
+  };
+}
+
+function toVendor(v: VendorDTO): Vendor {
+  return { id: v.id, name: v.name, specialty: v.specialty ?? '—', phone: v.phone ?? '—', email: v.email ?? '—', rating: null, active: v.active };
+}
+
+const STATUS_ENUM: Record<string, string> = {
+  Submitted: 'SUBMITTED', Quoted: 'QUOTED', Approved: 'APPROVED', Scheduled: 'SCHEDULED', 'In Progress': 'IN_PROGRESS', Completed: 'COMPLETED', Invoiced: 'INVOICED',
+};
 
 /* ── Status Colors ─────────────────────────────────────── */
 
@@ -180,50 +205,48 @@ export default function Concierge() {
   const [showModal, setShowModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null);
 
-  const { data: apiRequests, loading: requestsLoading } = useApi<ServiceRequest[]>('get', '/concierge', { immediate: true });
-  const { data: apiVendors, loading: vendorsLoading } = useApi<Vendor[]>('get', '/concierge/vendors', { immediate: true });
-
-  const [localRequests, setLocalRequests] = useState<ServiceRequest[]>([]);
-  const requests = localRequests.length > 0 ? localRequests : (apiRequests || MOCK_REQUESTS);
-  const vendors = apiVendors || MOCK_VENDORS;
+  const client = useApiClient();
+  const toast = useToast();
+  const list = useList<ServiceRequest, RequestDTO>(`/concierge/requests?take=200${statusFilter !== 'All' ? `&status=${STATUS_ENUM[statusFilter]}` : ''}`, { map: toRequest });
+  const vendorList = useList<Vendor, VendorDTO>(tab === 'vendors' ? '/concierge/vendors' : null, { map: toVendor });
+  const requests = list.items;
+  const vendors = vendorList.items;
 
   /* New request form state */
-  const [nrCustomer, setNrCustomer] = useState('');
+  const [nrCustomer, setNrCustomer] = useState<CustomerRef | null>(null);
   const [nrService, setNrService] = useState<ServiceType | ''>('');
-  const [nrBoat, setNrBoat] = useState('');
   const [nrDate, setNrDate] = useState('');
   const [nrUrgency, setNrUrgency] = useState<'Normal' | 'Urgent'>('Normal');
   const [nrNotes, setNrNotes] = useState('');
   const [nrSaving, setNrSaving] = useState(false);
+  const [nrError, setNrError] = useState<string | null>(null);
 
   const resetNewRequestForm = () => {
-    setNrCustomer(''); setNrService(''); setNrBoat('');
-    setNrDate(''); setNrUrgency('Normal'); setNrNotes('');
+    setNrCustomer(null); setNrService('');
+    setNrDate(''); setNrUrgency('Normal'); setNrNotes(''); setNrError(null);
   };
 
   const handleSubmitRequest = async () => {
-    if (!nrCustomer || !nrService) return;
+    if (!nrCustomer || !nrService || nrSaving) return;
     setNrSaving(true);
-    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    const newReq: ServiceRequest = {
-      id: `sr-${Date.now()}`,
-      requestNumber: `SR-${3000 + (requests.length + 1)}`,
-      customer: nrCustomer,
-      serviceType: nrService as ServiceType,
-      boat: nrBoat || '—',
-      preferredDate: nrDate || today,
-      vendor: 'Unassigned',
-      quote: null,
-      status: 'Submitted',
-      urgency: nrUrgency,
-      notes: nrNotes,
-      createdAt: new Date().toISOString().slice(0, 10),
-      timeline: [{ date: today, status: 'Submitted', note: 'Request created' }],
-    };
-    setLocalRequests((prev) => [newReq, ...(prev.length > 0 ? prev : apiRequests || MOCK_REQUESTS)]);
-    resetNewRequestForm();
-    setNrSaving(false);
-    setShowModal(false);
+    setNrError(null);
+    try {
+      await client.post('/concierge/requests', {
+        customerId: nrCustomer.id,
+        serviceType: nrService,
+        preferredDate: nrDate ? new Date(`${nrDate}T12:00:00`).toISOString() : null,
+        notes: nrNotes || null,
+        urgency: nrUrgency === 'Urgent' ? 'URGENT' : 'NORMAL',
+      });
+      toast.success('Service request submitted');
+      resetNewRequestForm();
+      setShowModal(false);
+      list.refetch();
+    } catch (err) {
+      setNrError(errorMessage(err));
+    } finally {
+      setNrSaving(false);
+    }
   };
 
   /* Derived stats */
@@ -233,7 +256,6 @@ export default function Concierge() {
   const revenue = requests.filter((r) => r.status === 'Invoiced' || r.status === 'Completed').reduce((sum, r) => sum + (r.quote || 0), 0);
 
   const filtered = requests.filter((r) => {
-    if (statusFilter !== 'All' && r.status !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       const hay = `${r.requestNumber} ${r.customer} ${r.serviceType} ${r.boat} ${r.vendor}`.toLowerCase();
@@ -247,7 +269,9 @@ export default function Concierge() {
       <h1 style={s.title} className="helm-page-title">Concierge Services</h1>
       <hr style={s.divider} />
 
-      {(requestsLoading || vendorsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading concierge data...</div>}
+      {list.loading && <LoadingState label="Loading service requests…" />}
+      {list.error && <ErrorState title="Could not load service requests" message={list.error} onRetry={list.refetch} />}
+      {tab === 'vendors' && vendorList.error && <ErrorState title="Could not load vendors" message={vendorList.error} onRetry={vendorList.refetch} />}
 
       {/* Stats */}
       <div style={s.statsRow} className="helm-stats-grid">
@@ -326,7 +350,7 @@ export default function Concierge() {
                     <td style={s.td}>{r.boat}</td>
                     <td style={s.td}>
                       <Calendar size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                      {r.preferredDate}
+                      {formatDate(r.preferredDate)}
                     </td>
                     <td style={s.td}>{r.vendor}</td>
                     <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(r.quote)}</td>
@@ -371,15 +395,7 @@ export default function Concierge() {
               </div>
               <div style={s.vendorSpecialty}>{v.specialty}</div>
               <div style={s.starRow}>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Star
-                    key={i}
-                    size={14}
-                    fill={i < Math.floor(v.rating) ? '#F59E0B' : 'none'}
-                    color={i < Math.floor(v.rating) ? '#F59E0B' : '#CCC'}
-                  />
-                ))}
-                <span style={{ fontSize: '13px', fontWeight: 600, color: '#0A2342', marginLeft: '4px' }}>{v.rating}</span>
+                <span style={{ fontSize: '12px', color: '#64748B' }}>Ratings are not tracked yet</span>
               </div>
               <div style={s.vendorDetail}>
                 <Phone size={13} color="#2E4A6B" /> {v.phone}
@@ -432,7 +448,7 @@ export default function Concierge() {
                   <span style={s.fieldLabel}>Preferred Date</span>
                   <span style={s.fieldValue}>
                     <Calendar size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedRequest.preferredDate}
+                    {formatDate(selectedRequest.preferredDate)}
                   </span>
                 </div>
                 <div style={s.field}>
@@ -480,15 +496,11 @@ export default function Concierge() {
               <button style={s.closeBtn} onClick={() => { setShowModal(false); resetNewRequestForm(); }}><X size={20} /></button>
             </div>
             <div style={s.modalBody}>
+              {nrError && <div style={{ marginBottom: 12 }}><InlineError message={nrError} /></div>}
               <div style={s.fieldGrid}>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Customer *</span>
-                  <select style={{ ...s.input, ...s.select }} value={nrCustomer} onChange={(e) => setNrCustomer(e.target.value)}>
-                    <option value="">Select customer...</option>
-                    {Array.from(new Set((apiRequests || MOCK_REQUESTS).map((r) => r.customer))).map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
+                  <CustomerPicker value={nrCustomer} onChange={setNrCustomer} inputStyle={s.input} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Service Type *</span>
@@ -496,10 +508,6 @@ export default function Concierge() {
                     <option value="">Select service...</option>
                     {SERVICE_TYPES.map((st) => <option key={st} value={st}>{st}</option>)}
                   </select>
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Boat</span>
-                  <input style={s.input} placeholder="Boat name (length)" value={nrBoat} onChange={(e) => setNrBoat(e.target.value)} />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Preferred Date</span>
