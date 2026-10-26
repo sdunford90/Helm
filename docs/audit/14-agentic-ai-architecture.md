@@ -269,12 +269,12 @@ export const createInvoice = defineCommand({
   key: "invoices.create",
   description: "Create a DRAFT invoice for a customer. Does not send it.",
   input: CreateInvoiceInput,
-  permission: "invoices.create",                        // pricing.override is checked in plan() once prices are resolved
-  risk: "low_write",                                    // draft only; sending is financial/outbound
+  risk: "LOW", kind: "write",                           // draft only; finalize/send are separate MEDIUM commands
+  // pricing.override / discounts.apply are authorized in plan() once prices are resolved (they raise risk to HIGH)
   async plan(ctx, input, tx) {
     const customer = await tx.customer.findFirstOrThrow({ where: { id: input.customerId } });  // RLS-scoped
     const priced = await priceLines(tx, input.lineItems);      // catalog price wins; flags overrides
-    if (priced.overrides.length) assertPermission(ctx, "pricing.override");
+    if (priced.overrides.length) await authorizeOrThrow(ctx.principal, "pricing.override", { percent: priced.maxOverridePct });   // doc 11 limit price_override.max_percent
     const tax = await calculateTax(ctx.tenantId, customer.id, priced.lines);
     const number = await peekNextInvoiceNumber(tx);            // sequential per tenant (fix G10)
     return {
@@ -295,7 +295,7 @@ export const createInvoice = defineCommand({
 The Express route shrinks to an adapter:
 
 ```ts
-router.post("/", ...auth(), restCommand(createInvoice));   // builds ctx from session, calls runCommand(execute)
+router.post("/", http(createInvoice, (req) => req.body));   // doc 11 §3.7 adapter: Principal from session → executeCommand
 ```
 
 **Scope of the refactor (Phase 0).** Don't refactor all 32 routers up front. Extract the roughly 25 commands and 20 queries the copilot needs first (the §2.4 catalog marked "P1/P2"). Wrap the rest later, as each feature is touched. Rough sizing: 0.5–1.5 days per command including tests. The rentals and payments commands follow the rebuilds in 04 and the payments audit.
@@ -328,89 +328,111 @@ export function buildToolsFor(ctx: ExecutionContext, surface: "staff" | "portal"
 - **Tool count and tool search.** Phase 1 has about 30 read tools and Phase 3 about 75 tools in total. Above roughly 40, mark rarely used tools `defer_loading: true` and include `tool_search_tool_bm25_20251119`. Core tools stay loaded: `search_customers`, `get_customer_360`, `get_metric`, `create_invoice` and similar.
 - **Caching.** Tool definitions render first in the prompt. The tool set is deterministic per **permission-set hash**, and users with the same role share it, so the prefix `tools + system` caches across users of a tenant. With tool search, it caches across tenants too, because the tool definitions are identical and tenant data never appears in the prefix.
 
-**The catalog.** Permission strings follow doc 11's `resource.action` convention. Where a doc-11 string isn't known yet, the closest analogue is proposed. Risk tiers:
-- **R** = read
-- **L** = low-risk write
-- **F** = financial
-- **C** = outbound communication
-- **D** = destructive or irreversible
+**The catalog.** Permission keys are doc 11 §3.4 catalog keys. Risk is the doc 11 scale (LOW / MEDIUM / HIGH / CRITICAL), using the command-risk examples in §3.11.2. `authorize()` can raise risk at runtime from amount, bulk count or a closed period. Every tool also needs an **AI capability** permission (doc 11 §3.4, "AI assistant & agents"); the effective set is user ∩ AI ceiling ∩ `TenantAiPolicy` (§3.11.1):
+
+| Tool type | AI capabilities required |
+|---|---|
+| Read tools | `ai.data.query`. Add `ai.data.query.financial` for anything backed by `reports.financial.view` data. `search_help_center` and drafting need only `ai.assistant.use`. |
+| Write tools | `ai.actions.propose` to produce a card. `ai.actions.execute` to run a confirmed card. |
+| 1:1 email/SMS | `ai.communications.send_individual` |
+| Bulk (> `bulk.maxRecords` / `bulkComms.maxRecipients`) | `ai.bulk_operations` / `ai.bulk_communications` |
+
+**"Kind"** (R read, W write, F financial, C outbound comm, D destructive) only drives card styling and undo UX (§3c, §3d). It is not an authorization input.
+
+**Confirmation column:**
+- **auto-eligible**: LOW, not on `alwaysConfirm`. It may skip the per-action click only for users holding `ai.actions.auto_approve.low_risk`, and only when `maxAutoRisk ≥ LOW`.
+- **confirm**: per-action click.
+- **always-confirm**: on doc 11's default `alwaysConfirm` list, or proposed for it here (marked †).
+- **+ approval**: a doc 11 §3.6 `ApprovalRequest` is needed above the policy threshold. The AI threshold is the stricter of the manual and AI thresholds.
 
 Phase is when the tool ships to the agent.
 
-#### 2.4.1 Read / query tools (tier R)
+#### 2.4.1 Read / query tools (kind R)
 
-| Tool | Domain query | Permission | Phase | Notes |
+| Tool | Domain query | Permission (doc 11 key) | Phase | Notes |
 |---|---|---|---|---|
-| `search_customers` | customers.search | `customers.read` | 1 | Fuzzy over name, email, phone, boat name, slip. Returns ids + disambiguation fields. PII-minimised (no DOB/DL). |
-| `get_customer_360` | customers.get360 | `customers.read` (+`invoices.read` for balances) | 1 | Profile, boats, slip contracts, balance, last payments, open reservations, insurance status, comm prefs. |
-| `get_customer_balance` | billing.balance | `invoices.read` | 1 | Balance, aging buckets, autopay status. |
-| `list_invoices` / `get_invoice` | invoices.list/get | `invoices.read` | 1 | |
-| `list_payments` | payments.list | `payments.read` | 1 | Card last4 only. |
-| `get_ar_aging` | metrics.ar_aging | `reports.financial.read` | 1 | |
-| `list_slips` / `get_slip` / `find_available_slips` | slips.* | `slips.read` | 1 | `find_available_slips` filters by LOA/beam/draft/power and dates. |
-| `get_occupancy` | metrics.occupancy | `reports.operations.read` | 1 | By location/dock/date. |
-| `list_contracts` / `get_contract` / `contracts_expiring` | contracts.* | `contracts.read` | 1 | |
-| `list_reservations` / `get_reservation` | rentals.reservations.* | `rentals.read` | 2* | *Gated on the 04 rebuild. |
-| `check_rental_availability` | rentals.availability | `rentals.read` | 2* | |
-| `quote_rental_price` | rentals.quote | `rentals.read` | 2* | One canonical pricing pipeline (04 §3.5). |
-| `list_boats` / `get_boat` | boats.* | `boats.read` | 1 | |
-| `get_insurance_status` | insurance.status | `insurance.read` | 1 | COI expiry, gaps. |
-| `list_waitlist` | waitlist.list | `waitlist.read` | 1 | |
-| `list_leads` / `get_lead` | leads.* | `leads.read` | 1 | |
-| `get_fuel_summary` | metrics.fuel | `reports.operations.read` | 1 | Gallons, revenue, margin by type/day. |
-| `get_pos_sales` | metrics.pos_sales | `reports.financial.read` | 1 | |
-| `get_revenue` / `get_deferred_revenue` | metrics.* | `reports.financial.read` | 1 | |
-| `get_metric` | MetricsCatalog | per-metric permission | 1 | Semantic layer entry point (§2.5). |
-| `list_metrics` | MetricsCatalog | — | 1 | Discovery: which metrics and dimensions exist. |
-| `list_announcements` / `get_delivery_stats` | announcements.* | `communications.read` | 1 | |
-| `get_comm_history` | communications.history | `communications.read` | 1 | Inbound bodies are **untrusted** (§3e). |
-| `list_dock_walk_findings` | dockwalks.* | `dockwalks.read` | 1 | |
-| `get_audit_trail` | audit.query | `audit.read` | 2 | "Who changed this slip rate?" |
-| `search_help_center` | help.search | — | 1 | Static help articles (`apps/web/src/data/help-articles.ts`). Product how-to answers. |
+| `search_customers` | customers.search | `customers.view` (contact fields masked unless `customers.contact.view`) | 1 | Fuzzy over name, email, phone, boat name, slip. Returns ids + disambiguation fields. `shape()` masks applied before the model sees data (doc 11 §3.11.1). |
+| `get_customer_360` | customers.get360 | `customers.view` (+`invoices.view`, `insurance.view` sections) | 1 | Profile, boats, slip contracts, balance, last payments, open reservations, insurance status, comm prefs. Sections the user can't see are omitted. |
+| `get_customer_balance` | billing.balance | `invoices.view` | 1 | Balance, aging buckets, autopay status. |
+| `list_invoices` / `get_invoice` | invoices.list/get | `invoices.view` | 1 | |
+| `list_payments` | payments.list | `payments.view` | 1 | Card last4 only. |
+| `get_ar_aging` | metrics.ar_aging | `reports.financial.view` (+`ai.data.query.financial`) | 1 | |
+| `list_slips` / `get_slip` / `find_available_slips` | slips.* | `slips.view` | 1 | `find_available_slips` filters by LOA/beam/draft/power and dates. |
+| `get_occupancy` | metrics.occupancy | `reports.operational.view` | 1 | By location/dock/date. |
+| `list_contracts` / `get_contract` / `contracts_expiring` | contracts.* | `contracts.view` | 1 | |
+| `list_reservations` / `get_reservation` | rentals.reservations.* | `rentals.view` | 2* | *Gated on the 04 rebuild. |
+| `check_rental_availability` | rentals.availability | `rentals.view` | 2* | |
+| `quote_rental_price` | rentals.quote | `rentals.view` | 2* | One canonical pricing pipeline (04 §3.5). |
+| `list_boats` / `get_boat` | boats.* | `boats.view` | 1 | |
+| `get_insurance_status` | insurance.status | `insurance.view` | 1 | COI expiry, gaps. |
+| `list_waitlist` | waitlist.list | `waitlist.view` | 1 | |
+| `list_leads` / `get_lead` | leads.* | `leads.view` | 1 | |
+| `get_fuel_summary` | metrics.fuel | `reports.sales.view` (margin columns need `inventory.cost.view`) | 1 | Gallons, revenue, margin by type/day. |
+| `get_pos_sales` | metrics.pos_sales | `reports.sales.view` | 1 | |
+| `get_revenue` / `get_deferred_revenue` | metrics.* | `reports.financial.view` (+`ai.data.query.financial`) | 1 | |
+| `get_metric` | MetricsCatalog | per-metric doc 11 key | 1 | Semantic layer entry point (§2.5). |
+| `list_metrics` | MetricsCatalog | `ai.data.query` | 1 | Discovery: which metrics and dimensions exist, filtered to what the user can query. |
+| `list_announcements` / `get_delivery_stats` | announcements.* | `communications.history.view` ‡ | 1 | |
+| `get_comm_history` | communications.history | `communications.history.view` ‡ | 1 | Inbound bodies are **untrusted** (§3e). |
+| `list_dock_walk_findings` | dockwalks.* | `reports.operational.view` | 1 | |
+| `get_audit_trail` | audit.query | `audit.view` | 2 | "Who changed this slip rate?" |
+| `search_help_center` | help.search | `ai.assistant.use` | 1 | Static help articles (`apps/web/src/data/help-articles.ts`). Product how-to answers. |
 
 #### 2.4.2 Action tools
 
-| Tool | Command | Tier | Permission(s) | Default policy | Reversal | Phase |
-|---|---|---|---|---|---|---|
-| `create_customer` | customers.create | L | `customers.create` | confirm (auto-approve allowed) | archive | 2 |
-| `update_customer_contact` | customers.updateContact | L | `customers.update` | confirm. Email/phone changes **always** confirm (they redirect future comms). | revert diff | 2 |
-| `add_customer_note` / `create_task` | notes.create / tasks.create | L | `customers.update` / `tasks.create` | auto-approve eligible | delete own note | 2 |
-| `create_boat` / `update_boat` | boats.create/update | L | `boats.create` / `boats.update` | confirm | revert | 2 |
-| `create_lead` / `update_lead_stage` | leads.* | L | `leads.update` | auto-approve eligible | revert | 2 |
-| `add_to_waitlist` | waitlist.add | L | `waitlist.update` | confirm | remove | 2 |
-| `create_invoice` (draft) | invoices.create | L | `invoices.create` (+`pricing.override` if non-catalog price) | confirm | delete draft | 2 |
-| `create_rental_hold` | rentals.hold | L | `rentals.create` | confirm | release hold | 2* |
-| `create_rental_reservation` | rentals.reservations.create | F (takes deposit) | `rentals.create` (+`payments.charge` if card on file) | confirm, always | cancel per policy | 3* |
-| `modify_rental_reservation` / `cancel_rental_reservation` | rentals.* | F | `rentals.update` / `rentals.cancel` (+`payments.refund`) | confirm, always | re-book (no auto-undo of refunds) | 3* |
-| `assign_slip` | slips.assign | L→F (if it creates a contract or charges) | `slips.assign` | confirm, always | unassign | 2 |
-| `record_meter_reading` | meters.record | L | `meters.create` | auto-approve eligible (dock staff) | correct reading | 2 |
-| `finalize_invoice` | invoices.finalize | F | `invoices.finalize` | confirm, always (posts GL) | `invoices.void` | 3 |
-| `send_invoice` | invoices.send | F + C | `invoices.send` | confirm, always | resend/void (email can't be unsent) | 3 |
-| `create_and_send_invoice` (macro) | invoices.create → finalize → send | F + C | union | **one** card showing all three steps | void | 3 |
-| `record_payment` (cash/check/external) | payments.recordManual | F | `payments.record` | confirm, always. Threshold → dual control. | `payments.reverse` | 3 |
-| `charge_card_on_file` | payments.charge | F | `payments.charge` | confirm, always. Never auto-approve. Threshold dual control. | refund | 3 |
-| `apply_credit` / `apply_discount` | billing.credit / invoices.discount | F | `invoices.credit`, `pricing.override` | confirm. Over $X → approver. | reverse credit | 3 |
-| `issue_refund` | payments.refund | F/D | `payments.refund` | confirm + **dual control above tenant threshold** (default $250). Never auto. | none (refunds are final) | 3 |
-| `void_invoice` | invoices.void | D | `invoices.void` | confirm + reason required | none (void is the undo) | 3 |
-| `write_off_balance` / `send_to_collections` | billing.writeOff / collections.open | D | `invoices.writeoff`, `collections.manage` | dual control always | reinstate | 4 |
-| `send_email` (1:1) | communications.sendEmail | C | `communications.send` | confirm, always. Shows rendered email. | none | 3 |
-| `send_sms` (1:1) | communications.sendSms | C | `communications.send.sms` | confirm, always. Consent/quiet hours enforced in the command. | none | 3 |
-| `draft_message` | communications.draft | L | `communications.send` | auto (a draft sends nothing) | delete | 2 |
-| `schedule_announcement` (bulk) | announcements.schedule | C (bulk) | `announcements.send` | confirm + recipient-count threshold → manager approval. Scheduled with a cancel window. | cancel before send | 3 |
-| `create_contract` | contracts.create (draft) | L | `contracts.create` | confirm | delete draft | 3 |
-| `send_contract_for_signature` | contracts.sendForSignature | F + C | `contracts.send` | confirm, always | void envelope | 3 |
-| `renew_contracts` (bulk) | renewals.createBatch | F (bulk) | `contracts.renew` | plan card + approver | cancel batch | 4 |
-| `update_slip_rate` / `update_pricing_rule` | pricing.* | F | `pricing.manage` | dual control | revert | 4 |
-| `create_transient_booking` | transient.create | F | `transient.create` | confirm | cancel | 3 |
-| `create_ramp_ticket` / `create_concierge_request` | ramp/concierge.create | L | `ramp.create` / `concierge.create` | auto-approve eligible | cancel | 2 |
-| `archive_customer` / `merge_customers` | customers.archive / customers.merge | D | `customers.delete` / `customers.merge` | dual control for merge | unmerge is not possible, so always confirm | 4 |
+| Tool | Command | Kind | Risk (doc 11) | Permission(s) (doc 11 keys) | Confirmation | Reversal | Phase |
+|---|---|---|---|---|---|---|---|
+| `create_customer` | customers.create | W | LOW | `customers.create` | auto-eligible | deactivate | 2 |
+| `update_customer_contact` | customers.edit | W | MEDIUM | `customers.edit` | always-confirm † (email/phone changes redirect future comms) | revert diff | 2 |
+| `add_customer_note` / `create_task` | customers.edit / tasks.create | W | LOW | `customers.edit` / `tasks.create` ‡ | auto-eligible | delete own note | 2 |
+| `create_boat` / `update_boat` | boats.edit | W | LOW | `boats.edit` | auto-eligible | revert | 2 |
+| `create_lead` / `update_lead_stage` | leads.edit | W | LOW | `leads.edit` | auto-eligible | revert | 2 |
+| `add_to_waitlist` | waitlist.edit | W | LOW | `waitlist.edit` | auto-eligible | remove | 2 |
+| `create_invoice` (draft) | invoices.create | W | LOW. Raised to HIGH if a price is overridden. | `invoices.create` (+`pricing.override` / `discounts.apply`, limits apply) | auto-eligible at catalog prices; confirm otherwise | delete draft (`invoices.edit_draft`) | 2 |
+| `create_rental_hold` | rentals.book | W | LOW (list price) | `rentals.book` | auto-eligible | release hold | 2* |
+| `create_rental_reservation` | rentals.book | F | MEDIUM (takes deposit) | `rentals.book` (+`payments.record.card` if charging a card on file) | confirm | cancel per policy | 3* |
+| `modify_rental_reservation` / `cancel_rental_reservation` | rentals.book | F | MEDIUM, or HIGH with refund | `rentals.book` (+`payments.refund`) | confirm; refund portion always-confirm + approval | re-book (no auto-undo of refunds) | 3* |
+| `assign_slip` | slips.assign | W/F | MEDIUM | `slips.assign` (+`contracts.create` if it drafts a contract). `slips.hold_override` is never offered via AI. | confirm | unassign | 2 |
+| `record_meter_reading` | meters.read.record | W | LOW | `meters.read.record` (past-period edits: `meters.read.edit_past`, HIGH) | auto-eligible | correct reading | 2 |
+| `finalize_invoice` | invoices.finalize | F | MEDIUM | `invoices.finalize` | always-confirm † (posts GL) | `invoices.void` | 3 |
+| `send_invoice` | invoices.send | F + C | MEDIUM | `invoices.send` | always-confirm † | void (email can't be unsent) | 3 |
+| `create_and_send_invoice` (macro) | create → finalize → send | F + C | MEDIUM (max of steps) | union | **one** card listing all three steps (doc 11 `confirmationMode: PLAN` semantics; each step authorized separately) | void | 3 |
+| `record_payment` (cash/check) | payments.record.cash_check | F | MEDIUM | `payments.record.cash_check` | always-confirm † | reversal entry | 3 |
+| `charge_card_on_file` | payments.record.card | F | MEDIUM, raised to HIGH via AI † | `payments.record.card` | always-confirm † + approval above threshold | refund | 3 |
+| `apply_credit` / `apply_discount` | invoices.line.credit / discounts.apply | F | HIGH / MEDIUM | `invoices.line.credit` (limit `credit.max_cents`) / `discounts.apply` (limits `discount.max_*`) | confirm + approval above limit (default discount > 15%) | reverse credit | 3 |
+| `issue_refund` | payments.refund | F/D | HIGH | `payments.refund` (limits `refund.max_cents`, `refund.daily_max_cents`) | always-confirm + approval above threshold (manual default $250; AI may be stricter) | none (refunds are final) | 3 |
+| `void_invoice` | invoices.void | D | HIGH (CRITICAL after close: `invoices.void.after_close`) | `invoices.void` | always-confirm + reason | none (void is the undo) | 3 |
+| `write_off_balance` / `send_to_collections` | invoices.write_off / collections.manage | D | HIGH | `invoices.write_off` (limit `write_off.max_cents`) / `collections.manage` | confirm + approval (default write-off > $100) | reinstate | 4 |
+| `send_email` (1:1) | communications.send.individual | C | MEDIUM | `communications.send.individual` + `ai.communications.send_individual` | always-confirm (doc 11 `communications.send.*`). Card shows the rendered email. | none | 3 |
+| `send_sms` (1:1) | communications.send.individual | C | MEDIUM | same as `send_email` | always-confirm. Consent and quiet hours enforced in the command (§3f). | none | 3 |
+| `draft_message` | communications.draft | W | LOW | `ai.assistant.use` (a draft sends nothing) | auto | delete | 2 |
+| `schedule_announcement` (bulk) | communications.send.bulk | C | HIGH | `communications.send.bulk` (limit `bulk_send.max_recipients`) + `ai.bulk_communications` (limit `ai.bulk_comms.max_recipients`, default 0) | always-confirm + approval (default > 500 recipients; AI threshold stricter). Scheduled with a cancel window. | cancel before send | 3 |
+| `create_contract` | contracts.create | W | LOW (draft) | `contracts.create` (+`contracts.rate.override` if off-rate) | confirm | delete draft (`contracts.edit_draft`) | 3 |
+| `send_contract_for_signature` | contracts.send_for_signature | F + C | MEDIUM | `contracts.send_for_signature` | confirm | void envelope | 3 |
+| `renew_contracts` (bulk) | contracts.renew.bulk | F | HIGH | `contracts.renew.bulk` + `ai.bulk_operations` | plan card + approval | cancel batch | 4 |
+| `update_slip_rate` / `update_pricing_rule` | slips.rates.edit / pricing.rules.manage | F | HIGH | `slips.rates.edit` / `pricing.rules.manage` | confirm + approval | revert | 4 |
+| `create_transient_booking` | transient.book | F | LOW at list price, MEDIUM if charged | `transient.book` | confirm | cancel | 3 |
+| `create_ramp_ticket` / `create_concierge_request` | ramp.tickets.sell / concierge.requests.manage | W | LOW | `ramp.tickets.sell` / `concierge.requests.manage` | auto-eligible (unpaid) | cancel | 2 |
+| `archive_customer` / `merge_customers` | customers.deactivate / customers.merge | D | MEDIUM / HIGH | `customers.deactivate` / `customers.merge` | confirm / confirm + approval (unmerge is impossible) | reactivate / none | 4 |
 
-**Never exposed to the agent** (UI-only, with a human present):
-- tenant settings, Stripe/QBO connect and disconnect, team, role and permission changes, API key minting
-- bulk deletes, GL manual journal entries, period close, data export of all customers
-- changing a customer's payment method, and anything in `apps/admin` (platform admin)
+**Markers:**
+- † This document proposes adding these to doc 11's default `alwaysConfirm` (money movement and contact-detail changes), and raising `payments.record.card` to HIGH when `via=ai_assistant`. These are proposals for doc 11 to adopt or reject. They only ever tighten.
+- ‡ Not in doc 11's v1 catalog. Proposed additions:
+  - `communications.history.view`: read sent/received messages
+  - `tasks.create`
+  - `communications.send.adhoc_recipient`: send to an address not on file (§3c)
+  - `approvals.comms.approve`: approver capability for bulk-send approval policies
 
-`exposure.agent = false` enforces this at registry level. A user who asks gets a deep link to the settings page.
+**Never exposed to the agent.** Doc 11's `TenantAiPolicy.blockedActions` default already covers `settings.*`, `users.*`, `roles.manage`, `apikeys.manage`, `settings.payments.payout_account`, `gl.period.*`, `tenant.delete` and `customers.delete_erase`. This design also sets `exposure.agent = false` in v1 for:
+- `payments.methods.manage_on_file`
+- `gl.post_manual*`
+- `integrations.*` / `settings.integrations.manage`
+- `data.export*` / `ai.export`
+- `slips.hold_override`
+- `customers.pii.view_full`
+- anything in `apps/admin`
+
+A user who asks for one of these gets a deep link to the right screen.
 
 **Hard per-command value limits** apply even with approval: max invoice $50k, max refund $5k, max SMS recipients 500 per action. They are tenant-configurable downward only. Above them, the agent says "do this in the Billing screen".
 
