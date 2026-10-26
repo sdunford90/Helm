@@ -252,18 +252,7 @@ export default function AppLayout() {
           className="helm-sidebar-overlay"
         />
       )}
-      <style>{`
-        @media (max-width: 768px) {
-          .helm-sidebar-overlay { display: block !important; }
-          .helm-sidebar { transform: translateX(${sidebarOpen ? '0' : '-100%'}) !important; transition: transform 0.25s ease; }
-          .helm-main { margin-left: 0 !important; width: 100% !important; }
-          .helm-hamburger { display: flex !important; }
-          .helm-topbar { padding-left: 16px !important; padding-right: 16px !important; }
-          .helm-content { padding: 16px !important; }
-          .helm-location-picker { display: none !important; }
-        }
-      `}</style>
-      <nav style={styles.sidebar} className="helm-sidebar">
+      <nav style={styles.sidebar} className={`helm-sidebar${sidebarOpen ? " open" : ""}`}>
         <div style={styles.logo}>HELM</div>
         {NAV_SECTIONS.map((section) => {
           const visibleItems = section.items.filter((item) => {

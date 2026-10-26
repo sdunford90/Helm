@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App';
+// Shared design tokens, reset and the helm-* responsive classes.
+import '../../../packages/ui-kit/src/styles/global.css';
 import { ToastProvider } from './components/Toast';
 
 const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';

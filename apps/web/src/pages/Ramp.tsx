@@ -220,7 +220,7 @@ export default function Ramp() {
               <Plus size={16} /> New Ticket
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -289,7 +289,7 @@ export default function Ramp() {
               <Plus size={16} /> New Ticket
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -344,7 +344,7 @@ export default function Ramp() {
             <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Seasonal Pass Holders</span>
             <div style={s.spacer} />
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>

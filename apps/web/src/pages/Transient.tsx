@@ -261,7 +261,7 @@ export default function Transient() {
               <Plus size={16} /> New Booking
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -349,7 +349,7 @@ export default function Transient() {
               <Plus size={16} /> New Booking
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>

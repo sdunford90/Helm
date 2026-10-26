@@ -764,7 +764,7 @@ export default function Announcements() {
                   <Plus size={16} /> Create Rule
                 </button>
               </div>
-              <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
+              <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }} className="helm-table-wrap">
                 <table style={styles.table}>
                   <thead>
                     <tr>
@@ -869,7 +869,7 @@ export default function Announcements() {
                   <option>Delivered</option><option>Opened</option><option>Bounced</option><option>Failed</option>
                 </select>
               </div>
-              <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
+              <div style={{ background: '#FFFFFF', borderRadius: '8px', border: '1px solid #E2E8F0', overflow: 'hidden' }} className="helm-table-wrap">
                 <table style={styles.table}>
                   <thead>
                     <tr>
