@@ -1,4 +1,8 @@
 import { useState } from 'react';
+import { useApiClient } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { InlineError } from './StateViews';
+import { useToast } from './Toast';
 import {
   X,
   Copy,
@@ -29,8 +33,16 @@ interface FormField {
 
 interface LeadFormBuilderProps {
   onClose: () => void;
-  onSave?: (name: string, type: FormType, fields: FormField[]) => void;
+  /** Called with the saved form (as returned by POST /lead-forms). */
+  onSave?: (form: { id: string; name: string; embedKey: string }) => void;
 }
+
+const FORM_TYPE_API: Record<FormType, string> = {
+  'Slip Inquiry': 'slip_inquiry',
+  'Rental Inquiry': 'rental_inquiry',
+  'Waitlist Signup': 'waitlist_signup',
+  'General Contact': 'general_contact',
+};
 
 const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   text: 'Text',
@@ -243,7 +255,37 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
   const [fields, setFields] = useState<FormField[]>(DEFAULT_FIELDS);
   const [previewTab, setPreviewTab] = useState<'preview' | 'embed'>('preview');
   const [copied, setCopied] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedForm, setSavedForm] = useState<{ id: string; name: string; embedKey: string } | null>(null);
+  const client = useApiClient();
+  const toast = useToast();
+
+  const handleSave = async () => {
+    if (saving) return;
+    if (!formName.trim()) {
+      setSaveError('Give the form a name before saving.');
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const form = await client.post<{ id: string; name: string; embedKey: string }>('/lead-forms', {
+        name: formName.trim(),
+        formType: FORM_TYPE_API[formType],
+        fieldsJson: {
+          fields: fields.map(({ key, label, enabled, required, type, options }) => ({ key, label, enabled, required, type, options })),
+        },
+      });
+      setSavedForm(form);
+      toast.success('Lead form saved');
+      onSave?.(form);
+    } catch (err) {
+      setSaveError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const updateField = (key: string, changes: Partial<FormField>) => {
     setFields((prev) => prev.map((f) => f.key === key ? { ...f, ...changes } : f));
@@ -296,7 +338,7 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
   data-helm-form="${formName || 'untitled'}"
   data-helm-type="${formType.toLowerCase().replace(/\s/g, '-')}"
   data-helm-fields="${enabledFields.map((f) => f.key).join(',')}"
-  data-helm-marina="YOUR_MARINA_ID"
+  data-helm-marina="YOUR_MARINA_ID"${savedForm ? `\n  data-helm-key="${savedForm.embedKey}"` : ''}
 ></script>`;
 
   const handleCopy = () => {
@@ -493,7 +535,9 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
           {previewTab === 'embed' && (
             <>
             <div style={{ fontSize: 12, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
-              Preview only: this form is not saved and the embed script is not published yet, so this code will not work on a live site.
+              {savedForm
+                ? 'This form is saved, but the embed script is not published yet, so this code will not work on a live site.'
+                : 'Preview only: this form is not saved yet and the embed script is not published, so this code will not work on a live site.'}
             </div>
             <div style={s.codeBlock}>
               <button style={s.copyBtn} onClick={handleCopy}>
@@ -509,14 +553,14 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
         {/* Footer */}
         <div style={s.footer}>
           <button style={s.cancelBtn} onClick={onClose}>Cancel</button>
-          {/* Saving forms is not wired to the API yet; it used to flash "Saved!" and discard the form. */}
+          {saveError && <div style={{ marginRight: 'auto' }}><InlineError message={saveError} /></div>}
           <button
-            style={{ ...s.saveBtn, opacity: 0.5, cursor: 'not-allowed' }}
-            disabled
-            title="Coming soon: lead forms are not saved to the server yet."
+            style={{ ...s.saveBtn, opacity: saving || savedForm ? 0.6 : 1, cursor: saving || savedForm ? 'not-allowed' : 'pointer' }}
+            disabled={saving || !!savedForm}
+            onClick={handleSave}
           >
-            <Save size={16} />
-            Save Form (coming soon)
+            {savedForm ? <Check size={16} /> : <Save size={16} />}
+            {saving ? 'Saving…' : savedForm ? 'Saved' : 'Save Form'}
           </button>
         </div>
       </div>
