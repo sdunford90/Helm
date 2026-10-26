@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   Search,
   Plus,
@@ -12,7 +12,13 @@ import {
   Mail,
   Phone,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { customerName, type CustomerRef } from '../lib/dto';
+import { formatDate, formatPhone } from '../lib/format';
+import CustomerPicker from '../components/CustomerPicker';
+import { ComingSoonButton, ErrorState, InlineError, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -26,31 +32,59 @@ interface WaitlistEntry {
   lastName: string;
   email: string;
   phone: string;
-  slipType: SlipType;
-  boatLength: number;
+  slipType: string;
+  boatLength: number | null;
   desiredDate: string;
   status: WaitlistStatus;
   dateAdded: string;
-  notes: string;
+  notifiedAt: string;
+  holdExpiresAt: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+interface WaitlistDTO {
+  id: string;
+  queuePosition: number;
+  slipType?: string | null;
+  boatLength?: number | null;
+  desiredDate?: string | null;
+  status: 'WAITING' | 'NOTIFIED' | 'HOLD' | 'ACCEPTED' | 'EXPIRED' | 'REMOVED';
+  notifiedAt?: string | null;
+  holdExpiresAt?: string | null;
+  createdAt: string;
+  customer?: CustomerRef | null;
+  lead?: CustomerRef | null;
+}
+
+const STATUS_LABEL: Record<string, WaitlistStatus> = {
+  WAITING: 'Waiting', NOTIFIED: 'Notified', HOLD: 'Hold', ACCEPTED: 'Accepted', EXPIRED: 'Expired',
+};
+const STATUS_ENUM: Record<string, string> = {
+  Waiting: 'WAITING', Notified: 'NOTIFIED', Hold: 'HOLD', Accepted: 'ACCEPTED', Expired: 'EXPIRED',
+};
+
+function toEntry(e: WaitlistDTO): WaitlistEntry {
+  const person = e.customer ?? e.lead ?? null;
+  return {
+    id: e.id,
+    position: e.queuePosition,
+    firstName: person?.firstName ?? '',
+    lastName: person?.lastName ?? (person ? '' : customerName(null)),
+    email: person?.email ?? '',
+    phone: person?.phone ?? '',
+    slipType: e.slipType ?? '—',
+    boatLength: e.boatLength ?? null,
+    desiredDate: e.desiredDate ?? '',
+    status: STATUS_LABEL[e.status] ?? 'Expired',
+    dateAdded: e.createdAt,
+    notifiedAt: e.notifiedAt ?? '',
+    holdExpiresAt: e.holdExpiresAt ?? '',
+  };
+}
+
+const ACCEPT_REASON = 'Coming soon: accepting an offer creates a contract and needs a slip, start date and rate; this form is not built yet.';
 
 const SLIP_TYPES: SlipType[] = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 const STATUSES: WaitlistStatus[] = ['Waiting', 'Notified', 'Hold', 'Accepted', 'Expired'];
-
-const MOCK_ENTRIES: WaitlistEntry[] = [
-  { id: '1', position: 1, firstName: 'Richard', lastName: 'Brennan', email: 'rbrennan@email.com', phone: '(555) 111-2222', slipType: 'Annual', boatLength: 34, desiredDate: '2026-04-01', status: 'Waiting', dateAdded: '2026-02-15', notes: 'Prefers Dock A, end slip if possible.' },
-  { id: '2', position: 2, firstName: 'Catherine', lastName: 'Yao', email: 'cyao@email.com', phone: '(555) 222-3333', slipType: 'Annual', boatLength: 28, desiredDate: '2026-04-15', status: 'Waiting', dateAdded: '2026-02-18', notes: 'Current member at rival marina, looking to switch.' },
-  { id: '3', position: 3, firstName: 'Dennis', lastName: 'Murphy', email: 'dmurphy@email.com', phone: '(555) 333-4444', slipType: 'Liveaboard', boatLength: 42, desiredDate: '2026-05-01', status: 'Notified', dateAdded: '2026-01-20', notes: 'Notified about C-01 opening. Awaiting response.' },
-  { id: '4', position: 4, firstName: 'Lisa', lastName: 'Patel', email: 'lpatel@email.com', phone: '(555) 444-5555', slipType: 'Seasonal', boatLength: 26, desiredDate: '2026-06-01', status: 'Hold', dateAdded: '2026-02-01', notes: 'On hold — deciding between seasonal and annual.' },
-  { id: '5', position: 5, firstName: 'George', lastName: 'Huang', email: 'ghuang@email.com', phone: '(555) 555-6666', slipType: 'Annual', boatLength: 38, desiredDate: '2026-04-01', status: 'Accepted', dateAdded: '2025-12-10', notes: 'Accepted B-07 slip. Converting to customer.' },
-  { id: '6', position: 6, firstName: 'Megan', lastName: 'Torres', email: 'mtorres@email.com', phone: '(555) 666-7777', slipType: 'Transient', boatLength: 22, desiredDate: '2026-03-15', status: 'Expired', dateAdded: '2025-11-05', notes: 'Did not respond within 14-day window.' },
-  { id: '7', position: 7, firstName: 'Brian', lastName: 'Carter', email: 'bcarter@email.com', phone: '(555) 777-8888', slipType: 'Annual', boatLength: 30, desiredDate: '2026-05-01', status: 'Waiting', dateAdded: '2026-03-01', notes: 'New inquiry from website form.' },
-  { id: '8', position: 8, firstName: 'Stephanie', lastName: 'Kim', email: 'skim@email.com', phone: '(555) 888-9999', slipType: 'Seasonal', boatLength: 24, desiredDate: '2026-06-15', status: 'Waiting', dateAdded: '2026-03-05', notes: 'Summer season only.' },
-];
-
-/* ── Status Colors ─────────────────────────────────────── */
 
 const STATUS_COLORS: Record<WaitlistStatus, { bg: string; text: string }> = {
   Waiting: { bg: '#D6E8F4', text: '#0A2342' },
@@ -353,23 +387,27 @@ export default function Waitlist() {
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [search, setSearch] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<WaitlistEntry | null>(null);
-  const [entries, setEntries] = useState<WaitlistEntry[]>(MOCK_ENTRIES);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addSaved, setAddSaved] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const client = useApiClient();
+  const toast = useToast();
 
-  // API calls
-  const { data: apiEntries, loading, error, execute: refetchWaitlist } = useApi<WaitlistEntry[]>('get', '/waitlist', { immediate: true });
-  const addToWaitlistApi = useApi<WaitlistEntry>('post', '/waitlist');
+  // Add form
+  const [addCustomer, setAddCustomer] = useState<CustomerRef | null>(null);
+  const [addSlipType, setAddSlipType] = useState<string>(SLIP_TYPES[0]);
+  const [addLength, setAddLength] = useState('');
+  const [addDate, setAddDate] = useState('');
+  const [addSaving, setAddSaving] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (apiEntries) {
-      setEntries(apiEntries);
-    }
-  }, [apiEntries]);
+  const params = new URLSearchParams({ limit: '100' });
+  if (slipFilter !== 'All') params.set('slipType', slipFilter);
+  if (statusFilter !== 'All') params.set('status', STATUS_ENUM[statusFilter]);
+  const list = useList<WaitlistEntry, WaitlistDTO>(`/waitlist?${params.toString()}`, { map: toEntry });
+  const entries = list.items;
 
   const filtered = entries.filter((e) => {
-    if (slipFilter !== 'All' && e.slipType !== slipFilter) return false;
-    if (statusFilter !== 'All' && e.status !== statusFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       const full = `${e.firstName} ${e.lastName} ${e.email}`.toLowerCase();
@@ -381,19 +419,65 @@ export default function Waitlist() {
   const countByStatus = (status: WaitlistStatus) =>
     entries.filter((e) => e.status === status).length;
 
-  const handleNotify = (id: string, ev: React.MouseEvent) => {
+  // The API notifies the next WAITING entry for a slip type (POST /waitlist/notify-next),
+  // so Notify is offered only on the entry that is actually next in its queue.
+  const nextWaitingId = (slipType: string) =>
+    entries.filter((e) => e.status === 'Waiting' && e.slipType === slipType).sort((a, b) => a.position - b.position)[0]?.id;
+
+  const handleNotify = async (entry: WaitlistEntry, ev: React.MouseEvent) => {
     ev.stopPropagation();
-    setEntries(entries.map((e) => e.id === id ? { ...e, status: 'Notified' as WaitlistStatus } : e));
+    if (busy) return;
+    setBusy(entry.id);
+    setActionError(null);
+    try {
+      await client.post('/waitlist/notify-next', { slipType: entry.slipType });
+      toast.success(`Next ${entry.slipType} entry notified and placed on hold`);
+      list.refetch();
+      setSelectedEntry(null);
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
-  const handleAccept = (id: string, ev: React.MouseEvent) => {
+  const handleRemove = async (entry: WaitlistEntry, ev: React.MouseEvent) => {
     ev.stopPropagation();
-    setEntries(entries.map((e) => e.id === id ? { ...e, status: 'Accepted' as WaitlistStatus } : e));
+    if (busy || !window.confirm(`Remove ${entry.firstName} ${entry.lastName} from the waitlist?`)) return;
+    setBusy(entry.id);
+    setActionError(null);
+    try {
+      await client.delete(`/waitlist/${entry.id}`);
+      toast.success('Removed from waitlist');
+      list.refetch();
+      setSelectedEntry(null);
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
-  const handleRemove = (id: string, ev: React.MouseEvent) => {
-    ev.stopPropagation();
-    setEntries(entries.filter((e) => e.id !== id));
+  const handleAdd = async () => {
+    if (!addCustomer) { setAddError('Select a customer.'); return; }
+    setAddSaving(true);
+    setAddError(null);
+    try {
+      await client.post('/waitlist', {
+        customerId: addCustomer.id,
+        slipType: addSlipType,
+        boatLength: Number(addLength) > 0 ? Number(addLength) : null,
+        desiredDate: addDate || null,
+      });
+      toast.success(`${customerName(addCustomer)} added to the waitlist`);
+      setShowAddModal(false);
+      setAddCustomer(null); setAddLength(''); setAddDate('');
+      list.refetch();
+    } catch (err) {
+      setAddError(errorMessage(err));
+    } finally {
+      setAddSaving(false);
+    }
   };
 
   return (
@@ -401,14 +485,14 @@ export default function Waitlist() {
       <h1 style={s.title} className="helm-page-title">Waitlist</h1>
       <hr style={s.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {actionError && <div style={{ marginBottom: 16 }}><InlineError message={actionError} /></div>}
 
       {/* Stats Row */}
       <div style={s.statsRow} className="helm-stats-grid">
         {STATUSES.map((status) => (
           <div key={status} style={s.statCard}>
             <div style={s.statLabel}>{status}</div>
-            <div style={s.statValue}>{countByStatus(status)}</div>
+            <div style={s.statValue}>{list.loading ? '—' : countByStatus(status)}</div>
           </div>
         ))}
       </div>
@@ -456,6 +540,7 @@ export default function Waitlist() {
       </div>
 
       {/* Table */}
+      {list.loading ? <LoadingState label="Loading waitlist…" /> : list.error ? <ErrorState title="Could not load the waitlist" message={list.error} onRetry={list.refetch} /> : (
       <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
         <table style={s.table}>
           <thead>
@@ -491,13 +576,13 @@ export default function Waitlist() {
                   <span style={s.positionBadge}>{entry.position}</span>
                 </td>
                 <td style={{ ...s.td, fontWeight: 600 }}>
-                  {entry.firstName} {entry.lastName}
+                  {`${entry.firstName} ${entry.lastName}`.trim() || '—'}
                 </td>
                 <td style={s.td}>{entry.slipType}</td>
                 <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>
-                  {entry.boatLength} ft
+                  {entry.boatLength ? `${entry.boatLength} ft` : '—'}
                 </td>
-                <td style={s.td}>{entry.desiredDate}</td>
+                <td style={s.td}>{formatDate(entry.desiredDate)}</td>
                 <td style={s.td}>
                   <span
                     style={{
@@ -509,31 +594,29 @@ export default function Waitlist() {
                     {entry.status}
                   </span>
                 </td>
-                <td style={s.td}>{entry.dateAdded}</td>
+                <td style={s.td}>{formatDate(entry.dateAdded)}</td>
                 <td style={s.td}>
-                  {entry.status === 'Waiting' && (
+                  {entry.status === 'Waiting' && nextWaitingId(entry.slipType) === entry.id && (
                     <button
                       style={{ ...s.actionBtn, ...s.actionBtnNotify }}
-                      onClick={(ev) => handleNotify(entry.id, ev)}
-                      title="Send notification"
+                      onClick={(ev) => handleNotify(entry, ev)}
+                      disabled={!!busy}
+                      title="Notify this entry (next in queue) and place a hold"
                     >
                       <Bell size={12} />
                       Notify
                     </button>
                   )}
                   {(entry.status === 'Waiting' || entry.status === 'Notified' || entry.status === 'Hold') && (
-                    <button
-                      style={{ ...s.actionBtn, ...s.actionBtnAccept }}
-                      onClick={(ev) => handleAccept(entry.id, ev)}
-                      title="Accept entry"
-                    >
+                    <ComingSoonButton style={{ ...s.actionBtn, ...s.actionBtnAccept }} reason={ACCEPT_REASON}>
                       <Check size={12} />
                       Accept
-                    </button>
+                    </ComingSoonButton>
                   )}
                   <button
                     style={{ ...s.actionBtn, ...s.actionBtnRemove }}
-                    onClick={(ev) => handleRemove(entry.id, ev)}
+                    onClick={(ev) => handleRemove(entry, ev)}
+                    disabled={!!busy}
                     title="Remove from waitlist"
                   >
                     <Trash2 size={12} />
@@ -552,29 +635,32 @@ export default function Waitlist() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Add to Waitlist Modal */}
       {showAddModal && (
-        <div style={s.overlay} onClick={() => setShowAddModal(false)}>
-          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+        <div style={s.overlay}>
+          <div style={s.modal} className="helm-modal" role="dialog" aria-modal="true" aria-label="Add to waitlist">
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>Add to Waitlist</h2>
-              <button style={s.closeBtn} onClick={() => setShowAddModal(false)}><X size={20} /></button>
+              <button style={s.closeBtn} onClick={() => setShowAddModal(false)} disabled={addSaving} aria-label="Close"><X size={20} /></button>
             </div>
-            {addSaved && <div style={{ padding: '12px 24px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Added to waitlist!</div>}
             <div style={s.modalBody}>
+              {addError && <div style={{ marginBottom: 12 }}><InlineError message={addError} /></div>}
               <div style={s.fieldGrid}>
-                <div style={s.field}><span style={s.fieldLabel}>First Name *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="First name" /></div>
-                <div style={s.field}><span style={s.fieldLabel}>Last Name *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Last name" /></div>
-                <div style={s.field}><span style={s.fieldLabel}>Email *</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Email" type="email" /></div>
-                <div style={s.field}><span style={s.fieldLabel}>Phone</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} placeholder="Phone" /></div>
-                <div style={s.field}><span style={s.fieldLabel}>Slip Type</span><select style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }}>{SLIP_TYPES.map((t) => <option key={t}>{t}</option>)}</select></div>
-                <div style={s.field}><span style={s.fieldLabel}>Boat Length (ft)</span><input style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} type="number" placeholder="30" /></div>
+                <div style={{ ...s.field, gridColumn: '1 / -1' }}>
+                  <span style={s.fieldLabel}>Customer *</span>
+                  <CustomerPicker value={addCustomer} onChange={setAddCustomer} inputStyle={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} />
+                  <span style={{ fontSize: 12, color: '#64748B' }}>Waitlist entries are linked to an existing customer or lead. Add a new person on the Customers page first.</span>
+                </div>
+                <label style={s.field}><span style={s.fieldLabel}>Slip Type</span><select value={addSlipType} onChange={(e) => setAddSlipType(e.target.value)} style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }}>{SLIP_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
+                <label style={s.field}><span style={s.fieldLabel}>Boat Length (ft)</span><input value={addLength} onChange={(e) => setAddLength(e.target.value)} style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} type="number" placeholder="30" /></label>
+                <label style={s.field}><span style={s.fieldLabel}>Desired Date</span><input value={addDate} onChange={(e) => setAddDate(e.target.value)} style={{ padding: '8px 12px', fontSize: '14px', border: '1px solid #CCC', borderRadius: '4px', color: '#0A2342', width: '100%', boxSizing: 'border-box' as const }} type="date" /></label>
               </div>
             </div>
             <div style={s.modalFooter}>
-              <button style={{ padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' }} onClick={() => setShowAddModal(false)}>Cancel</button>
-              <button style={{ ...s.primaryBtn, padding: '8px 24px' }} onClick={() => { setAddSaved(true); setTimeout(() => { setAddSaved(false); setShowAddModal(false); }, 1500); }}>Add to Waitlist</button>
+              <button style={{ padding: '8px 24px', fontSize: '14px', fontWeight: 600, color: '#2E4A6B', background: '#FFFFFF', border: '1px solid #CCC', borderRadius: '6px', cursor: 'pointer' }} disabled={addSaving} onClick={() => setShowAddModal(false)}>Cancel</button>
+              <button style={{ ...s.primaryBtn, padding: '8px 24px', opacity: addSaving ? 0.7 : 1 }} disabled={addSaving} onClick={handleAdd}>{addSaving ? 'Adding…' : 'Add to Waitlist'}</button>
             </div>
           </div>
         </div>
@@ -612,14 +698,14 @@ export default function Waitlist() {
                   <span style={s.fieldLabel}>Email</span>
                   <span style={s.fieldValue}>
                     <Mail size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.email}
+                    {selectedEntry.email || '—'}
                   </span>
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Phone</span>
                   <span style={s.fieldValue}>
                     <Phone size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.phone}
+                    {selectedEntry.phone ? formatPhone(selectedEntry.phone) : '—'}
                   </span>
                 </div>
                 <div style={s.field}>
@@ -633,60 +719,55 @@ export default function Waitlist() {
                   <span style={s.fieldLabel}>Boat Length</span>
                   <span style={s.fieldValueMono}>
                     <Ship size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.boatLength} ft
+                    {selectedEntry.boatLength ? `${selectedEntry.boatLength} ft` : '—'}
                   </span>
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Desired Date</span>
                   <span style={s.fieldValue}>
                     <Calendar size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.desiredDate}
+                    {formatDate(selectedEntry.desiredDate)}
                   </span>
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Date Added</span>
                   <span style={s.fieldValue}>
                     <Calendar size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                    {selectedEntry.dateAdded}
+                    {formatDate(selectedEntry.dateAdded)}
                   </span>
                 </div>
               </div>
-              <div style={s.notesBox}>
-                <div style={s.notesLabel}>Notes</div>
-                <div style={s.notesText}>{selectedEntry.notes}</div>
-              </div>
+              {(selectedEntry.notifiedAt || selectedEntry.holdExpiresAt) && (
+                <div style={s.notesBox}>
+                  <div style={s.notesLabel}>Notification</div>
+                  <div style={s.notesText}>
+                    {selectedEntry.notifiedAt ? `Notified ${formatDate(selectedEntry.notifiedAt)}.` : ''}
+                    {selectedEntry.holdExpiresAt ? ` Hold expires ${formatDate(selectedEntry.holdExpiresAt)}.` : ''}
+                  </div>
+                </div>
+              )}
             </div>
             <div style={s.modalFooter}>
-              {selectedEntry.status === 'Waiting' && (
+              {selectedEntry.status === 'Waiting' && nextWaitingId(selectedEntry.slipType) === selectedEntry.id && (
                 <button
                   style={{ ...s.actionBtn, ...s.actionBtnNotify, padding: '8px 16px', fontSize: '14px' }}
-                  onClick={(ev) => {
-                    handleNotify(selectedEntry.id, ev);
-                    setSelectedEntry({ ...selectedEntry, status: 'Notified' });
-                  }}
+                  disabled={!!busy}
+                  onClick={(ev) => handleNotify(selectedEntry, ev)}
                 >
                   <Bell size={14} />
                   Notify
                 </button>
               )}
               {(selectedEntry.status === 'Waiting' || selectedEntry.status === 'Notified' || selectedEntry.status === 'Hold') && (
-                <button
-                  style={{ ...s.actionBtn, ...s.actionBtnAccept, padding: '8px 16px', fontSize: '14px' }}
-                  onClick={(ev) => {
-                    handleAccept(selectedEntry.id, ev);
-                    setSelectedEntry({ ...selectedEntry, status: 'Accepted' });
-                  }}
-                >
+                <ComingSoonButton style={{ ...s.actionBtn, ...s.actionBtnAccept, padding: '8px 16px', fontSize: '14px' }} reason={ACCEPT_REASON}>
                   <Check size={14} />
                   Accept
-                </button>
+                </ComingSoonButton>
               )}
               <button
                 style={{ ...s.actionBtn, ...s.actionBtnRemove, padding: '8px 16px', fontSize: '14px' }}
-                onClick={(ev) => {
-                  handleRemove(selectedEntry.id, ev);
-                  setSelectedEntry(null);
-                }}
+                disabled={!!busy}
+                onClick={(ev) => handleRemove(selectedEntry, ev)}
               >
                 <Trash2 size={14} />
                 Remove
