@@ -1,99 +1,155 @@
-version: "3.8"
+# =============================================================================
+# docker-compose.yml: production-like full stack (single host)
+#
+#   cp .env.example .env    # then fill in secrets, incl. POSTGRES_PASSWORD
+#   docker compose up -d --build
+#   open http://localhost:8080
+#
+# Startup order: postgres/redis healthy -> migrate (one-shot
+# `prisma migrate deploy`) completes -> api healthy + worker -> web.
+#
+# To run published images instead of building:
+#   HELM_API_IMAGE=ghcr.io/<org>/<repo>/api:<sha> \
+#   HELM_WEB_IMAGE=ghcr.io/<org>/<repo>/web:<sha> \
+#   docker compose pull && docker compose up -d --no-build
+#
+# For local development (hot reload, auth bypass) use docker-compose.dev.yml.
+# See docs/DEPLOYMENT.md.
+# =============================================================================
+
+name: helm
+
+x-api-build: &api-build
+  context: .
+  dockerfile: Dockerfile.api
+
+# Shared by api, worker and migrate. Values here override the same keys
+# from env_file. DATABASE_URL/REDIS_URL always point at the bundled services.
+x-api-environment: &api-environment
+  NODE_ENV: production
+  API_PORT: "3001"
+  DATABASE_URL: postgresql://${POSTGRES_USER:-helm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-helm}?schema=public
+  REDIS_URL: redis://redis:6379
 
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: helm-postgres
+    image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: helm
-      POSTGRES_PASSWORD: helmpassword
-      POSTGRES_DB: helm
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-helm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-helm}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    networks:
-      - helm-network
+    # Not published to the host. Use `docker compose exec postgres psql`.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U helm -d helm"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
-    container_name: helm-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # BullMQ requirements: persistence (AOF) so queued/delayed jobs survive a
+    # restart, and `noeviction` so Redis never silently drops job keys under
+    # memory pressure (it errors instead, which BullMQ surfaces).
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis-data:/data
-    networks:
-      - helm-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
+
+  # One-shot: apply pending Prisma migrations, then exit 0.
+  migrate:
+    image: ${HELM_API_IMAGE:-helm-api:local}
+    build: *api-build
+    restart: "no"
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *api-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: helm-api
+    image: ${HELM_API_IMAGE:-helm-api:local}
+    build: *api-build
     restart: unless-stopped
+    command: ["node", "dist/index.js"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *api-environment
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql://helm:helmpassword@postgres:5432/helm?schema=public
-      REDIS_URL: redis://redis:6379
+      migrate:
+        condition: service_completed_successfully
+    # Bound to localhost only, for debugging. Public traffic goes through web.
     ports:
-      - "3001:3001"
-    networks:
-      - helm-network
+      - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
+    # HEALTHCHECK (GET /api/health) comes from the image.
+
+  # BullMQ workers + repeatable schedulers. Same image, different command.
+  # dist/worker.js is built from apps/api/src/worker.ts.
+  worker:
+    image: ${HELM_API_IMAGE:-helm-api:local}
+    build: *api-build
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *api-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No HTTP server in the worker, so the image's /api/health check
+    # doesn't apply.
+    healthcheck:
+      disable: true
+    stop_grace_period: 30s
 
   web:
+    image: ${HELM_WEB_IMAGE:-helm-web:local}
     build:
       context: .
       dockerfile: Dockerfile.web
-    container_name: helm-web
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+        VITE_API_URL: ${VITE_API_URL:-}
     restart: unless-stopped
-    depends_on:
-      - api
-    ports:
-      - "5173:80"
-    networks:
-      - helm-network
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: helm-worker
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql://helm:helmpassword@postgres:5432/helm?schema=public
-      REDIS_URL: redis://redis:6379
-    command: ["node", "dist/jobs/renewal-job.js"]
-    networks:
-      - helm-network
-
-networks:
-  helm-network:
-    driver: bridge
+      API_UPSTREAM: api:3001
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-8080}:8080"
 
 volumes:
   postgres-data:

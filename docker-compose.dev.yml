@@ -1,41 +1,68 @@
-version: "3.8"
+# =============================================================================
+# docker-compose.dev.yml: local development infrastructure only
+#
+#   docker compose -f docker-compose.dev.yml up -d     # Postgres 16 + Redis 7
+#   pnpm db:migrate:deploy && pnpm db:seed
+#   pnpm --filter @helm/api dev                       # API on :3001 (tsx watch)
+#   pnpm worker:dev                                   # BullMQ worker (tsx watch)
+#   pnpm --filter @helm/web dev                       # dashboard on :5000
+#
+# The API, worker and web apps run on the host for hot reload. Put this in
+# apps/api/.env. Both `dotenv/config` (cwd = apps/api under pnpm --filter)
+# and the Prisma CLI read that file:
+#
+#   NODE_ENV=development
+#   HELM_DEV_AUTH_BYPASS=true        # local-only auth bypass, see below
+#   DATABASE_URL=postgresql://helm:helmpassword@localhost:5432/helm?schema=public
+#   REDIS_URL=redis://localhost:6379
+#
+# HELM_DEV_AUTH_BYPASS=true is the explicit opt-in for skipping Clerk auth
+# locally. Auth fails closed when NODE_ENV=production, and both images set
+# that. Never set the flag in docker-compose.yml, an image, or any deployed
+# environment.
+#
+# Credentials below are deliberately throwaway and for localhost only.
+# =============================================================================
 
-# Development override: only infrastructure services
-# Usage: docker compose -f docker-compose.dev.yml up -d
-# Run api and web locally with `npm run dev`
+name: helm-dev
 
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: helm-postgres-dev
+    image: postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_USER: helm
       POSTGRES_PASSWORD: helmpassword
       POSTGRES_DB: helm
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DEV_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data-dev:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U helm -d helm"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
 
   redis:
     image: redis:7-alpine
-    container_name: helm-redis-dev
     restart: unless-stopped
+    # Same BullMQ-safe settings as production: AOF on, never evict keys.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${DEV_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data-dev:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
 
 volumes:
   postgres-data-dev:
