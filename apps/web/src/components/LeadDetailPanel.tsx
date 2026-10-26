@@ -14,7 +14,10 @@ import {
   Edit2,
   Check,
 } from 'lucide-react';
-import ConversionWizard from './ConversionWizard';
+import { useResource } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { formatDateTime, humanizeEnum } from '../lib/format';
+import { InlineError } from './StateViews';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -33,6 +36,10 @@ interface Lead {
   assignedTo: string;
   createdAt: string;
   notes: string;
+  sourceUrl?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  fromLeadForm?: boolean;
 }
 
 interface ActivityEvent {
@@ -46,8 +53,10 @@ interface ActivityEvent {
 interface LeadDetailPanelProps {
   lead: Lead;
   onClose: () => void;
-  onStageChange: (stage: string) => void;
-  onSave?: (lead: Lead) => void;
+  /** Should throw on failure; the panel shows the error. */
+  onStageChange: (stage: string) => Promise<void> | void;
+  /** Should throw on failure; the panel stays in edit mode and shows the error. */
+  onSave?: (lead: Lead) => Promise<void> | void;
 }
 
 /* ── Stage Flow ───────────────────────────────────────── */
@@ -66,17 +75,9 @@ const STAGE_COLORS: Record<Stage, { bg: string; text: string }> = {
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
 const SOURCES = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 const SLIP_TYPES = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
-const STAFF = ['Sarah Chen', 'Mike Torres', 'Jessica Park', 'David Liu'];
 
 /* ── Mock Activity ────────────────────────────────────── */
 
-const MOCK_ACTIVITY: ActivityEvent[] = [
-  { id: '1', type: 'stage_change', description: 'Lead created — stage set to New', timestamp: '2026-03-20 09:15', user: 'System' },
-  { id: '2', type: 'email', description: 'Welcome email sent automatically', timestamp: '2026-03-20 09:16', user: 'System' },
-  { id: '3', type: 'note', description: 'Spoke with lead on phone, interested in annual slip for 32ft sailboat.', timestamp: '2026-03-21 14:30', user: 'Sarah Chen' },
-  { id: '4', type: 'stage_change', description: 'Stage changed from New to Contacted', timestamp: '2026-03-21 14:32', user: 'Sarah Chen' },
-  { id: '5', type: 'call', description: 'Follow-up call — scheduled marina tour for Saturday', timestamp: '2026-03-22 10:00', user: 'Sarah Chen' },
-];
 
 /* ── Styles ────────────────────────────────────────────── */
 
@@ -338,8 +339,19 @@ function getActivityIcon(type: string) {
 
 export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }: LeadDetailPanelProps) {
   const [noteText, setNoteText] = useState('');
-  const [activities, setActivities] = useState<ActivityEvent[]>(MOCK_ACTIVITY);
-  const [showConversion, setShowConversion] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
+  // Activity = audit history from GET /leads/:id (activityHistory).
+  const detail = useResource<{ activityHistory?: { id: string; action: string; userName?: string | null; createdAt: string; changedFieldsJson?: Record<string, unknown> | null }[] }>(
+    lead.id ? `/leads/${lead.id}` : null,
+  );
+  const activities: ActivityEvent[] = (detail.data?.activityHistory ?? []).map((a) => ({
+    id: a.id,
+    type: a.action.includes('STAGE') || (a.changedFieldsJson && 'stage' in a.changedFieldsJson) ? 'stage_change' : 'note',
+    description: `${humanizeEnum(a.action)}${a.changedFieldsJson && 'stage' in a.changedFieldsJson ? `: stage ${JSON.stringify((a.changedFieldsJson as Record<string, unknown>).stage)}` : ''}`,
+    timestamp: formatDateTime(a.createdAt),
+    user: a.userName ?? 'System',
+  }));
   const [isEditing, setIsEditing] = useState(!lead.id); // auto-edit for new leads
   const [editData, setEditData] = useState<Lead>({ ...lead });
 
@@ -351,27 +363,38 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
     setEditData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleSave = () => {
-    onSave?.(editData);
-    setIsEditing(false);
+  const handleSave = async () => {
+    if (!editData.firstName.trim() || !editData.lastName.trim()) {
+      setPanelError('First and last name are required.');
+      return;
+    }
+    setBusy(true);
+    setPanelError(null);
+    try {
+      await onSave?.(editData);
+      setIsEditing(false);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStage = async (stage: string) => {
+    setBusy(true);
+    setPanelError(null);
+    try {
+      await onStageChange(stage);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleCancelEdit = () => {
     setEditData({ ...lead });
     setIsEditing(false);
-  };
-
-  const handleAddNote = () => {
-    if (!noteText.trim()) return;
-    const newEvent: ActivityEvent = {
-      id: String(Date.now()),
-      type: 'note',
-      description: noteText.trim(),
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      user: 'You',
-    };
-    setActivities([newEvent, ...activities]);
-    setNoteText('');
   };
 
   return (
@@ -389,7 +412,7 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                   {isEditing ? editData.stage : lead.stage}
                 </span>
                 {!isEditing && lead.stage === 'Won' && (
-                  <button style={s.convertBtn} onClick={() => setShowConversion(true)}>
+                  <button style={{ ...s.convertBtn, opacity: 0.5, cursor: 'not-allowed' }} disabled title="Coming soon: the conversion wizard is not connected to POST /leads/:id/convert yet.">
                     <ArrowRightCircle size={14} />
                     Convert to Customer
                   </button>
@@ -402,9 +425,9 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                 )}
                 {isEditing && (
                   <>
-                    <button style={s.saveBtn} onClick={handleSave}>
+                    <button style={s.saveBtn} onClick={handleSave} disabled={busy}>
                       <Check size={13} />
-                      Save
+                      {busy ? 'Saving…' : 'Save'}
                     </button>
                     {!isNew && (
                       <button style={s.cancelEditBtn} onClick={handleCancelEdit}>
@@ -520,48 +543,17 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                 {/* Source */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Source</span>
-                  {isEditing ? (
-                    <select
-                      style={s.fieldSelect}
-                      value={editData.source}
-                      onChange={(e) => handleEdit('source', e.target.value)}
-                    >
-                      {SOURCES.map((src) => <option key={src}>{src}</option>)}
-                    </select>
-                  ) : (
-                    <span style={s.fieldValue}>{lead.source || '—'}</span>
-                  )}
+                  <span style={s.fieldValue}>{lead.source || '—'}</span>
                 </div>
                 {/* Stage */}
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Stage</span>
-                  {isEditing ? (
-                    <select
-                      style={s.fieldSelect}
-                      value={editData.stage}
-                      onChange={(e) => handleEdit('stage', e.target.value)}
-                    >
-                      {STAGES.map((st) => <option key={st}>{st}</option>)}
-                    </select>
-                  ) : (
-                    <span style={s.fieldValue}>{lead.stage}</span>
-                  )}
+                  <span style={s.fieldValue}>{lead.stage}</span>
                 </div>
                 {/* Assigned To */}
                 <div style={{ ...s.field, gridColumn: '1 / -1' }}>
                   <span style={s.fieldLabel}>Assigned To</span>
-                  {isEditing ? (
-                    <select
-                      style={s.fieldSelect}
-                      value={editData.assignedTo}
-                      onChange={(e) => handleEdit('assignedTo', e.target.value)}
-                    >
-                      <option value="">Unassigned</option>
-                      {STAFF.map((name) => <option key={name}>{name}</option>)}
-                    </select>
-                  ) : (
-                    <span style={s.fieldValue}>{lead.assignedTo || '—'}</span>
-                  )}
+                  <span style={{ ...s.fieldValue, color: '#64748B', fontWeight: 400 }}>{lead.assignedTo ? 'Assigned' : 'Unassigned'} (assignment is not editable here yet)</span>
                 </div>
                 {/* Notes */}
                 <div style={{ ...s.field, gridColumn: '1 / -1' }}>
@@ -592,19 +584,19 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                 <div style={s.fieldGrid}>
                   <div style={s.field}>
                     <span style={s.fieldLabel}>Form</span>
-                    <span style={s.fieldValue}>Slip Inquiry Form</span>
+                    <span style={s.fieldValue}>{lead.fromLeadForm ? 'Website lead form' : '—'}</span>
                   </div>
                   <div style={s.field}>
                     <span style={s.fieldLabel}>Landing URL</span>
-                    <span style={{ ...s.fieldValue, color: '#0369A1', fontSize: '13px' }}>/marina/slips</span>
+                    <span style={{ ...s.fieldValue, color: '#0369A1', fontSize: '13px', wordBreak: 'break-all' }}>{lead.sourceUrl || '—'}</span>
                   </div>
                   <div style={s.field}>
                     <span style={s.fieldLabel}>UTM Source</span>
-                    <span style={s.fieldValue}>google</span>
+                    <span style={s.fieldValue}>{lead.utmSource || '—'}</span>
                   </div>
                   <div style={s.field}>
-                    <span style={s.fieldLabel}>UTM Campaign</span>
-                    <span style={s.fieldValue}>spring_promo</span>
+                    <span style={s.fieldLabel}>UTM Medium</span>
+                    <span style={s.fieldValue}>{lead.utmMedium || '—'}</span>
                   </div>
                 </div>
               </div>
@@ -634,59 +626,41 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
                   </div>
                 ))}
                 {activities.length === 0 && (
-                  <div style={{ fontSize: '13px', color: '#64748B', padding: '8px 0' }}>No activity yet.</div>
+                  <div style={{ fontSize: '13px', color: '#64748B', padding: '8px 0' }}>
+                    {!lead.id ? 'Save the lead to start its history.' : detail.loading ? 'Loading activity…' : detail.error ? `Could not load activity: ${detail.error}` : 'No activity yet.'}
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* Add Note */}
-            <div style={s.section}>
-              <div style={s.sectionTitle}>
-                <MessageSquare size={14} />
-                Add Note
-              </div>
-              <div style={s.noteForm}>
-                <textarea
-                  style={s.textarea}
-                  placeholder="Type a note..."
-                  value={noteText}
-                  onChange={(e) => setNoteText(e.target.value)}
-                />
-                <div style={s.noteSubmitRow}>
-                  <button style={s.noteSubmitBtn} onClick={handleAddNote}>
-                    <Send size={14} />
-                    Add Note
-                  </button>
-                </div>
-              </div>
-            </div>
+            {panelError && <div style={{ padding: '0 24px 16px' }}><InlineError message={panelError} /></div>}
           </div>
 
           {/* Footer Actions */}
           <div style={s.footer}>
             {!isEditing && lead.stage !== 'Won' && lead.stage !== 'Lost' && nextStage && (
-              <button style={s.primaryBtn} onClick={() => onStageChange(nextStage)}>
+              <button style={s.primaryBtn} disabled={busy} onClick={() => handleStage(nextStage)}>
                 <ChevronRight size={16} />
                 Move to {nextStage}
               </button>
             )}
             {!isEditing && lead.stage !== 'Lost' && (
-              <button style={s.destructiveBtn} onClick={() => onStageChange('Lost')}>
+              <button style={s.destructiveBtn} disabled={busy} onClick={() => handleStage('Lost')}>
                 <XCircle size={16} />
                 Mark as Lost
               </button>
             )}
             {!isEditing && lead.stage === 'Lost' && (
-              <button style={s.primaryBtn} onClick={() => onStageChange('New')}>
+              <button style={s.primaryBtn} disabled={busy} onClick={() => handleStage('New')}>
                 <ArrowRightCircle size={16} />
                 Reopen Lead
               </button>
             )}
             {isEditing && (
               <>
-                <button style={s.primaryBtn} onClick={handleSave}>
+                <button style={s.primaryBtn} onClick={handleSave} disabled={busy}>
                   <Check size={16} />
-                  Save Changes
+                  {busy ? 'Saving…' : 'Save Changes'}
                 </button>
                 {!isNew && (
                   <button style={s.destructiveBtn} onClick={handleCancelEdit}>
@@ -699,13 +673,6 @@ export default function LeadDetailPanel({ lead, onClose, onStageChange, onSave }
         </div>
       </div>
 
-      {showConversion && (
-        <ConversionWizard
-          lead={lead}
-          onClose={() => setShowConversion(false)}
-          onConvert={() => { setShowConversion(false); onClose(); }}
-        />
-      )}
     </>
   );
 }

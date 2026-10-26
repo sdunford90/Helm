@@ -491,6 +491,10 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
           )}
 
           {previewTab === 'embed' && (
+            <>
+            <div style={{ fontSize: 12, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
+              Preview only: this form is not saved and the embed script is not published yet, so this code will not work on a live site.
+            </div>
             <div style={s.codeBlock}>
               <button style={s.copyBtn} onClick={handleCopy}>
                 {copied ? <Check size={12} /> : <Copy size={12} />}
@@ -498,23 +502,21 @@ export default function LeadFormBuilder({ onClose, onSave }: LeadFormBuilderProp
               </button>
               {embedCode}
             </div>
+            </>
           )}
         </div>
 
         {/* Footer */}
         <div style={s.footer}>
           <button style={s.cancelBtn} onClick={onClose}>Cancel</button>
+          {/* Saving forms is not wired to the API yet; it used to flash "Saved!" and discard the form. */}
           <button
-            style={{ ...s.saveBtn, backgroundColor: saved ? '#16A34A' : undefined }}
-            onClick={() => {
-              if (saved) return;
-              onSave?.(formName, formType, fields);
-              setSaved(true);
-              setTimeout(() => onClose(), 1000);
-            }}
+            style={{ ...s.saveBtn, opacity: 0.5, cursor: 'not-allowed' }}
+            disabled
+            title="Coming soon: lead forms are not saved to the server yet."
           >
-            {saved ? <Check size={16} /> : <Save size={16} />}
-            {saved ? 'Saved!' : 'Save Form'}
+            <Save size={16} />
+            Save Form (coming soon)
           </button>
         </div>
       </div>

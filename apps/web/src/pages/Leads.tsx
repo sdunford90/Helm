@@ -14,7 +14,9 @@ import {
 } from 'lucide-react';
 import LeadDetailPanel from '../components/LeadDetailPanel';
 import LeadFormBuilder from '../components/LeadFormBuilder';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { ErrorState, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -29,12 +31,82 @@ interface Lead {
   email: string;
   phone: string;
   stage: Stage;
-  source: Source;
-  slipType: SlipType;
+  source: string;
+  slipType: string;
   boatLength: number;
   assignedTo: string;
   createdAt: string;
   notes: string;
+  sourceUrl?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  fromLeadForm?: boolean;
+}
+
+interface LeadDTO {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email?: string | null;
+  phone?: string | null;
+  stage: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'PROPOSAL_SENT' | 'WON' | 'LOST';
+  slipType?: string | null;
+  boatLength?: number | null;
+  assignedTo?: string | null;
+  notes?: string | null;
+  sourceFormId?: string | null;
+  sourceUrl?: string | null;
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  referralCode?: string | null;
+  createdAt: string;
+}
+
+const STAGE_LABEL: Record<LeadDTO['stage'], Stage> = {
+  NEW: 'New', CONTACTED: 'Contacted', QUALIFIED: 'Qualified', PROPOSAL_SENT: 'Proposal Sent', WON: 'Won', LOST: 'Lost',
+};
+const STAGE_ENUM: Record<Stage, LeadDTO['stage']> = {
+  New: 'NEW', Contacted: 'CONTACTED', Qualified: 'QUALIFIED', 'Proposal Sent': 'PROPOSAL_SENT', Won: 'WON', Lost: 'LOST',
+};
+
+function leadSource(l: LeadDTO): string {
+  if (l.referralCode) return 'Referral';
+  if (l.utmSource) return l.utmSource;
+  if (l.sourceFormId) return 'Website';
+  return 'Manual entry';
+}
+
+function toLead(l: LeadDTO): Lead {
+  return {
+    id: l.id,
+    firstName: l.firstName,
+    lastName: l.lastName,
+    email: l.email ?? '',
+    phone: l.phone ?? '',
+    stage: STAGE_LABEL[l.stage] ?? 'New',
+    source: leadSource(l),
+    slipType: l.slipType ?? '',
+    boatLength: l.boatLength ?? 0,
+    assignedTo: l.assignedTo ?? '',
+    createdAt: l.createdAt,
+    notes: l.notes ?? '',
+    sourceUrl: l.sourceUrl ?? '',
+    utmSource: l.utmSource ?? '',
+    utmMedium: l.utmMedium ?? '',
+    fromLeadForm: !!l.sourceFormId,
+  };
+}
+
+function leadPayload(l: Lead) {
+  return {
+    firstName: l.firstName.trim(),
+    lastName: l.lastName.trim(),
+    email: l.email.trim() || null,
+    phone: l.phone.trim() || null,
+    boatLength: l.boatLength > 0 ? l.boatLength : null,
+    slipType: l.slipType || null,
+    notes: l.notes || null,
+  };
 }
 
 /* ── Mock Data ─────────────────────────────────────────── */
@@ -42,18 +114,6 @@ interface Lead {
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
 const SOURCES: Source[] = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 
-const MOCK_LEADS: Lead[] = [
-  { id: '1', firstName: 'James', lastName: 'Morrison', email: 'james@email.com', phone: '(555) 123-4567', stage: 'New', source: 'Website', slipType: 'Annual', boatLength: 32, assignedTo: 'Sarah Chen', createdAt: '2026-03-20', notes: 'Interested in 30-35ft slip' },
-  { id: '2', firstName: 'Linda', lastName: 'Park', email: 'linda.park@email.com', phone: '(555) 234-5678', stage: 'New', source: 'Referral', slipType: 'Seasonal', boatLength: 28, assignedTo: 'Mike Torres', createdAt: '2026-03-19', notes: 'Referred by member #412' },
-  { id: '3', firstName: 'Robert', lastName: 'Chen', email: 'rchen@email.com', phone: '(555) 345-6789', stage: 'Contacted', source: 'Walk-in', slipType: 'Annual', boatLength: 45, assignedTo: 'Sarah Chen', createdAt: '2026-03-18', notes: 'Large yacht, needs end slip' },
-  { id: '4', firstName: 'Maria', lastName: 'Santos', email: 'maria.s@email.com', phone: '(555) 456-7890', stage: 'Contacted', source: 'Website', slipType: 'Transient', boatLength: 24, assignedTo: 'Sarah Chen', createdAt: '2026-03-17', notes: 'Weekend visits only' },
-  { id: '5', firstName: 'David', lastName: 'Kim', email: 'dkim@email.com', phone: '(555) 567-8901', stage: 'Qualified', source: 'Phone', slipType: 'Annual', boatLength: 38, assignedTo: 'Mike Torres', createdAt: '2026-03-15', notes: 'Ready to tour the marina' },
-  { id: '6', firstName: 'Susan', lastName: 'Wright', email: 'swright@email.com', phone: '(555) 678-9012', stage: 'Qualified', source: 'Social Media', slipType: 'Liveaboard', boatLength: 42, assignedTo: 'Sarah Chen', createdAt: '2026-03-14', notes: 'Needs liveaboard permit info' },
-  { id: '7', firstName: 'Tom', lastName: 'Baker', email: 'tbaker@email.com', phone: '(555) 789-0123', stage: 'Proposal Sent', source: 'Website', slipType: 'Annual', boatLength: 36, assignedTo: 'Mike Torres', createdAt: '2026-03-12', notes: 'Sent annual rate sheet' },
-  { id: '8', firstName: 'Emily', lastName: 'Johnson', email: 'ejohnson@email.com', phone: '(555) 890-1234', stage: 'Won', source: 'Referral', slipType: 'Annual', boatLength: 30, assignedTo: 'Sarah Chen', createdAt: '2026-03-10', notes: 'Contract signed, awaiting deposit' },
-  { id: '9', firstName: 'Mark', lastName: 'Davis', email: 'mdavis@email.com', phone: '(555) 901-2345', stage: 'Lost', source: 'Website', slipType: 'Seasonal', boatLength: 26, assignedTo: 'Mike Torres', createdAt: '2026-03-08', notes: 'Chose competitor marina' },
-  { id: '10', firstName: 'Anna', lastName: 'Lee', email: 'alee@email.com', phone: '(555) 012-3456', stage: 'Proposal Sent', source: 'Walk-in', slipType: 'Transient', boatLength: 22, assignedTo: 'Sarah Chen', createdAt: '2026-03-11', notes: 'Short term stay inquiry' },
-];
 
 /* ── Stage Colors ──────────────────────────────────────── */
 
@@ -301,17 +361,15 @@ export default function Leads() {
   const [search, setSearch] = useState('');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showFormBuilder, setShowFormBuilder] = useState(false);
-  const [localLeads, setLocalLeads] = useState<Lead[]>(MOCK_LEADS);
+  const client = useApiClient();
+  const toast = useToast();
 
-  // API calls
-  const { data: apiLeads, loading, execute: refetchLeads } = useApi<Lead[]>('get', '/leads', { immediate: true });
-  const createLeadApi = useApi<Lead>('post', '/leads');
-  const updateLeadApi = useApi<Lead>('put', '/leads');
-
-  const leads = apiLeads || localLeads;
+  const params = new URLSearchParams({ limit: '100' });
+  if (stageFilter !== 'All') params.set('stage', STAGE_ENUM[stageFilter as Stage]);
+  const list = useList<Lead, LeadDTO>(`/leads?${params.toString()}`, { map: toLead });
+  const leads = list.items;
 
   const filtered = leads.filter((l) => {
-    if (stageFilter !== 'All' && l.stage !== stageFilter) return false;
     if (sourceFilter !== 'All' && l.source !== sourceFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -328,7 +386,8 @@ export default function Leads() {
       <h1 style={s.title} className="helm-page-title">Leads</h1>
       <hr style={s.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
+      {list.loading && <LoadingState label="Loading leads…" />}
+      {list.error && <ErrorState title="Could not load leads" message={list.error} onRetry={list.refetch} />}
 
       {/* Filter Bar */}
       <div style={s.filterBar} className="helm-filter-bar">
@@ -391,7 +450,7 @@ export default function Leads() {
         <button style={s.primaryBtn} onClick={() => setSelectedLead({
           id: '', firstName: '', lastName: '', email: '', phone: '',
           stage: 'New', source: 'Website', slipType: 'Annual',
-          boatLength: 0, assignedTo: '', createdAt: new Date().toISOString().slice(0, 10), notes: '',
+          boatLength: 0, assignedTo: '', createdAt: new Date().toISOString(), notes: '',
         })}>
           <UserPlus size={16} />
           Add Lead
@@ -399,7 +458,7 @@ export default function Leads() {
       </div>
 
       {/* Kanban View */}
-      {view === 'kanban' && (
+      {!list.loading && !list.error && view === 'kanban' && (
         <div style={s.kanban}>
           {STAGES.map((stage) => {
             const leads = leadsByStage(stage);
@@ -466,7 +525,7 @@ export default function Leads() {
       )}
 
       {/* Table View */}
-      {view === 'table' && (
+      {!list.loading && !list.error && view === 'table' && (
         <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
           <table style={s.table}>
             <thead>
@@ -533,25 +592,29 @@ export default function Leads() {
         <LeadDetailPanel
           lead={selectedLead}
           onClose={() => setSelectedLead(null)}
-          onSave={(updated) => {
+          onSave={async (updated) => {
             if (updated.id) {
-              setLocalLeads((prev) => prev.map((l) => l.id === updated.id ? updated : l));
-              updateLeadApi.execute(updated).then(() => refetchLeads());
+              await client.put(`/leads/${updated.id}`, leadPayload(updated));
+              toast.success('Lead updated');
             } else {
-              const newLead = { ...updated, id: String(Date.now()) };
-              setLocalLeads((prev) => [newLead, ...prev]);
-              createLeadApi.execute(newLead).then(() => refetchLeads());
+              await client.post('/leads', leadPayload(updated));
+              toast.success(`Lead ${updated.firstName} ${updated.lastName} added`);
+              setSelectedLead(null);
             }
-            setSelectedLead(null);
+            list.refetch();
           }}
           onStageChange={async (newStage) => {
-            const updated = { ...selectedLead, stage: newStage as Stage };
-            setSelectedLead(updated);
-            setLocalLeads((prev) => prev.map((l) => l.id === selectedLead.id ? updated : l));
-            if (selectedLead.id) {
-              await updateLeadApi.execute(updated);
-              refetchLeads();
+            if (!selectedLead.id) return;
+            let lostReason: string | undefined;
+            if (newStage === 'Lost') {
+              const reason = window.prompt('Reason this lead was lost (optional):');
+              if (reason === null) return;
+              lostReason = reason || undefined;
             }
+            await client.put(`/leads/${selectedLead.id}/stage`, { stage: STAGE_ENUM[newStage as Stage], lostReason });
+            setSelectedLead({ ...selectedLead, stage: newStage as Stage });
+            toast.success(`Moved to ${newStage}`);
+            list.refetch();
           }}
         />
       )}
