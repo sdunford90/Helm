@@ -1,6 +1,10 @@
-import { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { useApi } from '../hooks/useApi';
+import { useEffect, useState } from 'react';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useApiClient, useResource } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { customerName, type CustomerRef, type InvoiceDTO } from '../lib/dto';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 import {
   ArrowLeft,
   Send,
@@ -11,7 +15,7 @@ import {
   BookOpen,
 } from 'lucide-react';
 import PaymentModal from '../components/PaymentModal';
-import { formatCents, formatDate } from '../lib/format';
+import { formatCents, formatDate, humanizeEnum } from '../lib/format';
 
 /* ─── Types ─── */
 type InvoiceStatus = 'Draft' | 'Issued' | 'Paid' | 'Past Due' | 'Void' | 'Collections';
@@ -21,7 +25,8 @@ interface LineItem {
   qty: number;
   unitPrice: number;
   discount: number;
-  taxRate: number;
+  tax: number;
+  total: number;
 }
 
 interface Payment {
@@ -29,7 +34,7 @@ interface Payment {
   date: string;
   method: string;
   amount: number;
-  status: 'Completed' | 'Pending' | 'Failed';
+  status: string;
 }
 
 interface GLEntry {
@@ -43,120 +48,81 @@ interface GLEntry {
 interface InvoiceData {
   id: string;
   number: string;
+  customerId: string;
   customer: string;
+  customerRef: CustomerRef | null;
   status: InvoiceStatus;
   issued: string;
   due: string;
-  terms: string;
   lines: LineItem[];
-  taxJurisdictions: { name: string; amount: number }[];
+  subtotal: number;
+  tax: number;
+  total: number;
+  balance: number;
   payments: Payment[];
   glEntries: GLEntry[];
 }
 
-/* ─── Mock data ─── */
-const mockInvoices: Record<string, InvoiceData> = {
-  '1': {
-    id: '1', number: 'INV-2026-0001', customer: 'Harbor Point Yacht Club',
-    status: 'Issued', issued: '2026-03-01', due: '2026-03-31', terms: 'Net 30',
-    lines: [
-      { description: 'Seasonal Slip Rental - Slip A-12 (40ft)', qty: 1, unitPrice: 185000, discount: 0, taxRate: 7 },
-      { description: 'Electricity Surcharge - March', qty: 1, unitPrice: 45000, discount: 0, taxRate: 7 },
-      { description: 'Pump-out Service', qty: 2, unitPrice: 27500, discount: 5000, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 17100 },
-      { name: 'County Tax (1%)', amount: 2850 },
-    ],
-    payments: [],
-    glEntries: [
-      { date: '2026-03-01', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0001', debit: 304950, credit: 0 },
-      { date: '2026-03-01', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 280000 },
-      { date: '2026-03-01', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 19950 },
-      { date: '2026-03-01', account: '4200 - Service Revenue', description: 'Service revenue', debit: 0, credit: 5000 },
-    ],
-  },
-  '3': {
-    id: '3', number: 'INV-2026-0003', customer: 'Coastal Marine LLC',
-    status: 'Paid', issued: '2026-02-15', due: '2026-03-15', terms: 'Net 30',
-    lines: [
-      { description: 'Annual Slip Lease - Slip C-08 (55ft)', qty: 1, unitPrice: 380000, discount: 0, taxRate: 7 },
-      { description: 'Wi-Fi Premium Package', qty: 12, unitPrice: 2500, discount: 0, taxRate: 7 },
-      { description: 'Dock Box Rental', qty: 1, unitPrice: 40000, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 27000 },
-      { name: 'County Tax (1%)', amount: 4500 },
-    ],
-    payments: [
-      { id: 'p1', date: '2026-03-10', method: 'ACH', amount: 481500, status: 'Completed' },
-    ],
-    glEntries: [
-      { date: '2026-02-15', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0003', debit: 481500, credit: 0 },
-      { date: '2026-02-15', account: '4000 - Slip Revenue', description: 'Slip lease revenue', debit: 0, credit: 450000 },
-      { date: '2026-02-15', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 31500 },
-      { date: '2026-03-10', account: '1000 - Operating Account', description: 'ACH Payment received', debit: 481500, credit: 0 },
-      { date: '2026-03-10', account: '1200 - Accounts Receivable', description: 'Payment applied', debit: 0, credit: 481500 },
-    ],
-  },
-  '4': {
-    id: '4', number: 'INV-2026-0004', customer: 'Maria Gonzalez',
-    status: 'Past Due', issued: '2026-01-10', due: '2026-02-09', terms: 'Net 30',
-    lines: [
-      { description: 'Monthly Slip Rental - Slip B-03 (32ft)', qty: 1, unitPrice: 125000, discount: 0, taxRate: 7 },
-      { description: 'Late Fee', qty: 1, unitPrice: 50000, discount: 0, taxRate: 0 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 7500 },
-      { name: 'County Tax (1%)', amount: 1250 },
-      { name: 'Municipal Fee (0.5%)', amount: 3500 },
-    ],
-    payments: [],
-    glEntries: [
-      { date: '2026-01-10', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0004', debit: 187250, credit: 0 },
-      { date: '2026-01-10', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 175000 },
-      { date: '2026-01-10', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 12250 },
-    ],
-  },
-  '10': {
-    id: '10', number: 'INV-2026-0010', customer: 'Thomas Drake',
-    status: 'Past Due', issued: '2026-01-20', due: '2026-02-19', terms: 'Net 30',
-    lines: [
-      { description: 'Monthly Slip Rental - Slip D-11 (45ft)', qty: 1, unitPrice: 155000, discount: 0, taxRate: 7 },
-      { description: 'Fuel - Diesel 50 gal', qty: 50, unitPrice: 1100, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [
-      { name: 'State Sales Tax (6%)', amount: 12600 },
-      { name: 'County Tax (1%)', amount: 2100 },
-    ],
-    payments: [
-      { id: 'p2', date: '2026-02-25', method: 'Card', amount: 112350, status: 'Completed' },
-    ],
-    glEntries: [
-      { date: '2026-01-20', account: '1200 - Accounts Receivable', description: 'Invoice INV-2026-0010', debit: 224700, credit: 0 },
-      { date: '2026-01-20', account: '4000 - Slip Revenue', description: 'Slip rental revenue', debit: 0, credit: 210000 },
-      { date: '2026-01-20', account: '2100 - Sales Tax Payable', description: 'Sales tax collected', debit: 0, credit: 14700 },
-      { date: '2026-02-25', account: '1000 - Operating Account', description: 'Card payment received', debit: 112350, credit: 0 },
-      { date: '2026-02-25', account: '1200 - Accounts Receivable', description: 'Partial payment applied', debit: 0, credit: 112350 },
-    ],
-  },
+/* ─── API mapping (all money comes from the server; nothing is recomputed) ─── */
+interface InvoiceDetailDTO extends InvoiceDTO {
+  lineItems: {
+    description: string;
+    quantity: number;
+    unitPriceCents: number;
+    discountCents: number;
+    taxCents: number;
+    extendedCents: number;
+  }[];
+  payments: { id: string; amountCents: number; method: string; status: string; postedDate: string }[];
+  glEntries: {
+    postedAt: string;
+    description?: string | null;
+    debitCents: number;
+    creditCents: number;
+    account?: { accountNumber?: string | null; name?: string | null } | null;
+  }[];
+}
+
+const STATUS_LABEL: Record<InvoiceDTO['status'], InvoiceStatus> = {
+  DRAFT: 'Draft', ISSUED: 'Issued', PAID: 'Paid', PAST_DUE: 'Past Due', VOID: 'Void', COLLECTIONS: 'Collections',
 };
 
-// Generate a default invoice for IDs not in mock data
-function getDefaultInvoice(id: string): InvoiceData {
+function toInvoiceData(dto: InvoiceDetailDTO): InvoiceData {
   return {
-    id, number: `INV-2026-000${id}`, customer: 'Sample Customer',
-    status: 'Issued', issued: '2026-03-15', due: '2026-04-14', terms: 'Net 30',
-    lines: [
-      { description: 'Slip Rental', qty: 1, unitPrice: 150000, discount: 0, taxRate: 7 },
-    ],
-    taxJurisdictions: [{ name: 'State Sales Tax (7%)', amount: 10500 }],
-    payments: [],
-    glEntries: [
-      { date: '2026-03-15', account: '1200 - Accounts Receivable', description: `Invoice INV-2026-000${id}`, debit: 160500, credit: 0 },
-      { date: '2026-03-15', account: '4000 - Slip Revenue', description: 'Slip revenue', debit: 0, credit: 150000 },
-      { date: '2026-03-15', account: '2100 - Sales Tax Payable', description: 'Sales tax', debit: 0, credit: 10500 },
-    ],
+    id: dto.id,
+    number: dto.invoiceNumber,
+    customerId: dto.customerId,
+    customer: customerName(dto.customer),
+    customerRef: dto.customer ?? null,
+    status: STATUS_LABEL[dto.status] ?? 'Draft',
+    issued: dto.issuedDate,
+    due: dto.dueDate,
+    lines: (dto.lineItems ?? []).map((l) => ({
+      description: l.description,
+      qty: l.quantity,
+      unitPrice: l.unitPriceCents,
+      discount: l.discountCents ?? 0,
+      tax: l.taxCents ?? 0,
+      total: (l.extendedCents ?? 0) + (l.taxCents ?? 0),
+    })),
+    subtotal: dto.subtotalCents,
+    tax: dto.taxCents,
+    total: dto.totalCents,
+    balance: dto.balanceCents,
+    payments: (dto.payments ?? []).map((p) => ({
+      id: p.id,
+      date: p.postedDate,
+      method: humanizeEnum(p.method),
+      amount: p.amountCents,
+      status: humanizeEnum(p.status),
+    })),
+    glEntries: (dto.glEntries ?? []).map((g) => ({
+      date: g.postedAt,
+      account: [g.account?.accountNumber, g.account?.name].filter(Boolean).join(' - ') || '—',
+      description: g.description ?? '',
+      debit: g.debitCents,
+      credit: g.creditCents,
+    })),
   };
 }
 
@@ -271,27 +237,69 @@ const st: Record<string, React.CSSProperties> = {
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showPayment, setShowPayment] = useState(false);
+  const [busy, setBusy] = useState<null | 'finalize' | 'send' | 'void'>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const client = useApiClient();
+  const toast = useToast();
 
-  // API calls with fallback to mock data
-  const { data: apiInvoice, loading: loadingInvoice } = useApi<InvoiceData>('get', `/invoices/${id}`, { immediate: true });
-  const { data: apiPayments, loading: loadingPayments } = useApi<Payment[]>('get', `/payments?invoiceId=${id}`, { immediate: true });
-  const recordPayment = useApi<Payment>('post', '/payments');
+  const { data: invoice, loading, error, notFound, refetch } = useResource<InvoiceData, InvoiceDetailDTO>(
+    id ? `/invoices/${id}` : null,
+    { map: toInvoiceData },
+  );
 
-  const fallbackInvoice = mockInvoices[id || ''] || getDefaultInvoice(id || '0');
-  const invoice = apiInvoice
-    ? { ...apiInvoice, payments: apiPayments ?? apiInvoice.payments }
-    : fallbackInvoice;
+  const canPay = !!invoice && invoice.balance > 0 && ['Issued', 'Past Due', 'Collections'].includes(invoice.status);
 
-  const lineTotal = (l: LineItem) => l.qty * l.unitPrice - l.discount;
-  const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
-  const subtotal = invoice.lines.reduce((s, l) => s + lineTotal(l), 0);
-  const totalTax = invoice.taxJurisdictions.reduce((s, j) => s + j.amount, 0);
-  const total = subtotal + totalTax;
+  // Honour the ?action=pay deep link from the Billing list.
+  useEffect(() => {
+    if (invoice && searchParams.get('action') === 'pay') {
+      if (canPay) setShowPayment(true);
+      searchParams.delete('action');
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [invoice, canPay, searchParams, setSearchParams]);
+
+  const runAction = async (action: 'finalize' | 'send' | 'void') => {
+    if (!invoice || busy) return;
+    if (action === 'void' && !window.confirm(`Void invoice ${invoice.number}? This reverses its journal entries and cannot be undone.`)) return;
+    setBusy(action);
+    setActionError(null);
+    try {
+      await client.post(`/invoices/${invoice.id}/${action}`);
+      toast.success(
+        action === 'finalize' ? `Invoice ${invoice.number} finalized` : action === 'send' ? `Invoice ${invoice.number} queued for email delivery` : `Invoice ${invoice.number} voided`,
+      );
+      refetch();
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loading) {
+    return <div style={st.page}><LoadingState label="Loading invoice…" /></div>;
+  }
+  if (notFound || !invoice) {
+    return (
+      <div style={st.page}>
+        <button style={st.backBtn} onClick={() => navigate('/billing')}>
+          <ArrowLeft size={16} /> Back to Billing
+        </button>
+        {notFound ? (
+          <ErrorState title="Invoice not found" message={`There is no invoice with id ${id}. It may have been deleted, or the link is wrong.`} />
+        ) : (
+          <ErrorState title="Could not load this invoice" message={error} onRetry={refetch} />
+        )}
+      </div>
+    );
+  }
+
   const paymentsApplied = invoice.payments
     .filter((p) => p.status === 'Completed')
     .reduce((s, p) => s + p.amount, 0);
-  const balanceDue = total - paymentsApplied;
+  const balanceDue = invoice.balance;
 
   return (
     <div style={st.page}>
@@ -300,8 +308,6 @@ export default function InvoiceDetail() {
         <ArrowLeft size={16} /> Back to Billing
       </button>
 
-      {(loadingInvoice || loadingPayments) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoice...</div>}
-
       {/* Header */}
       <div style={st.headerRow}>
         <div>
@@ -309,26 +315,35 @@ export default function InvoiceDetail() {
             <h1 style={st.invoiceNum}>{invoice.number}</h1>
             <span style={statusBadge(invoice.status)}>{invoice.status}</span>
           </div>
-          <div style={st.customerName}>{invoice.customer}</div>
+          <div style={st.customerName}>
+            <Link to={`/customers/${invoice.customerId}`} style={{ color: '#2E4A6B' }}>{invoice.customer}</Link>
+          </div>
         </div>
         <div style={st.actions}>
           {invoice.status === 'Draft' && (
-            <button style={st.btnPrimary}><CheckCircle size={14} /> Finalize</button>
+            <button style={st.btnPrimary} disabled={!!busy} onClick={() => runAction('finalize')}>
+              <CheckCircle size={14} /> {busy === 'finalize' ? 'Finalizing…' : 'Finalize'}
+            </button>
           )}
-          {(invoice.status === 'Issued' || invoice.status === 'Past Due') && (
-            <>
-              <button style={st.btnSecondary}><Send size={14} /> Send</button>
-              <button style={st.btnPrimary} onClick={() => setShowPayment(true)}>
-                <DollarSign size={14} /> Record Payment
-              </button>
-            </>
+          {(invoice.status === 'Issued' || invoice.status === 'Past Due' || invoice.status === 'Collections') && (
+            <button style={st.btnSecondary} disabled={!!busy} onClick={() => runAction('send')}>
+              <Send size={14} /> {busy === 'send' ? 'Sending…' : 'Send'}
+            </button>
+          )}
+          {canPay && (
+            <button style={st.btnPrimary} disabled={!!busy} onClick={() => setShowPayment(true)}>
+              <DollarSign size={14} /> Record Payment
+            </button>
           )}
           {invoice.status !== 'Void' && invoice.status !== 'Paid' && (
-            <button style={st.btnDestructive}><Ban size={14} /> Void</button>
+            <button style={st.btnDestructive} disabled={!!busy} onClick={() => runAction('void')}>
+              <Ban size={14} /> {busy === 'void' ? 'Voiding…' : 'Void'}
+            </button>
           )}
         </div>
       </div>
       <hr style={st.divider} />
+      {actionError && <div style={{ marginBottom: 16 }}><InlineError message={actionError} /></div>}
 
       {/* Meta */}
       <div style={st.metaRow}>
@@ -339,10 +354,6 @@ export default function InvoiceDetail() {
         <div style={st.metaItem}>
           <div style={st.metaLabel as React.CSSProperties}>Due</div>
           <div style={st.metaValue}>{formatDate(invoice.due)}</div>
-        </div>
-        <div style={st.metaItem}>
-          <div style={st.metaLabel as React.CSSProperties}>Terms</div>
-          <div style={st.metaValue}>{invoice.terms}</div>
         </div>
       </div>
 
@@ -368,8 +379,8 @@ export default function InvoiceDetail() {
                   <td style={st.tdRight}>{line.qty}</td>
                   <td style={st.tdRight}>{formatCents(line.unitPrice)}</td>
                   <td style={st.tdRight}>{line.discount > 0 ? `(${formatCents(line.discount)})` : '--'}</td>
-                  <td style={st.tdRight}>{formatCents(lineTax(line))}</td>
-                  <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(lineTotal(line) + lineTax(line))}</td>
+                  <td style={st.tdRight}>{formatCents(line.tax)}</td>
+                  <td style={{ ...st.tdRight, fontWeight: 600 }}>{formatCents(line.total)}</td>
                 </tr>
               ))}
             </tbody>
@@ -381,17 +392,15 @@ export default function InvoiceDetail() {
           <div style={st.totalsBox}>
             <div style={st.totalsRow}>
               <span>Subtotal</span>
-              <span style={{ ...mono, fontWeight: 600, color: '#0A2342' }}>{formatCents(subtotal)}</span>
+              <span style={{ ...mono, fontWeight: 600, color: '#0A2342' }}>{formatCents(invoice.subtotal)}</span>
             </div>
-            {invoice.taxJurisdictions.map((tj) => (
-              <div key={tj.name} style={st.totalsRow}>
-                <span>{tj.name}</span>
-                <span style={{ ...mono, fontSize: '13px' }}>{formatCents(tj.amount)}</span>
-              </div>
-            ))}
+            <div style={st.totalsRow}>
+              <span>Tax</span>
+              <span style={{ ...mono, fontSize: '13px' }}>{formatCents(invoice.tax)}</span>
+            </div>
             <div style={{ ...st.totalsRow, fontWeight: 600, color: '#0A2342' }}>
               <span>Total</span>
-              <span style={mono}>{formatCents(total)}</span>
+              <span style={mono}>{formatCents(invoice.total)}</span>
             </div>
             {paymentsApplied > 0 && (
               <div style={{ ...st.totalsRow, color: '#1B5E20' }}>
@@ -465,6 +474,9 @@ export default function InvoiceDetail() {
               </tr>
             </thead>
             <tbody>
+              {invoice.glEntries.length === 0 && (
+                <tr><td colSpan={5} style={{ ...st.td, color: '#64748B', textAlign: 'center' }}>No journal entries yet (drafts are posted when finalized).</td></tr>
+              )}
               {invoice.glEntries.map((gl, idx) => (
                 <tr key={idx} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
                   <td style={st.td}>{formatDate(gl.date)}</td>
@@ -482,14 +494,13 @@ export default function InvoiceDetail() {
       {/* Payment Modal */}
       {showPayment && (
         <PaymentModal
+          invoiceId={invoice.id}
           invoiceNumber={invoice.number}
+          customerId={invoice.customerId}
           customer={invoice.customer}
           balanceDue={balanceDue}
           onClose={() => setShowPayment(false)}
-          onSubmit={async (payment: Record<string, unknown>) => {
-            await recordPayment.execute({ ...payment, invoiceId: id });
-            setShowPayment(false);
-          }}
+          onRecorded={() => refetch()}
         />
       )}
     </div>

@@ -1,37 +1,25 @@
 import { useState, useCallback } from 'react';
 import { X, Plus, Trash2, Save, Send } from 'lucide-react';
-import { formatCents } from '../lib/format';
+import { formatCents, todayKey } from '../lib/format';
+import { errorMessage } from '../lib/api';
+import { useApiClient } from '../hooks/useApi';
+import CustomerPicker from './CustomerPicker';
+import type { CustomerRef, InvoiceDTO } from '../lib/dto';
 
 /* ─── Types ─── */
 interface LineItem {
   id: number;
   description: string;
-  qty: number;
-  unitPrice: number; // cents
-  taxRate: number;   // percentage e.g. 7
+  qty: string;   // raw input text, parsed on submit
+  price: string; // raw dollar text, so typing "12.5" is not reformatted mid-keystroke
 }
 
 interface InvoiceFormProps {
   onClose: () => void;
-  onSaveDraft?: (data: Record<string, unknown>) => void;
-  onFinalize?: (data: Record<string, unknown>) => void;
+  /** Called only after the server accepted the invoice. */
+  onCreated: (invoice: InvoiceDTO, finalized: boolean) => void;
+  initialCustomer?: CustomerRef | null;
 }
-
-/* ─── Mock customers ─── */
-const mockCustomers = [
-  'Harbor Point Yacht Club',
-  'James T. Morrison',
-  'Coastal Marine LLC',
-  'Maria Gonzalez',
-  'Sunset Bay Holdings',
-  'Robert Chen',
-  'Windward Sailing Co.',
-  'Patricia Williams',
-  'Blue Horizon Charters',
-  'Thomas Drake',
-  'Anchor Bay Marina',
-  'Lisa Park',
-];
 
 /* ─── Styles ─── */
 const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
@@ -76,11 +64,11 @@ const s: Record<string, React.CSSProperties> = {
   },
   row: { display: 'flex', gap: '16px' },
   lineHeader: {
-    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 0.7fr 1fr 40px',
+    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 1fr 40px',
     gap: '8px', marginBottom: '8px',
   },
   lineRow: {
-    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 0.7fr 1fr 40px',
+    display: 'grid', gridTemplateColumns: '2fr 0.7fr 1fr 1fr 40px',
     gap: '8px', marginBottom: '8px', alignItems: 'center',
   },
   lineInput: {
@@ -137,137 +125,120 @@ const s: Record<string, React.CSSProperties> = {
 
 let nextId = 1;
 function blankLine(): LineItem {
-  return { id: nextId++, description: '', qty: 1, unitPrice: 0, taxRate: 7 };
+  return { id: nextId++, description: '', qty: '1', price: '' };
 }
 
-export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: InvoiceFormProps) {
-  const [customer, setCustomer] = useState('');
-  const [customerOpen, setCustomerOpen] = useState(false);
+/** Parse a dollar string to integer cents; null when not a valid amount. */
+function toCents(text: string): number | null {
+  if (!text.trim()) return null;
+  const n = Number(text);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}
+
+export default function InvoiceForm({ onClose, onCreated, initialCustomer }: InvoiceFormProps) {
+  const client = useApiClient();
+  const [customer, setCustomer] = useState<CustomerRef | null>(initialCustomer ?? null);
+  const [issuedDate, setIssuedDate] = useState(todayKey());
   const [dueDate, setDueDate] = useState('');
-  const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineItem[]>([blankLine()]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const filteredCustomers = mockCustomers.filter((c) =>
-    c.toLowerCase().includes(customer.toLowerCase())
-  );
-
-  const updateLine = useCallback((id: number, field: keyof LineItem, value: string | number) => {
-    setLines((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, [field]: value } : l))
-    );
+  const updateLine = useCallback((id: number, field: 'description' | 'qty' | 'price', value: string) => {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, [field]: value } : l)));
   }, []);
 
-  const removeLine = (id: number) => {
-    setLines((prev) => prev.filter((l) => l.id !== id));
-  };
-
+  const removeLine = (id: number) => setLines((prev) => prev.filter((l) => l.id !== id));
   const addLine = () => setLines((prev) => [...prev, blankLine()]);
 
-  const lineTotal = (l: LineItem) => l.qty * l.unitPrice;
-  const lineTax = (l: LineItem) => Math.round(lineTotal(l) * (l.taxRate / 100));
+  const lineTotal = (l: LineItem) => {
+    const q = Number(l.qty);
+    const c = toCents(l.price);
+    return Number.isFinite(q) && c !== null ? Math.round(q * c) : 0;
+  };
   const subtotal = lines.reduce((sum, l) => sum + lineTotal(l), 0);
-  const totalTax = lines.reduce((sum, l) => sum + lineTax(l), 0);
-  const total = subtotal + totalTax;
 
-  const buildPayload = () => ({
-    customer,
-    dueDate,
-    notes,
-    lines: lines.map((l) => ({
-      description: l.description,
-      qty: l.qty,
-      unitPriceCents: l.unitPrice,
-      taxRate: l.taxRate,
-    })),
-    subtotalCents: subtotal,
-    taxCents: totalTax,
-    totalCents: total,
-  });
+  const validate = (): string | null => {
+    if (!customer) return 'Select a customer from the list.';
+    if (!issuedDate) return 'Set an issue date.';
+    if (!dueDate) return 'Set a due date.';
+    if (dueDate < issuedDate) return 'The due date cannot be before the issue date.';
+    for (const [i, l] of lines.entries()) {
+      if (!l.description.trim()) return `Line ${i + 1}: add a description.`;
+      const q = Number(l.qty);
+      if (!Number.isFinite(q) || q <= 0) return `Line ${i + 1}: quantity must be greater than 0.`;
+      if (toCents(l.price) === null) return `Line ${i + 1}: enter a unit price.`;
+    }
+    return null;
+  };
 
-  const validate = (): boolean => {
-    if (!customer.trim()) { setError('Please select a customer.'); return false; }
-    if (!dueDate) { setError('Please set a due date.'); return false; }
-    if (lines.every((l) => !l.description.trim() && l.unitPrice === 0)) { setError('Please add at least one line item.'); return false; }
+  const submit = async (finalize: boolean) => {
+    const problem = validate();
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setError('');
-    return true;
-  };
-
-  const handleSaveDraft = async () => {
-    if (!validate()) return;
     setSaving(true);
-    await onSaveDraft?.(buildPayload());
-    setSaving(false);
-    onClose();
-  };
-
-  const handleFinalize = async () => {
-    if (!validate()) return;
-    setSaving(true);
-    await onFinalize?.(buildPayload());
-    setSaving(false);
-    onClose();
+    let created: InvoiceDTO | null = null;
+    try {
+      created = await client.post<InvoiceDTO>('/invoices', {
+        customerId: customer!.id,
+        issuedDate,
+        dueDate,
+        lineItems: lines.map((l) => ({
+          description: l.description.trim(),
+          quantity: Number(l.qty),
+          unitPriceCents: toCents(l.price)!,
+        })),
+      });
+      if (finalize) {
+        const finalized = await client.post<InvoiceDTO>(`/invoices/${created.id}/finalize`);
+        onCreated(finalized, true);
+      } else {
+        onCreated(created, false);
+      }
+      onClose();
+    } catch (err) {
+      if (created) {
+        // The draft exists; only finalizing failed. Say exactly that.
+        setError(`Draft ${created.invoiceNumber} was saved, but finalizing failed: ${errorMessage(err)}`);
+        onCreated(created, false);
+      } else {
+        setError(errorMessage(err));
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+    <div style={s.overlay}>
+      <div style={s.modal} className="helm-modal" role="dialog" aria-modal="true" aria-labelledby="invoice-form-title">
         {/* Header */}
         <div style={s.header}>
-          <h2 style={s.headerTitle}>Create Invoice</h2>
-          <button style={s.closeBtn} onClick={onClose}><X size={20} /></button>
+          <h2 id="invoice-form-title" style={s.headerTitle}>Create Invoice</h2>
+          <button style={s.closeBtn} onClick={onClose} disabled={saving} aria-label="Close"><X size={20} /></button>
         </div>
 
         {/* Body */}
         <div style={s.body}>
           {/* Customer Picker */}
-          <div style={{ ...s.fieldGroup, position: 'relative' }}>
+          <div style={s.fieldGroup}>
             <label style={s.label}>Customer</label>
-            <input
-              style={s.input}
-              placeholder="Search for a customer..."
-              value={customer}
-              onChange={(e) => { setCustomer(e.target.value); setCustomerOpen(true); }}
-              onFocus={() => setCustomerOpen(true)}
-              onBlur={() => setTimeout(() => setCustomerOpen(false), 150)}
-            />
-            {customerOpen && customer.length > 0 && filteredCustomers.length > 0 && (
-              <div style={s.customerDropdown as React.CSSProperties}>
-                {filteredCustomers.map((c) => (
-                  <div
-                    key={c}
-                    style={s.customerOption}
-                    onMouseDown={() => { setCustomer(c); setCustomerOpen(false); }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#D6E8F4'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
-                  >
-                    {c}
-                  </div>
-                ))}
-              </div>
-            )}
+            <CustomerPicker value={customer} onChange={setCustomer} inputStyle={s.input} />
           </div>
 
-          {/* Due date & Notes */}
-          <div style={{ ...s.row, marginBottom: '24px' }}>
+          {/* Dates */}
+          <div style={{ ...s.row, marginBottom: '24px' }} className="helm-form-grid">
+            <div style={{ flex: 1 }}>
+              <label style={s.label}>Issue Date</label>
+              <input type="date" style={s.input} value={issuedDate} onChange={(e) => setIssuedDate(e.target.value)} />
+            </div>
             <div style={{ flex: 1 }}>
               <label style={s.label}>Due Date</label>
-              <input
-                type="date"
-                style={s.input}
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-              />
-            </div>
-            <div style={{ flex: 2 }}>
-              <label style={s.label}>Notes</label>
-              <input
-                style={s.input}
-                placeholder="Optional notes..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-              />
+              <input type="date" style={s.input} value={dueDate} min={issuedDate} onChange={(e) => setDueDate(e.target.value)} />
             </div>
           </div>
 
@@ -277,8 +248,7 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
             <span style={s.colLabel as React.CSSProperties}>Description</span>
             <span style={s.colLabel as React.CSSProperties}>Qty</span>
             <span style={s.colLabel as React.CSSProperties}>Unit Price</span>
-            <span style={s.colLabel as React.CSSProperties}>Tax %</span>
-            <span style={{ ...s.colLabel as React.CSSProperties, textAlign: 'right' }}>Total</span>
+            <span style={{ ...s.colLabel as React.CSSProperties, textAlign: 'right' }}>Amount</span>
             <span />
           </div>
           {lines.map((line) => (
@@ -286,41 +256,37 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
               <input
                 style={s.lineInput}
                 placeholder="Description..."
+                aria-label="Line description"
                 value={line.description}
                 onChange={(e) => updateLine(line.id, 'description', e.target.value)}
               />
               <input
                 style={s.lineInputMono as React.CSSProperties}
                 type="number"
-                min={1}
+                min={0}
+                step="any"
+                aria-label="Quantity"
                 value={line.qty}
-                onChange={(e) => updateLine(line.id, 'qty', parseInt(e.target.value) || 0)}
+                onChange={(e) => updateLine(line.id, 'qty', e.target.value)}
               />
               <input
                 style={s.lineInputMono as React.CSSProperties}
                 type="number"
-                min={0}
                 step={0.01}
                 placeholder="0.00"
-                value={line.unitPrice ? (line.unitPrice / 100).toFixed(2) : ''}
-                onChange={(e) => updateLine(line.id, 'unitPrice', Math.round(parseFloat(e.target.value || '0') * 100))}
-              />
-              <input
-                style={s.lineInputMono as React.CSSProperties}
-                type="number"
-                min={0}
-                step={0.5}
-                value={line.taxRate}
-                onChange={(e) => updateLine(line.id, 'taxRate', parseFloat(e.target.value) || 0)}
+                aria-label="Unit price in dollars"
+                value={line.price}
+                onChange={(e) => updateLine(line.id, 'price', e.target.value)}
               />
               <div style={{ ...mono, textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#0A2342', padding: '8px 4px' }}>
-                {formatCents(lineTotal(line) + lineTax(line))}
+                {formatCents(lineTotal(line))}
               </div>
               <button
                 style={s.removeBtn}
                 onClick={() => removeLine(line.id)}
                 disabled={lines.length === 1}
                 title="Remove line"
+                aria-label="Remove line"
               >
                 <Trash2 size={16} />
               </button>
@@ -337,13 +303,9 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
                 <span>Subtotal</span>
                 <span style={{ ...mono, fontWeight: 600 }}>{formatCents(subtotal)}</span>
               </div>
-              <div style={s.totalsRow}>
+              <div style={{ ...s.totalsRow, color: '#64748B', fontSize: '13px' }}>
                 <span>Tax</span>
-                <span style={{ ...mono, fontWeight: 600 }}>{formatCents(totalTax)}</span>
-              </div>
-              <div style={s.totalsFinal}>
-                <span>Total</span>
-                <span style={mono}>{formatCents(total)}</span>
+                <span>Calculated by the server on save</span>
               </div>
             </div>
           </div>
@@ -351,12 +313,12 @@ export default function InvoiceForm({ onClose, onSaveDraft, onFinalize }: Invoic
 
         {/* Footer */}
         <div style={s.footer}>
-          {error && <span style={{ fontSize: '13px', color: '#B71C1C', flex: 1, alignSelf: 'center' }}>{error}</span>}
-          <button style={s.secondaryBtn} onClick={onClose}>Cancel</button>
-          <button style={{ ...s.secondaryBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSaveDraft} disabled={saving}>
+          {error && <span role="alert" style={{ fontSize: '13px', color: '#B71C1C', flex: 1, alignSelf: 'center' }}>{error}</span>}
+          <button style={s.secondaryBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...s.secondaryBtn, opacity: saving ? 0.7 : 1 }} onClick={() => submit(false)} disabled={saving}>
             <Save size={16} /> {saving ? 'Saving...' : 'Save as Draft'}
           </button>
-          <button style={{ ...s.primaryBtn, opacity: saving ? 0.7 : 1 }} onClick={handleFinalize} disabled={saving}>
+          <button style={{ ...s.primaryBtn, opacity: saving ? 0.7 : 1 }} onClick={() => submit(true)} disabled={saving}>
             <Send size={16} /> {saving ? 'Saving...' : 'Save & Finalize'}
           </button>
         </div>

@@ -1,6 +1,9 @@
 import { Download } from 'lucide-react';
-import { formatCents } from '../lib/format';
-import { useApi } from '../hooks/useApi';
+import { formatCents, todayKey } from '../lib/format';
+import { useResource } from '../hooks/useApi';
+import { customerName, type CustomerRef } from '../lib/dto';
+import { downloadCsv, centsToDollars } from '../lib/csv';
+import { ComingSoonButton, DataState, EmptyState } from '../components/StateViews';
 
 /* ─── Types ─── */
 interface AgingRow {
@@ -12,22 +15,42 @@ interface AgingRow {
   days90plus: number;
 }
 
-/* ─── Mock data ─── */
-const mockAgingData: AgingRow[] = [
-  { customer: 'Harbor Point Yacht Club', current: 304950, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'James T. Morrison', current: 133750, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Robert Chen', current: 101650, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Blue Horizon Charters', current: 577800, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Maria Gonzalez', current: 0, days1to30: 0, days31to60: 187250, days61to90: 0, days90plus: 0 },
-  { customer: 'Thomas Drake', current: 0, days1to30: 0, days31to60: 112350, days61to90: 0, days90plus: 0 },
-  { customer: 'Sunset Bay Holdings', current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 663400 },
-  { customer: 'Dockside Properties', current: 0, days1to30: 85000, days31to60: 0, days61to90: 0, days90plus: 0 },
-  { customer: 'Anchor Bay Marina', current: 0, days1to30: 0, days31to60: 0, days61to90: 142500, days90plus: 0 },
-  { customer: 'Wavecrest Holdings', current: 0, days1to30: 67200, days31to60: 0, days61to90: 0, days90plus: 225000 },
-];
+/* ─── API mapping ─── */
+// GET /reports/ar-aging returns per-invoice details with a bucket:
+// current (not yet due), days30 (1-30), days60 (31-60), days90 (61-90), days120plus (91+).
+interface AgingReport {
+  buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number };
+  totalOutstanding: number;
+  invoiceCount: number;
+  details: {
+    invoiceId: string;
+    invoiceNumber: string;
+    customer: CustomerRef | null;
+    balanceCents: number;
+    daysOverdue: number;
+    bucket: 'current' | 'days30' | 'days60' | 'days90' | 'days120plus';
+  }[];
+}
+
+const BUCKET_FIELD: Record<AgingReport['details'][number]['bucket'], keyof Omit<AgingRow, 'customer'>> = {
+  current: 'current', days30: 'days1to30', days60: 'days31to60', days90: 'days61to90', days120plus: 'days90plus',
+};
+
+function toAgingRows(report: AgingReport): AgingRow[] {
+  const byCustomer = new Map<string, AgingRow>();
+  for (const d of report.details ?? []) {
+    const key = d.customer?.id ?? 'unknown';
+    const row = byCustomer.get(key) ?? {
+      customer: customerName(d.customer), current: 0, days1to30: 0, days31to60: 0, days61to90: 0, days90plus: 0,
+    };
+    row[BUCKET_FIELD[d.bucket] ?? 'current'] += d.balanceCents;
+    byCustomer.set(key, row);
+  }
+  return [...byCustomer.values()].sort((a, b) => rowTotal(b) - rowTotal(a));
+}
 
 /* ─── Helpers ─── */
-const rowTotal = (r: AgingRow) => r.current + r.days1to30 + r.days31to60 + r.days61to90 + r.days90plus;
+function rowTotal(r: AgingRow) { return r.current + r.days1to30 + r.days31to60 + r.days61to90 + r.days90plus; }
 const colSum = (data: AgingRow[], field: keyof Omit<AgingRow, 'customer'>) =>
   data.reduce((s, r) => s + r[field], 0);
 
@@ -90,19 +113,35 @@ const agingBuckets: { label: string; field: keyof Omit<AgingRow, 'customer'>; co
 ];
 
 export default function ARaging() {
-  // API call with fallback to mock data
-  const { data: apiAgingData, loading } = useApi<AgingRow[]>('get', '/reports/ar-aging', { immediate: true });
-  const agingData = apiAgingData ?? mockAgingData;
+  const report = useResource<AgingRow[], AgingReport>('/reports/ar-aging', { map: toAgingRows });
+  const agingData = report.data ?? [];
 
   const grandTotal = agingData.reduce((s, r) => s + rowTotal(r), 0);
+
+  const exportCsv = () =>
+    downloadCsv(
+      `ar-aging-${todayKey()}.csv`,
+      ['Customer', 'Current', '1-30 Days', '31-60 Days', '61-90 Days', '90+ Days', 'Total'],
+      agingData.map((r) => [r.customer, centsToDollars(r.current), centsToDollars(r.days1to30), centsToDollars(r.days31to60), centsToDollars(r.days61to90), centsToDollars(r.days90plus), centsToDollars(rowTotal(r))]),
+    );
 
   return (
     <div style={s.page}>
       <h1 style={s.title} className="helm-page-title">A/R Aging</h1>
       <hr style={s.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading aging data...</div>}
-
+      <DataState
+        loading={report.loading}
+        error={report.status === 403 ? null : report.error}
+        onRetry={report.refetch}
+        errorTitle="Could not load A/R aging"
+        isEmpty={report.status === 403 || agingData.length === 0}
+        empty={
+          report.status === 403
+            ? <EmptyState title="No access" message="A/R aging is limited to owner, manager and accounting roles." />
+            : <EmptyState title="No open receivables" message="There are no issued or past-due invoices with a balance." />
+        }
+      >
       {/* Summary Cards */}
       <div style={s.summaryRow} className="helm-stats-grid">
         {agingBuckets.map((b) => {
@@ -118,8 +157,8 @@ export default function ARaging() {
 
       {/* Export Toolbar */}
       <div style={s.toolbar}>
-        <button style={s.exportBtn}><Download size={14} /> Export CSV</button>
-        <button style={s.exportBtn}><Download size={14} /> Export PDF</button>
+        <button style={s.exportBtn} onClick={exportCsv}><Download size={14} /> Export CSV</button>
+        <ComingSoonButton style={s.exportBtn} reason="PDF export is not available yet."><Download size={14} /> Export PDF</ComingSoonButton>
       </div>
 
       {/* Aging Table */}
@@ -172,6 +211,7 @@ export default function ARaging() {
           </tbody>
         </table>
       </div>
+      </DataState>
     </div>
   );
 }

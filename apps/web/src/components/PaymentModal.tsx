@@ -1,16 +1,22 @@
 import { useState } from 'react';
 import { X, CreditCard, Building2, Banknote, Anchor, CheckCircle, AlertCircle } from 'lucide-react';
 import { formatCents } from '../lib/format';
-import { useApi } from '../hooks/useApi';
+import { useApiClient } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import type { PaymentDTO } from '../lib/dto';
 
 /* ─── Types ─── */
 type PaymentMethod = 'Card' | 'ACH' | 'Cash' | 'Charge to Slip';
 
 interface PaymentModalProps {
+  invoiceId: string;
   invoiceNumber: string;
+  customerId: string;
   customer: string;
-  balanceDue: number; // cents
+  balanceDue: number; // cents, from the server
   onClose: () => void;
+  /** Called only after the server recorded the payment (2xx). */
+  onRecorded?: (payment: PaymentDTO) => void;
 }
 
 /* ─── Styles ─── */
@@ -105,39 +111,56 @@ const methods: { value: PaymentMethod; icon: typeof CreditCard; label: string }[
   { value: 'Charge to Slip', icon: Anchor, label: 'Charge to Slip' },
 ];
 
-export default function PaymentModal({ invoiceNumber, customer, balanceDue, onClose }: PaymentModalProps) {
-  const [method, setMethod] = useState<PaymentMethod>('Card');
+export default function PaymentModal({ invoiceId, invoiceNumber, customerId, customer, balanceDue, onClose, onRecorded }: PaymentModalProps) {
+  const client = useApiClient();
+  const [method, setMethod] = useState<PaymentMethod>('Cash');
   const [amount, setAmount] = useState((balanceDue / 100).toFixed(2));
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const recordPayment = useApi<unknown>('post', '/payments');
+  const [errorText, setErrorText] = useState('');
+  const [recordedCents, setRecordedCents] = useState(0);
+
+  const amountCents = Math.round(Number(amount) * 100);
+  const amountProblem =
+    !amount.trim() || !Number.isFinite(amountCents) || amountCents <= 0
+      ? 'Enter an amount greater than $0.00.'
+      : amountCents > balanceDue
+        ? `Amount exceeds the balance due (${formatCents(balanceDue)}).`
+        : null;
 
   const handleProcess = async () => {
+    if (amountProblem || status === 'processing') return;
     setStatus('processing');
+    setErrorText('');
     try {
-      const result = await recordPayment.execute({
-        invoiceNumber,
-        amountCents: Math.round(parseFloat(amount) * 100),
+      const payment = await client.post<PaymentDTO>('/payments', {
+        invoiceId,
+        customerId,
+        amountCents,
         method: method === 'Card' ? 'CARD' : method === 'ACH' ? 'ACH' : method === 'Cash' ? 'CASH' : 'CHARGE_TO_SLIP',
       });
-      setStatus(result ? 'success' : 'success'); // Fallback to success for mock mode
-    } catch {
-      setStatus('success'); // Graceful fallback when API unavailable
+      // Only a 2xx response reaches this line.
+      setRecordedCents(payment?.amountCents ?? amountCents);
+      setStatus('success');
+      onRecorded?.(payment);
+    } catch (err) {
+      setErrorText(errorMessage(err));
+      setStatus('error');
     }
   };
 
   const buttonLabel = method === 'Card' || method === 'ACH'
-    ? 'Process via Stripe'
+    ? 'Charge Payment Method on File'
     : method === 'Cash'
       ? 'Record Cash Payment'
       : 'Charge to Slip';
 
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+    <div style={s.overlay} onClick={() => { if (status !== 'processing') onClose(); }}>
+      <div style={s.modal} className="helm-modal" role="dialog" aria-modal="true" aria-label="Record payment" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={s.header}>
           <h2 style={s.headerTitle}>Record Payment</h2>
-          <button style={s.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={s.closeBtn} onClick={onClose} disabled={status === 'processing'} aria-label="Close"><X size={20} /></button>
         </div>
 
         {/* Body */}
@@ -158,7 +181,7 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
             </div>
           </div>
 
-          {status === 'idle' ? (
+          {status === 'idle' || status === 'processing' ? (
             <>
               {/* Payment Method */}
               <label style={s.label}>Payment Method</label>
@@ -189,9 +212,17 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                 />
-                {parseFloat(amount) < balanceDue / 100 && parseFloat(amount) > 0 && (
+                {amountProblem && amount.trim() !== '' && (
+                  <div style={{ fontSize: '12px', color: '#B71C1C', marginTop: '6px' }}>{amountProblem}</div>
+                )}
+                {(method === 'Card' || method === 'ACH') && (
+                  <div style={{ fontSize: '12px', color: '#64748B', marginTop: '6px' }}>
+                    Charges the customer's saved {method === 'ACH' ? 'bank account' : 'card'} in Stripe. Fails if Stripe is not connected or no payment method is on file.
+                  </div>
+                )}
+                {!amountProblem && amountCents < balanceDue && (
                   <div style={{ fontSize: '12px', color: '#856404', marginTop: '6px' }}>
-                    Partial payment -- remaining balance will be {formatCents(balanceDue - Math.round(parseFloat(amount) * 100))}
+                    Partial payment -- remaining balance will be {formatCents(balanceDue - amountCents)}
                   </div>
                 )}
               </div>
@@ -199,27 +230,38 @@ export default function PaymentModal({ invoiceNumber, customer, balanceDue, onCl
           ) : status === 'success' ? (
             <div style={s.successBox}>
               <CheckCircle size={24} />
-              Payment of {formatCents(Math.round(parseFloat(amount) * 100))} recorded successfully.
+              Payment of {formatCents(recordedCents)} recorded.
             </div>
           ) : (
             <div style={s.errorBox}>
               <AlertCircle size={24} />
-              Payment processing failed. Please try again.
+              <div>
+                <div>The payment was not recorded.</div>
+                <div style={{ fontWeight: 400, fontSize: '13px', marginTop: '4px' }}>{errorText}</div>
+              </div>
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div style={s.footer}>
-          <button style={s.cancelBtn} onClick={onClose}>
-            {status === 'idle' ? 'Cancel' : 'Close'}
+          <button style={s.cancelBtn} onClick={onClose} disabled={status === 'processing'}>
+            {status === 'success' ? 'Close' : 'Cancel'}
           </button>
-          {status === 'idle' && (
+          {status === 'error' && (
+            <button style={s.processBtn} onClick={() => setStatus('idle')}>Try Again</button>
+          )}
+          {(status === 'idle' || status === 'processing') && (
             <button
-              style={method === 'Cash' || method === 'Charge to Slip' ? s.processBtnGreen : s.processBtn}
+              style={{
+                ...(method === 'Cash' || method === 'Charge to Slip' ? s.processBtnGreen : s.processBtn),
+                opacity: amountProblem || status === 'processing' ? 0.6 : 1,
+                cursor: amountProblem || status === 'processing' ? 'not-allowed' : 'pointer',
+              }}
+              disabled={!!amountProblem || status === 'processing'}
               onClick={handleProcess}
             >
-              {buttonLabel}
+              {status === 'processing' ? 'Processing…' : buttonLabel}
             </button>
           )}
         </div>

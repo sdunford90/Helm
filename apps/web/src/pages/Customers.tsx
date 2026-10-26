@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Search, Plus, ChevronDown } from 'lucide-react';
-import CustomerForm from '../components/CustomerForm';
-import { useApi } from '../hooks/useApi';
+import CustomerForm, { customerFormToPayload, STATUS_FROM_ENUM } from '../components/CustomerForm';
+import { useApiClient, useList } from '../hooks/useApi';
+import { formatDate, formatPhone } from '../lib/format';
+import { ErrorState, LoadingState, Pager } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
 interface Customer {
   id: string;
@@ -12,20 +15,43 @@ interface Customer {
   phone: string;
   status: 'Active' | 'Inactive' | 'Waitlist' | 'Collections Hold' | 'Seasonal';
   boats: number;
-  balance: number;
   taxExempt: boolean;
   achBlocked: boolean;
   created: string;
 }
 
-const MOCK_CUSTOMERS: Customer[] = [
-  { id: '1', firstName: 'James', lastName: 'Harborview', email: 'james@harbor.com', phone: '(555) 123-4567', status: 'Active', boats: 2, balance: 1250.00, taxExempt: false, achBlocked: false, created: '2024-03-15' },
-  { id: '2', firstName: 'Maria', lastName: 'Seabreeze', email: 'maria@ocean.net', phone: '(555) 234-5678', status: 'Active', boats: 1, balance: 0, taxExempt: true, achBlocked: false, created: '2024-06-01' },
-  { id: '3', firstName: 'Robert', lastName: 'Dockside', email: 'rob@docks.com', phone: '(555) 345-6789', status: 'Waitlist', boats: 1, balance: 500.00, taxExempt: false, achBlocked: false, created: '2024-09-20' },
-  { id: '4', firstName: 'Susan', lastName: 'Baywatch', email: 'susan@bay.org', phone: '(555) 456-7890', status: 'Inactive', boats: 0, balance: 0, taxExempt: false, achBlocked: true, created: '2023-11-10' },
-  { id: '5', firstName: 'David', lastName: 'Tidewater', email: 'david@tide.com', phone: '(555) 567-8901', status: 'Collections Hold', boats: 1, balance: 4500.00, taxExempt: false, achBlocked: true, created: '2024-01-05' },
-  { id: '6', firstName: 'Elena', lastName: 'Windward', email: 'elena@wind.com', phone: '(555) 678-9012', status: 'Seasonal', boats: 1, balance: 750.00, taxExempt: false, achBlocked: false, created: '2025-04-01' },
-];
+interface CustomerDTO {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  status: string;
+  taxExempt: boolean;
+  achBlocked: boolean;
+  createdAt: string;
+  boats?: { id: string }[];
+}
+
+function toCustomer(c: CustomerDTO): Customer {
+  return {
+    id: c.id,
+    firstName: c.firstName,
+    lastName: c.lastName,
+    email: c.email ?? '',
+    phone: c.phone ?? '',
+    status: (STATUS_FROM_ENUM[c.status] ?? 'Active') as Customer['status'],
+    boats: c.boats?.length ?? 0,
+    taxExempt: c.taxExempt,
+    achBlocked: c.achBlocked,
+    created: c.createdAt,
+  };
+}
+
+const STATUS_ENUM: Record<string, string> = {
+  Active: 'ACTIVE', Inactive: 'INACTIVE', Waitlist: 'WAITLIST', 'Collections Hold': 'COLLECTIONS_HOLD', Seasonal: 'SEASONAL',
+};
+const PAGE_SIZE = 25;
 
 const statusBadgeColors: Record<string, { bg: string; color: string; border?: string }> = {
   Active: { bg: '#E8F5E9', color: '#1B5E20' },
@@ -178,40 +204,36 @@ export default function Customers() {
   const [achBlockedFilter, setAchBlockedFilter] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  // API calls
-  const { data: apiCustomers, loading, error, execute: refetchCustomers } = useApi<Customer[]>('get', '/customers', { immediate: true });
-  const createCustomerApi = useApi<Customer>('post', '/customers');
+  const [skip, setSkip] = useState(0);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search.trim()); setSkip(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  const client = useApiClient();
+  const toast = useToast();
 
-  const customers = apiCustomers || MOCK_CUSTOMERS;
-
-  const filtered = customers.filter((c) => {
-    if (statusFilter !== 'All' && c.status !== statusFilter) return false;
-    if (taxExemptFilter && !c.taxExempt) return false;
-    if (achBlockedFilter && !c.achBlocked) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const match =
-        `${c.firstName} ${c.lastName}`.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        c.phone.includes(q);
-      if (!match) return false;
-    }
-    return true;
-  });
+  // Filtering, search and paging all happen on the server.
+  const params = new URLSearchParams({ skip: String(skip), take: String(PAGE_SIZE) });
+  if (statusFilter !== 'All') params.set('status', STATUS_ENUM[statusFilter]);
+  if (debouncedSearch) params.set('search', debouncedSearch);
+  if (taxExemptFilter) params.set('taxExempt', 'true');
+  if (achBlockedFilter) params.set('achBlocked', 'true');
+  const list = useList<Customer, CustomerDTO>(`/customers?${params.toString()}`, { map: toCustomer });
+  const filtered = list.items;
 
   return (
     <div style={styles.page}>
       <h1 style={styles.title} className="helm-page-title">Customers</h1>
       <hr style={styles.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
 
       {/* Filter Bar */}
       <div style={styles.filterBar} className="helm-filter-bar">
         <select
           style={styles.select}
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onChange={(e) => { setStatusFilter(e.target.value); setSkip(0); }}
         >
           <option value="All">All Statuses</option>
           <option value="Active">Active</option>
@@ -235,7 +257,7 @@ export default function Customers() {
           <input
             type="checkbox"
             checked={taxExemptFilter}
-            onChange={(e) => setTaxExemptFilter(e.target.checked)}
+            onChange={(e) => { setTaxExemptFilter(e.target.checked); setSkip(0); }}
             style={styles.checkbox}
           />
           Tax Exempt
@@ -245,7 +267,7 @@ export default function Customers() {
           <input
             type="checkbox"
             checked={achBlockedFilter}
-            onChange={(e) => setAchBlockedFilter(e.target.checked)}
+            onChange={(e) => { setAchBlockedFilter(e.target.checked); setSkip(0); }}
             style={styles.checkbox}
           />
           ACH Blocked
@@ -258,7 +280,12 @@ export default function Customers() {
       </div>
 
       {/* Data Table */}
-      {filtered.length > 0 ? (
+      {list.loading ? (
+        <LoadingState label="Loading customers…" />
+      ) : list.error ? (
+        <ErrorState title="Could not load customers" message={list.error} onRetry={list.refetch} />
+      ) : filtered.length > 0 ? (
+        <>
         <div style={styles.tableWrap} className="helm-table-wrap">
           <table style={styles.table}>
             <thead>
@@ -268,7 +295,6 @@ export default function Customers() {
                 <th style={styles.th}>Phone</th>
                 <th style={styles.th}>Status</th>
                 <th style={styles.th}>Boats</th>
-                <th style={styles.th}>Balance</th>
                 <th style={styles.th}>Created</th>
               </tr>
             </thead>
@@ -291,24 +317,23 @@ export default function Customers() {
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, fontWeight: 600 }}>
                       {c.firstName} {c.lastName}
                     </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.email}</td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.phone}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.email || '—'}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>{c.phone ? formatPhone(c.phone) : '—'}</td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg }}>
                       <span style={{ ...styles.badge, backgroundColor: badgeStyle.bg, color: badgeStyle.color }}>
                         {c.status}
                       </span>
                     </td>
                     <td style={{ ...styles.tdBase, backgroundColor: rowBg, textAlign: 'center' }}>{c.boats}</td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, ...styles.mono }}>
-                      ${c.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                    </td>
-                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>{c.created}</td>
+                    <td style={{ ...styles.tdBase, backgroundColor: rowBg, color: '#64748B' }}>{formatDate(c.created)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+        <Pager skip={skip} take={PAGE_SIZE} total={list.pagination?.total ?? filtered.length} onChange={setSkip} />
+        </>
       ) : (
         <div style={styles.emptyState}>
           <Users size={32} style={{ marginBottom: '16px', color: '#2E4A6B' }} />
@@ -331,8 +356,9 @@ export default function Customers() {
         <CustomerForm
           onClose={() => setShowForm(false)}
           onSave={async (data) => {
-            await createCustomerApi.execute(data);
-            refetchCustomers();
+            await client.post('/customers', customerFormToPayload(data));
+            toast.success(`Customer ${data.firstName} ${data.lastName} added`);
+            list.refetch();
             setShowForm(false);
           }}
         />
