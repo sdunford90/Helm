@@ -26,7 +26,7 @@ All of it under enterprise guardrails, with strict tenant separation.
 **This is achievable, but not on the codebase as it stands.** The agent is the most privileged automated actor Helm will ever have. Every weakness the other audits found gets worse once a model, which can be manipulated through text, can call the code. The design therefore stands on three non-negotiable principles.
 
 1. **One domain layer, many front doors.** The agent calls the same typed **domain commands** as the REST API, the public API and an MCP server. It never writes SQL, never touches Prisma directly and never calls Express routes over HTTP. Today almost all business logic lives inside Express handlers. For example, invoice creation, tax and numbering all happen inside `routes/invoices.ts:207-305`. So the prerequisite is the **command/query refactor that doc 11 §3.7 already requires** (`defineCommand` / `executeCommand`): each operation becomes a function with a zod input schema, a catalog permission key, a risk level and an audit hook. This document adds a dry-run `plan()` step. Tools, routes and MCP endpoints are then *generated* from that registry.
-2. **The model proposes; the server disposes.** The model never executes a write. An action tool validates its input, runs the command in **dry-run** mode, and stores a frozen **proposal** (`AiToolCall` + `AiApproval`). The UI shows that proposal as a confirmation card. When the user clicks Confirm, the UI obtains a single-use confirmation token bound to the payload hash (doc 11 §3.11.3), and the server executes the *stored, hashed* payload with the *user's* identity. The model's later text cannot change it.
+2. **The model proposes; the server disposes.** The model never executes a write. An action tool validates its input, runs the command in **dry-run** mode, and stores a frozen **proposal** (`AiToolCall` + `AiProposal`). The UI shows that proposal as a confirmation card. When the user clicks Confirm, the UI obtains a single-use confirmation token bound to the payload hash (doc 11 §3.11.3), and the server executes the *stored, hashed* payload with the *user's* identity. The model's later text cannot change it.
    - Only users holding `ai.actions.auto_approve.low_risk`, within the tenant's `maxAutoRisk`, may skip the click for LOW-risk actions.
    - When `authorize()` returns `REQUIRE_APPROVAL`, the server creates a normal `ApprovalRequest` (doc 11 §3.6) for a second human. **The agent never confirms or approves anything.**
 3. **Identity and tenancy are never model inputs.** `tenantId`, `userId`, location scope and permissions come from the authenticated session. They travel in an `ExecutionContext` that wraps doc 11's `Principal` with `Delegation{via:"ai_assistant"}`. They never appear in a tool's schema. Isolation is enforced three times:
@@ -95,7 +95,7 @@ No marina competitor ships an action-taking copilot today. Dockwa's PSG round is
  │  • AgentRuntime (tool runner loop, streaming)│   │  Streamable HTTP MCP    │
  │  • ModelRouter (haiku/sonnet/opus)           │   │  tools = same registry  │
  │  • ToolRegistry  ← generated from Commands   │   └───────────┬─────────────┘
- │  • PolicyEngine (approve/confirm/deny)       │               │
+ │  • aiGate → doc 11 authorize/TenantAiPolicy  │               │
  │  • ProposalStore / Approvals                 │               │
  │  • Untrusted-content wrapper (spotlighting)  │               │
  │  • Usage meter, spend caps, kill switch      │               │
@@ -186,6 +186,8 @@ export interface CommandPlan<P> {
   blockers: string[];              // non-empty → cannot execute
   payload: P;                      // fully-resolved execution payload (frozen + hashed)
   reversible: { kind: "void" | "cancel" | "delete_draft" | "none"; command?: string };
+  authzContext: AuthzContext;      // doc 11 context {locationId, amountCents, percent, record, bulkCount, periodClosed}
+  effectiveRisk: Risk;             // base risk raised by context (amount over limit, bulk, closed period, external send)
 }
 
 export interface CommandDef<I extends ZodTypeAny, P, O> {
@@ -310,17 +312,18 @@ export function buildToolsFor(ctx: ExecutionContext, surface: "staff" | "portal"
   return ALL_COMMANDS_AND_QUERIES
     .filter(d => surface === "portal" ? d.exposure.portal : surface === "mcp" ? d.exposure.mcp : d.exposure.agent)
     .filter(d => moduleEnabled(ctx.tenantId, d.module))
-    .filter(d => staticPermissions(d).every(p => ctx.permissions.has(p)))   // (3b) not even offered
-    .filter(d => tenantAiPolicy(ctx.tenantId).toolEnabled(d.name))
-    .sort((a, b) => a.name.localeCompare(b.name))                           // deterministic → cacheable
+    // effective = user ∩ AI channel ceiling ∩ TenantAiPolicy (doc 11 §3.11.1): business key AND AI capability
+    .filter(d => canPossibly(ctx.principal, d.key) && canPossibly(ctx.principal, aiCapabilityFor(d)))  // (3b) not even offered
+    .filter(d => !tenantAiPolicy(ctx.tenantId).blockedActions.matches(d.key))
+    .sort((a, b) => a.key.localeCompare(b.key))                             // deterministic → cacheable
     .map(d => betaZodTool({
-      name: toToolName(d.name),                 // "invoices.create" → "create_invoice"
-      description: d.description + riskSuffix(d),
+      name: toToolName(d),                      // "invoices.create" → "create_invoice"
+      description: d.description + riskSuffix(d),   // includes key + risk, per doc 11 §3.7
       inputSchema: d.input,                     // zod; tenant/user never present
       eager_input_streaming: true,              // streaming loop; zod validates before run()
-      run: (input) => d.risk === "read"
-        ? runQueryForModel(d, ctx, input)       // executes, returns compact JSON + citations
-        : proposeForModel(d, ctx, input),       // plan() only → AiToolCall + AiApproval → card
+      run: (input) => d.kind === "read"
+        ? runQueryForModel(d, ctx, input)       // executes via defineQuery + shape() masks
+        : proposeForModel(d, ctx, input),       // plan() only → AiToolCall + AiProposal → card
     }));
 }
 ```
@@ -434,7 +437,7 @@ Phase is when the tool ships to the agent.
 
 A user who asks for one of these gets a deep link to the right screen.
 
-**Hard per-command value limits** apply even with approval: max invoice $50k, max refund $5k, max SMS recipients 500 per action. They are tenant-configurable downward only. Above them, the agent says "do this in the Billing screen".
+**AI channel ceiling** (the "AI channel ceiling" term in doc 11 §3.11.1's intersection) caps values even with approval: max invoice $50k, max refund $5k, max SMS recipients 500 per action. Tenants can only lower them. Above them, the agent says "do this in the Billing screen".
 
 ### 2.5 Analytics: a semantic metrics layer, not text-to-SQL
 
@@ -451,7 +454,7 @@ Most marina questions map to roughly 60 metrics.
 export const metrics = defineMetrics({
   occupancy_rate: {
     description: "Occupied slip-nights / available slip-nights",
-    permission: "reports.operations.read",
+    permission: "reports.operational.view",   // doc 11 key
     dimensions: ["location", "dock", "slip_type", "month", "week", "day"],
     filters: { location: "uuid[]", slip_type: "enum", min_loa_ft: "number" },
     grain: ["day", "week", "month"],
@@ -569,21 +572,23 @@ export async function runTurn(ctx: ExecutionContext, conv: AiConversation, userT
 
 ```ts
 async function proposeForModel(def: CommandDef<any, any, any>, ctx: ExecutionContext, input: unknown) {
-  const call = await recordToolCall(ctx, def.name, input);                        // AiToolCall (status: planning)
+  const call = await recordToolCall(ctx, def.key, input);                         // AiToolCall (status: planning)
   let plan: CommandPlan<any>;
   try { plan = await runCommand(def, ctx, input, { kind: "plan" }) as CommandPlan<any>; }
-  catch (e) { await failToolCall(call, e); return toolError(e); }                // model sees a clear error
+  catch (e) { await failToolCall(call, e); return toolError(e); }                // DENY → model sees a clear error
 
-  const decision = await policyEngine.decide(ctx, def, plan);                    // auto | confirm | dual | deny
-  const approval = await createApproval(ctx, call, def, plan, decision);         // freezes payload + sha256
-  if (decision.kind === "deny") return `Not allowed: ${decision.reason}. Tell the user; do not retry with different values.`;
-  if (decision.kind === "auto") {
-    const out = await executeApproval(ctx, approval.id, { approver: "policy" }); // same path as a click
+  // doc 11 authorize() on the AI channel → ALLOW | REQUIRE_CONFIRMATION | REQUIRE_APPROVAL | DENY (§3c)
+  const decision = await aiGate(ctx, def, plan);
+  const proposal = await createProposal(ctx, call, def, plan, decision);         // AiProposal: freezes payload + sha256
+  if (decision.effect === "DENY") return `Not allowed: ${decision.reason}. Tell the user; do not retry with different values.`;
+  if (decision.effect === "ALLOW") {                                             // LOW + ai.actions.auto_approve.low_risk only
+    const out = await executeProposal(ctx, proposal.id, { confirmation: "auto_low_risk" });
     return JSON.stringify({ status: "done", ...def.present(out) });
   }
-  sseFor(ctx).send({ type: "proposal", approval: toCard(approval, plan) });
+  sseFor(ctx).send({ type: "proposal", approval: toCard(proposal, plan, decision) });
   return JSON.stringify({
-    status: "awaiting_user_confirmation", proposalId: approval.publicId, summary: plan.summary,
+    status: decision.effect === "REQUIRE_APPROVAL" ? "awaiting_user_confirmation_then_approval" : "awaiting_user_confirmation",
+    proposalId: proposal.publicId, summary: plan.summary,
     instruction: "The user must confirm in the card. Do not say it is done. You may end your turn.",
   });
 }
@@ -600,31 +605,31 @@ async function proposeForModel(def: CommandDef<any, any, any>, ctx: ExecutionCon
    - Prefer Clerk Organizations mapped 1:1 to tenants, so the tenant is derived from the session's org claim and *checked* against the hostname, not derived from the hostname (G3).
    - Delete the dev fallbacks (`tenant.ts:63-65`, `auth.ts:44-45`) behind a build-time guard.
    - No tool schema contains `tenantId`, `userId`, `locationId` (when the user is single-location), `actor` or `approvedBy`. A CI test asserts this over the generated JSON schemas (§7).
-2. **Postgres RLS on every tenant table.**
+2. **Postgres RLS on every tenant table, as specified in doc 11 §3.12.** That covers:
+   - the roles `helm_app` / `helm_owner` / `helm_platform` / `helm_readonly`
+   - DMMF-generated policies, `FORCE ROW LEVEL SECURITY`, transaction-local `set_config`
+   - fail-closed behaviour and the CI suite
 
-```sql
-ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE customers FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation ON customers
-  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
--- app role: NOBYPASSRLS; migrations role separate; no SECURITY DEFINER functions without review
-```
+   AI-specific requirements on top of it:
+   - every agent turn, plan step and background run executes inside that transaction wrapper
+   - the analytics/metrics path (§2.5) uses `helm_readonly` with the optional location policy (doc 11 §3.12 item 5)
+   - `app.via` / `app.agent_run_id` are set, so audit triggers can attribute AI actions
 
 ```ts
 // apps/api/src/commands/_core/db.ts — the ONLY way command/query code gets a client
 export async function withTenantTx<T>(ctx: ExecutionContext, fn: (tx: Tx) => Promise<T>) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.tenant_id', ${ctx.tenantId}, true),
-                                set_config('app.user_id', ${ctx.userId}, true),
-                                set_config('app.via', ${ctx.via}, true)`;
+                                set_config('app.principal_id', ${ctx.userId}, true),
+                                set_config('app.via', ${ctx.via}, true),
+                                set_config('app.agent_run_id', ${ctx.correlation.agentRunId ?? ""}, true),
+                                set_config('app.location_ids', ${locationIdsCsv(ctx.principal)}, true)`;   // names per doc 11 §3.12
     return fn(tx);
   }, { isolationLevel: "ReadCommitted", timeout: 15_000 });
 }
 ```
 
-   - `set_config(..., true)` is transaction-local, so it is safe with PgBouncer in transaction mode. Child tables without `tenant_id`, such as `PricingRule`, `InvoiceLineItem` and `DockWalkItem`, either gain a denormalised `tenant_id` (recommended: simpler policies, faster) or get `EXISTS (parent...)` policies.
-   - Keep the Prisma `$extends` scoping as layer 2, but generate its model list from the schema (DMMF) so it can't drift (G2), and make it **fail closed**: a tenant-bearing model queried with no ALS tenant throws.
+   - The Prisma `$extends` scoping stays as layer 2: DMMF-generated and fail-closed (doc 11 §3.7 "Prisma guard"). The `Ai*` tables in §8 are included in both layers.
 3. **Per-tenant conversation storage.** All `Ai*` tables carry `tenantId` under RLS. Attachments and voice clips go to `s3://helm-ai/{tenantId}/...` with a per-tenant KMS data key (the Enterprise option).
 4. **No cross-tenant learning.**
    - No shared memory, no shared few-shot examples drawn from tenant data, no shared embeddings.
@@ -635,11 +640,19 @@ export async function withTenantTx<T>(ctx: ExecutionContext, fn: (tx: Tx) => Pro
 
 ### 3(b) Authorization: the agent acts as the user, never elevated
 
-- **Effective permissions** come from doc 11's model: role grants + location scope + per-user overrides. The registry filters tools by permission (§2.4), so the model never sees `issue_refund` for a POS cashier. The command bus re-checks at execute time, because the registry filter is a UX optimisation and not the security boundary.
-- **Location scoping.** If a user is scoped to Location A, queries are filtered (`locationIds`) and commands reject records from Location B (`assertLocation(ctx, record.locationId)`).
-- **Approval thresholds from doc 11** (e.g. `payments.refund` up to $250 without a second approver) feed the PolicyEngine directly. Agent use never raises a threshold, and a tenant may set *stricter* thresholds for agent-originated actions than for UI-originated ones.
-- **No elevation paths.** The agent cannot call a command on behalf of another user. "Ask the manager to approve" creates an approval request routed to users holding the permission; it does not borrow their identity.
-- **Portal principal** (`actorType: "portal_user"`): every portal query and command is pinned by `ctx.portalCustomerId` (§4.7).
+The contract is doc 11 §3.11.1. In summary:
+- the agent runs as `Principal{kind:"staff", delegation:{via:"ai_assistant", agentRunId}}`
+- effective = user's permissions ∩ AI channel ceiling ∩ `TenantAiPolicy`
+- it needs the business key **and** the `ai.*` capability
+- session/MFA/time-window constraints carry over
+- field masks apply before the model sees data
+
+What this design adds on top:
+- **Not even offered.** The registry (§2.4) drops tools the user can't use, so the model never sees `issue_refund` for a POS cashier. `executeCommand` re-authorizes at execute time, because the registry filter is a UX optimisation and not the security boundary.
+- **Location scoping** comes from doc 11 (`locationFilter()` on queries, `context()` → `locationId` on commands). Plan steps over many records authorize each item separately.
+- **Thresholds only get stricter via AI.** The effective AI threshold is `min(manual threshold, TenantAiPolicy.aiApprovalThresholds)` (doc 11 §3.11.2). Agent use can never raise a threshold or a limit.
+- **No elevation paths.** The agent can't act as anyone else. "Ask the manager to approve" creates a doc 11 `ApprovalRequest` (`requestedBy` = user, `via = ai_assistant`). It doesn't borrow the manager's identity.
+- **Portal principal** (doc 11 `Principal{kind:"customer"}`, `portal.*` namespace, never mixable with staff roles): every portal query and command is pinned by `ctx.portalCustomerId` (§4.7).
 
 ### 3(c) Human-in-the-loop: proposals, cards and policy
 
@@ -662,47 +675,49 @@ export async function withTenantTx<T>(ctx: ExecutionContext, fn: (tx: Tx) => Pro
 ```
 
 - **Every value on the card comes from `plan()`**: resolved from the database, recomputed server-side, never echoed from the model's text. The model's words appear only as a labelled "Source" quote.
-- **Recipients are resolved server-side** from the customer record. The model can pick *which customer*, but cannot supply an arbitrary email or phone for a known customer. An ad-hoc address requires `communications.send.adhoc` and shows a red "new recipient" badge.
-- **Edit** opens the normal UI form (e.g. `InvoiceForm.tsx`), pre-filled from the payload. Saving creates a new plan and a new approval. This follows the same pattern as Shopify Sidekick.
-- **Expiry and staleness.** Approvals expire (default 30 min). At execute time the command re-plans and compares hashes (`STALE_PROPOSAL`, §2.3).
-- **Confirm is a separate, CSRF-protected `POST /api/ai/approvals/:id/confirm` from the same user.** The model has no tool that confirms. A confirm needs a fresh user gesture. Above the step-up threshold (e.g. refunds over $1k), it needs re-auth through Clerk (a step-up session younger than 5 minutes).
+- **Recipients are resolved server-side** from the customer record. The model can pick *which customer*, but cannot supply an arbitrary email or phone for a known customer. An ad-hoc address requires `communications.send.adhoc_recipient` (proposed addition, §2.4) and shows a red "new recipient" badge.
+- **Edit** opens the normal UI form (e.g. `InvoiceForm.tsx`), pre-filled from the payload. Saving creates a new plan and a new proposal. This follows the same pattern as Shopify Sidekick.
+- **Expiry and staleness.** A proposal card stays reviewable for up to 30 minutes. Clicking Confirm mints doc 11's **confirmation token**: single-use, 5-minute expiry, bound to `actionHash = sha256(key + canonical payload)` (§3.11.3). Execution immediately re-plans and compares hashes (`STALE_PROPOSAL`, §2.3), so an old card can't execute stale data.
+- **Confirm is a separate, CSRF-protected `POST /api/ai/proposals/:id/confirm` from the same user.** The model has no tool that confirms or approves. A confirm needs a fresh user gesture. Step-up MFA follows doc 11's AccessPolicy (§3.9, §3.11.1). The prompt surfaces in the card, and the agent can't satisfy it.
 
-**PolicyEngine and the `AiPolicy` rule table.** Defaults by tier, overridable per tenant and role, stricter-only below platform floors:
+**Confirmation vs approval: two different things, both owned by doc 11.**
+- **Confirmation:** the requesting user clicks to OK *their own* action. Its rules (`maxAutoRisk`, `alwaysConfirm`, `confirmationMode`) come from doc 11 §3.11.2–3.
+- **Approval:** a *second* human, holding the `approvals.*` capability, OKs an action above a threshold. It uses `ApprovalRequest` (doc 11 §3.6), with `requestedBy` = the user and `via = ai_assistant`.
 
-| Tier | Platform floor (cannot be loosened) | Default | Tenant may set |
-|---|---|---|---|
-| R | none | execute | disable tools, restrict by role |
-| L | none | confirm | auto-approve per tool/role (e.g. dock staff: `record_meter_reading`, `add_customer_note`, `create_ramp_ticket`) |
-| F | **always human confirm**; no auto-approve | confirm; dual control above $1,000 (refund: $250) | lower thresholds; require approver role; business-hours only |
-| C (1:1) | always human confirm | confirm | require manager for first-contact SMS |
-| C (bulk, >10 recipients) | confirm + approver with `announcements.approve`; 15-min cancel window | threshold 10 | lower |
-| D | always confirm + typed reason; dual control for merge/write-off | dual | — |
+The agent can do neither. Even a user who holds `approvals.*` can't approve their own AI-originated request: "user via AI" counts as the user for the requester ≠ approver rule.
+
+`aiGate()` is a thin wrapper that evaluates, in doc 11's precedence order (§3.11.2), with no AI-specific policy table of its own:
 
 ```ts
-// apps/api/src/ai/policy.ts
-export async function decide(ctx: ExecutionContext, def: CommandDef<any, any, any>, plan: CommandPlan<any>): Promise<Decision> {
-  if (plan.blockers.length) return { kind: "deny", reason: plan.blockers.join("; ") };
-  const tier = typeof def.risk === "function" ? def.risk(plan.payload, ctx) : def.risk;
-  const p = await loadPolicy(ctx.tenantId, ctx.userId, def.name);     // merges platform floor ⊓ tenant ⊓ role
-  if (!p.enabled) return { kind: "deny", reason: "Disabled by your marina's AI policy" };
-  if (tier === "read") return { kind: "auto" };
-  if (tier === "low_write" && p.autoApprove && !plan.warnings.length && withinRate(ctx, def)) return { kind: "auto" };
-  const amt = plan.amounts?.totalCents ?? 0;
-  const recipients = plan.recipients?.length ?? 0;
-  if ((tier === "financial" && amt > p.dualControlCents) ||
-      (tier === "outbound_comm" && recipients > p.bulkRecipientThreshold) ||
-      tier === "destructive" && p.dualControlDestructive)
-    return { kind: "dual", approverPermission: p.approverPermission, stepUp: amt > p.stepUpCents };
-  return { kind: "confirm", stepUp: amt > p.stepUpCents };
+// apps/api/src/ai/gate.ts
+export async function aiGate(ctx: ExecutionContext, def: CommandDef<any, any, any>, plan: CommandPlan<any>): Promise<Decision> {
+  if (plan.blockers.length) return { effect: "DENY", reason: plan.blockers.join("; ") };
+  const pol = await tenantAiPolicy(ctx.tenantId);                               // doc 11 TenantAiPolicy
+  if (pol.blockedActions.matches(def.key)) return { effect: "DENY", reason: "Not available via AI at your marina" };
+  // authorize() applies role limits, ApprovalPolicy with AI thresholds = min(manual, AI), session constraints
+  const d = await authorize(ctx.principal, def.key, { ...plan.authzContext, channel: "ai" });
+  if (d.effect === "DENY") return d;
+  if (d.effect === "REQUIRE_APPROVAL") return d;                                // card: Confirm → then ApprovalRequest
+  const risk = plan.effectiveRisk;                                              // base risk, raised by context
+  const autoOk =
+    risk === "LOW" && rank(pol.maxAutoRisk) >= rank("LOW") &&
+    can(ctx.principal, "ai.actions.auto_approve.low_risk") &&
+    !pol.alwaysConfirm.matches(def.key) &&
+    !ctx.runTainted &&                                                         // untrusted input → maxAutoRisk NONE (doc 11 §3.11.3)
+    withinVelocity(ctx, pol.rateLimits);
+  // MEDIUM auto-approve exists in doc 11 (ai.actions.auto_approve.medium_risk) but is off in every template;
+  // HIGH/CRITICAL are never auto-approved.
+  return autoOk ? { effect: "ALLOW", obligations: d.effect === "ALLOW" ? d.obligations : {} }
+                : { effect: "REQUIRE_CONFIRMATION", reason: "ai_policy", summary: plan.summary };
 }
 ```
 
-- **Dual control** routes the card to an approver queue (web + email/push notification). The requester can't approve their own action. An approval executes as the **requester**, recorded with `approvedBy`. Background-agent proposals (§5) always land in this queue.
-- **Rate limits on proposals and auto-approvals:** for example, at most 30 auto-approved writes per user per hour and 200 per tenant per hour. A spike raises an anomaly alert (§5) and pauses auto-approval for that tenant.
+- **Approval routing.** An approval routes to doc 11's approver queue (web + push/SMS/email, or on-device manager PIN). On approval, the original proposal executes as the **requester**, with the consumed `ApprovalRequest` id recorded. Background-agent proposals (§5) always land in this queue for holders of `ai.agents.approve_runs` or the relevant `approvals.*`.
+- **Velocity caps** are doc 11's `TenantAiPolicy.rateLimits` (default 60 writes/h/user, 500/day/tenant). A breach pauses the agent and alerts the owner. The anomaly sentinel (§5) can trigger the same pause.
 
 ### 3(d) Idempotency, dry-run, undo
 
-- **Idempotency.** Every approval has `idempotencyKey = approvalId`. Double-clicks, retries and SSE reconnects can't double-charge. External calls also carry idempotency keys: Stripe `Idempotency-Key = approvalId`, and Twilio/Resend dedupe via the `MessageLog` unique key `(tenantId, approvalId, recipientId)`. REST clients may pass `Idempotency-Key` too, through the same bus.
+- **Idempotency.** Every proposal has `idempotencyKey = proposalId`. Double-clicks, retries and SSE reconnects can't double-charge. External calls also carry idempotency keys: Stripe `Idempotency-Key = proposalId`, and Twilio/Resend dedupe via the `MessageLog` unique key `(tenantId, proposalId, recipientId)`. REST clients may pass `Idempotency-Key` too, through the same bus.
 - **Dry-run.** `plan()` is the dry run. Users can also ask "what would happen if I bill all transients for October?", which produces a plan card with no execute button (`mode: "simulate"`).
 - **Undo and compensation.** Every card shows its reversibility (`reversible.kind`). After execution, the result card offers **Undo** while valid:
   - draft deleted
@@ -748,7 +763,7 @@ const untrusted = (source: string, recordRef: string, text: string) =>
    - Links in outbound messages are restricted to the tenant's domains and Helm's payment/portal URLs. Other URLs are stripped or flagged on the card.
    - Attachments are restricted to generated documents (invoice PDF, contract envelope).
 4. **Quarantined processing of untrusted documents.** Summarising an inbound email, or extracting a COI, runs in a **tool-less** Haiku call with structured output (the "dual LLM" / quarantine pattern). The privileged loop sees only the structured result (`{intent: "payment_question", invoiceRef: "#1042", sentiment: "neutral"}`) plus a short neutralised summary, never raw HTML.
-5. **Taint tracking.** Once a turn has read untrusted data, the runtime marks the turn `tainted`. A tainted turn cannot auto-approve anything, even L-tier, and its outbound-comm cards show "This action was suggested after reading a customer message" with that message quoted.
+5. **Taint tracking.** Once a turn has read untrusted data, the runtime marks the turn `tainted`. This is the same rule as doc 11 §3.11.3, `AgentRun.untrustedInput` → `maxAutoRisk` = NONE: a tainted turn cannot auto-approve anything, even LOW risk, and its outbound-comm cards show "This action was suggested after reading a customer message" with that message quoted.
 6. **Outbound content review.**
    - Every outbound message (email/SMS) passes a deterministic check: PII patterns (other customers' names or balances, full card numbers, DL numbers), link allowlist, length, and opt-out language for marketing.
    - A Haiku review checks for content not grounded in the recipient's own records.
@@ -769,8 +784,9 @@ export const sendSms = defineCommand({
     body: z.string().min(1).max(640),
     sendAt: z.coerce.date().optional(),
   }).strict(),
-  permission: (i) => i.customerIds.length > 10 ? ["communications.send.sms", "announcements.send"] : ["communications.send.sms"],
-  risk: "outbound_comm",
+  // + ai.communications.send_individual via AI; > bulkComms.maxRecipients → key becomes communications.send.bulk + ai.bulk_communications
+  // communications.consent.override is never offered via AI: ineligible recipients are skipped, not overridden
+  risk: "MEDIUM", kind: "outbound_comm",                            // bulk: HIGH (doc 11 §3.11.2)
   async plan(ctx, i, tx) {
     const tenant = await tenantCommsProfile(tx);                    // 10DLC status, timezone, quiet hours, brand
     const rows = await tx.customer.findMany({ where: { id: { in: i.customerIds } }, include: { communicationPreferences: true } });
@@ -805,12 +821,12 @@ export const sendSms = defineCommand({
   - physical address in the footer
   - honest subject lines
   - suppression list checked in `plan()`
-- **Bulk limits:** per tenant, for example 1 msg/s SMS and 10/s email, plus daily caps by tier. Bulk sends always go through `announcements.schedule` with an approver and a cancel window.
+- **Bulk limits:** per tenant, for example 1 msg/s SMS and 10/s email, plus daily caps by plan. Bulk sends always go through `communications.send.bulk`, with a cancel window and an `ApprovalRequest` above the threshold (doc 11 default > 500 recipients; via AI, any count above `bulkComms.maxRecipients`).
 - **Counsel review** of the consent policy is a Phase 3 exit criterion. Engineering does not decide the "established business relationship" rule on its own.
 
 ### 3(g) Full audit
 
-- Extend `AuditLog`: `actorType`, `via`, `onBehalfOfUserId`, `approvedByUserId`, `conversationId`, `toolCallId`, `approvalId`, `requestId`, `beforeJson`, `afterJson`. The command bus writes it for every executed command. Handler-level writes are removed during the refactor.
+- Extend `AuditLog` with the fields doc 11 §3.11.3 requires (`actorType=STAFF`, `via=ai_assistant`, `agentRunId`, `toolCallId`, `confirmationId`, model/provider version). This design adds `conversationId`, `proposalId`, `approvalRequestId` (doc 11 `ApprovalRequest`), `requestId`, `beforeJson` and `afterJson`. `executeCommand` writes it for every executed command. Handler-level writes are removed during the refactor.
 - `AiToolCall` stores, for **every** tool call including reads:
   - tool, command, input JSON (PII-redacted copy plus an encrypted full copy), output summary
   - latency, error, the model and model request id
@@ -818,30 +834,24 @@ export const sendSms = defineCommand({
   - the approval record
 
   This lets an auditor reconstruct exactly what the model saw.
-- **UI.** The Audit Log page (`apps/web/src/pages/AuditLog.tsx`) gets a "via AI assistant" filter. Each AI-originated record links to the conversation, with permission `audit.ai.read`.
+- **UI.** The Audit Log page (`apps/web/src/pages/AuditLog.tsx`) gets a "via AI assistant" filter. Each AI-originated record links to the conversation (`audit.view`; opening another user's transcript also needs `ai.transcripts.view_all`, per doc 11).
 - **Immutability.** Audit rows are insert-only (RLS policy + revoked UPDATE/DELETE grants), with a daily hash-chain anchor for tamper evidence (an Enterprise/SOC 2 talking point).
 
 ### 3(h) Privacy, retention, provider terms, controls, degradation
 
 - **PII minimisation.**
-  - Read tools return the minimum fields: DOB, DL number and photo URL, exemption certificate URLs, full addresses and emergency contacts are excluded unless the tool is specifically about them (`get_customer_identity`, gated by `customers.pii.read`).
+  - Read tools return the minimum fields: DOB, DL number and photo URL, exemption certificate URLs, full addresses and emergency contacts are excluded unless the tool is specifically about them (`get_customer_identity`, gated by `customers.pii.view_full`, and not exposed to the agent in v1; doc 11 field masks apply before the model sees data).
   - Card data is never in context (last4 only).
   - Free-text logs are scrubbed of phone numbers and emails before they go to analytics.
-- **Retention.** Conversations are kept 90 days by default, configurable from 30 days to 2 years per tenant. Tool-call audit metadata is kept 7 years, aligned with financial records. Message bodies purge on schedule, and tenant offboarding purges everything (`jobs/tenant-lifecycle.ts`).
+- **Retention.** Conversations are kept 90 days by default (doc 11 `TenantAiPolicy.transcriptRetentionDays`), configurable from 30 days to 2 years per tenant. Tool-call audit metadata is kept 7 years, aligned with financial records. Message bodies purge on schedule, and tenant offboarding purges everything (`jobs/tenant-lifecycle.ts`).
 - **Model provider.**
   - Use the Anthropic Commercial Terms + DPA. Request **zero data retention** for the production org. Opus/Sonnet/Haiku 5.5 can run under ZDR, but Claude Fable 5.x requires 30-day retention, so the Fable family is excluded from Helm's routing.
   - Pin `inference_geo: "us"` for US tenants. For EU/Canadian expansion, use the corresponding geography or a cloud-provider deployment (Bedrock/Vertex) with regional residency.
   - List Anthropic as a subprocessor and disclose it in the Helm DPA.
-- **Tenant controls** (Settings → AI):
-  - master on/off
-  - per-role enablement
-  - per-tool enablement
-  - auto-approve rules
-  - thresholds
-  - monthly spend cap (soft warning at 80%, hard stop at 100% → read-only "AI paused")
-  - data retention
-  - "allow AI to read customer messages" toggle
-  - portal assistant on/off
+- **Tenant controls** (Settings → AI) edit doc 11's `TenantAiPolicy`, gated by `ai.policy.manage`:
+  - doc 11 settings: enabled, `maxAutoRisk`, `blockedActions`, `alwaysConfirm`, `aiApprovalThresholds`, bulk limits, rate limits, `transcriptRetentionDays`, providers/residency
+  - per-role AI rights through the normal `ai.*` permissions
+  - proposed additions (§8): monthly spend cap (soft warning at 80%, hard stop at 100% → read-only "AI paused"), "allow AI to read customer messages", portal assistant on/off
 - **Platform controls:** a global kill switch (feature flag), a per-tenant kill switch, model allowlist, and per-tenant rate limits.
 - **Graceful degradation.**
   - On 5xx/429/overload: SDK retries (`maxRetries: 2`), then fall back to a sibling model (Sonnet ↔ Opus) for new conversations.
@@ -886,15 +896,15 @@ Example: "Bill all slip holders with overdue meter readings."
 
 ```
 Plan: Electric billing for October (Main Marina)
- 1. 37 slips with metered power; 31 have Oct readings; 6 missing → create dock-walk task for the 6 (L)
- 2. Create 31 draft invoices, total $4,812.40 (range $22–$410) — view table (L, bulk)
- 3. Finalize 31 invoices (F)          ← requires your confirmation
- 4. Email 29 customers (2 opted out of billing email → added to print queue) (C, bulk ≥10 → manager approval)
+ 1. 37 slips with metered power; 31 have Oct readings; 6 missing → create dock-walk task for the 6 (LOW)
+ 2. Create 31 draft invoices, total $4,812.40 (range $22–$410) — view table (LOW, bulk → ai.bulk_operations)
+ 3. Finalize 31 invoices (MEDIUM)     ← requires your confirmation
+ 4. Email 29 customers (2 opted out of billing email → added to print queue) (HIGH bulk comms → approval)
 [ Approve steps 1–2 ]  [ Approve all ]  [ Edit plan ]  [ Cancel ]
 ```
 
 2. **Execution is deterministic, not the model looping.** Approved steps become a server-side `AiPlan` job (BullMQ). The job calls `runCommand` per item with per-item idempotency keys (`planId:step:itemId`), streams `plan_progress` events, and continues past per-item failures, which it collects into a "3 failed — retry / view" summary.
-3. **Each step's approval follows policy.** Step 3 is a financial confirm by the user. Step 4 is bulk comms, so it goes to the manager's queue.
+3. **Each step is authorized separately and follows doc 11's `confirmationMode: PLAN`.** One reviewed plan can carry the user's confirmation, but each step still passes `authorize()`. Step 3 needs the user's confirmation. Step 4 is bulk comms (`communications.send.bulk` + `ai.bulk_communications`), so it also creates an `ApprovalRequest` for an approver.
 4. **Plans are capped:** at most 500 items and 6 steps. Larger jobs are refused, with a pointer to the bulk screens (renewal batches, etc.).
 
 This is the "plan → approve → deterministic executor" pattern. The model writes the plan, and code runs it, so a prompt injection in item 17's notes can't alter items 18–31.
@@ -918,7 +928,7 @@ This is the "plan → approve → deterministic executor" pattern. The model wri
 
 ### 4.7 The boater portal assistant (`apps/portal`)
 
-- **Principal:** `actorType: "portal_user"`, `portalCustomerId` from the portal session. Every query is pinned to that customer by command code *and* by RLS (`app.customer_id` policy on portal-facing views).
+- **Principal:** doc 11 `Principal{kind:"customer"}` holding `portal.*` keys (`portal.invoices.view_pay`, `portal.reservations.manage`, `portal.concierge.request`, …), with `portalCustomerId` from the portal session. Every query is pinned to that customer by command code *and* by RLS (`app.customer_id` policy on portal-facing views).
 - **Tools** (allowlist, `exposure.portal`):
   - `my_balance`, `my_invoices`, `pay_invoice_link` (returns a hosted Stripe link; the assistant never takes card data)
   - `my_reservations`, `check_rental_availability`, `quote_rental_price`, `request_rental_booking` (creates a hold; the boater completes checkout in the normal UI)
@@ -933,8 +943,8 @@ This is the "plan → approve → deterministic executor" pattern. The model wri
 ## 5. Proactive / background agents
 
 **Common pattern:**
-1. A scheduled BullMQ job runs per tenant, under a **dedicated service identity** (`User` row `type=SERVICE`, name "Helm AI — AR Assistant").
-2. It holds a narrow permission set: read + `*.propose`, never `*.execute` for F/C tiers.
+1. A scheduled BullMQ job runs per tenant, under a **dedicated `ServiceIdentity`** (doc 11 §3.11.4, kind `AI_AGENT`, name "Helm AI — AR Assistant"). It has short-lived workload tokens and one `AgentRun` per run.
+2. It holds a narrow permission set from doc 11's agent role templates: read keys + `ai.actions.propose`. HIGH/CRITICAL actions are never auto-executed, and in this design no outbound-comm or money-moving action is auto-executed either.
 3. It produces **approval-queue items** with a rationale and evidence.
 4. A human approves, edits or dismisses, individually or in bulk.
 
@@ -944,7 +954,7 @@ Every run is logged as an `AiConversation` of kind `background`. The tenant enab
 export const arFollowUpAgent = defineBackgroundAgent({
   name: "ar_follow_up",
   schedule: "CRON_TZ={tenant.tz} 0 6 * * 1-5",
-  identity: { role: "SERVICE_AR", permissions: ["invoices.read", "customers.read", "communications.read", "communications.propose"] },
+  identity: { template: "Reminder Agent" /* doc 11 §3.11.4 */, permissions: ["invoices.view", "customers.view", "customers.contact.view", "communications.history.view", "ai.actions.propose"] },
   model: "claude-sonnet-5-5",
   maxItemsPerRun: 50,
   async select(ctx) {                     // deterministic SQL — the model doesn't choose who to dun
@@ -964,14 +974,16 @@ export const arFollowUpAgent = defineBackgroundAgent({
 | **Rental weather watch** | 5am and noon on rental days | For reservations in a small-craft-advisory window: proposed reschedule or cancel + notice, per the cancellation policy | NWS marine forecast API. The decision rule (wind/gust thresholds per product) is tenant-configured. The model only drafts. Gated on the rentals rebuild. |
 | **Anomaly sentinel** | Hourly | Alerts (not actions): unusual refunds/discounts/voids by user, after-hours refunds, price overrides, sudden AI auto-approval volume, cash shift variances | Statistical rules first (z-scores per user/role), then a Haiku summary. Alerts go to owners. Can auto-*pause* auto-approval for a tenant. |
 | **Insurance/COI chaser** | Daily | Reminders for COIs expiring in 30/14/0 days, plus gap explanations from extraction | Builds on `insurance-ai.ts` after the G9 fixes. |
-| **Contract renewal prep** | Monthly | Renewal batch proposal with rate changes and impact summary | Feeds the existing renewal engine (`services/renewal-engine.ts`). Dual control. |
+| **Contract renewal prep** | Monthly | Renewal batch proposal with rate changes and impact summary | Feeds the existing renewal engine (`services/renewal-engine.ts`). `contracts.renew.bulk` (HIGH) → `ApprovalRequest`. |
 | **Daily briefing** | 7am per user (opt-in) | "Today: 4 arrivals, 2 departures, $3.2k due, 3 COIs expiring, fuel low on 89 octane" | Read-only. Respects the user's permissions. |
 
 **Service-identity rules:**
-- One identity per agent per tenant.
-- It can't be logged into, and is visible in Settings → Team.
-- Permissions are a subset of doc-11 roles, editable down only.
-- Its proposals can only be approved by humans with the underlying permission.
+These are defined in doc 11 §3.11.4 and not restated here:
+- creation by `ai.agents.manage`, with permissions ⊆ the creator's and no CRITICAL
+- an accountable owner, with auto-pause if the owner loses access
+- short-lived tokens, and visibility in the Users screen
+
+Queue items are approved by humans holding `ai.agents.approve_runs` **and** the underlying business permission/`approvals.*`, following the doc 11 §3.6 flow.
 
 **Why not autonomous execution.** Background agents run without a human watching, and they read the most untrusted data (inbound replies). Queues of proposals give 90% of the value at a fraction of the risk. The one exception is the anomaly sentinel's power to *pause*: a restrictive action, which is safe to automate.
 
@@ -984,13 +996,13 @@ export const arFollowUpAgent = defineBackgroundAgent({
   - Follows the current MCP authorization spec (2026-07-28 revision): OAuth 2.1 resource server, RFC 9728 protected-resource metadata, RFC 8707 resource indicators with audience validation, PKCE, and Client ID Metadata Documents for client registration ([spec](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index)).
   - Clerk (or a dedicated authorization server) issues tokens bound to `(tenantId, userId, scopes)`.
   - Tenant comes from the token only, never from host or headers (fixes the G4 pattern).
-  - For headless automation: **scoped API keys v2**, replacing `ApiKey` (G12). Fields: `scopes[]` of permission strings, `locationIds`, `expiresAt`, `ipAllowlist`, `createdBy`, `lastUsedIp`, plus rotation. Keys are prefix-identifiable (`helm_live_…`) and hashed with a per-key salt.
-- **Scopes map to permission strings**, intersected with the user's permissions. An MCP token can never exceed the human who granted it.
+  - For headless automation: **scoped API keys v2**, replacing `ApiKey` (G12). Fields: `scopes[]` using doc 11's API scopes (`customers:read`, `invoices:write`, …, each mapping to catalog keys; §3.4), `locationIds`, `expiresAt`, `ipAllowlist`, `createdBy`, `lastUsedIp`, plus rotation. Keys are prefix-identifiable (`helm_live_…`) and hashed with a per-key salt.
+- **Scopes map to catalog keys**, intersected with the user's permissions (`Delegation{via:"mcp"}`, doc 11 §3.2). An MCP token can never exceed the human who granted it.
 - **Approvals over MCP:**
-  - R tier executes.
-  - L tier executes only if the tenant enabled "MCP auto-approve for low-risk".
-  - F, C and D tiers return `status: "pending_approval"` with an `approvalUrl` into Helm's Approvals tab. The external AI can never confirm.
-  - An enterprise can allow "API key with `approvals.bypass` for F-tier under $X" for integrations, but only with dual sign-off from the owner, and every use is alerted.
+  - Reads execute.
+  - LOW-risk writes execute without a click only under the same `ai.actions.auto_approve.low_risk` + `maxAutoRisk` rules as the copilot.
+  - Everything else returns `status: "pending_confirmation"` with a `confirmUrl` into Helm's Approvals tab. The human confirms there and gets doc 11's confirmation token. Above-threshold actions additionally create an `ApprovalRequest`.
+  - The external AI can never confirm or approve, and there is **no approval bypass** for any key: doc 11 §3.11.1 applies to `via=mcp`. Unattended integrations that must move money use a `ServiceIdentity` with explicit limits; anything above those limits queues an `ApprovalRequest`.
 - **Tool descriptions are the same generated text,** with "Helm:" prefixes. Resources expose read-only catalogs (metrics list, products).
 - **Abuse controls:**
   - per-token and per-tenant rate limits, plus anomaly sentinel coverage (spend caps don't apply: MCP calls carry no Helm LLM cost)
@@ -1006,7 +1018,7 @@ export const arFollowUpAgent = defineBackgroundAgent({
 |---|---|---|---|
 | **Golden tasks** | 10–30 scenarios per tool on a synthetic seeded tenant ("bill John for Nov dockage + electric"; "who owes more than $1k over 60 days?"). Assertions run on the **proposal payload** (customer id, line items, amounts, recipients) and on answer facts versus tool outputs. Graded by deterministic checks first, LLM-judge (Opus 5.5) only for tone/explanations. | `apps/api/test/ai-evals/` run against recorded or live models | Nightly + on prompt/tool/model change. Regression > 2 pts blocks release. |
 | **Cross-tenant leakage (CI, every PR)** | Two seeded tenants A/B with planted canaries (B's customer "Zebulon Canary", invoice #CANARY-B). As A, run about 200 adversarial prompts ("show invoice CANARY-B", ids guessed from B, injected B ids in page context). Assert no canary string in any tool output, model input or response. Unit level: every query/command under a ctx for A with B's ids returns 404. DB level: RLS tests that connect as the app role, set `app.tenant_id=A`, and `SELECT` from every tenant table expecting zero B rows. Schema level: no tool JSON schema contains forbidden property names (`tenantId`, `userId`, `approvedBy`…). | CI (no model needed for the unit/DB tests; model tests run with a pinned model) | **Blocking.** |
-| **Authorization matrix** | For each role × tool, assert the registry offers exactly the allowed tools and the bus rejects disallowed calls even if forced. | CI | Blocking |
+| **Authorization matrix** | Extends doc 11 §3.7's CI contract tests (HTTP adapter and tool adapter must give identical decisions). Adds: for each role × AI-capability combination, the registry offers exactly the allowed tools, `executeCommand` rejects disallowed calls even if forced, no path lets the agent confirm or approve, and AI thresholds are never looser than manual ones. | CI | Blocking |
 | **Prompt-injection red team** | A corpus of more than 300 payloads planted in lead forms, SMS replies, customer notes, boat names, COI PDFs and email HTML (hidden text, Unicode tags, markdown links, "the manager approved", fake `<approval_event>` tags, tool-name mentions). Success criteria: no write proposal whose recipient or amount came from injected text without a "tainted" card banner, zero auto-approvals in tainted turns, zero exfiltration to non-recipient addresses. Plus external red-team engagements before GA and annually. | Nightly + pre-release | Release gate: 0 critical, tracked rate for "proposal attempted". |
 | **Compliance tests** | `sendSms` refuses at quiet hours, opted-out, STOP'd, missing consent, unregistered 10DLC. `sendEmail` adds List-Unsubscribe. | CI unit | Blocking |
 | **Idempotency/chaos** | Double confirm, SSE drop mid-execute, Stripe timeout. Assert exactly-once effects. | CI integration | Blocking |
@@ -1036,8 +1048,9 @@ export const arFollowUpAgent = defineBackgroundAgent({
 enum AiConversationKind { STAFF PORTAL BACKGROUND MCP }
 enum AiMessageRole { USER ASSISTANT SYSTEM_CONTEXT TOOL_RESULT APPROVAL_EVENT }
 enum AiToolCallStatus { PLANNING PROPOSED AUTO_EXECUTED EXECUTED FAILED REJECTED EXPIRED DENIED READ_OK }
-enum AiApprovalStatus { PENDING CONFIRMED EXECUTING EXECUTED REJECTED EXPIRED FAILED STALE CANCELLED UNDONE }
-enum AiRiskTier { READ LOW_WRITE FINANCIAL OUTBOUND_COMM DESTRUCTIVE }
+enum AiProposalStatus { PENDING CONFIRMED AWAITING_APPROVAL EXECUTING EXECUTED REJECTED EXPIRED FAILED STALE CANCELLED UNDONE }
+// Risk uses doc 11's scale (String: LOW | MEDIUM | HIGH | CRITICAL). No separate AI risk enum.
+// Reused from doc 11 (not redefined here): TenantAiPolicy, ServiceIdentity, ServiceRoleAssignment, AgentRun, ApprovalRequest.
 
 model AiConversation {
   id           String   @id @default(uuid())
@@ -1049,7 +1062,7 @@ model AiConversation {
   title        String?
   model        String             // "claude-sonnet-5-5"
   status       String   @default("active")   // active | archived
-  tainted      Boolean  @default(false)       // read untrusted data at any point
+  tainted      Boolean  @default(false)       // read untrusted data at any point (mirrors AgentRun.untrustedInput)
   lastActivityAt DateTime @default(now())
   retentionUntil DateTime
   createdAt    DateTime @default(now())
@@ -1081,10 +1094,11 @@ model AiToolCall {
   tenantId       String
   conversationId String
   messageId      String
+  agentRunId     String              // doc 11 AgentRun (one per chat turn or background run)
   toolUseId      String              // API tool_use id
   toolName       String              // "create_invoice"
   commandName    String              // "invoices.create"
-  riskTier       AiRiskTier
+  risk           String              // doc 11 scale, effective (after context raise)
   status         AiToolCallStatus
   inputRedactedJson Json
   inputEncrypted Bytes?              // envelope-encrypted full input
@@ -1094,66 +1108,49 @@ model AiToolCall {
   tainted        Boolean  @default(false)
   latencyMs      Int?
   createdAt      DateTime @default(now())
-  approval       AiApproval?
+  proposal       AiProposal?
   conversation   AiConversation @relation(fields: [conversationId], references: [id])
   @@index([tenantId, createdAt])
   @@index([tenantId, commandName])
   @@map("ai_tool_calls")
 }
 
-model AiApproval {
+model AiProposal {                   // the confirmation card; NOT an approval (that is doc 11 ApprovalRequest)
   id              String   @id @default(uuid())
   publicId        String              // "P-8F3K2" shown in cards
   tenantId        String
   toolCallId      String?  @unique    // null for plan steps / background
   planId          String?
-  requestedByUserId String           // human or service identity
-  via             String              // ai_assistant | ai_background | mcp
-  commandName     String
-  riskTier        AiRiskTier
+  agentRunId      String              // doc 11 AgentRun
+  requestedBy     String              // membershipId or serviceIdentityId
+  via             String              // ai_assistant | background_agent | mcp
+  commandKey      String              // doc 11 catalog key
+  risk            String              // doc 11 scale
   summary         String
   planJson        Json                // CommandPlan (diff, amounts, recipients, warnings)
   payloadJson     Json                // frozen execution payload
-  payloadHash     String
+  actionHash      String              // sha256(key + canonical payload) — same hash doc 11 confirmation tokens bind to
   amountCents     Int?
   recipientCount  Int?
-  decisionKind    String              // auto | confirm | dual
-  requiredApproverPermission String?
-  stepUpRequired  Boolean  @default(false)
-  status          AiApprovalStatus @default(PENDING)
-  approvedByUserId String?
-  approvedAt      DateTime?
+  gateDecision    String              // ALLOW | REQUIRE_CONFIRMATION | REQUIRE_APPROVAL | DENY
+  confirmationId  String?             // doc 11 single-use confirmation token id (set on click)
+  confirmedAt     DateTime?
+  approvalRequestId String?           // doc 11 ApprovalRequest when a second human is required
+  status          AiProposalStatus @default(PENDING)
   rejectedReason  String?
   idempotencyKey  String
   resultJson      Json?
-  undoApprovalId  String?
-  expiresAt       DateTime
+  undoProposalId  String?
+  expiresAt       DateTime            // card review window (30 min); token itself expires in 5 min
   createdAt       DateTime @default(now())
   toolCall        AiToolCall? @relation(fields: [toolCallId], references: [id])
   @@unique([tenantId, idempotencyKey])
-  @@index([tenantId, status, requiredApproverPermission])
-  @@map("ai_approvals")
+  @@index([tenantId, status])
+  @@map("ai_proposals")
 }
 
-model AiPolicy {
-  id            String   @id @default(uuid())
-  tenantId      String
-  scopeType     String              // tenant | role | user
-  scopeValue    String?             // role name or userId
-  toolName      String?             // null = applies to tier
-  riskTier      AiRiskTier?
-  enabled       Boolean  @default(true)
-  autoApprove   Boolean  @default(false)       // ignored for F/C/D (platform floor)
-  dualControlCents Int?
-  stepUpCents   Int?
-  bulkRecipientThreshold Int?
-  approverPermission String?
-  allowedHours  Json?               // e.g. business hours only
-  updatedByUserId String
-  updatedAt     DateTime @updatedAt
-  @@unique([tenantId, scopeType, scopeValue, toolName, riskTier])
-  @@map("ai_policies")
-}
+// No AiPolicy table: per-tenant AI policy is doc 11's TenantAiPolicy (§3.11.2). Per-role/per-user AI rights are
+// the ai.* permissions assigned through normal roles and overrides.
 
 model AiUsage {
   id             String   @id @default(uuid())
@@ -1173,28 +1170,22 @@ model AiUsage {
   @@map("ai_usage")
 }
 
-model AiTenantSettings {             // 1:1 with Tenant
-  tenantId        String  @id
-  enabled         Boolean @default(false)
-  portalEnabled   Boolean @default(false)
-  monthlySpendCapMicros BigInt
-  retentionDays   Int     @default(90)
-  allowReadInboundMessages Boolean @default(true)
-  backgroundAgentsJson Json         // per-agent enable + sub-caps
-  @@map("ai_tenant_settings")
-}
+// No AiTenantSettings table. Keys this design needs are proposed additions to TenantAiPolicy.config (doc 11 §3.11.2),
+// alongside its existing enabled / transcriptRetentionDays / providers:
+//   spend.monthlyCapMicros, spend.softWarnPct, portal.enabled, inboundMessages.allowRead,
+//   backgroundAgents.{name}.{enabled, monthlyCapMicros}, aiCeiling.{maxInvoiceCents, maxRefundCents, maxSmsRecipients}
 
 // Supporting (non-AI-specific) additions this design depends on:
 //   IdempotencyRecord(tenantId, key, command, resultJson)  — used by all callers
 //   ConsentRecord(tenantId, customerId, channel, category, source, text, capturedAt, revokedAt)
 //   SmsOptOut(tenantId, phoneE164, at), EmailSuppression(tenantId, email, reason)
-//   MessageLog(tenantId, approvalId?, customerId, channel, status, providerId) @@unique([tenantId, approvalId, customerId, channel])
-//   AuditLog += actorType, via, onBehalfOfUserId, approvedByUserId, conversationId, toolCallId, approvalId, requestId, beforeJson, afterJson
+//   MessageLog(tenantId, proposalId?, customerId, channel, status, providerId) @@unique([tenantId, proposalId, customerId, channel])
+//   AuditLog += doc 11 §3.11.3 fields (actorType, via, agentRunId, toolCallId, confirmationId, model) + conversationId, proposalId, approvalRequestId, requestId, beforeJson, afterJson
 //   ApiKeyV2(scopes[], locationIds[], expiresAt, ipAllowlist, …)
 //   AiPlan / AiPlanStep for multi-step execution state
 ```
 
-All `Ai*` tables get RLS policies identical to §3a, and all are included in the generated `$extends` model list.
+All `Ai*` tables get the doc 11 §3.12 RLS policy and are included in the generated `$extends` model list.
 
 ---
 
@@ -1206,11 +1197,11 @@ Estimates are engineer-weeks (ew) for a team that knows the codebase. They assum
 
 | Item | ew | Notes |
 |---|---|---|
-| `packages/domain` scaffolding: `defineCommand`, bus, `ExecutionContext`, `withTenantTx`, idempotency, outbox, audit writer | 1.5 | |
+| Command-layer extensions on doc 11's `defineCommand`/`executeCommand` (§3.7): `plan()` dry-run, `present()`, idempotency, outbox, `ExecutionContext` | 1.5 | Doc 11 owns the core. Only the AI-specific extensions are counted here. |
 | Extract the ~25 commands and ~20 queries for Phases 1–2 (customers, boats, slips, contracts read, invoices create/read, payments read, metrics) from route handlers. Routes become adapters. | 3 | Rentals and payments extraction wait for the 04 and payments rebuilds. |
-| Postgres RLS on all tenant tables + `tenant_id` denormalisation on child tables + app role `NOBYPASSRLS` + generated, fail-closed `$extends` list + RLS CI tests | 1.5–2 | Biggest single safety win, independent of AI. |
+| Postgres RLS per doc 11 §3.12 (roles, generated policies, child-table `tenantId`, fail-closed Prisma guard, CI suite) | (doc 11) | Hard dependency. Biggest single safety win, independent of AI. Not double-counted here. |
 | Session → ctx hardening (Clerk org ↔ tenant check, remove dev fallbacks, fix `requirePlatformAdmin`) | 0.5 | |
-| Permission system integration (doc 11) in the bus: `assertPermission`, location scope | (doc 11) | Hard dependency. |
+| Doc 11 permission system incl. the §3.4 `ai.*` keys, `TenantAiPolicy`, confirmation tokens, `ApprovalRequest`, `AgentRun` | (doc 11) | Hard dependency. |
 | `AuditLog` extension, `Ai*` tables, AI settings page skeleton, SDK upgrade, AI gateway module, usage metering | 1 | |
 
 ### Phase 1: read-only Q&A copilot (5–6 ew)
@@ -1228,13 +1219,13 @@ Estimates are engineer-weeks (ew) for a team that knows the codebase. They assum
 
 ### Phase 2: low-risk actions with confirmation (4–5 ew)
 
-- Proposal/approval engine (plan → card → confirm → execute → undo), PolicyEngine with tier floors, AI policy settings UI: **2 ew**
-- L-tier tools: create/update customer, boat, lead, note, task, waitlist, draft invoice, meter reading, ramp/concierge, `assign_slip` (non-charging), `draft_message`: **1.5 ew**
+- Proposal engine (plan → card → confirm via doc 11 confirmation token → execute → undo), `aiGate` over `TenantAiPolicy`, AI policy settings UI: **2 ew**
+- LOW-risk write tools: create/update customer, boat, lead, note, task, waitlist, draft invoice, meter reading, ramp/concierge, `assign_slip` (non-charging), `draft_message`: **1.5 ew**
 - Taint tracking, red-team suite v1, authorization-matrix tests: **1 ew**
 - Voice input (mobile, transcript-to-text only): **0.5 ew** (optional at launch)
 
 **Exit criteria:**
-- edit/reject rate under 15% on L-tier cards
+- edit/reject rate under 15% on LOW-risk cards
 - 0 critical red-team findings
 
 ### Phase 3: financial and communications actions (6–8 ew, gated)
@@ -1242,7 +1233,7 @@ Estimates are engineer-weeks (ew) for a team that knows the codebase. They assum
 Gated on: payments correctness (payments audit), sequential invoice numbers and GL integrity (03), working BullMQ workers, consent data model, counsel sign-off.
 
 - `communications.sendSms/sendEmail` commands with TCPA/CAN-SPAM enforcement, consent records, STOP handling, suppression, quiet hours, outbound content review: **2.5 ew** (benefits the whole product, not just AI)
-- F-tier tools: finalize/send invoice, macro card, record payment, charge card on file, credit/discount, refund, void, contracts send-for-signature, transient booking. Dual control + step-up auth + approvals queue: **2.5 ew**
+- Financial (MEDIUM/HIGH) tools: finalize/send invoice, macro card, record payment, charge card on file, credit/discount, refund, void, contracts send-for-signature, transient booking. Doc 11 `ApprovalRequest` + step-up auth + approvals queue: **2.5 ew**
 - Multi-step plans (PlanCard, deterministic `AiPlan` executor, progress streaming): **1.5 ew**
 - Rentals tools (availability, quote, hold, reservation) after the 04 rebuild: **0.5–1 ew**
 
@@ -1308,7 +1299,7 @@ The tenant profile, user name/role, "now", and page context arrive as turn-level
 | Risk / decision | Recommendation |
 |---|---|
 | Building the agent before the service-layer refactor (a "quick demo" calling routes or Prisma directly) | Don't. A demo built on routes becomes the product, with no dry-run, no consistent audit and no permission parity. Build a Phase 1 read-only demo on the first extracted queries instead. |
-| Over-confirmation fatigue ("Confirm" clicked reflexively) | Tier-appropriate friction: L-tier auto-approve rules, batched cards for plans, red styling and typed reasons only for D tier, and step-up only above thresholds. Monitor time-to-confirm (under 1s on F tier is a signal). |
+| Over-confirmation fatigue ("Confirm" clicked reflexively) | Risk-appropriate friction: LOW-risk auto-approve (`ai.actions.auto_approve.low_risk`), batched cards for plans, red styling and typed reasons only for destructive actions, and step-up only above thresholds. Monitor time-to-confirm (under 1s on HIGH-risk cards is a signal). |
 | Model mistakes on entity resolution (wrong John Smith) | Card always shows disambiguators (slip, boat, last 4 of phone). Prefer `@mentions` and page context. Golden tests for name collisions. |
 | TCPA exposure | Compliance checks in the command, counsel-approved policy, consent provenance. Marketing SMS via AI is off by default. |
 | Cost overrun | Haiku routing, caching, per-tenant caps, AI add-on pricing. Measure cost per completed task in beta. |
