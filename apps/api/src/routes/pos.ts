@@ -46,7 +46,9 @@ const UpdateProductSchema = z.object({
 const TransactionLineItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.number().int().positive(),
-  unitPriceCents: z.number().int().min(0),
+  // Accepted for backwards compatibility but IGNORED: the unit price is
+  // always the product's priceCents from the DB.
+  unitPriceCents: z.number().int().optional(),
   discountCents: z.number().int().min(0).default(0),
 });
 
@@ -365,13 +367,37 @@ router.post(
 
       const productMap = new Map(products.map((p) => [p.id, p]));
 
+      // Never trust client money: every product must exist in this tenant
+      // and is sold at its DB price.
+      const unknown = productIds.filter((id) => !productMap.has(id));
+      if (unknown.length > 0) {
+        throw appError(`Unknown product(s): ${unknown.join(", ")}`, 400, "UNKNOWN_PRODUCT");
+      }
+
+      const hasDiscount = data.lineItems.some((li) => li.discountCents > 0);
+      if (hasDiscount && !(MANAGER_ROLES as readonly string[]).includes(req.userRole ?? "")) {
+        throw appError("Discounts require a manager or owner", 403, "DISCOUNT_REQUIRES_MANAGER");
+      }
+
+      if (data.shiftId) {
+        const shift = await prisma.shift.findFirst({
+          where: { id: data.shiftId, tenantId },
+          select: { id: true },
+        });
+        if (!shift) throw appError("Shift not found", 400, "SHIFT_NOT_FOUND");
+      }
+
       let subtotalCents = 0;
       let taxCents = 0;
 
       const lineItemsData = data.lineItems.map((li) => {
-        const product = productMap.get(li.productId);
-        const unitPrice = li.unitPriceCents ?? product?.priceCents ?? 0;
-        const lineSubtotal = unitPrice * li.quantity - li.discountCents;
+        const product = productMap.get(li.productId)!;
+        const unitPrice = product.priceCents;
+        const gross = unitPrice * li.quantity;
+        if (li.discountCents > gross) {
+          throw appError("Discount exceeds the line amount", 400, "DISCOUNT_EXCEEDS_LINE");
+        }
+        const lineSubtotal = gross - li.discountCents;
         // Calculate tax based on taxClass; use 7% default if taxClass exists
         const taxRate = product?.taxClass ? 0.07 : 0;
         const lineTax = Math.round(lineSubtotal * taxRate);

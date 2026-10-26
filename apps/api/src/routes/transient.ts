@@ -25,11 +25,49 @@ const CreateBookingSchema = z.object({
   boatLength: z.number().positive().optional().nullable(),
   checkIn: z.string().datetime(),
   checkOut: z.string().datetime().optional().nullable(),
-  rateCents: z.number().int().positive(),
-  totalCents: z.number().int().positive(),
+  // Accepted for backwards compatibility but IGNORED: price is computed
+  // server-side. Any client-sent Stripe account id is dropped by zod.
+  rateCents: z.number().int().optional(),
+  totalCents: z.number().int().optional(),
   customerId: z.string().uuid().optional().nullable(),
-  stripeConnectedAccountId: z.string().optional(),
+  // Create a Stripe PaymentIntent for the server-computed total on the
+  // tenant's own connected account.
+  collectPayment: z.boolean().default(false),
 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Server-side transient pricing: the tenant's configured nightly rate per
+ * foot (settings → billing `transientRatePerFtCents`) × the slip's length
+ * (DB) × nights. No client-supplied price is ever used; without a configured
+ * rate the booking is refused rather than trusting the client.
+ */
+export function priceTransientStay(input: {
+  ratePerFtCents: unknown;
+  slipLengthFt: number;
+  checkIn: Date;
+  checkOut: Date;
+}): { rateCents: number; nights: number; totalCents: number } {
+  const perFt = input.ratePerFtCents;
+  if (typeof perFt !== "number" || !Number.isInteger(perFt) || perFt <= 0) {
+    throw appError(
+      "Transient nightly rate is not configured for this marina (settings → billing → transientRatePerFtCents)",
+      400,
+      "TRANSIENT_RATE_NOT_CONFIGURED",
+    );
+  }
+  if (!(input.slipLengthFt > 0)) {
+    throw appError("Slip has no length on file; cannot price the stay", 400, "SLIP_NOT_PRICEABLE");
+  }
+  const ms = input.checkOut.getTime() - input.checkIn.getTime();
+  if (!(ms > 0)) {
+    throw appError("checkOut must be after checkIn", 400, "INVALID_DATES");
+  }
+  const nights = Math.ceil(ms / DAY_MS);
+  const rateCents = Math.round(input.slipLengthFt * perFt);
+  return { rateCents, nights, totalCents: rateCents * nights };
+}
 
 const ListBookingsQuerySchema = z.object({
   status: TransientStatusEnum.optional(),
@@ -169,16 +207,47 @@ router.post(
         throw appError("Slip is not transient-capable", 400, "SLIP_NOT_TRANSIENT");
       }
 
-      // Process payment via Stripe if connected account provided
+      if (!body.checkOut) {
+        throw appError("checkOut is required to price a transient booking", 400, "CHECKOUT_REQUIRED");
+      }
+
+      if (body.customerId) {
+        const customer = await prisma.customer.findFirst({
+          where: { id: body.customerId, tenantId: req.tenantId! },
+          select: { id: true },
+        });
+        if (!customer) throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
+      }
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.tenantId! },
+        select: { invoiceTemplateJson: true, stripeAccountId: true },
+      });
+      const billing = (tenant?.invoiceTemplateJson ?? {}) as Record<string, unknown>;
+
+      // Price comes from DB data only (tenant rate × slip length × nights).
+      const { rateCents, totalCents } = priceTransientStay({
+        ratePerFtCents: billing.transientRatePerFtCents,
+        slipLengthFt: slip.lengthFt,
+        checkIn: new Date(body.checkIn),
+        checkOut: new Date(body.checkOut),
+      });
+
+      // Charge on the tenant's OWN connected account (never a client-sent id).
       let stripePaymentId: string | null = null;
-      if (body.stripeConnectedAccountId) {
+      let paymentClientSecret: string | null = null;
+      if (body.collectPayment) {
+        if (!tenant?.stripeAccountId) {
+          throw appError("Stripe is not connected for this marina", 400, "STRIPE_NOT_CONFIGURED");
+        }
         const pi = await createPaymentIntent(
-          body.totalCents,
+          totalCents,
           "usd",
-          body.stripeConnectedAccountId,
-          Math.round(body.totalCents * 0.03), // 3% platform fee
+          tenant.stripeAccountId,
+          Math.round(totalCents * 0.03), // 3% platform fee
         );
         stripePaymentId = pi.id;
+        paymentClientSecret = pi.client_secret ?? null;
       }
 
       const booking = await prisma.transientBooking.create({
@@ -191,9 +260,9 @@ router.post(
           boatName: body.boatName ?? null,
           boatLength: body.boatLength ?? null,
           checkIn: new Date(body.checkIn),
-          checkOut: body.checkOut ? new Date(body.checkOut) : null,
-          rateCents: body.rateCents,
-          totalCents: body.totalCents,
+          checkOut: new Date(body.checkOut),
+          rateCents,
+          totalCents,
           customerId: body.customerId ?? null,
           stripePaymentId,
           status: "BOOKED",
@@ -201,7 +270,7 @@ router.post(
         include: { slip: true },
       });
 
-      res.status(201).json({ data: booking });
+      res.status(201).json({ data: booking, paymentClientSecret });
     } catch (err) {
       next(err);
     }

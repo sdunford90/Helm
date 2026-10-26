@@ -16,11 +16,33 @@ const CreateTicketSchema = z.object({
   licensePlate: z.string().optional().nullable(),
   boatRegistration: z.string().optional().nullable(),
   ticketType: RampTicketTypeEnum,
-  amountCents: z.number().int().min(0),
+  // Accepted for backwards compatibility but IGNORED: the price comes from
+  // the tenant's configured ramp prices. Client Stripe account ids are dropped.
+  amountCents: z.number().int().optional(),
   paymentMethod: z.enum(["CARD", "CASH", "CHARGE_TO_SLIP"]).optional(),
   locationId: z.string().uuid().optional().nullable(),
-  stripeConnectedAccountId: z.string().optional(),
 });
+
+/**
+ * Server-side ramp price: tenant settings → billing
+ * `rampPricesCents[ticketType]`. Refuses (400) when not configured rather
+ * than trusting a client amount.
+ */
+export function rampPriceCents(config: unknown, ticketType: string): number {
+  const prices =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? ((config as Record<string, unknown>).rampPricesCents as Record<string, unknown> | undefined)
+      : undefined;
+  const price = prices?.[ticketType];
+  if (typeof price !== "number" || !Number.isInteger(price) || price < 0) {
+    throw appError(
+      `Ramp price for ${ticketType} is not configured (settings → billing → rampPricesCents)`,
+      400,
+      "RAMP_PRICE_NOT_CONFIGURED",
+    );
+  }
+  return price;
+}
 
 const ListTicketsQuerySchema = z.object({
   ticketType: RampTicketTypeEnum.optional(),
@@ -157,43 +179,65 @@ router.post(
     try {
       const body = CreateTicketSchema.parse(req.body);
 
+      const tenantId = req.tenantId!;
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { invoiceTemplateJson: true, stripeAccountId: true },
+      });
+
       // Check slip holder discount if customerId provided
       let discountApplied = false;
+      let amountCents: number;
       if (body.customerId) {
-        const activeContract = await prisma.slipContract.findFirst({
-          where: {
-            customerId: body.customerId,
-            status: "ACTIVE",
-          },
+        const customer = await prisma.customer.findFirst({
+          where: { id: body.customerId, tenantId },
+          select: { id: true },
         });
-        if (activeContract) {
-          discountApplied = true;
-          // Slip holders get free launches — set amount to 0
-          body.amountCents = 0;
-        }
+        if (!customer) throw appError("Customer not found", 404, "CUSTOMER_NOT_FOUND");
+      }
+      const activeContract = body.customerId
+        ? await prisma.slipContract.findFirst({
+            where: {
+              tenantId,
+              customerId: body.customerId,
+              status: "ACTIVE",
+            },
+          })
+        : null;
+      if (activeContract) {
+        discountApplied = true;
+        // Slip holders get free launches
+        amountCents = 0;
+      } else {
+        amountCents = rampPriceCents(tenant?.invoiceTemplateJson, body.ticketType);
       }
 
-      // Process payment via Stripe if paying by card
+      // Card payments are charged on the tenant's OWN connected account.
       let stripePaymentId: string | null = null;
-      if (body.paymentMethod === "CARD" && body.amountCents > 0 && body.stripeConnectedAccountId) {
+      let paymentClientSecret: string | null = null;
+      if (body.paymentMethod === "CARD" && amountCents > 0) {
+        if (!tenant?.stripeAccountId) {
+          throw appError("Stripe is not connected for this marina", 400, "STRIPE_NOT_CONFIGURED");
+        }
         const pi = await createPaymentIntent(
-          body.amountCents,
+          amountCents,
           "usd",
-          body.stripeConnectedAccountId,
-          Math.round(body.amountCents * 0.03),
+          tenant.stripeAccountId,
+          Math.round(amountCents * 0.03),
         );
         stripePaymentId = pi.id;
+        paymentClientSecret = pi.client_secret ?? null;
       }
 
       const ticket = await prisma.rampTicket.create({
         data: {
-          tenantId: (req as any).tenantId,
+          tenantId,
           guestName: body.guestName ?? null,
           customerId: body.customerId ?? null,
           licensePlate: body.licensePlate ?? null,
           boatRegistration: body.boatRegistration ?? null,
           ticketType: body.ticketType,
-          amountCents: body.amountCents,
+          amountCents,
           paymentMethod: body.paymentMethod ?? null,
           locationId: body.locationId ?? null,
           stripePaymentId,
@@ -201,7 +245,7 @@ router.post(
         include: { customer: true },
       });
 
-      res.status(201).json({ data: ticket, discountApplied });
+      res.status(201).json({ data: ticket, discountApplied, paymentClientSecret });
     } catch (err) {
       next(err);
     }

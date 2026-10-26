@@ -45,6 +45,16 @@ const billingSchema = z.object({
   taxRate: z.number().min(0).max(100).optional(),
   electricityRatePerKwh: z.number().min(0).optional(),
   securityDepositDefault: z.number().int().min(0).optional(),
+  // Server-side price sources for transient bookings and ramp tickets
+  // (routes never accept client-supplied prices).
+  transientRatePerFtCents: z.number().int().positive().optional(),
+  rampPricesCents: z
+    .object({
+      SINGLE_LAUNCH: z.number().int().min(0).optional(),
+      DAILY_PASS: z.number().int().min(0).optional(),
+      SEASONAL_PASS: z.number().int().min(0).optional(),
+    })
+    .optional(),
 });
 
 const notificationsSchema = z.object({
@@ -284,6 +294,8 @@ router.get("/billing", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAG
       taxRate: invoiceTemplate.taxRate ?? 0,
       electricityRatePerKwh: invoiceTemplate.electricityRatePerKwh ?? 0.12,
       securityDepositDefault: invoiceTemplate.securityDepositDefault ?? 50000,
+      transientRatePerFtCents: invoiceTemplate.transientRatePerFtCents ?? null,
+      rampPricesCents: invoiceTemplate.rampPricesCents ?? {},
     });
   } catch (err) {
     next(err);
