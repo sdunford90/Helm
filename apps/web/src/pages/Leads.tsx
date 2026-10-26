@@ -109,7 +109,7 @@ function leadPayload(l: Lead) {
   };
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'];
 const SOURCES: Source[] = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];

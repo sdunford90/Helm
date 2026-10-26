@@ -83,7 +83,7 @@ interface ApiKeyEntry {
   lastUsed: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 const st: Record<string, React.CSSProperties> = {
   page: { padding: '32px' },

@@ -69,7 +69,7 @@ interface Template {
   body: string;
 }
 
-/* ─── Mock Data ─── */
+
 /* ─── API mapping ─── */
 
 interface AnnouncementDTO {
@@ -117,7 +117,7 @@ const DELIVERY_LABEL: Record<DeliveryDTO['status'], DeliveryStatus> = {
 };
 
 /** Starter message text. These are built-in drafts, not customer data. */
-const mockTemplates: Template[] = [
+const STARTER_TEMPLATES: Template[] = [
   { id: '1', title: 'Weather Alert', description: 'Urgent weather notifications for approaching storms, high winds, or severe conditions affecting the marina.', icon: 'weather', subject: 'Weather Alert: [Condition] Expected', body: 'Dear Marina Tenants,\n\nThis is an urgent weather advisory. [Condition details] are expected in the area starting [date/time].\n\nPlease take the following precautions:\n- Secure all loose items on your vessel\n- Double-check mooring lines\n- Remove canvas and bimini tops if possible\n\nMarina staff will be monitoring conditions. Contact the dock office at (555) 000-0000 for assistance.\n\nStay safe,\nMarina Management' },
   { id: '2', title: 'Billing Reminder', description: 'Monthly billing notifications, payment reminders, and account balance updates for slip holders.', icon: 'billing', subject: 'Your [Month] Billing Statement is Ready', body: 'Dear [Customer Name],\n\nYour monthly billing statement for [Month] is now available. Your current balance is $[amount].\n\nPayment is due by [due date]. You can pay online through your tenant portal or contact the marina office.\n\nThank you for your prompt payment.\n\nBest regards,\nMarina Billing Department' },
   { id: '3', title: 'Maintenance Notice', description: 'Planned maintenance alerts for docks, utilities, facilities, and other marina infrastructure.', icon: 'maintenance', subject: 'Scheduled Maintenance: [Area] - [Dates]', body: 'Dear Tenants,\n\nPlease be advised that scheduled maintenance will take place in [area] from [start date] to [end date].\n\nWork details: [description]\n\nDuring this time, [impacts]. We apologize for any inconvenience and appreciate your patience.\n\nIf you have questions, please contact the dock office.\n\nThank you,\nMarina Operations' },
@@ -590,7 +590,7 @@ export default function Announcements() {
       {/* ─── Templates Tab ─── */}
       {activeTab === 'templates' && (
         <div style={styles.templateGrid}>
-          {mockTemplates.map(t => (
+          {STARTER_TEMPLATES.map(t => (
             <div key={t.id} style={styles.templateCard}>
               <div style={styles.templateIconWrap}>{templateIcon(t.icon)}</div>
               <h3 style={styles.templateTitle}>{t.title}</h3>

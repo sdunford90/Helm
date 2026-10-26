@@ -15,7 +15,7 @@ import SlipSelect from '../components/SlipSelect';
 import { ComingSoonButton, EmptyState, ErrorState, LoadingState } from '../components/StateViews';
 import { useToast } from '../components/Toast';
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 interface CustomerDetail {
   id: string;

@@ -55,7 +55,7 @@ interface Vendor {
   active: boolean;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 const SERVICE_TYPES: ServiceType[] = ['Detailing', 'Cleaning', 'Provisioning', 'Pump-Out', 'Mechanic', 'Fueling', 'Winterization'];
 const ALL_STATUSES: RequestStatus[] = ['Submitted', 'Quoted', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Invoiced'];

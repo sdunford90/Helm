@@ -41,6 +41,29 @@ const TIMEZONES = [
 // Inline styles
 // ---------------------------------------------------------------------------
 
+const stepCircle = (active: boolean, done: boolean): React.CSSProperties => ({
+    width: 36,
+    height: 36,
+    borderRadius: '50%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 700,
+    fontSize: 14,
+    color: active || done ? WHITE : NAVY,
+    background: active ? CYAN : done ? NAVY : WHITE,
+    border: `2px solid ${active ? CYAN : NAVY}`,
+    flexShrink: 0,
+    transition: 'all 0.2s',
+  });
+
+const stepLine = (done: boolean): React.CSSProperties => ({
+    height: 3,
+    width: 60,
+    background: done ? NAVY : BORDER,
+    transition: 'background 0.2s',
+  });
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
@@ -69,27 +92,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 0,
     marginBottom: 40,
   },
-  stepCircle: (active: boolean, done: boolean): React.CSSProperties => ({
-    width: 36,
-    height: 36,
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 700,
-    fontSize: 14,
-    color: active || done ? WHITE : NAVY,
-    background: active ? CYAN : done ? NAVY : WHITE,
-    border: `2px solid ${active ? CYAN : NAVY}`,
-    flexShrink: 0,
-    transition: 'all 0.2s',
-  }),
-  stepLine: (done: boolean): React.CSSProperties => ({
-    height: 3,
-    width: 60,
-    background: done ? NAVY : BORDER,
-    transition: 'background 0.2s',
-  }),
 
   // Card
   card: {
@@ -502,9 +504,9 @@ export default function Onboarding() {
           const done = num < step;
           return (
             <div key={label} style={{ display: 'flex', alignItems: 'center' }}>
-              {i > 0 && <div style={styles.stepLine(done)} />}
+              {i > 0 && <div style={stepLine(done)} />}
               <div
-                style={styles.stepCircle(active, done)}
+                style={stepCircle(active, done)}
                 title={label}
               >
                 {done ? '\u2713' : num}

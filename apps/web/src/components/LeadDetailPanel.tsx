@@ -76,7 +76,7 @@ const STAGES: Stage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won'
 const SOURCES = ['Website', 'Referral', 'Walk-in', 'Phone', 'Social Media'];
 const SLIP_TYPES = ['Annual', 'Seasonal', 'Transient', 'Liveaboard'];
 
-/* ── Mock Activity ────────────────────────────────────── */
+
 
 
 /* ── Styles ────────────────────────────────────────────── */
