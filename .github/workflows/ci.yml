@@ -1,137 +1,208 @@
 name: CI
 
+# CI runs on every pull request. Pushes to main are covered by deploy.yml,
+# which calls this workflow (workflow_call) and only builds/pushes images
+# when every job here passes.
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Prefixed with "ci-" so the group never collides with the caller's
+  # (deploy.yml) group when run via workflow_call.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "22"
+  # Chrome is not needed for typecheck/build/test (see docs/DEPLOYMENT.md, "PDF").
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+  TURBO_TELEMETRY_DISABLED: "1"
+  # Do not set continue-on-error anywhere in this file: a red job must block.
 
 jobs:
-  lint-and-typecheck:
-    name: Lint & Typecheck
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      # pnpm version comes from the root package.json "packageManager"
+      # field (pnpm@9.15.9). Do not also set `version:` here.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
-          cache: npm
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Restore Turbo cache
         uses: actions/cache@v4
         with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ github.sha }}
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-typecheck-${{ github.sha }}
           restore-keys: |
-            turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-
-            turbo-${{ runner.os }}-
+            turbo-${{ runner.os }}-typecheck-
 
-      - name: Lint
-        run: npx turbo lint
+      - name: Generate Prisma client
+        run: pnpm db:generate
 
-      - name: Typecheck
-        run: npx turbo build
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Restore Turbo cache
-        uses: actions/cache@v4
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ github.sha }}
-          restore-keys: |
-            turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-
-            turbo-${{ runner.os }}-
-
-      - name: Run tests
-        run: npx turbo test
-        continue-on-error: true
+      # --continue reports every failing package in one run; the step
+      # still fails if any package fails.
+      - name: Typecheck all packages (tsc --noEmit)
+        run: pnpm turbo run typecheck --continue
 
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
-          cache: npm
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Restore Turbo cache
         uses: actions/cache@v4
         with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ github.sha }}
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-build-${{ github.sha }}
           restore-keys: |
-            turbo-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-
-            turbo-${{ runner.os }}-
+            turbo-${{ runner.os }}-build-
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
 
       - name: Build all packages
-        run: npx turbo build
+        run: pnpm turbo run build --continue
 
-      - name: Verify API build artifacts
-        run: test -d apps/api/dist
+      - name: Verify build artifacts
+        run: |
+          test -f apps/api/dist/index.js
+          test -f apps/web/dist/index.html
+          test -f apps/portal/dist/index.html
+          test -f apps/admin/dist/index.html
+          ls apps/widgets/dist/*.es.js
 
-      - name: Verify Web build artifacts
-        run: test -d apps/web/dist
-
-  docker-build:
-    name: Docker Build
+  test:
+    name: Test (API, Postgres 16 + Redis)
     runs-on: ubuntu-latest
-    needs: [build]
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: helm
+          POSTGRES_PASSWORD: helm
+          POSTGRES_DB: helm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helm -d helm_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://helm:helm@localhost:5432/helm_test?schema=public
+      REDIS_URL: redis://localhost:6379
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-test-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-test-
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations (prisma migrate deploy)
+        run: pnpm db:migrate:deploy
+
+      # Fails (exit code 2) if schema.prisma has changes that no migration
+      # captures, e.g. a field added without `pnpm db:migrate:dev`.
+      - name: Check schema.prisma matches migrations
+        working-directory: apps/api
+        run: >-
+          pnpm exec prisma migrate diff
+          --from-url "$DATABASE_URL"
+          --to-schema-datamodel prisma/schema.prisma
+          --exit-code
+
+      - name: Run API tests
+        run: pnpm turbo run test --filter=@helm/api
+
+  docker:
+    name: Docker build (no push)
+    # On main, deploy.yml builds and pushes the images itself.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, web]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build API image
+      - name: Build ${{ matrix.image }} image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.api
+          file: Dockerfile.${{ matrix.image }}
           push: false
-          tags: helm-api:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.web
-          push: false
-          tags: helm-web:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: helm-${{ matrix.image }}:ci
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
