@@ -98,11 +98,13 @@ vi.mock('../src/middleware/tenant.js', () => ({
 }));
 
 // Mock Stripe
+const stripeMock = vi.hoisted(() => ({
+  paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
+  refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
+}));
 vi.mock('../src/lib/stripe.js', () => ({
-  stripe: {
-    paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
-    refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
-  },
+  stripe: stripeMock,
+  requireStripe: () => stripeMock,
   createPaymentIntent: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
   createCustomer: vi.fn().mockResolvedValue({ id: 'cus_test' }),
   processWebhook: vi.fn().mockResolvedValue(null),

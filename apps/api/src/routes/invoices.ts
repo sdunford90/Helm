@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth, requireRole, MANAGER_ROLES, FINANCE_ROLES } from "../middleware/auth.js";
+import { clerkAuth, requireRole, FINANCE_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { calculateTax } from "../services/tax-engine.js";
 import { postInvoice, postVoid } from "../services/gl-posting.js";
