@@ -314,6 +314,11 @@ export default function Onboarding() {
 
   // Step 3 — Stripe
   const [stripeConnected, setStripeConnected] = useState(false);
+  // 'opened' = the provider window was opened; only the server can confirm a connection.
+  const [stripeAuthOpened, setStripeAuthOpened] = useState(false);
+  const [qboAuthOpened, setQboAuthOpened] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [statusNote, setStatusNote] = useState('');
 
   // Step 4 — QBO
   const [qboConnected, setQboConnected] = useState(false);
@@ -403,7 +408,8 @@ export default function Onboarding() {
       const data = await res.json();
       // Open Stripe OAuth in a new window
       window.open(data.url, '_blank', 'noopener,noreferrer');
-      setStripeConnected(true);
+      // Opening the window is not a connection. Wait for the server to confirm.
+      setStripeAuthOpened(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -426,11 +432,38 @@ export default function Onboarding() {
       }
       const data = await res.json();
       window.open(data.url, '_blank', 'noopener,noreferrer');
-      setQboConnected(true);
+      // Opening the Intuit window is not a connection. Wait for the server to confirm.
+      setQboAuthOpened(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** Ask the server whether Stripe / QuickBooks are actually connected. */
+  async function handleCheckStatus() {
+    if (!tenantId) return;
+    setCheckingStatus(true);
+    setStatusNote('');
+    try {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/status`));
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed (${res.status})`);
+      }
+      const data = (await res.json()) as { checklist?: { stripe?: { status?: string }; qbo?: { status?: string } } };
+      const stripeOk = data.checklist?.stripe?.status === 'connected';
+      const qboOk = data.checklist?.qbo?.status === 'connected';
+      setStripeConnected(stripeOk);
+      setQboConnected(qboOk);
+      setStatusNote(
+        `Server reports: Stripe ${stripeOk ? 'connected' : 'not connected'}, QuickBooks ${qboOk ? 'connected' : 'not connected'}.`,
+      );
+    } catch (err: unknown) {
+      setStatusNote(`Could not verify the connection: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setCheckingStatus(false);
     }
   }
 
@@ -688,9 +721,20 @@ export default function Onboarding() {
             disabled={loading}
             onClick={handleConnectStripe}
           >
-            {loading ? 'Connecting...' : 'Connect Stripe Account'}
+            {loading ? 'Connecting...' : stripeAuthOpened ? 'Reopen Stripe Authorization' : 'Connect Stripe Account'}
           </button>
         )}
+        {!stripeConnected && stripeAuthOpened && (
+          <div style={{ marginTop: 12, fontSize: 13, color: SLATE, lineHeight: 1.5 }}>
+            Finish connecting in the Stripe window, then check the status. Stripe is not marked connected until the server confirms it.
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.secondaryBtn} disabled={checkingStatus} onClick={handleCheckStatus}>
+                {checkingStatus ? 'Checking…' : 'Check connection status'}
+              </button>
+            </div>
+          </div>
+        )}
+        {statusNote && <p style={{ marginTop: 8, fontSize: 13, color: SLATE }}>{statusNote}</p>}
 
         {error && <p style={styles.errorText}>{error}</p>}
 
@@ -725,9 +769,20 @@ export default function Onboarding() {
             disabled={loading}
             onClick={handleConnectQBO}
           >
-            {loading ? 'Connecting...' : 'Connect QuickBooks'}
+            {loading ? 'Connecting...' : qboAuthOpened ? 'Reopen QuickBooks Authorization' : 'Connect QuickBooks'}
           </button>
         )}
+        {!qboConnected && qboAuthOpened && (
+          <div style={{ marginTop: 12, fontSize: 13, color: SLATE, lineHeight: 1.5 }}>
+            Finish authorizing in the Intuit window, then check the status. QuickBooks is not marked connected until the server confirms it.
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.secondaryBtn} disabled={checkingStatus} onClick={handleCheckStatus}>
+                {checkingStatus ? 'Checking…' : 'Check connection status'}
+              </button>
+            </div>
+          </div>
+        )}
+        {statusNote && <p style={{ marginTop: 8, fontSize: 13, color: SLATE }}>{statusNote}</p>}
 
         {error && <p style={styles.errorText}>{error}</p>}
 
@@ -777,8 +832,8 @@ export default function Onboarding() {
       { label: 'Timezone', value: timezone.replace(/_/g, ' ') },
       { label: 'Fiscal Year End', value: fiscalYearEnd },
       { label: 'Branding', value: brandingSaved ? 'Configured' : 'Not configured' },
-      { label: 'Stripe', value: stripeConnected ? 'Connected' : 'Not connected' },
-      { label: 'QuickBooks', value: qboConnected ? 'Connected' : 'Not connected' },
+      { label: 'Stripe', value: stripeConnected ? 'Connected' : stripeAuthOpened ? 'Not confirmed by server' : 'Not connected' },
+      { label: 'QuickBooks', value: qboConnected ? 'Connected' : qboAuthOpened ? 'Not confirmed by server' : 'Not connected' },
     ];
 
     return (

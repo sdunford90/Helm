@@ -1,6 +1,8 @@
-import { useState, useEffect, Fragment } from 'react';
-import { Plus, Check, X, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useState, Fragment } from 'react';
+import { Plus, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
+import { useList } from '../hooks/useApi';
+import { formatCents } from '../lib/format';
+import { ComingSoonButton, EmptyState, ErrorState, LoadingState } from '../components/StateViews';
 
 /* ─── Types ─── */
 type AccountType = 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense';
@@ -10,46 +12,37 @@ interface GLAccount {
   number: string;
   name: string;
   type: AccountType;
-  subType: string;
-  qboLinked: boolean;
+  debits: number; // cents, current month
+  credits: number;
+  net: number;
 }
 
-/* ─── Mock data ─── */
-const mockAccounts: GLAccount[] = [
-  // Assets
-  { id: '1', number: '1000', name: 'Operating Account', type: 'Asset', subType: 'Bank', qboLinked: true },
-  { id: '2', number: '1050', name: 'Stripe Clearing', type: 'Asset', subType: 'Bank', qboLinked: true },
-  { id: '3', number: '1200', name: 'Accounts Receivable', type: 'Asset', subType: 'Accounts Receivable', qboLinked: true },
-  { id: '4', number: '1300', name: 'Prepaid Expenses', type: 'Asset', subType: 'Other Current Asset', qboLinked: false },
-  { id: '5', number: '1500', name: 'Marina Infrastructure', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  { id: '6', number: '1510', name: 'Dock Equipment', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  { id: '7', number: '1600', name: 'Accumulated Depreciation', type: 'Asset', subType: 'Fixed Asset', qboLinked: true },
-  // Liabilities
-  { id: '8', number: '2000', name: 'Accounts Payable', type: 'Liability', subType: 'Accounts Payable', qboLinked: true },
-  { id: '9', number: '2100', name: 'Sales Tax Payable', type: 'Liability', subType: 'Other Current Liability', qboLinked: true },
-  { id: '10', number: '2200', name: 'Deferred Revenue', type: 'Liability', subType: 'Other Current Liability', qboLinked: true },
-  { id: '11', number: '2300', name: 'Customer Deposits', type: 'Liability', subType: 'Other Current Liability', qboLinked: false },
-  { id: '12', number: '2500', name: 'Long-Term Debt', type: 'Liability', subType: 'Long-Term Liability', qboLinked: true },
-  // Equity
-  { id: '13', number: '3000', name: 'Owner\'s Equity', type: 'Equity', subType: 'Equity', qboLinked: true },
-  { id: '14', number: '3100', name: 'Retained Earnings', type: 'Equity', subType: 'Equity', qboLinked: true },
-  // Revenue
-  { id: '15', number: '4000', name: 'Slip Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '16', number: '4100', name: 'Fuel Sales', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '17', number: '4200', name: 'Service Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '18', number: '4300', name: 'Boat Rental Revenue', type: 'Revenue', subType: 'Income', qboLinked: true },
-  { id: '19', number: '4400', name: 'Merchandise Sales', type: 'Revenue', subType: 'Income', qboLinked: false },
-  { id: '20', number: '4500', name: 'Late Fees', type: 'Revenue', subType: 'Other Income', qboLinked: true },
-  // Expenses
-  { id: '21', number: '5000', name: 'Cost of Fuel', type: 'Expense', subType: 'Cost of Goods Sold', qboLinked: true },
-  { id: '22', number: '6000', name: 'Payroll', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '23', number: '6100', name: 'Utilities', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '24', number: '6200', name: 'Insurance', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '25', number: '6300', name: 'Repairs & Maintenance', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '26', number: '6400', name: 'Office & Admin', type: 'Expense', subType: 'Expense', qboLinked: false },
-  { id: '27', number: '6500', name: 'Depreciation Expense', type: 'Expense', subType: 'Expense', qboLinked: true },
-  { id: '28', number: '6600', name: 'Payment Processing Fees', type: 'Expense', subType: 'Expense', qboLinked: true },
-];
+// GET /reports/gl-summary -> { period, accounts: [{accountNumber, name, type, debitsCents, creditsCents, netCents}] }
+interface GlSummaryRow {
+  accountNumber: string;
+  name: string;
+  type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE';
+  debitsCents: number;
+  creditsCents: number;
+  netCents: number;
+}
+
+const TYPE_LABEL: Record<GlSummaryRow['type'], AccountType> = {
+  ASSET: 'Asset', LIABILITY: 'Liability', EQUITY: 'Equity', REVENUE: 'Revenue', EXPENSE: 'Expense',
+};
+
+function toAccount(r: GlSummaryRow): GLAccount {
+  return {
+    id: r.accountNumber,
+    number: r.accountNumber,
+    name: r.name,
+    type: TYPE_LABEL[r.type] ?? 'Asset',
+    debits: r.debitsCents,
+    credits: r.creditsCents,
+    net: r.netCents,
+  };
+}
+
 
 const accountTypes: AccountType[] = ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'];
 
@@ -125,16 +118,9 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export default function ChartOfAccounts() {
-  // API call with fallback to mock data
-  const { data: apiAccounts, loading } = useApi<GLAccount[]>('get', '/reports/gl-summary', { immediate: true });
-  const [accounts, setAccounts] = useState<GLAccount[]>(mockAccounts);
-
-  useEffect(() => {
-    if (apiAccounts) setAccounts(apiAccounts);
-  }, [apiAccounts]);
+  const list = useList<GLAccount, GlSummaryRow>('/reports/gl-summary', { key: 'accounts', map: toAccount });
+  const accounts = list.items;
   const [collapsedTypes, setCollapsedTypes] = useState<Set<AccountType>>(new Set());
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
 
   const toggleSection = (type: AccountType) => {
     setCollapsedTypes((prev) => {
@@ -143,22 +129,6 @@ export default function ChartOfAccounts() {
       return next;
     });
   };
-
-  const startEdit = (acct: GLAccount) => {
-    setEditingId(acct.id);
-    setEditName(acct.name);
-  };
-
-  const saveEdit = () => {
-    if (editingId) {
-      setAccounts((prev) =>
-        prev.map((a) => (a.id === editingId ? { ...a, name: editName } : a))
-      );
-      setEditingId(null);
-    }
-  };
-
-  const cancelEdit = () => setEditingId(null);
 
   const grouped = accountTypes.map((type) => ({
     type,
@@ -170,12 +140,11 @@ export default function ChartOfAccounts() {
       <h1 style={s.title} className="helm-page-title">Chart of Accounts</h1>
       <hr style={s.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading accounts...</div>}
-
       <div style={s.toolbar}>
-        <button style={s.addBtn}><Plus size={16} /> Add Account</button>
+        <ComingSoonButton style={s.addBtn} reason="Coming soon: the API has no endpoint to create GL accounts yet."><Plus size={16} /> Add Account</ComingSoonButton>
       </div>
 
+      {list.loading ? <LoadingState label="Loading accounts…" /> : list.error ? <ErrorState title="Could not load the chart of accounts" message={list.status === 403 ? 'The chart of accounts is limited to owner, manager and accounting roles.' : list.error} onRetry={list.refetch} /> : accounts.length === 0 ? <EmptyState title="No GL accounts set up" message="Accounts are created during onboarding (chart of accounts step)." /> : (
       <div style={s.tableWrap} className="helm-table-wrap">
         <table style={s.table}>
           <thead>
@@ -183,8 +152,8 @@ export default function ChartOfAccounts() {
               <th style={s.th}>Account #</th>
               <th style={{ ...s.th, width: '35%' }}>Name</th>
               <th style={s.th}>Type</th>
-              <th style={s.th}>Sub Type</th>
-              <th style={{ ...s.th, textAlign: 'center' }}>QBO Linked</th>
+              <th style={{ ...s.th, textAlign: 'right' }}>Debits (this month)</th>
+              <th style={{ ...s.th, textAlign: 'right' }}>Credits (this month)</th>
               <th style={{ ...s.th, textAlign: 'center', width: '50px' }}></th>
             </tr>
           </thead>
@@ -215,23 +184,7 @@ export default function ChartOfAccounts() {
                   {!collapsed && typeAccounts.map((acct, idx) => (
                     <tr key={acct.id} style={{ backgroundColor: idx % 2 === 1 ? '#D6E8F4' : '#FFFFFF' }}>
                       <td style={s.tdMono}>{acct.number}</td>
-                      <td style={s.td}>
-                        {editingId === acct.id ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <input
-                              style={s.inlineInput}
-                              value={editName}
-                              onChange={(e) => setEditName(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') cancelEdit(); }}
-                              autoFocus
-                            />
-                            <button style={s.inlineSaveBtn} onClick={saveEdit} title="Save"><Check size={16} /></button>
-                            <button style={s.inlineCancelBtn} onClick={cancelEdit} title="Cancel"><X size={16} /></button>
-                          </div>
-                        ) : (
-                          acct.name
-                        )}
-                      </td>
+                      <td style={s.td}>{acct.name}</td>
                       <td style={s.td}>
                         <span style={{
                           display: 'inline-block', padding: '2px 10px', borderRadius: '9999px',
@@ -241,28 +194,12 @@ export default function ChartOfAccounts() {
                           {acct.type}
                         </span>
                       </td>
-                      <td style={s.td}>
-                        <span style={s.subTypeBadge}>{acct.subType}</span>
-                      </td>
+                      <td style={{ ...s.tdMono, textAlign: 'right' }}>{formatCents(acct.debits)}</td>
+                      <td style={{ ...s.tdMono, textAlign: 'right' }}>{formatCents(acct.credits)}</td>
                       <td style={{ ...s.td, textAlign: 'center' }}>
-                        {acct.qboLinked ? (
-                          <span style={{ ...s.checkmark, backgroundColor: '#E8F5E9', color: '#1B5E20' }}>
-                            <Check size={14} />
-                          </span>
-                        ) : (
-                          <span style={{ ...s.checkmark, backgroundColor: '#F2F4F6', color: '#94A3B8' }}>
-                            <X size={14} />
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ ...s.td, textAlign: 'center' }}>
-                        <button
-                          style={s.editBtn}
-                          onClick={() => startEdit(acct)}
-                          title="Edit account name"
-                        >
+                        <ComingSoonButton style={s.editBtn} reason="Coming soon: renaming accounts is not connected to the server yet.">
                           <Pencil size={14} />
-                        </button>
+                        </ComingSoonButton>
                       </td>
                     </tr>
                   ))}
@@ -272,6 +209,7 @@ export default function ChartOfAccounts() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }
