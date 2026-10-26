@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 
+import { loadEnv } from "./lib/env.js";
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
 
@@ -43,8 +44,11 @@ import communicationPrefsRouter from "./routes/communication-prefs.js";
 // App initialisation
 // --------------------------------------------------------------------------
 
+// Fail fast on missing/unsafe configuration (exits the process on error).
+const env = loadEnv();
+
 const app = express();
-const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
+const PORT = env.API_PORT;
 
 // --------------------------------------------------------------------------
 // Global middleware

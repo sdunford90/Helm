@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
-import { requireAuth, getAuth } from "@clerk/express";
+import { clerkMiddleware, requireAuth, getAuth } from "@clerk/express";
 import { prisma } from "../lib/prisma.js";
+import { isDevAuthBypassEnabled, parseList } from "../lib/env.js";
 
 // --------------------------------------------------------------------------
 // Extend Express Request with authenticated user context
@@ -11,6 +12,8 @@ declare global {
     interface Request {
       userId?: string;
       userRole?: string;
+      /** Set when the explicit HELM_DEV_AUTH_BYPASS flag let this request skip Clerk. */
+      devAuthBypass?: boolean;
       userRecord?: {
         id: string;
         clerk_id: string;
@@ -24,43 +27,58 @@ declare global {
 }
 
 /**
- * Clerk authentication middleware.
+ * Clerk authentication middleware (fail-closed).
  *
- * Wraps `requireAuth` from @clerk/express and then resolves the internal
- * user record, verifying that the user belongs to the current tenant.
+ * 1. Verifies the Clerk session (401 JSON when missing/invalid — never a
+ *    redirect, never an anonymous pass-through).
+ * 2. Resolves the internal user record and verifies it belongs to the
+ *    current tenant.
+ *
+ * The ONLY way to skip Clerk is the explicit local-development flag
+ * `HELM_DEV_AUTH_BYPASS=true`, which is refused (throws, and `loadEnv()`
+ * exits at boot) when NODE_ENV=production. NODE_ENV alone never disables auth.
  */
 export function clerkAuth() {
-  // ── Dev bypass: skip Clerk token verification in development ─────────────
-  if (process.env.NODE_ENV !== "production") {
-    return [
-      async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-        try {
-          // Try to find any user for this tenant so we have a real userId
-          const user = await prisma.user.findFirst({
-            where: { tenantId: req.tenantId },
-            orderBy: { createdAt: "asc" },
-          });
-
-          req.userId = user?.id ?? "dev-user";
-          req.userRole = user?.role ?? "admin";
-          req.userRecord = user as unknown as Express.Request["userRecord"];
-          next();
-        } catch (err) {
-          next(err);
-        }
-      },
-    ];
-  }
+  const verifyClerkSession = clerkSessionVerifier();
 
   return [
-    // First: Clerk's own guard — returns 401 if no valid session
-    requireAuth(),
+    // First: authenticate (Clerk session, or explicit dev bypass)
+    (req: Request, res: Response, next: NextFunction): void => {
+      let bypass: boolean;
+      try {
+        bypass = isDevAuthBypassEnabled();
+      } catch (err) {
+        next(err);
+        return;
+      }
+      if (bypass) {
+        req.devAuthBypass = true;
+        next();
+        return;
+      }
+      verifyClerkSession(req, res, next);
+    },
 
     // Second: resolve internal user and verify tenant membership
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const auth = getAuth(req);
-        const clerkUserId = auth.userId;
+        if (req.devAuthBypass) {
+          const user = await prisma.user.findFirst({
+            where: { tenantId: req.tenantId },
+            orderBy: { createdAt: "asc" },
+          });
+          if (!user) {
+            res.status(401).json({ error: "Dev bypass: no user in this tenant", code: "UNAUTHORIZED" });
+            return;
+          }
+          req.userId = user.id;
+          req.userRole = user.role;
+          req.userRecord = user as unknown as Express.Request["userRecord"];
+          next();
+          return;
+        }
+
+        const clerkUserId = getAuth(req).userId;
 
         if (!clerkUserId) {
           res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
@@ -93,6 +111,46 @@ export function clerkAuth() {
       }
     },
   ];
+}
+
+/**
+ * Returns middleware that runs Clerk's session verification and responds
+ * 401 JSON when there is no authenticated Clerk user. Unlike Clerk's
+ * `requireAuth()` it never redirects (the SPA expects JSON).
+ */
+function clerkSessionVerifier() {
+  let clerk: ReturnType<typeof clerkMiddleware> | undefined;
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) {
+      // Fail closed: without Clerk configured nobody can authenticate.
+      res.status(401).json({ error: "Unauthorized", code: "AUTH_NOT_CONFIGURED" });
+      return;
+    }
+
+    if (!clerk) {
+      const authorizedParties = parseList(process.env.CLERK_AUTHORIZED_PARTIES);
+      clerk = clerkMiddleware(authorizedParties.length > 0 ? { authorizedParties } : undefined);
+    }
+
+    clerk(req, res, (err?: unknown) => {
+      if (err) {
+        next(err);
+        return;
+      }
+      let userId: string | null | undefined;
+      try {
+        userId = getAuth(req).userId;
+      } catch {
+        userId = null;
+      }
+      if (!userId) {
+        res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+        return;
+      }
+      next();
+    });
+  };
 }
 
 /**

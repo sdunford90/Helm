@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma, tenantStore } from "../lib/prisma.js";
+import { isDevAuthBypassEnabled } from "../lib/env.js";
 
 // --------------------------------------------------------------------------
 // Extend Express Request to carry tenant context
@@ -60,8 +61,10 @@ export async function tenantMiddleware(
         : { customDomain: hostname },
     });
 
-    // ── Dev fallback: use the first tenant when hostname doesn't resolve ──
-    if (!tenant && process.env.NODE_ENV !== "production") {
+    // ── Dev fallback: only with the explicit HELM_DEV_AUTH_BYPASS flag ──
+    // (isDevAuthBypassEnabled() throws if the flag is set in production).
+    // Without the flag an unknown host is always a 404 — never "some tenant".
+    if (!tenant && isDevAuthBypassEnabled()) {
       tenant = await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } });
     }
 
