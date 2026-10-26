@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Outlet, useLocation, Link } from 'react-router-dom';
-import { useUser } from '@clerk/clerk-react';
+import { useUser, useClerk } from '@clerk/clerk-react';
+import PageErrorBoundary from './PageErrorBoundary';
 import HelpCenter from './HelpCenter';
 import { useModules } from '../context/ModulesContext';
 import {
@@ -28,6 +29,7 @@ import {
   ChevronDown,
   Package,
   FileSpreadsheet,
+  LogOut,
 } from 'lucide-react';
 
 const LOCATIONS = [
@@ -207,13 +209,27 @@ function getPageTitle(pathname: string): string {
     '/reports': 'Reports',
     '/announcements': 'Announcements',
     '/settings': 'Settings',
+    '/transient': 'Transient',
+    '/ramp': 'Launch Ramp',
+    '/concierge': 'Concierge',
+    '/fuel': 'Fuel',
+    '/inventory': 'Inventory',
+    '/audit-log': 'Audit Log',
+    '/rent-roll': 'Rent Roll',
+    '/portfolio': 'Portfolio',
+    '/billing/ar-aging': 'A/R Aging',
+    '/billing/chart-of-accounts': 'Chart of Accounts',
   };
-  return map[pathname] || 'Helm';
+  if (map[pathname]) return map[pathname];
+  if (pathname.startsWith('/billing/invoices/')) return 'Billing › Invoice';
+  if (pathname.startsWith('/customers/')) return 'Customers › Customer';
+  return 'Helm';
 }
 
 export default function AppLayout() {
   const location = useLocation();
   const { user } = useUser();
+  const { signOut } = useClerk();
   const { modules } = useModules();
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
@@ -259,7 +275,9 @@ export default function AppLayout() {
             <div key={section.label}>
               <div style={styles.sectionLabel}>{section.label}</div>
               {visibleItems.map((item) => {
-                const isActive = location.pathname === item.path;
+                const isActive =
+                  location.pathname === item.path ||
+                  (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
                 return (
                   <Link
                     key={item.path}
@@ -367,11 +385,22 @@ export default function AppLayout() {
             <button style={styles.helpBtn} title="Help">
               <HelpCircle size={16} />
             </button>
-            <div style={styles.avatar}>{initials}</div>
+            <div style={styles.avatar} title={user?.primaryEmailAddress?.emailAddress ?? undefined}>{initials}</div>
+            <button
+              style={{ ...styles.helpBtn, width: 'auto', borderRadius: 6, padding: '0 10px', gap: 6, fontSize: 13 }}
+              title="Sign out"
+              aria-label="Sign out"
+              onClick={() => signOut({ redirectUrl: '/' })}
+            >
+              <LogOut size={14} />
+              <span>Sign out</span>
+            </button>
           </div>
         </header>
         <main style={styles.content} className="helm-content">
-          <Outlet />
+          <PageErrorBoundary key={location.pathname}>
+            <Outlet />
+          </PageErrorBoundary>
         </main>
       </div>
       <HelpCenter />
