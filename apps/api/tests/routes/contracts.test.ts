@@ -48,8 +48,9 @@ describe('GET /api/contracts', () => {
 
 describe('POST /api/contracts', () => {
   it('creates a contract with valid data', async () => {
-    const slip = buildSlip({ status: 'VACANT' });
-    const customer = buildCustomer();
+    // The create schema requires UUIDs for slipId/customerId.
+    const slip = buildSlip({ id: '11111111-1111-4111-8111-111111111111', status: 'VACANT' });
+    const customer = buildCustomer({ id: '22222222-2222-4222-8222-222222222222' });
     const contract = buildContract({
       slipId: slip.id,
       customerId: customer.id,

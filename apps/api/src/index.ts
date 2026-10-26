@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
 
 import express from "express";
 import cors from "cors";
@@ -104,8 +105,12 @@ app.use(errorHandler);
 // Start server
 // --------------------------------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(`[helm-api] listening on port ${PORT}`);
-});
+// Listen only when this file is the entrypoint (node dist/index.js, tsx
+// src/index.ts), not when imported (e.g. by tests via supertest).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  app.listen(PORT, () => {
+    console.log(`[helm-api] listening on port ${PORT}`);
+  });
+}
 
 export default app;

@@ -1,11 +1,11 @@
-import { vi } from 'vitest';
+import { vi, beforeEach } from 'vitest';
 
 // Mock environment
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
 process.env.REDIS_URL = 'redis://localhost:6379';
 
 // Mock Prisma - create a mock that returns empty arrays/objects by default
-export const mockPrisma = {
+const mockPrismaBase = {
   lead: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   customer: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   slip: { findMany: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]), delete: vi.fn() },
@@ -49,13 +49,55 @@ export const mockPrisma = {
   meterReading: { findMany: vi.fn().mockResolvedValue([]) },
   user: { findMany: vi.fn().mockResolvedValue([]) },
   apiKey: { findUnique: vi.fn() },
-  processed_webhooks: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
   inventory: { findMany: vi.fn().mockResolvedValue([]) },
   purchaseOrder: { findMany: vi.fn().mockResolvedValue([]) },
   tenant: { findFirst: vi.fn(), findUnique: vi.fn() },
   achReturn: { findMany: vi.fn().mockResolvedValue([]) },
-  $transaction: vi.fn().mockImplementation((fn: any) => fn(mockPrisma)),
+  // Supports both interactive (callback) and batch (array) transactions.
+  $transaction: vi.fn().mockImplementation((arg: any) =>
+    typeof arg === 'function' ? arg(mockPrisma) : Promise.all(arg),
+  ),
 };
+
+// Every model delegate (and every method on it) exists on demand, so a test
+// never fails with "Cannot read properties of undefined (reading
+// 'mockResolvedValue')" just because a delegate was not listed above.
+// Defaults: list-like reads resolve to empty results, everything else to
+// undefined.
+const DELEGATE_DEFAULTS: Record<string, () => unknown> = {
+  findMany: () => vi.fn().mockResolvedValue([]),
+  count: () => vi.fn().mockResolvedValue(0),
+  groupBy: () => vi.fn().mockResolvedValue([]),
+  aggregate: () =>
+    vi.fn().mockResolvedValue({ _sum: {}, _count: { id: 0 }, _avg: {}, _min: {}, _max: {} }),
+  createMany: () => vi.fn().mockResolvedValue({ count: 0 }),
+  updateMany: () => vi.fn().mockResolvedValue({ count: 0 }),
+  deleteMany: () => vi.fn().mockResolvedValue({ count: 0 }),
+};
+
+function autoDelegate(initial: Record<string, any> = {}): any {
+  return new Proxy(initial, {
+    get(target, prop) {
+      if (typeof prop !== 'string' || prop === 'then') return target[prop as any];
+      if (!(prop in target)) target[prop] = DELEGATE_DEFAULTS[prop]?.() ?? vi.fn();
+      return target[prop];
+    },
+  });
+}
+
+for (const key of Object.keys(mockPrismaBase)) {
+  if (!key.startsWith('$')) {
+    (mockPrismaBase as Record<string, any>)[key] = autoDelegate((mockPrismaBase as Record<string, any>)[key]);
+  }
+}
+
+export const mockPrisma: any = new Proxy(mockPrismaBase as Record<string, any>, {
+  get(target, prop) {
+    if (typeof prop !== 'string' || prop === 'then' || prop.startsWith('$')) return target[prop as any];
+    if (!(prop in target)) target[prop] = autoDelegate();
+    return target[prop];
+  },
+});
 
 vi.mock('../src/lib/prisma.js', () => ({
   prisma: mockPrisma,
@@ -63,6 +105,14 @@ vi.mock('../src/lib/prisma.js', () => ({
 }));
 
 // Mock Clerk auth
+// The signed-in test user's role. Defaults to MARINA_OWNER; tests may set
+// testAuth.role (reset before every test) to exercise role guards.
+const hoistedAuth = vi.hoisted(() => ({ role: 'MARINA_OWNER' as string }));
+export const testAuth = hoistedAuth;
+beforeEach(() => {
+  testAuth.role = 'MARINA_OWNER';
+});
+
 vi.mock('../src/middleware/auth.js', () => ({
   clerkAuth: () => [
     (_req: any, _res: any, next: any) => {
@@ -71,14 +121,21 @@ vi.mock('../src/middleware/auth.js', () => ({
     },
     (_req: any, _res: any, next: any) => {
       _req.userId = 'test-user-id';
-      _req.userRole = 'admin';
-      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'admin', email: 'admin@test.com' };
+      _req.userRole = hoistedAuth.role;
+      _req.userRecord = { id: 'test-user-id', clerkId: 'test-clerk-user', tenantId: 'test-tenant-id', role: hoistedAuth.role, email: 'owner@test.com' };
       next();
     },
   ],
-  requireRole: (..._roles: string[]) => (_req: any, _res: any, next: any) => {
-    _req.userId = 'test-user-id';
-    _req.userRole = 'admin';
+  // Enforces roles like the real middleware, against the UserRole enum
+  // values, so a guard written with non-existent role names (e.g. "admin")
+  // fails in tests instead of only in production.
+  requireRole: (...roles: string[]) => (req: any, res: any, next: any) => {
+    req.userId = req.userId ?? 'test-user-id';
+    req.userRole = hoistedAuth.role;
+    if (!roles.includes(hoistedAuth.role)) {
+      res.status(403).json({ error: 'Insufficient permissions', code: 'FORBIDDEN' });
+      return;
+    }
     next();
   },
   requirePlatformAdmin: () => [
@@ -146,6 +203,12 @@ vi.mock('../src/services/gl-posting.js', () => ({
   postVoid: vi.fn().mockResolvedValue(undefined),
   postPayment: vi.fn().mockResolvedValue(undefined),
   postRefund: vi.fn().mockResolvedValue(undefined),
+  postSecurityDeposit: vi.fn().mockResolvedValue(undefined),
+  releaseSecurityDeposit: vi.fn().mockResolvedValue(undefined),
+  postAchReturn: vi.fn().mockResolvedValue('journal-ach'),
+  postDeferredRecognition: vi.fn().mockResolvedValue(undefined),
+  postEarlyTermination: vi.fn().mockResolvedValue('journal-term'),
+  postManualJournalEntry: vi.fn().mockResolvedValue('journal-manual'),
 }));
 
 vi.mock('../src/services/deferred-revenue.js', () => ({
