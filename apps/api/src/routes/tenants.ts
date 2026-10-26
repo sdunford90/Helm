@@ -1,67 +1,69 @@
 import { Router } from "express";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole } from "../middleware/auth.js";
-import { stripe } from "../lib/stripe.js";
 
 const router = Router();
 
 // --------------------------------------------------------------------------
-// Validation schemas
+// Tenant self-service. Everything here operates on the Host-resolved
+// req.tenantId of the authenticated staff user — never on an id from the URL
+// or body. Removed (Phase 0):
+//   POST /api/tenants                 unauthenticated tenant creation;
+//                                     onboarding/start is the only create path
+//   GET/PUT /api/tenants/:id          cross-tenant read/write by id
+//   POST /api/tenants/:id/stripe/connect, /:id/qbo/connect
+//                                     duplicates of settings/stripe/connect
+//                                     and /api/qbo/authorize
 // --------------------------------------------------------------------------
 
-const createTenantSchema = z.object({
-  name: z.string().min(1).max(255),
-  subdomain: z.string().min(2).max(63).regex(/^[a-z0-9-]+$/),
-  owner_email: z.string().email(),
-  owner_name: z.string().min(1),
-  settings: z.record(z.unknown()).optional(),
-});
+/**
+ * Explicit allow-list of tenant columns returned to the UI. Never return
+ * integration secrets/ids (QBO realm/tokens, Stripe account id): expose
+ * only whether they are connected.
+ */
+const tenantPublicSelect = {
+  id: true,
+  name: true,
+  subdomain: true,
+  customDomain: true,
+  brandingJson: true,
+  timezone: true,
+  fiscalYearEnd: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+  stripeAccountId: true,
+  qboRealmId: true,
+} satisfies Prisma.TenantSelect;
 
-const updateTenantSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  branding: z.record(z.unknown()).optional(),
-  settings: z.record(z.unknown()).optional(),
-  custom_domain: z.string().nullable().optional(),
-});
+type TenantRow = Prisma.TenantGetPayload<{ select: typeof tenantPublicSelect }>;
 
-// --------------------------------------------------------------------------
-// POST /api/tenants — create a new tenant (onboarding wizard)
-// --------------------------------------------------------------------------
-router.post("/", async (req, res, next) => {
-  try {
-    const data = createTenantSchema.parse(req.body);
+function toPublicTenant(t: TenantRow) {
+  const { stripeAccountId, qboRealmId, ...rest } = t;
+  return {
+    ...rest,
+    stripeConnected: !!stripeAccountId,
+    qboConnected: !!qboRealmId,
+  };
+}
 
-    // Ensure subdomain uniqueness
-    const existing = await prisma.tenant.findFirst({
-      where: { subdomain: data.subdomain },
-    });
-    if (existing) {
-      res.status(409).json({ error: "Subdomain already taken", code: "SUBDOMAIN_CONFLICT" });
-      return;
-    }
-
-    const tenant = await prisma.tenant.create({
-      data: {
-        name: data.name,
-        subdomain: data.subdomain,
-        settings: data.settings ?? {},
-      },
-    });
-
-    res.status(201).json({ tenant });
-  } catch (err) {
-    next(err);
-  }
-});
+const updateTenantSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    branding: z.record(z.unknown()).optional(),
+  })
+  .strict();
 
 // --------------------------------------------------------------------------
-// GET /api/tenants/:id
+// GET /api/tenants/current
 // --------------------------------------------------------------------------
-router.get("/:id", ...clerkAuth(), async (req, res, next) => {
+router.get("/current", ...clerkAuth(), async (req, res, next) => {
   try {
     const tenant = await prisma.tenant.findUnique({
-      where: { id: req.params.id },
+      where: { id: req.tenantId! },
+      select: tenantPublicSelect,
     });
 
     if (!tenant) {
@@ -69,64 +71,36 @@ router.get("/:id", ...clerkAuth(), async (req, res, next) => {
       return;
     }
 
-    res.json({ tenant });
+    res.json({ tenant: toPublicTenant(tenant) });
   } catch (err) {
     next(err);
   }
 });
 
 // --------------------------------------------------------------------------
-// PUT /api/tenants/:id — update branding / settings
+// PUT /api/tenants/current — update name / branding (owner only)
 // --------------------------------------------------------------------------
-router.put("/:id", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
+router.put("/current", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
-    const data = updateTenantSchema.parse(req.body);
+    const parsed = updateTenantSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+      return;
+    }
+    const data = parsed.data;
 
     const tenant = await prisma.tenant.update({
-      where: { id: req.params.id },
-      data,
+      where: { id: req.tenantId! },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.branding !== undefined && {
+          brandingJson: data.branding as Prisma.InputJsonValue,
+        }),
+      },
+      select: tenantPublicSelect,
     });
 
-    res.json({ tenant });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// --------------------------------------------------------------------------
-// POST /api/tenants/:id/stripe/connect — initiate Stripe Connect OAuth
-// --------------------------------------------------------------------------
-router.post("/:id/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
-  try {
-    const accountLink = await stripe.accountLinks.create({
-      account: req.params.id, // Will be the connected account id stored on tenant
-      refresh_url: `${process.env.APP_URL}/settings/stripe?refresh=true`,
-      return_url: `${process.env.APP_URL}/settings/stripe?success=true`,
-      type: "account_onboarding",
-    });
-
-    res.json({ url: accountLink.url });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// --------------------------------------------------------------------------
-// POST /api/tenants/:id/qbo/connect — initiate QuickBooks Online OAuth
-// --------------------------------------------------------------------------
-router.post("/:id/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
-  try {
-    const clientId = process.env.QBO_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;
-    const scope = "com.intuit.quickbooks.accounting";
-    const state = req.params.id; // Tenant id for callback correlation
-
-    const authUrl =
-      `https://appcenter.intuit.com/connect/oauth2?` +
-      `client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}&response_type=code&state=${state}`;
-
-    res.json({ url: authUrl });
+    res.json({ tenant: toPublicTenant(tenant) });
   } catch (err) {
     next(err);
   }
