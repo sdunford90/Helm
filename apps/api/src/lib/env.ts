@@ -156,6 +156,34 @@ export function isDevAuthBypassEnabled(): boolean {
   return true;
 }
 
+/**
+ * CORS policy: reflect only allow-listed origins. With an empty list no
+ * cross-origin browser access is allowed — except in local dev with the
+ * explicit bypass flag, where every origin is reflected.
+ */
+export function buildCorsOptions(
+  allowedOrigins: string[],
+  devAllowAll: boolean,
+): {
+  origin: boolean | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void);
+  credentials: boolean;
+  methods: string[];
+  allowedHeaders: string[];
+  maxAge: number;
+} {
+  const allowed = new Set(allowedOrigins.map((o) => o.replace(/\/$/, "")));
+  return {
+    origin:
+      devAllowAll && allowed.size === 0
+        ? true
+        : (origin, cb) => cb(null, !!origin && allowed.has(origin)),
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Authorization", "Content-Type", "X-Requested-With"],
+    maxAge: 600,
+  };
+}
+
 /** Parse a comma-separated env value into a trimmed, non-empty list. */
 export function parseList(value: string | undefined): string[] {
   return (value ?? "")

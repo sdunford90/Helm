@@ -39,6 +39,7 @@ const BYPASS_EXACT = [
   "/api/onboarding/stripe/callback", // Stripe redirect (verified OAuth state)
   "/api/qbo/callback", // Intuit redirect (verified OAuth state)
   "/api/qbo/webhook", // Intuit (verified signature)
+  "/api/webhooks/stripe", // Stripe (signature) — mount point reserved in index.ts
 ];
 
 export function shouldBypassTenant(path: string): boolean {

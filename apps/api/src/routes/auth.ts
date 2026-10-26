@@ -52,8 +52,15 @@ router.post(
     const wh = new Webhook(WEBHOOK_SECRET);
     let evt: WebhookEvent;
 
+    // svix signs the exact raw bytes; index.ts mounts express.raw() for this
+    // path. Re-serialising parsed JSON breaks verification.
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: "Raw body required" });
+      return;
+    }
+
     try {
-      evt = wh.verify(JSON.stringify(req.body), {
+      evt = wh.verify(req.body.toString("utf8"), {
         "svix-id": svixId,
         "svix-timestamp": svixTimestamp,
         "svix-signature": svixSignature,

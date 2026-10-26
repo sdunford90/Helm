@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { validateEnv, isDevAuthBypassEnabled, EnvError } from '../../src/lib/env.js';
+import { validateEnv, isDevAuthBypassEnabled, EnvError, buildCorsOptions } from '../../src/lib/env.js';
 
 const PROD_REQUIRED = {
   NODE_ENV: 'production',
@@ -46,6 +46,26 @@ describe('validateEnv', () => {
     const env = validateEnv(PROD_REQUIRED);
     expect(env.STRIPE_SECRET_KEY).toBeUndefined();
     expect(env.QBO_CLIENT_ID).toBeUndefined();
+  });
+});
+
+describe('buildCorsOptions', () => {
+  const check = (opts: ReturnType<typeof buildCorsOptions>, origin: string | undefined) =>
+    new Promise<boolean | undefined>((resolve) => {
+      if (typeof opts.origin === 'boolean') return resolve(opts.origin);
+      opts.origin(origin, (_e, allow) => resolve(allow));
+    });
+
+  it('allows only configured origins', async () => {
+    const opts = buildCorsOptions(['https://app.gethelm.com', 'https://admin.gethelm.com/'], false);
+    expect(await check(opts, 'https://app.gethelm.com')).toBe(true);
+    expect(await check(opts, 'https://admin.gethelm.com')).toBe(true);
+    expect(await check(opts, 'https://evil.example')).toBe(false);
+  });
+
+  it('allows no cross-origin access when unconfigured (unless dev bypass)', async () => {
+    expect(await check(buildCorsOptions([], false), 'https://evil.example')).toBe(false);
+    expect(await check(buildCorsOptions([], true), 'https://anything.local')).toBe(true);
   });
 });
 
