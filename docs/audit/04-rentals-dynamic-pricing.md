@@ -22,7 +22,7 @@ The rental module is a **front-end mock with a non-functional back end**. Nothin
 7. **None of the following is implemented:** payments, deposit holds, waivers, license checks, refunds, emails and automations. The worker that would send automations is never started in production, and its own queries would crash.
 8. **The algorithmic pricing job is never scheduled.** If it ran, it would crash in all-tenant mode. In single-tenant mode it measures the wrong signal and can suggest a $0 price. The approve endpoint writes to columns that do not exist.
 
-**Bottom line:** treat rentals as roughly 15% built. The UI shell and the data model are a reasonable start. The engine, booking, payment and operations layers have to be written. The realistic launch options are (a) launch **without** rentals (turn the module off server-side) or (b) take on about 6 to 9 engineer-weeks to reach a minimal viable rental product (section 9).
+**Bottom line:** treat rentals as roughly 15% built. The UI shell and the data model are a reasonable start. The engine, booking, payment and operations layers have to be written. The realistic launch options are (a) launch **without** rentals (turn the module off server-side) or (b) take on about 6 to 9 engineer-weeks to reach a minimal viable rental product (section 8).
 
 ---
 
@@ -275,6 +275,18 @@ Vocabulary: the API's "check-in" means the boat leaves (CONFIRMED to CHECKED_IN)
 
 ---
 
+### Flow 8: Automations (pre-arrival reminders, post-rental NPS)
+
+| # | Location | Problem | Failure scenario | Fix | Sev | Eff |
+|---|---|---|---|---|---|---|
+| 8.1 | `services/email-automation.ts:354-430`; whole repo | Rental triggers (`rental_booking_confirmed`, `rental_pre_arrival`, `rental_post_return`, `rental_abandoned_cart`, `rental_nps_survey`) are defined, but **`processAutomationTrigger` is never called** anywhere. | No confirmation, reminder or survey email is ever sent. The widget promises a confirmation. | Emit domain events from the booking service (confirmed, departed, returned, cancelled, hold expired) that call `processAutomationTrigger`, and schedule the delayed ones (pre-arrival at T-48h or T-24h, NPS at return +24h) as delayed BullMQ jobs, recorded in `RentalAutomationEvent`. | P0 for the confirmation email, P1 for the rest | M |
+| 8.2 | `workers/index.ts:115-118` | The automation worker queries `customer` with `tenant_id`, `first_name` and `last_name` (snake_case), but the Prisma fields are camelCase. Every automation job throws. | Even if events were enqueued, nothing would send. | Use camelCase fields; add a worker smoke test. | P0 | S |
+| 8.3 | `workers/index.ts:160,182` vs `schema:154-165` | Job type names (`POST_BOOKING`, `POST_RENTAL`) do not match the enum (`POST_BOOKING_CONFIRM`, `POST_RENTAL_THANKS`). `CHECK_IN_REMINDER` and `GOOGLE_REVIEW_PROMPT` have no handlers. The worker templates are hard-coded and slip-oriented ("have your registration and insurance documents ready", which is wrong for renters). | Mismatched events are dropped as "Unknown automation type". | One enum shared by the producer and consumer; use the email-automation templates (tenant-editable) instead of inline HTML. | P1 | S |
+| 8.4 | `RentalAutomationEvent`, `NpsSurvey` models | Never written or read. The NPS email asks the customer to "reply with your score", so there is no response capture. No Google review prompt for promoters. | NPS data is never collected. | Create a tokenized NPS landing page (0-10 plus comment) that writes `NpsSurvey`. Promoters (9-10) get a Google review link, recording `googlePromptSentAt`. Detractors (0-6) alert the manager. | P2 | M |
+| 8.5 | (missing) | No SMS reminders for rentals (an SMS worker exists) and no day-of "your boat is ready / weather update" messages. Abandoned-cart flows need PENDING holds with contact info first. | Higher no-show rate. | Send an SMS reminder at T-24h and T-2h, with a link to the waiver if unsigned. Run abandoned cart only after hold expiry, and only with marketing consent (communication-prefs exists). | P2 | S |
+
+---
+
 ## 7. Algorithmic pricing job assessment (`apps/api/src/jobs/algorithmic-pricing.ts`)
 
 **What it does:**
@@ -302,19 +314,7 @@ Vocabulary: the API's "check-in" means the boat leaves (CONFIRMED to CHECKED_IN)
 
 ---
 
-## 8. Automations (pre-arrival reminders, post-rental NPS)
-
-| # | Location | Problem | Failure scenario | Fix | Sev | Eff |
-|---|---|---|---|---|---|---|
-| 8.1 | `services/email-automation.ts:354-430`; whole repo | Rental triggers (`rental_booking_confirmed`, `rental_pre_arrival`, `rental_post_return`, `rental_abandoned_cart`, `rental_nps_survey`) are defined, but **`processAutomationTrigger` is never called** anywhere. | No confirmation, reminder or survey email is ever sent. The widget promises a confirmation. | Emit domain events from the booking service (confirmed, departed, returned, cancelled, hold expired) that call `processAutomationTrigger`, and schedule the delayed ones (pre-arrival at T-48h or T-24h, NPS at return +24h) as delayed BullMQ jobs, recorded in `RentalAutomationEvent`. | P0 for the confirmation email, P1 for the rest | M |
-| 8.2 | `workers/index.ts:115-118` | The automation worker queries `customer` with `tenant_id`, `first_name` and `last_name` (snake_case), but the Prisma fields are camelCase. Every automation job throws. | Even if events were enqueued, nothing would send. | Use camelCase fields; add a worker smoke test. | P0 | S |
-| 8.3 | `workers/index.ts:160,182` vs `schema:154-165` | Job type names (`POST_BOOKING`, `POST_RENTAL`) do not match the enum (`POST_BOOKING_CONFIRM`, `POST_RENTAL_THANKS`). `CHECK_IN_REMINDER` and `GOOGLE_REVIEW_PROMPT` have no handlers. The worker templates are hard-coded and slip-oriented ("have your registration and insurance documents ready", which is wrong for renters). | Mismatched events are dropped as "Unknown automation type". | One enum shared by the producer and consumer; use the email-automation templates (tenant-editable) instead of inline HTML. | P1 | S |
-| 8.4 | `RentalAutomationEvent`, `NpsSurvey` models | Never written or read. The NPS email asks the customer to "reply with your score", so there is no response capture. No Google review prompt for promoters. | NPS data is never collected. | Create a tokenized NPS landing page (0-10 plus comment) that writes `NpsSurvey`. Promoters (9-10) get a Google review link, recording `googlePromptSentAt`. Detractors (0-6) alert the manager. | P2 | M |
-| 8.5 | (missing) | No SMS reminders for rentals (an SMS worker exists) and no day-of "your boat is ready / weather update" messages. Abandoned-cart flows need PENDING holds with contact info first. | Higher no-show rate. | Send an SMS reminder at T-24h and T-2h, with a link to the waiver if unsigned. Run abandoned cart only after hold expiry, and only with marketing consent (communication-prefs exists). | P2 | S |
-
----
-
-## 9. Competitive gap list (vs FareHarbor, Peek Pro, Checkfront, Bookeo, Boatsetter, Freedom Boat Club, Molo/Dockwa rentals)
+## 8. Competitive gap list (vs FareHarbor, Peek Pro, Checkfront, Bookeo, Boatsetter, Freedom Boat Club, Molo/Dockwa rentals)
 
 | Capability | Best-in-class | Helm today | Gap and recommendation | Priority |
 |---|---|---|---|---|
@@ -344,7 +344,7 @@ Vocabulary: the API's "check-in" means the boat leaves (CONFIRMED to CHECKED_IN)
 
 ---
 
-## 10. Prioritized fix and build list
+## 9. Prioritized fix and build list
 
 ### Decision first (day 0)
 - **Option A, recommended if launch is within 4-6 weeks:** launch without rentals. Hide the module server-side, return 404 from `/api/rentals/*` and `/public/rentals/*` when disabled, and remove the widget from marketing. Keep the mock UI out of production builds; it shows fake revenue numbers.
@@ -377,10 +377,10 @@ Vocabulary: the API's "check-in" means the boat leaves (CONFIRMED to CHECKED_IN)
 ### Phase 4: post-launch (P1/P2)
 17. Weather bulk-cancel and credit; no-show automation; pre-arrival SMS and email; NPS with Google review prompt. [6.6, 6.7, 8.3-8.5]
 18. Portal rentals: my bookings, self-service reschedule and cancel, waiver signing, and booking with member identity. [5.9]
-19. Multi-unit cart, add-on inventory, packages, gift cards and credits. [section 9]
+19. Multi-unit cart, add-on inventory, packages, gift cards and credits. [section 8]
 20. Algorithmic pricing v2: utilization and pace based, idempotent per-date suggestions applied as overrides, guardrails, inbox UI, performance tracking. [7.x]
-21. Boat-club memberships and credits (Freedom Boat Club-style). [section 9]
-22. OCTO API and Google Things to Do feed for OTA distribution. [section 9]
+21. Boat-club memberships and credits (Freedom Boat Club-style). [section 8]
+22. OCTO API and Google Things to Do feed for OTA distribution. [section 8]
 
 ### Quick wins (do these regardless of the A/B decision)
 - Remove `Rental` and `CancellationRule` from `TENANT_SCOPED_MODELS`, and the 4 tenantless models (or add the columns). (S)
