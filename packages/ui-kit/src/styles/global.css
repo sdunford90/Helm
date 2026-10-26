@@ -159,6 +159,17 @@ input, textarea, select {
   color: var(--color-text-muted);
 }
 
+/* ─── Tables ──────────────────────────────────────────────────────────── */
+
+/* Table wrappers scroll horizontally instead of clipping columns. Many
+   wrappers set an inline overflow:hidden (for rounded corners), which would
+   otherwise beat this rule and make the Actions column unreachable on
+   tablets and phones. overflow-x:auto still clips to the border radius. */
+.helm-table-wrap {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* ─── Mobile Responsive ───────────────────────────────────────────────── */
 
 @media (max-width: 1024px) {
@@ -217,11 +228,7 @@ input, textarea, select {
     grid-template-columns: 1fr !important;
   }
 
-  /* Tables scroll horizontally */
-  .helm-table-wrap {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
+  /* Tables keep a readable width and scroll horizontally */
   .helm-table-wrap table {
     min-width: 700px;
   }

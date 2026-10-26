@@ -23,9 +23,11 @@ import Ramp from './pages/Ramp';
 import Concierge from './pages/Concierge';
 import AuditLog from './pages/AuditLog';
 import Fuel from './pages/Fuel';
-import PortfolioDashboard from './pages/PortfolioDashboard';
 import RentRoll from './pages/RentRoll';
 import Inventory from './pages/Inventory';
+import NotFound from './pages/NotFound';
+import RequireAuth from './components/RequireAuth';
+import PageErrorBoundary from './components/PageErrorBoundary';
 import { ModulesProvider, useModules } from './context/ModulesContext';
 
 function AppRoutes() {
@@ -33,37 +35,39 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/onboarding" element={<Onboarding />} />
-      <Route element={<AppLayout />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/leads" element={<Leads />} />
-        <Route path="/waitlist" element={<Waitlist />} />
-        <Route path="/customers" element={<Customers />} />
-        <Route path="/customers/:id" element={<CustomerDetail />} />
-        <Route path="/slips" element={<Slips />} />
-        <Route path="/contracts" element={<Contracts />} />
-        <Route path="/billing" element={<Billing />} />
-        <Route path="/billing/invoices/:id" element={<InvoiceDetail />} />
-        <Route path="/billing/ar-aging" element={<ARaging />} />
-        <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
-        <Route
-          path="/rentals"
-          element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}
-        />
-        <Route path="/pos" element={<POS />} />
-        <Route path="/fuel" element={<Fuel />} />
-        <Route path="/inventory" element={<Inventory />} />
-        <Route path="/rent-roll" element={<RentRoll />} />
-        <Route path="/dock-walks" element={<DockWalks />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/announcements" element={<Announcements />} />
-        <Route path="/transient" element={<Transient />} />
-        <Route path="/ramp" element={<Ramp />} />
-        <Route path="/concierge" element={<Concierge />} />
-        <Route path="/audit-log" element={<AuditLog />} />
-        <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
-        <Route path="/portfolio" element={<PortfolioDashboard />} />
-        <Route path="/settings" element={<Settings />} />
+      <Route path="/onboarding" element={<PageErrorBoundary><Onboarding /></PageErrorBoundary>} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/leads" element={<Leads />} />
+          <Route path="/waitlist" element={<Waitlist />} />
+          <Route path="/customers" element={<Customers />} />
+          <Route path="/customers/:id" element={<CustomerDetail />} />
+          <Route path="/slips" element={<Slips />} />
+          <Route path="/contracts" element={<Contracts />} />
+          <Route path="/billing" element={<Billing />} />
+          <Route path="/billing/invoices/:id" element={<InvoiceDetail />} />
+          <Route path="/billing/ar-aging" element={<ARaging />} />
+          <Route path="/billing/chart-of-accounts" element={<ChartOfAccounts />} />
+          <Route
+            path="/rentals"
+            element={modules.rentals ? <Rentals /> : <Navigate to="/" replace />}
+          />
+          <Route path="/pos" element={<POS />} />
+          <Route path="/fuel" element={<Fuel />} />
+          <Route path="/inventory" element={<Inventory />} />
+          <Route path="/rent-roll" element={<RentRoll />} />
+          <Route path="/dock-walks" element={<DockWalks />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/announcements" element={<Announcements />} />
+          <Route path="/transient" element={<Transient />} />
+          <Route path="/ramp" element={<Ramp />} />
+          <Route path="/concierge" element={<Concierge />} />
+          <Route path="/audit-log" element={<AuditLog />} />
+          <Route path="/email-automation" element={<Navigate to="/announcements" replace />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
       </Route>
     </Routes>
   );

@@ -1,8 +1,19 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApi } from '../hooks/useApi';
-import { useToast } from '../components/Toast';
-import ReportViewer from '../components/ReportViewer';
+import { ComingSoonButton, NotAvailable } from '../components/StateViews';
+
+/**
+ * Reports that have a live screen today. Everything else needs the in-app
+ * viewer / export pipeline, which does not exist yet (there is no
+ * POST /reports/generate; the old viewer rendered hardcoded sample tables).
+ */
+const LIVE_REPORT_ROUTES: Record<string, string> = {
+  aging: '/billing/ar-aging',
+  gl: '/billing/chart-of-accounts',
+  rent_roll: '/rent-roll',
+  occupancy: '/',
+  revenue: '/',
+};
 import {
   DollarSign,
   Anchor,
@@ -62,49 +73,36 @@ interface ScheduledReport {
 }
 
 // ---------------------------------------------------------------------------
-// Mock Data
+// Report catalog
 // ---------------------------------------------------------------------------
 
 const reportCards: ReportCard[] = [
   // Financial
-  { id: 'revenue', title: 'Revenue Summary', description: 'Total revenue breakdown by category, payment method, and time period.', icon: DollarSign, lastGenerated: '2026-03-24', category: 'financial' },
-  { id: 'aging', title: 'Accounts Receivable Aging', description: 'Outstanding invoices grouped by 30/60/90/120+ day buckets.', icon: Clock, lastGenerated: '2026-03-23', category: 'financial' },
-  { id: 'collections', title: 'Collections Report', description: 'Payment collection performance, ACH returns, and follow-up status.', icon: TrendingUp, lastGenerated: '2026-03-20', category: 'financial' },
+  { id: 'revenue', title: 'Revenue Summary', description: 'Total revenue breakdown by category, payment method, and time period.', icon: DollarSign, lastGenerated: null, category: 'financial' },
+  { id: 'aging', title: 'Accounts Receivable Aging', description: 'Outstanding invoices grouped by 30/60/90/120+ day buckets.', icon: Clock, lastGenerated: null, category: 'financial' },
+  { id: 'collections', title: 'Collections Report', description: 'Payment collection performance, ACH returns, and follow-up status.', icon: TrendingUp, lastGenerated: null, category: 'financial' },
   { id: 'deferred', title: 'Deferred Revenue', description: 'Prepaid slip fees and deposits recognized over contract terms.', icon: BookOpen, lastGenerated: null, category: 'financial' },
-  { id: 'gl', title: 'GL Summary', description: 'General ledger balances and journal entry summary by account.', icon: PieChart, lastGenerated: '2026-03-22', category: 'financial' },
+  { id: 'gl', title: 'GL Summary', description: 'General ledger balances and journal entry summary by account.', icon: PieChart, lastGenerated: null, category: 'financial' },
   // Operations
-  { id: 'occupancy', title: 'Occupancy Report', description: 'Current and historical slip occupancy rates across all docks.', icon: Anchor, lastGenerated: '2026-03-24', category: 'operations' },
-  { id: 'utilization', title: 'Slip Utilization', description: 'Usage patterns, turnover rates, and vacancy duration per slip.', icon: BarChart3, lastGenerated: '2026-03-21', category: 'operations' },
-  { id: 'dockwalk', title: 'Dock Walk Summary', description: 'Inspection findings, compliance issues, and resolution tracking.', icon: ClipboardList, lastGenerated: '2026-03-23', category: 'operations' },
-  { id: 'maintenance', title: 'Maintenance Log', description: 'Work orders, scheduled maintenance, and cost tracking.', icon: Wrench, lastGenerated: '2026-03-19', category: 'operations' },
+  { id: 'occupancy', title: 'Occupancy Report', description: 'Current and historical slip occupancy rates across all docks.', icon: Anchor, lastGenerated: null, category: 'operations' },
+  { id: 'utilization', title: 'Slip Utilization', description: 'Usage patterns, turnover rates, and vacancy duration per slip.', icon: BarChart3, lastGenerated: null, category: 'operations' },
+  { id: 'dockwalk', title: 'Dock Walk Summary', description: 'Inspection findings, compliance issues, and resolution tracking.', icon: ClipboardList, lastGenerated: null, category: 'operations' },
+  { id: 'maintenance', title: 'Maintenance Log', description: 'Work orders, scheduled maintenance, and cost tracking.', icon: Wrench, lastGenerated: null, category: 'operations' },
   // Customer
-  { id: 'customer_activity', title: 'Customer Activity', description: 'Customer engagement, transaction history, and account status.', icon: Users, lastGenerated: '2026-03-24', category: 'customer' },
-  { id: 'leads', title: 'Lead Conversion', description: 'Lead sources, conversion rates, and sales pipeline analysis.', icon: Target, lastGenerated: '2026-03-18', category: 'customer' },
+  { id: 'customer_activity', title: 'Customer Activity', description: 'Customer engagement, transaction history, and account status.', icon: Users, lastGenerated: null, category: 'customer' },
+  { id: 'leads', title: 'Lead Conversion', description: 'Lead sources, conversion rates, and sales pipeline analysis.', icon: Target, lastGenerated: null, category: 'customer' },
   { id: 'waitlist', title: 'Waitlist Analytics', description: 'Waitlist volume, average wait time, and conversion to tenants.', icon: ClipboardList, lastGenerated: null, category: 'customer' },
   // Rentals & POS
-  { id: 'rent_roll', title: 'Rent Roll', description: 'Active slip leases, monthly charges, and occupancy details across all docks.', icon: FileText, lastGenerated: '2026-03-25', category: 'rentals_pos' },
-  { id: 'rental_util', title: 'Rental Utilization', description: 'Boat rental bookings, utilization rates, and revenue per asset.', icon: ShoppingCart, lastGenerated: '2026-03-22', category: 'rentals_pos' },
-  { id: 'pos_sales', title: 'POS Sales Summary', description: 'Point-of-sale transactions, top products, and daily totals.', icon: ShoppingCart, lastGenerated: '2026-03-24', category: 'rentals_pos' },
-  { id: 'inventory', title: 'Inventory Valuation', description: 'Current stock levels, cost basis, and reorder recommendations.', icon: Package, lastGenerated: '2026-03-15', category: 'rentals_pos' },
+  { id: 'rent_roll', title: 'Rent Roll', description: 'Active slip leases, monthly charges, and occupancy details across all docks.', icon: FileText, lastGenerated: null, category: 'rentals_pos' },
+  { id: 'rental_util', title: 'Rental Utilization', description: 'Boat rental bookings, utilization rates, and revenue per asset.', icon: ShoppingCart, lastGenerated: null, category: 'rentals_pos' },
+  { id: 'pos_sales', title: 'POS Sales Summary', description: 'Point-of-sale transactions, top products, and daily totals.', icon: ShoppingCart, lastGenerated: null, category: 'rentals_pos' },
+  { id: 'inventory', title: 'Inventory Valuation', description: 'Current stock levels, cost basis, and reorder recommendations.', icon: Package, lastGenerated: null, category: 'rentals_pos' },
 ];
 
-const recentReports: RecentReport[] = [
-  { id: '1', name: 'Revenue Summary - March 2026', type: 'Revenue', generatedBy: 'Sarah Johnson', date: '2026-03-24 14:32', format: 'PDF', size: '1.2 MB' },
-  { id: '2', name: 'Occupancy Report - Q1 2026', type: 'Occupancy', generatedBy: 'Mike Chen', date: '2026-03-24 09:15', format: 'XLSX', size: '856 KB' },
-  { id: '3', name: 'AR Aging - March 2026', type: 'Aging', generatedBy: 'Sarah Johnson', date: '2026-03-23 16:45', format: 'PDF', size: '943 KB' },
-  { id: '4', name: 'POS Sales - Week 12', type: 'POS Sales', generatedBy: 'Tom Rivera', date: '2026-03-23 08:00', format: 'CSV', size: '324 KB' },
-  { id: '5', name: 'Customer Activity - March', type: 'Customer Activity', generatedBy: 'Sarah Johnson', date: '2026-03-22 11:20', format: 'PDF', size: '2.1 MB' },
-  { id: '6', name: 'Dock Walk Summary - 03/21', type: 'Dock Walk', generatedBy: 'James Park', date: '2026-03-21 17:30', format: 'PDF', size: '1.8 MB' },
-  { id: '7', name: 'GL Summary - February 2026', type: 'GL Summary', generatedBy: 'Sarah Johnson', date: '2026-03-20 10:00', format: 'XLSX', size: '1.5 MB' },
-  { id: '8', name: 'Collections Report - Feb', type: 'Collections', generatedBy: 'Mike Chen', date: '2026-03-19 14:10', format: 'PDF', size: '678 KB' },
-];
 
-const scheduledReports: ScheduledReport[] = [
-  { id: '1', reportName: 'Revenue Summary', frequency: 'Monthly', recipients: ['sarah@marina.com', 'cfo@marina.com'], nextRun: '2026-04-01 06:00', status: 'Active' },
-  { id: '2', reportName: 'Occupancy Report', frequency: 'Weekly', recipients: ['ops@marina.com'], nextRun: '2026-03-30 07:00', status: 'Active' },
-  { id: '3', reportName: 'AR Aging Report', frequency: 'Weekly', recipients: ['sarah@marina.com', 'billing@marina.com'], nextRun: '2026-03-30 06:00', status: 'Active' },
-  { id: '4', reportName: 'POS Sales Summary', frequency: 'Daily', recipients: ['manager@marina.com'], nextRun: '2026-03-26 06:00', status: 'Paused' },
-];
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
 
 const categoryLabels: Record<string, string> = {
   financial: 'Financial',
@@ -112,22 +110,12 @@ const categoryLabels: Record<string, string> = {
   customer: 'Customer',
   rentals_pos: 'Rentals & POS',
 };
-
 const categoryIcons: Record<string, React.ElementType> = {
   financial: DollarSign,
   operations: Anchor,
   customer: Users,
   rentals_pos: ShoppingCart,
 };
-
-const formatOptions: ReportFormat[] = ['PDF', 'CSV', 'XLSX', 'JSON'];
-
-const dockOptions = ['All Docks', 'Dock A', 'Dock B', 'Dock C', 'Dock D', 'Fuel Dock'];
-const customerSegments = ['All Customers', 'Active Tenants', 'Liveaboards', 'Transients', 'Former Tenants'];
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
   page: { padding: '32px', maxWidth: '1400px', margin: '0 auto' },
@@ -208,53 +196,8 @@ const styles: Record<string, React.CSSProperties> = {
 type Tab = 'library' | 'recent' | 'scheduled';
 
 export default function Reports() {
-  const toast = useToast();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('library');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalReportId, setModalReportId] = useState<string | null>(null);
-  const { execute: generateReport, loading: generating } = useApi<any>('post', '/api/reports/generate');
-  const [modalFormat, setModalFormat] = useState<ReportFormat>('PDF');
-  const [modalDateFrom, setModalDateFrom] = useState('2026-03-01');
-  const [modalDateTo, setModalDateTo] = useState('2026-03-25');
-  const [modalDock, setModalDock] = useState('All Docks');
-  const [modalSegment, setModalSegment] = useState('All Customers');
-  const [cardFormats, setCardFormats] = useState<Record<string, ReportFormat>>({});
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [scheduleStatuses, setScheduleStatuses] = useState<Record<string, 'Active' | 'Paused'>>({});
-  const getScheduleStatus = (sr: ScheduledReport) => scheduleStatuses[sr.id] ?? sr.status;
-  const toggleSchedule = (id: string) => setScheduleStatuses((prev) => ({ ...prev, [id]: prev[id] === 'Active' || (!prev[id] && scheduledReports.find((s) => s.id === id)?.status === 'Active') ? 'Paused' : 'Active' }));
-
-  const [viewingReport, setViewingReport] = useState<string | null>(null);
-
-  const openViewer = (reportId: string) => {
-    if (reportId === 'rent_roll') { navigate('/rent-roll'); return; }
-    setViewingReport(reportId);
-  };
-
-  const openModal = (reportId: string) => {
-    if (reportId === 'rent_roll') { navigate('/rent-roll'); return; }
-    setModalReportId(reportId);
-    setModalFormat(cardFormats[reportId] || 'PDF');
-    setModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setModalOpen(false);
-    setModalReportId(null);
-  };
-
-  const getCardFormat = (id: string): ReportFormat => cardFormats[id] || 'PDF';
-  const setCardFormat = (id: string, fmt: ReportFormat) =>
-    setCardFormats((prev) => ({ ...prev, [id]: fmt }));
-
-  const selectedReport = reportCards.find((r) => r.id === modalReportId);
-  const showDockFilter =
-    modalReportId &&
-    ['occupancy', 'utilization', 'dockwalk', 'maintenance'].includes(modalReportId);
-  const showCustomerFilter =
-    modalReportId &&
-    ['customer_activity', 'leads', 'waitlist'].includes(modalReportId);
 
   const categories = ['financial', 'operations', 'customer', 'rentals_pos'] as const;
 
@@ -308,34 +251,24 @@ export default function Reports() {
                         <h3 style={styles.cardTitle}>{card.title}</h3>
                         <p style={styles.cardDesc}>{card.description}</p>
                         <p style={styles.cardMeta}>
-                          {card.lastGenerated
-                            ? `Last generated: ${card.lastGenerated}`
-                            : 'Never generated'}
+                          {LIVE_REPORT_ROUTES[card.id] ? 'Live data' : 'Not available yet'}
                         </p>
                         <div style={styles.cardActions}>
-                          <button
-                            style={styles.btnView}
-                            onClick={() => openViewer(card.id)}
-                          >
-                            View
-                          </button>
-                          <button
-                            style={styles.btnGenerate}
-                            onClick={() => openModal(card.id)}
-                          >
+                          {LIVE_REPORT_ROUTES[card.id] ? (
+                            <button
+                              style={styles.btnView}
+                              onClick={() => navigate(LIVE_REPORT_ROUTES[card.id])}
+                            >
+                              View
+                            </button>
+                          ) : (
+                            <ComingSoonButton style={styles.btnView} reason="Coming soon: the in-app viewer for this report is not built yet.">
+                              View
+                            </ComingSoonButton>
+                          )}
+                          <ComingSoonButton style={styles.btnGenerate} reason="Coming soon: report export (PDF/CSV/XLSX) is not available from the server yet.">
                             Export
-                          </button>
-                          <select
-                            style={styles.selectFormat}
-                            value={getCardFormat(card.id)}
-                            onChange={(e) =>
-                              setCardFormat(card.id, e.target.value as ReportFormat)
-                            }
-                          >
-                            <option value="PDF">PDF</option>
-                            <option value="CSV">CSV</option>
-                            <option value="XLSX">XLSX</option>
-                          </select>
+                          </ComingSoonButton>
                         </div>
                       </div>
                     );
@@ -349,301 +282,12 @@ export default function Reports() {
 
       {/* -------- Recent Reports -------- */}
       {activeTab === 'recent' && (
-        <div style={styles.tableWrap} className="helm-table-wrap">
-          <div style={styles.tableHeader}>
-            <h3 style={styles.tableTitle}>Recently Generated Reports</h3>
-          </div>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Name</th>
-                <th style={styles.th}>Type</th>
-                <th style={styles.th}>Generated By</th>
-                <th style={styles.th}>Date</th>
-                <th style={styles.th}>Format</th>
-                <th style={styles.th}>Size</th>
-                <th style={styles.th}>Download</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentReports.map((r) => (
-                <tr key={r.id}>
-                  <td style={styles.td}>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                      }}
-                    >
-                      <FileText size={14} color="#64748B" />
-                      {r.name}
-                    </span>
-                  </td>
-                  <td style={styles.td}>{r.type}</td>
-                  <td style={styles.td}>{r.generatedBy}</td>
-                  <td style={styles.td}>{r.date}</td>
-                  <td style={styles.td}>
-                    <span style={styles.formatBadge}>{r.format}</span>
-                  </td>
-                  <td style={styles.td}>{r.size}</td>
-                  <td style={styles.td}>
-                    <a
-                      style={styles.downloadLink}
-                      href="#"
-                      onClick={(e) => { e.preventDefault(); setDownloadingId(r.id); setTimeout(() => setDownloadingId(null), 2000); }}
-                    >
-                      <Download size={14} /> {downloadingId === r.id ? 'Downloaded!' : 'Download'}
-                    </a>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <NotAvailable title="Report history is not available yet" message="Generated reports are not stored by the server yet, so there is no history to show." />
       )}
 
       {/* -------- Scheduled Reports -------- */}
       {activeTab === 'scheduled' && (
-        <div>
-          <div style={styles.tableWrap} className="helm-table-wrap">
-            <div style={styles.tableHeader}>
-              <h3 style={styles.tableTitle}>Scheduled Reports</h3>
-              <button style={styles.btnPrimary} onClick={() => toast.info('Coming Soon', 'Schedule form will open here')}>
-                <Plus size={14} /> Add Schedule
-              </button>
-            </div>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Report Name</th>
-                  <th style={styles.th}>Frequency</th>
-                  <th style={styles.th}>Recipients</th>
-                  <th style={styles.th}>Next Run</th>
-                  <th style={styles.th}>Status</th>
-                  <th style={styles.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scheduledReports.map((sr) => (
-                  <tr key={sr.id}>
-                    <td style={styles.td}>
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                        }}
-                      >
-                        <Calendar size={14} color="#64748B" />
-                        {sr.reportName}
-                      </span>
-                    </td>
-                    <td style={styles.td}>{sr.frequency}</td>
-                    <td style={styles.td}>
-                      <span style={{ fontSize: '12px', color: '#64748B' }}>
-                        {sr.recipients.join(', ')}
-                      </span>
-                    </td>
-                    <td style={styles.td}>{sr.nextRun}</td>
-                    <td style={styles.td}>
-                      <span
-                        style={
-                          getScheduleStatus(sr) === 'Active'
-                            ? styles.badgeActive
-                            : styles.badgePaused
-                        }
-                      >
-                        {getScheduleStatus(sr)}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <button
-                        style={{
-                          ...styles.btnSecondary,
-                          padding: '4px 10px',
-                          fontSize: '12px',
-                        }}
-                        title={getScheduleStatus(sr) === 'Active' ? 'Pause' : 'Resume'}
-                        onClick={() => toggleSchedule(sr.id)}
-                      >
-                        {getScheduleStatus(sr) === 'Active' ? (
-                          <Pause size={12} />
-                        ) : (
-                          <Play size={12} />
-                        )}
-                        {getScheduleStatus(sr) === 'Active' ? 'Pause' : 'Resume'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* -------- Generate Report Modal -------- */}
-      {modalOpen && (
-        <div style={styles.overlay} onClick={closeModal}>
-          <div style={styles.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h2 style={styles.modalTitle}>
-                {selectedReport
-                  ? `Generate: ${selectedReport.title}`
-                  : 'Generate Report'}
-              </h2>
-              <button style={styles.closeBtn} onClick={closeModal}>
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Report type */}
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Report Type</label>
-              <select
-                style={styles.select}
-                value={modalReportId || ''}
-                onChange={(e) => setModalReportId(e.target.value)}
-              >
-                {reportCards.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Date range */}
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Date Range</label>
-              <div style={styles.dateRow}>
-                <input
-                  type="date"
-                  style={styles.input}
-                  value={modalDateFrom}
-                  onChange={(e) => setModalDateFrom(e.target.value)}
-                />
-                <input
-                  type="date"
-                  style={styles.input}
-                  value={modalDateTo}
-                  onChange={(e) => setModalDateTo(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* Format */}
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Output Format</label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                {formatOptions.map((fmt) => (
-                  <button
-                    key={fmt}
-                    onClick={() => setModalFormat(fmt)}
-                    style={{
-                      flex: 1,
-                      padding: '10px',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      borderRadius: '8px',
-                      border:
-                        modalFormat === fmt
-                          ? '2px solid #00D4FF'
-                          : '1px solid #E2E8F0',
-                      backgroundColor:
-                        modalFormat === fmt
-                          ? 'rgba(0,212,255,0.08)'
-                          : '#FFFFFF',
-                      color: modalFormat === fmt ? '#0A2342' : '#64748B',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {fmt}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Conditional filters */}
-            {showDockFilter && (
-              <div style={styles.formGroup}>
-                <label style={styles.label}>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                    }}
-                  >
-                    <Filter size={13} /> Dock Selection
-                  </span>
-                </label>
-                <select
-                  style={styles.select}
-                  value={modalDock}
-                  onChange={(e) => setModalDock(e.target.value)}
-                >
-                  {dockOptions.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {showCustomerFilter && (
-              <div style={styles.formGroup}>
-                <label style={styles.label}>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                    }}
-                  >
-                    <Filter size={13} /> Customer Segment
-                  </span>
-                </label>
-                <select
-                  style={styles.select}
-                  value={modalSegment}
-                  onChange={(e) => setModalSegment(e.target.value)}
-                >
-                  {customerSegments.map((seg) => (
-                    <option key={seg} value={seg}>
-                      {seg}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <button
-              style={styles.btnGenerateModal}
-              disabled={generating}
-              onClick={async () => {
-                await generateReport({
-                  reportId: modalReportId,
-                  format: modalFormat,
-                  dateFrom: modalDateFrom,
-                  dateTo: modalDateTo,
-                  dock: modalDock,
-                  segment: modalSegment,
-                });
-                closeModal();
-              }}
-            >
-              {generating ? 'Generating...' : 'Generate Report'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* -------- In-App Report Viewer -------- */}
-      {viewingReport && (
-        <ReportViewer reportId={viewingReport} onClose={() => setViewingReport(null)} />
+        <NotAvailable title="Scheduled reports are not available yet" message="Report scheduling and email delivery are not implemented in the API yet." />
       )}
     </div>
   );

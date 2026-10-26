@@ -1,5 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { useClerk, useUser } from '@clerk/clerk-react';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: '▣' },
@@ -72,6 +73,12 @@ const mainContent: React.CSSProperties = {
 
 const AdminLayout: React.FC = () => {
   const location = useLocation();
+  const { user } = useUser();
+  const { signOut } = useClerk();
+  const displayName = user?.fullName || user?.primaryEmailAddress?.emailAddress || 'Signed in';
+  const email = user?.primaryEmailAddress?.emailAddress ?? '';
+  const initials =
+    (user?.firstName?.[0] ?? '') + (user?.lastName?.[0] ?? '') || (email[0] ?? '?').toUpperCase();
 
   const getNavStyle = (path: string): React.CSSProperties => {
     const isActive = path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
@@ -122,16 +129,22 @@ const AdminLayout: React.FC = () => {
       <header style={topBar}>
         <div style={{ fontSize: 16, fontWeight: 600, color: '#FFFFFF' }}>{pageTitle}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>ENV: Production</span>
+          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>ENV: {import.meta.env.MODE}</span>
           <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.1)' }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#0A2342', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 13, fontWeight: 700 }}>
-              SA
+              {initials}
             </div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 500, color: '#FFF' }}>Super Admin</div>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>admin@helmhq.com</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#FFF' }}>{displayName}</div>
+              {email && email !== displayName && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>{email}</div>}
             </div>
+            <button
+              onClick={() => signOut({ redirectUrl: '/' })}
+              style={{ marginLeft: 8, background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, padding: '5px 12px', color: 'rgba(255,255,255,0.7)', fontSize: 12, cursor: 'pointer' }}
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>

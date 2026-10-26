@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApi } from '../hooks/useApi';
+import { useList, useResource } from '../hooks/useApi';
+import { formatCents, formatDate, formatDateTime, humanizeEnum, toDateKey } from '../lib/format';
+import { customerName, type AuditLogDTO, type ContractDTO, type InvoiceDTO } from '../lib/dto';
+import { EmptyState, ErrorState, LoadingState } from '../components/StateViews';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -29,24 +32,92 @@ import {
   MapPin,
   X,
 } from 'lucide-react';
-import InvoiceForm from '../components/InvoiceForm';
 
 type TimePeriod = 'Today' | 'This Week' | 'This Month' | 'This Quarter';
+
+interface OccupancyReport {
+  summary: { total: number; occupied: number; vacant: number; maintenance: number; reserved: number; occupancyRate: string };
+  byDock: { dock: string | null; total: number; occupied: number; rate: string }[];
+}
+interface RevenueReport {
+  revenue: { totalCents: number; paymentCount: number };
+  invoiced: { totalCents: number; invoiceCount: number };
+}
+interface ArAgingReport {
+  buckets: { current: number; days30: number; days60: number; days90: number; days120plus: number };
+  totalOutstanding: number;
+  invoiceCount: number;
+  details: { invoiceId: string; daysOverdue: number }[];
+}
+interface ComplianceReport {
+  insurance: { total: number; compliant: number; expiringSoon: number; expired: number };
+  registration: { total: number; expired: number; current: number };
+}
+interface LeadStats {
+  totalLeads: number;
+  countByStage: Record<string, number>;
+  conversionRate: number;
+}
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function startOfPeriod(period: TimePeriod): Date {
+  const now = new Date();
+  if (period === 'Today') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === 'This Week') return new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+  if (period === 'This Quarter') return new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function lastSixMonths(): Date[] {
+  const now = new Date();
+  return Array.from({ length: 6 }, (_, i) => new Date(now.getFullYear(), now.getMonth() - 5 + i, 1));
+}
+
+function monthRevenuePath(monthStart: Date): string {
+  const end = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
+  return `/reports/revenue?startDate=${toDateKey(monthStart)}&endDate=${toDateKey(end)}T23:59:59`;
+}
+
+function greeting(): string {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+
+function activityType(recordType: string): string {
+  const t = recordType.toLowerCase();
+  if (t.includes('payment')) return 'payment';
+  if (t.includes('contract')) return 'contract';
+  if (t.includes('lead')) return 'lead';
+  if (t.includes('dock')) return 'dockwalk';
+  if (t.includes('invoice')) return 'invoice';
+  return 'system';
+}
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('This Month');
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
-  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [taskDrawer, setTaskDrawer] = useState<{ title: string; items: { label: string; sub: string; urgent: boolean }[] } | null>(null);
 
-  // --- API Calls ---
-  const { data: occupancyData, loading: occupancyLoading } = useApi<any>('get', '/api/reports/occupancy', { immediate: true });
-  const { data: revenueApiData, loading: revenueLoading } = useApi<any>('get', '/api/reports/revenue', { immediate: true });
-  const { data: arData, loading: arLoading } = useApi<any>('get', '/api/reports/ar-aging', { immediate: true });
-  const { data: complianceData, loading: complianceLoading } = useApi<any>('get', '/api/reports/compliance', { immediate: true });
-
-  const apiLoading = occupancyLoading || revenueLoading || arLoading || complianceLoading;
+  // --- API Calls (real data only; failures show as unavailable) ---
+  const periodStart = startOfPeriod(timePeriod);
+  const occupancy = useResource<OccupancyReport>('/reports/occupancy');
+  const revenue = useResource<RevenueReport>(`/reports/revenue?startDate=${toDateKey(periodStart)}`);
+  const ar = useResource<ArAgingReport>('/reports/ar-aging');
+  const compliance = useResource<ComplianceReport>('/reports/compliance');
+  const leadStats = useResource<LeadStats>('/leads/stats');
+  const months = lastSixMonths();
+  const rev0 = useResource<RevenueReport>(monthRevenuePath(months[0]));
+  const rev1 = useResource<RevenueReport>(monthRevenuePath(months[1]));
+  const rev2 = useResource<RevenueReport>(monthRevenuePath(months[2]));
+  const rev3 = useResource<RevenueReport>(monthRevenuePath(months[3]));
+  const rev4 = useResource<RevenueReport>(monthRevenuePath(months[4]));
+  const rev5 = useResource<RevenueReport>(monthRevenuePath(months[5]));
+  const monthly = [rev0, rev1, rev2, rev3, rev4, rev5];
+  const recentInvoices = useList<InvoiceDTO>('/invoices?take=8&sortBy=issuedDate&sortOrder=desc');
+  const expiring = useList<ContractDTO>('/contracts/expiring?days=7');
+  const activity = useList<AuditLogDTO>('/audit-log?limit=10');
 
   const periods: TimePeriod[] = ['Today', 'This Week', 'This Month', 'This Quarter'];
 
@@ -228,134 +299,111 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // --- Data (API with fallback to mock) ---
-  const mockKpis = [
+  // --- Derived data (from the API only) ---
+  const unavailable = (r: { loading: boolean; error: string | null }) =>
+    r.loading ? 'Loading…' : r.error ? 'Unavailable' : null;
+
+  const arOverdueCents = ar.data
+    ? ar.data.buckets.days30 + ar.data.buckets.days60 + ar.data.buckets.days90 + ar.data.buckets.days120plus
+    : 0;
+  const insurance = compliance.data?.insurance;
+  const compliancePct =
+    insurance && insurance.total > 0 ? Math.round((insurance.compliant / insurance.total) * 100) : null;
+
+  const kpis: { label: string; value: string; sub: string; error?: string | null; icon: React.ReactNode }[] = [
     {
       label: 'Occupancy Rate',
-      value: '87%',
-      sub: '78 / 90 slips occupied',
-      trend: 'up' as const,
-      trendText: '+3% vs last month',
+      value: occupancy.data ? `${occupancy.data.summary.occupancyRate}%` : '—',
+      sub: unavailable(occupancy) ?? `${occupancy.data!.summary.occupied} / ${occupancy.data!.summary.total} slips occupied`,
+      error: occupancy.error,
       icon: <Anchor size={18} color={colors.cyan} />,
     },
     {
-      label: 'Monthly Revenue',
-      value: '$124,850',
-      sub: 'March 2026 to date',
-      trend: 'up' as const,
-      trendText: '+12% vs last month',
+      label: 'Revenue Collected',
+      value: revenue.data ? formatCents(revenue.data.revenue.totalCents) : '—',
+      sub: unavailable(revenue) ?? `${revenue.data!.revenue.paymentCount} payments · ${timePeriod}`,
+      error: revenue.error,
       icon: <DollarSign size={18} color={colors.cyan} />,
     },
     {
       label: 'Outstanding A/R',
-      value: '$18,420',
-      sub: '$4,200 overdue (30+ days)',
-      trend: 'down' as const,
-      trendText: '$4,200 overdue',
+      value: ar.data ? formatCents(ar.data.totalOutstanding) : '—',
+      sub: unavailable(ar) ?? `${formatCents(arOverdueCents)} overdue · ${ar.data!.invoiceCount} open invoices`,
+      error: ar.error,
       icon: <FileText size={18} color={colors.cyan} />,
     },
     {
-      label: 'Active Reservations',
-      value: '14',
-      sub: '6 checked in today',
-      trend: 'up' as const,
-      trendText: '+4 this week',
-      icon: <CalendarCheck size={18} color={colors.cyan} />,
-    },
-    {
-      label: 'New Leads',
-      value: '8',
-      sub: 'This week \u00B7 3 qualified',
-      trend: 'up' as const,
-      trendText: '+2 vs last week',
+      label: 'Leads',
+      value: leadStats.data ? String(leadStats.data.totalLeads) : '—',
+      sub:
+        unavailable(leadStats) ??
+        `${leadStats.data!.countByStage.QUALIFIED ?? 0} qualified · ${leadStats.data!.conversionRate}% conversion`,
+      error: leadStats.error,
       icon: <Users size={18} color={colors.cyan} />,
     },
     {
-      label: 'Compliance Score',
-      value: '94%',
-      sub: '2 items expiring this week',
-      trend: 'up' as const,
-      trendText: 'On track',
+      label: 'Insurance Compliance',
+      value: compliancePct === null ? '—' : `${compliancePct}%`,
+      sub:
+        unavailable(compliance) ??
+        (insurance && insurance.total > 0
+          ? `${insurance.expiringSoon} expiring in 30 days · ${insurance.expired} expired`
+          : 'No insurance records on file'),
+      error: compliance.error,
       icon: <ShieldCheck size={18} color={colors.cyan} />,
     },
   ];
 
-  // Merge API data into KPIs when available
-  const kpis = mockKpis.map((kpi) => {
-    if (kpi.label === 'Occupancy Rate' && occupancyData) {
-      return { ...kpi, value: `${occupancyData.rate ?? kpi.value}`, sub: occupancyData.sub ?? kpi.sub, trendText: occupancyData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Monthly Revenue' && revenueApiData) {
-      return { ...kpi, value: revenueApiData.total ?? kpi.value, sub: revenueApiData.sub ?? kpi.sub, trendText: revenueApiData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Outstanding A/R' && arData) {
-      return { ...kpi, value: arData.total ?? kpi.value, sub: arData.sub ?? kpi.sub, trendText: arData.trendText ?? kpi.trendText };
-    }
-    if (kpi.label === 'Compliance Score' && complianceData) {
-      return { ...kpi, value: complianceData.score ?? kpi.value, sub: complianceData.sub ?? kpi.sub, trendText: complianceData.trendText ?? kpi.trendText };
-    }
-    return kpi;
-  });
-
-  const revenueData = [
-    { month: 'Oct', value: 98200 },
-    { month: 'Nov', value: 105400 },
-    { month: 'Dec', value: 87600 },
-    { month: 'Jan', value: 92300 },
-    { month: 'Feb', value: 111500 },
-    { month: 'Mar', value: 124850 },
-  ];
-
-  const maxRevenue = Math.max(...revenueData.map((d) => d.value));
-
-  const transactions = [
-    { id: '1049', date: 'Mar 25', desc: 'Slip Rental - B12', customer: 'James Harlow', amount: '$2,450.00', status: 'Paid', type: 'invoice' },
-    { id: 'pos-201', date: 'Mar 25', desc: 'POS Sale - Fuel', customer: 'Sarah Mitchell', amount: '$387.50', status: 'Completed', type: 'pos' },
-    { id: '1048', date: 'Mar 24', desc: 'Invoice #1048', customer: 'Coastal Charters LLC', amount: '$6,800.00', status: 'Pending', type: 'invoice' },
-    { id: '1047', date: 'Mar 24', desc: 'Slip Rental - A05', customer: 'Robert Chen', amount: '$1,950.00', status: 'Paid', type: 'invoice' },
-    { id: '1045', date: 'Mar 23', desc: 'Maintenance Fee', customer: 'David Thompson', amount: '$425.00', status: 'Overdue', type: 'invoice' },
-    { id: 'pos-200', date: 'Mar 23', desc: 'POS Sale - Ship Store', customer: 'Maria Garcia', amount: '$128.75', status: 'Completed', type: 'pos' },
-    { id: '1046', date: 'Mar 22', desc: 'Invoice #1046', customer: 'Blue Water Excursions', amount: '$3,200.00', status: 'Paid', type: 'invoice' },
-    { id: '1044', date: 'Mar 22', desc: 'Rental Booking - C08', customer: "Kevin O\u2019Malley", amount: '$1,875.00', status: 'Pending', type: 'invoice' },
-  ];
+  const revenueData = months.map((m, i) => ({
+    month: MONTH_LABELS[m.getMonth()],
+    value: (monthly[i].data?.revenue.totalCents ?? 0) / 100,
+  }));
+  const revenueLoading = monthly.some((r) => r.loading);
+  const revenueError = monthly.find((r) => r.error)?.error ?? null;
+  const maxRevenue = Math.max(1, ...revenueData.map((d) => d.value));
+  const sixMonthTotal = revenueData.reduce((sum, d) => sum + d.value, 0);
 
   const tasks: {
     text: string; detail: string; icon: React.ReactNode; urgent: boolean;
     route?: string;
     drawer?: { title: string; items: { label: string; sub: string; urgent: boolean }[] };
-  }[] = [
-    {
-      text: '3 contracts expiring this week',
-      detail: 'James Harborview - Mar 30 · Elena Windward - Mar 28 · Tom Seaside - Mar 29',
+  }[] = [];
+  if (expiring.items.length > 0) {
+    tasks.push({
+      text: `${expiring.pagination?.total ?? expiring.items.length} contract${expiring.items.length === 1 ? '' : 's'} expiring in the next 7 days`,
+      detail: expiring.items.slice(0, 3).map((c) => `${customerName(c.customer)} - ${formatDate(c.endDate)}`).join(' · '),
       icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
       drawer: {
         title: 'Expiring Contracts',
-        items: [
-          { label: 'Elena Windward', sub: 'Expires Mar 28 — Slip A-12', urgent: true },
-          { label: 'Tom Seaside', sub: 'Expires Mar 29 — Slip B-03', urgent: true },
-          { label: 'James Harborview', sub: 'Expires Mar 30 — Slip C-07', urgent: true },
-        ],
+        items: expiring.items.map((c) => ({
+          label: customerName(c.customer),
+          sub: `Expires ${formatDate(c.endDate)}${c.slip?.slipNumber ? ` — Slip ${c.slip.slipNumber}` : ''}`,
+          urgent: (c.daysUntilExpiry ?? 99) <= 3,
+        })),
       },
-    },
-    {
-      text: '2 insurance documents expiring',
-      detail: 'Elena Windward - Insurance expires Mar 28 · Sarah Mitchell - Insurance expires Mar 31',
-      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: true,
-      drawer: {
-        title: 'Expiring Insurance',
-        items: [
-          { label: 'Elena Windward', sub: 'Insurance expires Mar 28 — Action required', urgent: true },
-          { label: 'Sarah Mitchell', sub: 'Insurance expires Mar 31 — Reminder sent', urgent: false },
-        ],
-      },
-    },
-    { text: '1 maintenance request pending', detail: 'Dock C, Slip 08 - Cleat replacement requested by David Thompson', icon: <Clock size={16} color={colors.cyan} />, urgent: false, route: '/concierge' },
-    { text: 'ACH return to review', detail: 'Coastal Charters LLC - $6,800.00 returned Mar 24', icon: <CreditCard size={16} color={colors.red} />, urgent: true, route: '/billing' },
-    { text: 'Dock walk overdue (Dock C)', detail: 'Last completed Mar 20 - 5 days overdue', icon: <Footprints size={16} color={colors.red} />, urgent: true, route: '/dock-walks' },
-  ];
+    });
+  }
+  if (insurance && insurance.expiringSoon + insurance.expired > 0) {
+    tasks.push({
+      text: `${insurance.expiringSoon + insurance.expired} insurance document${insurance.expiringSoon + insurance.expired === 1 ? '' : 's'} expired or expiring`,
+      detail: `${insurance.expired} expired · ${insurance.expiringSoon} expiring within 30 days`,
+      icon: <AlertTriangle size={16} color={colors.orange} />, urgent: insurance.expired > 0,
+      route: '/customers',
+    });
+  }
+  if (ar.data && arOverdueCents > 0) {
+    tasks.push({
+      text: `${formatCents(arOverdueCents)} in overdue receivables`,
+      detail: `${ar.data.details.filter((d) => d.daysOverdue > 0).length} invoices past due`,
+      icon: <CreditCard size={16} color={colors.red} />, urgent: true,
+      route: '/billing/ar-aging',
+    });
+  }
+  const tasksLoading = expiring.loading || compliance.loading || ar.loading;
+  const tasksError = expiring.error && compliance.error && ar.error ? expiring.error : null;
 
   const quickActions: { label: string; icon: React.ReactNode; route?: string; action?: () => void }[] = [
-    { label: 'New Invoice', icon: <Plus size={18} />, action: () => setShowInvoiceModal(true) },
+    { label: 'New Invoice', icon: <Plus size={18} />, route: '/billing?new=1' },
     { label: 'Add Customer', icon: <UserPlus size={18} />, route: '/customers' },
     { label: 'Start Dock Walk', icon: <Footprints size={18} />, route: '/dock-walks' },
     { label: 'Record Payment', icon: <CreditCard size={18} />, route: '/billing' },
@@ -363,25 +411,20 @@ const Dashboard: React.FC = () => {
     { label: 'Generate Report', icon: <BarChart3 size={18} />, route: '/reports' },
   ];
 
-  const docks = [
-    { name: 'Dock A', total: 24, occupied: 22, vacant: 1, maintenance: 1 },
-    { name: 'Dock B', total: 20, occupied: 18, vacant: 2, maintenance: 0 },
-    { name: 'Dock C', total: 26, occupied: 21, vacant: 3, maintenance: 2 },
-    { name: 'Dock D', total: 20, occupied: 17, vacant: 2, maintenance: 1 },
-  ];
+  const docks = (occupancy.data?.byDock ?? []).map((d) => ({
+    name: d.dock ? `Dock ${d.dock}` : 'Unassigned',
+    total: d.total,
+    occupied: d.occupied,
+    // The API reports occupied per dock only; maintenance is not broken out.
+    maintenance: 0,
+    vacant: Math.max(0, d.total - d.occupied),
+  }));
 
-  const activityFeed = [
-    { time: '9:42 AM', text: 'Payment of $2,450.00 received from James Harlow', type: 'payment' },
-    { time: '9:15 AM', text: 'Contract signed by Coastal Charters LLC (Slip B14)', type: 'contract' },
-    { time: '8:58 AM', text: "Lead converted: Kevin O\u2019Malley \u2192 Active Customer", type: 'lead' },
-    { time: '8:30 AM', text: 'Dock walk completed for Dock A by Mike Reynolds', type: 'dockwalk' },
-    { time: 'Yesterday 4:45 PM', text: 'Maintenance request #312 submitted for Dock C, Slip 08', type: 'maintenance' },
-    { time: 'Yesterday 3:20 PM', text: 'Invoice #1048 sent to Coastal Charters LLC', type: 'invoice' },
-    { time: 'Yesterday 2:10 PM', text: 'Insurance document uploaded by Sarah Mitchell', type: 'document' },
-    { time: 'Yesterday 11:30 AM', text: 'POS transaction: $387.50 fuel sale to Sarah Mitchell', type: 'payment' },
-    { time: 'Yesterday 10:15 AM', text: 'New lead: Patricia Nguyen \u2014 interested in 40ft slip', type: 'lead' },
-    { time: 'Yesterday 9:00 AM', text: 'Automated rent reminders sent (12 recipients)', type: 'system' },
-  ];
+  const activityFeed = activity.items.map((e) => ({
+    time: formatDateTime(e.createdAt),
+    text: `${humanizeEnum(e.action)} ${e.recordType.toLowerCase()}${e.userName || e.user?.email ? ` by ${e.userName ?? e.user?.email}` : ''}`,
+    type: activityType(e.recordType),
+  }));
 
   const activityDot = (type: string): string => {
     const map: Record<string, string> = {
@@ -400,11 +443,6 @@ const Dashboard: React.FC = () => {
   return (
     <>
     <div style={pageStyle}>
-      {apiLoading && (
-        <div style={{ padding: '8px 16px', marginBottom: '16px', backgroundColor: 'rgba(0,212,255,0.08)', borderRadius: '8px', fontSize: '13px', color: colors.darkGray }}>
-          Loading live data...
-        </div>
-      )}
       {/* Header */}
       <div style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -425,7 +463,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         <hr style={gradientDividerStyle} />
-        <p style={subtitleStyle}>Good morning &mdash; Tuesday, March 25, 2026 &nbsp;|&nbsp; Showing data for: <strong>{timePeriod}</strong></p>
+        <p style={subtitleStyle}>{greeting()} &mdash; {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })} &nbsp;|&nbsp; Revenue shown for: <strong>{timePeriod}</strong></p>
       </div>
 
       {/* KPI Cards */}
@@ -438,19 +476,8 @@ const Dashboard: React.FC = () => {
             </div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px' }}>
               <span style={kpiValueStyle}>{kpi.value}</span>
-              {kpi.label !== 'Outstanding A/R' ? (
-                <span style={kpi.trend === 'up' ? trendUpStyle : trendDownStyle}>
-                  {kpi.trend === 'up' ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                  {kpi.trendText}
-                </span>
-              ) : (
-                <span style={trendDownStyle}>
-                  <TrendingDown size={14} />
-                  {kpi.trendText}
-                </span>
-              )}
             </div>
-            <span style={kpiSubStyle}>{kpi.sub}</span>
+            <span style={kpiSubStyle} title={kpi.error ?? undefined}>{kpi.sub}</span>
           </div>
         ))}
       </div>
@@ -463,8 +490,9 @@ const Dashboard: React.FC = () => {
           <div style={cardStyle}>
             <h3 style={cardTitleStyle}>
               <BarChart3 size={18} color={colors.cyan} />
-              Revenue &mdash; Last 6 Months
+              Revenue Collected &mdash; Last 6 Months
             </h3>
+            {revenueLoading ? <LoadingState compact label="Loading revenue…" /> : revenueError ? <ErrorState compact message={revenueError} /> : (<>
             <div
               style={{
                 display: 'flex',
@@ -509,7 +537,7 @@ const Dashboard: React.FC = () => {
                           boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
                         }}
                       >
-                        ${d.value.toLocaleString()}
+                        {formatCents(Math.round(d.value * 100))}
                       </div>
                     )}
                     <span
@@ -562,44 +590,42 @@ const Dashboard: React.FC = () => {
               }}
             >
               <span style={{ color: colors.darkGray }}>
-                6-month total: <strong style={{ color: colors.navy }}>$619,850</strong>
+                6-month total: <strong style={{ color: colors.navy }}>{formatCents(Math.round(sixMonthTotal * 100))}</strong>
               </span>
               <span style={{ color: colors.darkGray }}>
-                Monthly avg: <strong style={{ color: colors.navy }}>$103,308</strong>
-              </span>
-              <span style={{ color: colors.green, fontWeight: 600 }}>
-                <TrendingUp size={14} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
-                +12% this month
+                Monthly avg: <strong style={{ color: colors.navy }}>{formatCents(Math.round((sixMonthTotal / 6) * 100))}</strong>
               </span>
             </div>
+            </>)}
           </div>
 
           {/* Recent Transactions */}
           <div style={cardStyle}>
             <h3 style={cardTitleStyle}>
               <DollarSign size={18} color={colors.cyan} />
-              Recent Transactions
+              Recent Invoices
             </h3>
+            {recentInvoices.loading ? <LoadingState compact /> : recentInvoices.error ? <ErrorState compact message={recentInvoices.error} onRetry={recentInvoices.refetch} /> : recentInvoices.items.length === 0 ? <EmptyState compact title="No invoices yet" /> : (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
                   <th style={tableHeaderStyle}>Date</th>
-                  <th style={tableHeaderStyle}>Description</th>
+                  <th style={tableHeaderStyle}>Invoice</th>
                   <th style={tableHeaderStyle}>Customer</th>
                   <th style={{ ...tableHeaderStyle, textAlign: 'right' }}>Amount</th>
                   <th style={{ ...tableHeaderStyle, textAlign: 'center' }}>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((t, i) => (
+                {recentInvoices.items.map((t, i) => (
                   <tr
-                    key={i}
+                    key={t.id}
                     style={{
                       backgroundColor: i % 2 === 0 ? colors.white : colors.lightGray,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease',
                     }}
-                    onClick={() => navigate(t.type === 'pos' ? '/pos' : `/billing/invoices/${t.id}`)}
+                    onClick={() => navigate(`/billing/invoices/${t.id}`)}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.backgroundColor = 'rgba(0, 212, 255, 0.06)';
                     }}
@@ -607,11 +633,11 @@ const Dashboard: React.FC = () => {
                       e.currentTarget.style.backgroundColor = i % 2 === 0 ? colors.white : colors.lightGray;
                     }}
                   >
-                    <td style={tableCellStyle}>{t.date}</td>
+                    <td style={tableCellStyle}>{formatDate(t.issuedDate)}</td>
                     <td style={{ ...tableCellStyle, fontWeight: 500, color: colors.navy }}>
-                      {t.desc}
+                      {t.invoiceNumber}
                     </td>
-                    <td style={tableCellStyle}>{t.customer}</td>
+                    <td style={tableCellStyle}>{customerName(t.customer)}</td>
                     <td
                       style={{
                         ...tableCellStyle,
@@ -620,15 +646,16 @@ const Dashboard: React.FC = () => {
                         fontVariantNumeric: 'tabular-nums',
                       }}
                     >
-                      {t.amount}
+                      {formatCents(t.totalCents)}
                     </td>
                     <td style={{ ...tableCellStyle, textAlign: 'center' }}>
-                      <span style={statusBadge(t.status)}>{t.status}</span>
+                      <span style={statusBadge(humanizeEnum(t.status))}>{humanizeEnum(t.status)}</span>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            )}
           </div>
         </div>
 
@@ -640,6 +667,7 @@ const Dashboard: React.FC = () => {
               <CheckCircle2 size={18} color={colors.cyan} />
               Upcoming Tasks
             </h3>
+            {tasksLoading ? <LoadingState compact /> : tasksError ? <ErrorState compact message={tasksError} /> : tasks.length === 0 ? <EmptyState compact title="Nothing needs attention" message="No expiring contracts, insurance issues or overdue receivables." /> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {tasks.map((task, i) => (
                 <div
@@ -696,77 +724,7 @@ const Dashboard: React.FC = () => {
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Weather Widget */}
-          <div style={cardStyle}>
-            <h3 style={cardTitleStyle}>
-              <CloudSun size={18} color={colors.cyan} />
-              Marina Weather
-            </h3>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '20px',
-                marginBottom: '16px',
-              }}
-            >
-              <div>
-                <CloudSun size={48} color={colors.orange} />
-              </div>
-              <div>
-                <div
-                  style={{
-                    fontSize: '32px',
-                    fontWeight: 700,
-                    color: colors.navy,
-                    lineHeight: 1,
-                  }}
-                >
-                  72&deg;F
-                </div>
-                <div style={{ fontSize: '14px', color: colors.darkGray, marginTop: '4px' }}>
-                  Partly Cloudy
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 12px',
-                  backgroundColor: colors.lightGray,
-                  borderRadius: '8px',
-                }}
-              >
-                <Wind size={16} color={colors.cyan} />
-                <div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: colors.navy }}>
-                    8 mph SW
-                  </div>
-                  <div style={{ fontSize: '11px', color: colors.gray }}>Wind</div>
-                </div>
-              </div>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 12px',
-                  backgroundColor: colors.lightGray,
-                  borderRadius: '8px',
-                }}
-              >
-                <Waves size={16} color={colors.cyan} />
-                <div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: colors.navy }}>Calm</div>
-                  <div style={{ fontSize: '11px', color: colors.gray }}>Sea State</div>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Quick Actions */}
@@ -821,6 +779,7 @@ const Dashboard: React.FC = () => {
             <MapPin size={18} color={colors.cyan} />
             Occupancy by Dock
           </h3>
+          {occupancy.loading ? <LoadingState compact /> : occupancy.error ? <ErrorState compact message={occupancy.error} onRetry={occupancy.refetch} /> : docks.length === 0 ? <EmptyState compact title="No slips set up yet" /> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {docks.map((dock) => (
               <div key={dock.name}>
@@ -849,7 +808,7 @@ const Dashboard: React.FC = () => {
                 >
                   <div
                     style={{
-                      width: `${(dock.occupied / dock.total) * 100}%`,
+                      width: `${dock.total > 0 ? (dock.occupied / dock.total) * 100 : 0}%`,
                       backgroundColor: colors.navy,
                       display: 'flex',
                       alignItems: 'center',
@@ -951,6 +910,7 @@ const Dashboard: React.FC = () => {
               </div>
             </div>
           </div>
+          )}
         </div>
 
         {/* Recent Activity Feed */}
@@ -959,6 +919,7 @@ const Dashboard: React.FC = () => {
             <Activity size={18} color={colors.cyan} />
             Recent Activity
           </h3>
+          {activity.loading ? <LoadingState compact /> : activity.error ? <ErrorState compact message={activity.error} onRetry={activity.refetch} /> : activityFeed.length === 0 ? <EmptyState compact title="No recent activity" /> : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {activityFeed.map((item, i) => (
               <div
@@ -1006,18 +967,10 @@ const Dashboard: React.FC = () => {
               </div>
             ))}
           </div>
+          )}
         </div>
       </div>
     </div>
-
-    {/* Invoice Modal */}
-    {showInvoiceModal && (
-      <InvoiceForm
-        onClose={() => setShowInvoiceModal(false)}
-        onSaveDraft={() => setShowInvoiceModal(false)}
-        onFinalize={() => setShowInvoiceModal(false)}
-      />
-    )}
 
     {/* Task Drawer */}
     {taskDrawer && (

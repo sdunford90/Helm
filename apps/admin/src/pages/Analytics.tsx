@@ -1,51 +1,48 @@
 import React from 'react';
+import { formatCents, useAdminResource } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/StateViews';
 
-const GMV_TREND = [
-  { month: 'Oct', value: 1520000 },
-  { month: 'Nov', value: 1680000 },
-  { month: 'Dec', value: 1890000 },
-  { month: 'Jan', value: 2010000 },
-  { month: 'Feb', value: 2180000 },
-  { month: 'Mar', value: 2340000 },
-];
+// Everything on this page comes from the admin API. Time series (GMV trend,
+// tenant growth) and feature adoption have no endpoint yet and say so.
 
-const TIER_DISTRIBUTION = [
-  { tier: 'Starter', count: 4, color: '#2196F3', pct: 33 },
-  { tier: 'Professional', count: 5, color: '#FF9800', pct: 42 },
-  { tier: 'Enterprise', count: 3, color: '#9C27B0', pct: 25 },
-];
+interface AnalyticsOverview {
+  totalSlips: number;
+  totalCustomers: number;
+  totalInvoices: number;
+  totalTransactions: number;
+  totalGmvCents: number;
+  breakdown: {
+    slipPaymentsCents: number;
+    posTransactionsCents: number;
+    transientBookingsCents: number;
+    rampTicketsCents: number;
+  };
+  tenantCount: number;
+}
 
-const TOP_TENANTS = [
-  { name: 'Coral Reef Marina', gmv: 385000, tier: 'Enterprise' },
-  { name: 'Pacific Coast Marina', gmv: 342000, tier: 'Enterprise' },
-  { name: 'Fisherman\'s Wharf Marina', gmv: 298000, tier: 'Enterprise' },
-  { name: 'Blue Horizon Marina', gmv: 245000, tier: 'Professional' },
-  { name: 'Sunset Cove Marina', gmv: 218000, tier: 'Professional' },
-  { name: 'Windward Yacht Harbor', gmv: 196000, tier: 'Professional' },
-  { name: 'Seabreeze Marina', gmv: 172000, tier: 'Professional' },
-  { name: 'Old Port Marina', gmv: 148000, tier: 'Professional' },
-  { name: 'Anchor Point Marina', gmv: 98000, tier: 'Starter' },
-  { name: 'North Shore Docks', gmv: 85000, tier: 'Starter' },
-];
+interface Tier {
+  id: string;
+  name: string;
+  tenantCount: number;
+}
 
-const FEATURE_ADOPTION = [
-  { feature: 'Online Payments', pct: 94 },
-  { feature: 'Automated Invoicing', pct: 88 },
-  { feature: 'Waitlist Management', pct: 72 },
-  { feature: 'Customer Portal', pct: 67 },
-  { feature: 'Custom Domain', pct: 42 },
-  { feature: 'API Integration', pct: 25 },
-  { feature: 'White Label', pct: 17 },
-];
+interface TenantHealthRow {
+  id: string;
+  name: string;
+  status: string;
+  saasTier: string | null;
+  healthScore: number;
+  atRisk: boolean;
+  usage: { users: number; slips: number; customers: number; recentPayments: number; recentInvoices: number };
+}
 
-const GROWTH = [
-  { month: 'Oct', newTenants: 2, churned: 0, net: 2 },
-  { month: 'Nov', newTenants: 3, churned: 1, net: 2 },
-  { month: 'Dec', newTenants: 1, churned: 0, net: 1 },
-  { month: 'Jan', newTenants: 2, churned: 0, net: 2 },
-  { month: 'Feb', newTenants: 1, churned: 0, net: 1 },
-  { month: 'Mar', newTenants: 3, churned: 1, net: 2 },
-];
+interface TenantHealthResponse {
+  total: number;
+  atRiskCount: number;
+  tenants: TenantHealthRow[];
+}
+
+const TIER_COLORS = ['#2196F3', '#FF9800', '#9C27B0', '#4CAF50', '#00D4FF'];
 
 const card: React.CSSProperties = {
   background: '#0D1B2A',
@@ -63,138 +60,127 @@ const cardTitle: React.CSSProperties = {
   marginBottom: 16,
 };
 
+const muted: React.CSSProperties = { fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6 };
+
+const th: React.CSSProperties = {
+  textAlign: 'left', padding: '8px 10px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+  textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid rgba(255,255,255,0.06)',
+};
+const td: React.CSSProperties = { padding: '8px 10px', fontSize: 12, color: 'rgba(255,255,255,0.7)', borderBottom: '1px solid rgba(255,255,255,0.04)' };
+
 const Analytics: React.FC = () => {
-  const maxGMV = Math.max(...GMV_TREND.map((m) => m.value));
-  const maxTopGMV = TOP_TENANTS[0]?.gmv || 1;
+  const overview = useAdminResource<AnalyticsOverview>('/analytics/overview');
+  const tiers = useAdminResource<Tier[]>('/billing/tiers');
+  const health = useAdminResource<TenantHealthResponse>('/analytics/tenants');
+
+  if (overview.loading) return <LoadingState label="Loading platform analytics…" />;
+  if (overview.error || !overview.data) {
+    return <ErrorState title="Could not load platform analytics" message={overview.error ?? 'No data returned.'} onRetry={overview.refetch} />;
+  }
+  const o = overview.data;
+  const breakdown = [
+    { label: 'Slip payments', cents: o.breakdown.slipPaymentsCents, color: '#00D4FF' },
+    { label: 'POS', cents: o.breakdown.posTransactionsCents, color: '#4CAF50' },
+    { label: 'Transient bookings', cents: o.breakdown.transientBookingsCents, color: '#FF9800' },
+    { label: 'Ramp tickets', cents: o.breakdown.rampTicketsCents, color: '#9C27B0' },
+  ];
+  const maxBreakdown = Math.max(1, ...breakdown.map((b) => b.cents));
+  const tierTotal = (tiers.data ?? []).reduce((sum, t) => sum + t.tenantCount, 0);
 
   return (
     <div>
-      {/* GMV Over Time */}
+      {/* GMV */}
       <div style={{ ...card, marginBottom: 20 }}>
-        <div style={cardTitle}>Platform GMV Over Time</div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, height: 160, paddingTop: 10 }}>
-          {GMV_TREND.map((m) => (
-            <div key={m.month} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-              <div style={{ fontSize: 12, color: '#4CAF50', fontWeight: 600 }}>${(m.value / 1000000).toFixed(2)}M</div>
-              <div style={{ width: '100%', height: `${(m.value / maxGMV) * 130}px`, background: 'linear-gradient(180deg, #00D4FF 0%, #0A2342 100%)', borderRadius: 4 }} />
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{m.month}</div>
+        <div style={cardTitle}>Platform GMV (all time): {formatCents(o.totalGmvCents)}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {breakdown.map((b) => (
+            <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 150, fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{b.label}</div>
+              <div style={{ flex: 1, height: 10, background: 'rgba(255,255,255,0.04)', borderRadius: 5 }}>
+                <div style={{ width: `${(b.cents / maxBreakdown) * 100}%`, height: '100%', background: b.color, borderRadius: 5 }} />
+              </div>
+              <div style={{ width: 110, textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#FFF' }}>{formatCents(b.cents)}</div>
             </div>
           ))}
+        </div>
+        <div style={{ ...muted, marginTop: 14, fontSize: 12 }}>
+          {o.totalTransactions.toLocaleString('en-US')} transactions · {o.totalSlips.toLocaleString('en-US')} slips · {o.totalCustomers.toLocaleString('en-US')} customers · {o.totalInvoices.toLocaleString('en-US')} invoices across {o.tenantCount} tenants.
+          GMV over time is not available yet (the API has no monthly history).
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
         {/* Tier Distribution */}
         <div style={card}>
-          <div style={cardTitle}>Tenant Distribution by Tier</div>
-          <div style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
-            <div style={{ position: 'relative', width: 120, height: 120 }}>
-              <svg viewBox="0 0 36 36" style={{ width: 120, height: 120, transform: 'rotate(-90deg)' }}>
-                {(() => {
-                  let offset = 0;
-                  return TIER_DISTRIBUTION.map((seg) => {
-                    const el = (
-                      <circle
-                        key={seg.tier}
-                        cx="18" cy="18" r="15.9"
-                        fill="none"
-                        stroke={seg.color}
-                        strokeWidth="3.5"
-                        strokeDasharray={`${seg.pct} ${100 - seg.pct}`}
-                        strokeDashoffset={`${-offset}`}
-                      />
-                    );
-                    offset += seg.pct;
-                    return el;
-                  });
-                })()}
-              </svg>
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: '#FFF' }}>12</div>
-                <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)' }}>ACTIVE</div>
+          <div style={cardTitle}>Tier Distribution</div>
+          {tiers.loading && <div style={muted}>Loading…</div>}
+          {tiers.error && <div style={{ ...muted, color: '#F44336' }}>Could not load tiers: {tiers.error}</div>}
+          {tiers.data && tiers.data.length === 0 && <div style={muted}>No SaaS tiers configured.</div>}
+          {tiers.data && tiers.data.length > 0 && (
+            <>
+              <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', marginBottom: 16, background: 'rgba(255,255,255,0.04)' }}>
+                {tiers.data.map((t, i) => (
+                  <div key={t.id} style={{ width: `${tierTotal ? (t.tenantCount / tierTotal) * 100 : 0}%`, background: TIER_COLORS[i % TIER_COLORS.length] }} />
+                ))}
               </div>
-            </div>
-            <div style={{ flex: 1 }}>
-              {TIER_DISTRIBUTION.map((seg) => (
-                <div key={seg.tier} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 12, height: 12, borderRadius: 3, background: seg.color }} />
-                    <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>{seg.tier}</span>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: '#FFF' }}>{seg.count}</span>
-                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginLeft: 6 }}>{seg.pct}%</span>
-                  </div>
+              {tiers.data.map((t, i) => (
+                <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: TIER_COLORS[i % TIER_COLORS.length] }} />
+                    {t.name}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#FFF' }}>
+                    {t.tenantCount} {tierTotal ? `(${Math.round((t.tenantCount / tierTotal) * 100)}%)` : ''}
+                  </span>
                 </div>
               ))}
-            </div>
-          </div>
+            </>
+          )}
         </div>
 
-        {/* Growth Metrics */}
+        {/* Growth / feature adoption */}
         <div style={card}>
-          <div style={cardTitle}>Growth Metrics</div>
+          <div style={cardTitle}>Tenant Growth &amp; Feature Adoption</div>
+          <div style={muted}>
+            Not available yet: the API does not record tenant sign-up/churn history or feature usage, so there is
+            nothing to chart. New tenants in the last 30 days are shown on the Dashboard.
+          </div>
+        </div>
+      </div>
+
+      {/* Tenant health */}
+      <div style={card}>
+        <div style={cardTitle}>
+          Tenant Health{health.data ? ` · ${health.data.atRiskCount} at risk of ${health.data.total}` : ''}
+        </div>
+        {health.loading && <div style={muted}>Loading…</div>}
+        {health.error && <div style={{ ...muted, color: '#F44336' }}>Could not load tenant health: {health.error}</div>}
+        {health.data && health.data.tenants.length === 0 && <div style={muted}>No tenants yet.</div>}
+        {health.data && health.data.tenants.length > 0 && (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Month', 'New', 'Churned', 'Net'].map((h) => (
-                  <th key={h} style={{ textAlign: 'left', padding: '8px 10px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{h}</th>
+                {['Tenant', 'Tier', 'Health', 'Users', 'Slips', 'Customers', 'Payments (30d)', 'Invoices (30d)'].map((h) => (
+                  <th key={h} style={th}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {GROWTH.map((g) => (
-                <tr key={g.month}>
-                  <td style={{ padding: '8px 10px', fontSize: 13, color: 'rgba(255,255,255,0.6)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{g.month}</td>
-                  <td style={{ padding: '8px 10px', fontSize: 13, fontWeight: 600, color: '#4CAF50', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>+{g.newTenants}</td>
-                  <td style={{ padding: '8px 10px', fontSize: 13, fontWeight: 600, color: g.churned > 0 ? '#F44336' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{g.churned > 0 ? `-${g.churned}` : '0'}</td>
-                  <td style={{ padding: '8px 10px', fontSize: 13, fontWeight: 700, color: g.net > 0 ? '#4CAF50' : '#F44336', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>+{g.net}</td>
+              {health.data.tenants.map((t) => (
+                <tr key={t.id}>
+                  <td style={{ ...td, color: '#FFF', fontWeight: 500 }}>{t.name}</td>
+                  <td style={td}>{t.saasTier ?? '—'}</td>
+                  <td style={{ ...td, fontWeight: 600, color: t.atRisk ? '#F44336' : t.healthScore >= 70 ? '#4CAF50' : '#FF9800' }}>{t.healthScore}</td>
+                  <td style={td}>{t.usage.users}</td>
+                  <td style={td}>{t.usage.slips}</td>
+                  <td style={td}>{t.usage.customers}</td>
+                  <td style={td}>{t.usage.recentPayments}</td>
+                  <td style={td}>{t.usage.recentInvoices}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Top Tenants by GMV */}
-        <div style={card}>
-          <div style={cardTitle}>Top Tenants by GMV (This Month)</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {TOP_TENANTS.map((t, i) => (
-              <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 22, fontSize: 12, fontWeight: 700, color: i < 3 ? '#00D4FF' : 'rgba(255,255,255,0.3)', textAlign: 'right' }}>#{i + 1}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, color: '#FFF', fontWeight: 500 }}>{t.name}</span>
-                    <span style={{ fontSize: 12, color: '#4CAF50', fontWeight: 600 }}>${(t.gmv / 1000).toFixed(0)}k</span>
-                  </div>
-                  <div style={{ height: 4, background: 'rgba(255,255,255,0.04)', borderRadius: 2, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${(t.gmv / maxTopGMV) * 100}%`, background: i < 3 ? '#00D4FF' : 'rgba(0,212,255,0.4)', borderRadius: 2 }} />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Feature Adoption */}
-        <div style={card}>
-          <div style={cardTitle}>Feature Adoption Rates</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {FEATURE_ADOPTION.map((f) => (
-              <div key={f.feature}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{f.feature}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: '#FFF' }}>{f.pct}%</span>
-                </div>
-                <div style={{ height: 6, background: 'rgba(255,255,255,0.04)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${f.pct}%`, background: f.pct > 75 ? '#4CAF50' : f.pct > 40 ? '#FF9800' : '#00D4FF', borderRadius: 3, transition: 'width 0.3s' }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -1,31 +1,47 @@
 import { Routes, Route } from 'react-router-dom';
+import { SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react';
 import PortalLayout from './components/PortalLayout';
-import Dashboard from './pages/Dashboard';
-import Invoices from './pages/Invoices';
-import InvoiceDetail from './pages/InvoiceDetail';
-import PaymentMethods from './pages/PaymentMethods';
-import MyBoats from './pages/MyBoats';
-import Insurance from './pages/Insurance';
-import ConciergeRequests from './pages/ConciergeRequests';
-import WaitlistStatus from './pages/WaitlistStatus';
-import Announcements from './pages/Announcements';
-import Messages from './pages/Messages';
+import NotAvailable from './pages/NotAvailable';
+
+// Every portal section is pending a customer-scoped API (see pages/NotAvailable.tsx).
+const SECTIONS: { path: string; label: string }[] = [
+  { path: '/', label: 'Dashboard' },
+  { path: '/invoices', label: 'Invoices' },
+  { path: '/invoices/:id', label: 'Invoice' },
+  { path: '/payments', label: 'Payment Methods' },
+  { path: '/boats', label: 'My Boats' },
+  { path: '/insurance', label: 'Insurance' },
+  { path: '/concierge', label: 'Concierge' },
+  { path: '/waitlist', label: 'Waitlist' },
+  { path: '/announcements', label: 'Announcements' },
+  { path: '/messages', label: 'Messages' },
+];
+
+function NotFound() {
+  return (
+    <div>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: '#0A2342', margin: '0 0 12px' }}>Page not found</h1>
+      <p style={{ color: '#2E4A6B' }}>There is no portal page at this address.</p>
+    </div>
+  );
+}
 
 export default function App() {
   return (
-    <Routes>
-      <Route element={<PortalLayout />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/invoices" element={<Invoices />} />
-        <Route path="/invoices/:id" element={<InvoiceDetail />} />
-        <Route path="/payments" element={<PaymentMethods />} />
-        <Route path="/boats" element={<MyBoats />} />
-        <Route path="/insurance" element={<Insurance />} />
-        <Route path="/concierge" element={<ConciergeRequests />} />
-        <Route path="/waitlist" element={<WaitlistStatus />} />
-        <Route path="/announcements" element={<Announcements />} />
-        <Route path="/messages" element={<Messages />} />
-      </Route>
-    </Routes>
+    <>
+      <SignedIn>
+        <Routes>
+          <Route element={<PortalLayout />}>
+            {SECTIONS.map((s) => (
+              <Route key={s.path} path={s.path} element={<NotAvailable section={s.label} />} />
+            ))}
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </SignedIn>
+      <SignedOut>
+        <RedirectToSignIn />
+      </SignedOut>
+    </>
   );
 }

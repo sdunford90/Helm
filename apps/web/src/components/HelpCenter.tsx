@@ -15,11 +15,6 @@ interface Ticket {
   submittedAt: string;
 }
 
-const MOCK_TICKETS: Ticket[] = [
-  { id: '1', subject: 'QBO sync not updating invoices', category: 'Integrations', status: 'In Progress', submittedAt: '2026-03-24' },
-  { id: '2', subject: 'How to set up seasonal pricing', category: 'Boat Rentals', status: 'Resolved', submittedAt: '2026-03-20' },
-  { id: '3', subject: 'Invoice PDF not showing logo', category: 'Billing & Payments', status: 'Open', submittedAt: '2026-03-25' },
-];
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -164,9 +159,10 @@ export default function HelpCenter() {
                 <label style={st.label}>Description *</label>
                 <textarea style={{ ...st.input, minHeight: '120px', resize: 'vertical' as const }} placeholder="Describe your issue in detail..." />
               </div>
-              <button style={st.submitBtn} onClick={() => setTicketSubmitted(true)}>
-                <Send size={16} /> Submit Ticket
+              <button style={{ ...st.submitBtn, opacity: 0.5, cursor: 'not-allowed' }} disabled title="Coming soon: support tickets are not connected to the server yet.">
+                <Send size={16} /> Submit Ticket (coming soon)
               </button>
+              <p style={{ fontSize: 12, color: '#64748B', marginTop: 8 }}>Ticket submission is not connected yet, so nothing entered here is sent.</p>
             </>
           )}
 
@@ -181,19 +177,7 @@ export default function HelpCenter() {
           {/* My Tickets Tab */}
           {tab === 'tickets' && (
             <>
-              {MOCK_TICKETS.map((t) => {
-                const sc = ticketStatusColors[t.status];
-                return (
-                  <div key={t.id} style={st.ticketCard}>
-                    <div style={st.ticketTitle}>{t.subject}</div>
-                    <div style={st.ticketMeta}>
-                      <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>{t.status}</span>
-                      <span>{t.category}</span>
-                      <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />{t.submittedAt}</span>
-                    </div>
-                  </div>
-                );
-              })}
+              <div style={{ fontSize: 14, color: '#64748B', padding: '16px 0' }}>Support tickets are not available yet.</div>
             </>
           )}
         </div>

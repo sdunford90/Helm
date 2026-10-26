@@ -4,12 +4,16 @@ import {
   Eye, CheckCircle2, Clock, MapPin, Camera, Droplets,
   Shield,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useUser } from '@clerk/clerk-react';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { formatDate, formatDateTime, humanizeEnum } from '../lib/format';
+import { ComingSoonButton, ErrorState, InlineError, LoadingState } from '../components/StateViews';
 
 /* ── Types ─────────────────────────────────────────────── */
 
 type WalkStatus = 'In Progress' | 'Completed';
-type Severity = 'Low' | 'Medium' | 'High' | 'Critical';
+type Severity = 'Violation' | 'Needs Attention';
 type ViolationStatus = 'Open' | 'Resolved';
 
 interface DockWalk {
@@ -26,6 +30,7 @@ interface DockWalk {
 
 interface Violation {
   id: string;
+  walkId: string;
   number: string;
   walkDate: string;
   slip: string;
@@ -46,48 +51,89 @@ interface PumpOut {
   notes: string;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const WALKS: DockWalk[] = [
-  { id: '1', number: 'DW-0042', date: '2026-03-25', inspector: 'Jake Martinez', docks: ['A', 'B'], slipsChecked: 14, violations: 2, status: 'In Progress', duration: '35 min' },
-  { id: '2', number: 'DW-0041', date: '2026-03-24', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 1, status: 'Completed', duration: '52 min' },
-  { id: '3', number: 'DW-0040', date: '2026-03-23', inspector: 'Jake Martinez', docks: ['C'], slipsChecked: 6, violations: 0, status: 'Completed', duration: '18 min' },
-  { id: '4', number: 'DW-0039', date: '2026-03-22', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 3, status: 'Completed', duration: '58 min' },
-  { id: '5', number: 'DW-0038', date: '2026-03-21', inspector: 'Jake Martinez', docks: ['B'], slipsChecked: 7, violations: 1, status: 'Completed', duration: '22 min' },
-  { id: '6', number: 'DW-0037', date: '2026-03-20', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 2, status: 'Completed', duration: '48 min' },
-  { id: '7', number: 'DW-0036', date: '2026-03-19', inspector: 'Jake Martinez', docks: ['A'], slipsChecked: 8, violations: 0, status: 'Completed', duration: '20 min' },
-  { id: '8', number: 'DW-0035', date: '2026-03-18', inspector: 'Maria Santos', docks: ['A', 'B', 'C'], slipsChecked: 20, violations: 4, status: 'Completed', duration: '1h 5min' },
-];
+interface DockWalkDTO {
+  id: string;
+  inspectorId: string;
+  dockId?: string | null;
+  startedAt: string;
+  completedAt?: string | null;
+  status: 'IN_PROGRESS' | 'COMPLETED';
+  items?: { id: string; status: 'OK' | 'VIOLATION' | 'NEEDS_ATTENTION' }[];
+}
 
-const VIOLATIONS: Violation[] = [
-  { id: '1', number: 'VIO-0089', walkDate: '2026-03-25', slip: 'A-01', type: 'Line Condition', severity: 'Medium', description: 'Port-side dock line frayed near cleat, showing significant wear. Recommend replacement.', status: 'Open', reportedBy: 'Jake Martinez' },
-  { id: '2', number: 'VIO-0088', walkDate: '2026-03-25', slip: 'B-01', type: 'Electrical', severity: 'High', description: 'Shore power cord showing exposed insulation near pedestal connection. Fire/shock hazard.', status: 'Open', reportedBy: 'Jake Martinez' },
-  { id: '3', number: 'VIO-0087', walkDate: '2026-03-24', slip: 'C-02', type: 'Cleanliness', severity: 'Low', description: 'Oil sheen observed around vessel. Minor leak from engine compartment.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '4', number: 'VIO-0086', walkDate: '2026-03-22', slip: 'A-04', type: 'Safety Hazard', severity: 'Critical', description: 'Bilge pump failure — vessel taking on water. Owner contacted immediately.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '5', number: 'VIO-0085', walkDate: '2026-03-22', slip: 'B-03', type: 'Unauthorized Modification', severity: 'Medium', description: 'Tenant installed unapproved solar panel mount on dock finger.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '6', number: 'VIO-0084', walkDate: '2026-03-22', slip: 'A-02', type: 'Line Condition', severity: 'Low', description: 'Spring line showing light wear. Monitor on next walk.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '7', number: 'VIO-0083', walkDate: '2026-03-21', slip: 'B-02', type: 'Cleanliness', severity: 'Low', description: 'Trash and debris on dock near slip. Tenant notified.', status: 'Resolved', reportedBy: 'Jake Martinez' },
-  { id: '8', number: 'VIO-0082', walkDate: '2026-03-20', slip: 'A-03', type: 'Safety Hazard', severity: 'High', description: 'Fire extinguisher expired. Vessel non-compliant with marina safety policy.', status: 'Open', reportedBy: 'Maria Santos' },
-  { id: '9', number: 'VIO-0081', walkDate: '2026-03-20', slip: 'C-01', type: 'Electrical', severity: 'Medium', description: 'Shore power cord not properly secured. Trip hazard on dock.', status: 'Resolved', reportedBy: 'Maria Santos' },
-  { id: '10', number: 'VIO-0080', walkDate: '2026-03-18', slip: 'B-01', type: 'Line Condition', severity: 'High', description: 'Bow line undersized for vessel weight. Must upgrade to 5/8" minimum.', status: 'Resolved', reportedBy: 'Maria Santos' },
-];
+interface IssueDTO {
+  id: string;
+  status: 'VIOLATION' | 'NEEDS_ATTENTION';
+  notes?: string | null;
+  violationType?: string | null;
+  slip?: { slipNumber?: string | null } | null;
+  dockWalk?: { id: string; startedAt: string; inspectorId?: string | null } | null;
+}
 
-const PUMP_OUTS: PumpOut[] = [
-  { id: '1', date: '2026-03-25 9:30 AM', slip: 'A-01', boatName: 'Sea Spirit', performedBy: 'Jake Martinez', duration: '15 min', notes: '' },
-  { id: '2', date: '2026-03-24 2:15 PM', slip: 'B-01', boatName: 'Tidewater Express', performedBy: 'Maria Santos', duration: '20 min', notes: 'Tank nearly full' },
-  { id: '3', date: '2026-03-23 10:00 AM', slip: 'C-01', boatName: 'Windward', performedBy: 'Jake Martinez', duration: '12 min', notes: '' },
-  { id: '4', date: '2026-03-22 3:45 PM', slip: 'A-02', boatName: 'Coastal Dream', performedBy: 'Maria Santos', duration: '18 min', notes: 'Requested weekly schedule' },
-  { id: '5', date: '2026-03-20 11:30 AM', slip: 'B-03', boatName: 'Harbor Light', performedBy: 'Jake Martinez', duration: '14 min', notes: '' },
-  { id: '6', date: '2026-03-18 9:00 AM', slip: 'A-01', boatName: 'Sea Spirit', performedBy: 'Maria Santos', duration: '16 min', notes: '' },
-];
+interface PumpOutDTO {
+  id: string;
+  eventDate: string;
+  gallons?: number | null;
+  slip?: { slipNumber?: string | null } | null;
+  staffId?: string | null;
+}
+
+function durationText(start: string, end?: string | null): string {
+  if (!end) return '—';
+  const mins = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000);
+  if (!(mins >= 0)) return '—';
+  return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+}
+
+function toWalk(w: DockWalkDTO): DockWalk {
+  return {
+    id: w.id,
+    number: w.id.slice(0, 8).toUpperCase(),
+    date: w.startedAt,
+    inspector: w.inspectorId,
+    docks: w.dockId ? [w.dockId] : [],
+    slipsChecked: w.items?.length ?? 0,
+    violations: (w.items ?? []).filter((i) => i.status !== 'OK').length,
+    status: w.status === 'COMPLETED' ? 'Completed' : 'In Progress',
+    duration: durationText(w.startedAt, w.completedAt),
+  };
+}
+
+function toViolation(i: IssueDTO): Violation {
+  return {
+    id: i.id,
+    walkId: i.dockWalk?.id ?? '',
+    number: i.id.slice(0, 8).toUpperCase(),
+    walkDate: i.dockWalk?.startedAt ?? '',
+    slip: i.slip?.slipNumber ?? '—',
+    type: i.violationType ?? '—',
+    severity: i.status === 'VIOLATION' ? 'Violation' : 'Needs Attention',
+    description: i.notes ?? '',
+    // GET /dock-walks/issues returns open items only.
+    status: 'Open',
+    reportedBy: i.dockWalk?.inspectorId ?? '—',
+  };
+}
+
+function toPumpOut(p: PumpOutDTO): PumpOut {
+  return {
+    id: p.id,
+    date: p.eventDate,
+    slip: p.slip?.slipNumber ?? '—',
+    boatName: p.gallons ? `${p.gallons} gal` : '—',
+    performedBy: p.staffId ?? '—',
+    duration: '—',
+    notes: '',
+  };
+}
 
 /* ── Styles ─────────────────────────────────────────────── */
 
 const severityColors: Record<Severity, { bg: string; color: string }> = {
-  Low: { bg: '#DBEAFE', color: '#1E40AF' },
-  Medium: { bg: '#FFF3CD', color: '#856404' },
-  High: { bg: '#FED7AA', color: '#C2410C' },
-  Critical: { bg: '#FDE8E8', color: '#9B1C1C' },
+  'Needs Attention': { bg: '#FFF3CD', color: '#856404' },
+  Violation: { bg: '#FDE8E8', color: '#9B1C1C' },
 };
 
 const st: Record<string, React.CSSProperties> = {
@@ -136,77 +182,45 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Start Walk Modal ──────────────────────────────────── */
 
-const INSPECTORS = [
-  { id: 'staff-jake', name: 'Jake Martinez' },
-  { id: 'staff-maria', name: 'Maria Santos' },
-  { id: 'staff-tom', name: 'Tom Bradley' },
-];
-
-const DOCKS = ['A', 'B', 'C', 'D', 'Fuel'];
-
-function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (walk: DockWalk) => void }) {
-  const [inspector, setInspector] = useState(INSPECTORS[0].id);
-  const [selectedDocks, setSelectedDocks] = useState<string[]>(['A', 'B', 'C']);
+function StartWalkModal({ onClose, onStarted }: { onClose: () => void; onStarted: () => void }) {
+  const client = useApiClient();
+  const { user } = useUser();
+  const [dock, setDock] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
-
-  const toggleDock = (d: string) =>
-    setSelectedDocks((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+  const [error, setError] = useState<string | null>(null);
 
   const handleStart = async () => {
-    if (!inspector || selectedDocks.length === 0) return;
+    if (!user) return;
     setSaving(true);
+    setError(null);
     try {
-      const res = await fetch('/api/dock-walks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inspectorId: inspector, dockId: selectedDocks[0], notes }),
-      });
-      const inspectorName = INSPECTORS.find((i) => i.id === inspector)?.name ?? inspector;
-      const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const newWalk: DockWalk = res.ok
-        ? await res.json()
-        : {
-            id: `walk-${Date.now()}`,
-            number: `DW-${String(Date.now()).slice(-4)}`,
-            date: today,
-            inspector: inspectorName,
-            docks: selectedDocks,
-            slipsChecked: 0,
-            violations: 0,
-            status: 'In Progress',
-            duration: '—',
-          };
-      onSave?.(newWalk);
+      await client.post('/dock-walks', { inspectorId: user.id, dockId: dock.trim() || null, notes: notes || null });
+      onStarted();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setSaving(false);
-      onClose();
     }
   };
 
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={() => { if (!saving) onClose(); }}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Start Dock Walk</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
         <div style={st.modalBody}>
+          {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
           <div style={st.field}>
-            <label style={st.label}>Inspector *</label>
-            <select style={st.input} value={inspector} onChange={(e) => setInspector(e.target.value)}>
-              {INSPECTORS.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
-            </select>
+            <label style={st.label}>Inspector</label>
+            <div style={{ fontSize: 14, color: '#0A2342' }}>{user?.fullName || user?.primaryEmailAddress?.emailAddress || 'Signed-in user'}</div>
           </div>
           <div style={st.field}>
-            <label style={st.label}>Dock(s) *</label>
-            <div style={{ display: 'flex', gap: '16px', marginTop: '4px', flexWrap: 'wrap' as const }}>
-              {DOCKS.map((d) => (
-                <label key={d} style={st.checkboxLabel}>
-                  <input type="checkbox" checked={selectedDocks.includes(d)} onChange={() => toggleDock(d)} /> Dock {d}
-                </label>
-              ))}
-            </div>
+            <label style={st.label}>Dock</label>
+            <input style={st.input} placeholder="e.g. A (leave blank for all docks)" value={dock} onChange={(e) => setDock(e.target.value)} />
           </div>
           <div style={st.field}>
             <label style={st.label}>Notes</label>
@@ -214,8 +228,8 @@ function StartWalkModal({ onClose, onSave }: { onClose: () => void; onSave?: (wa
           </div>
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={handleStart} disabled={saving || selectedDocks.length === 0}>
+          <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleStart} disabled={saving || !user}>
             <ClipboardCheck size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
             {saving ? 'Starting…' : 'Start Walk'}
           </button>
@@ -232,22 +246,27 @@ function ViolationDetail({ violation, onClose, onResolved }: {
   onClose: () => void;
   onResolved?: (id: string) => void;
 }) {
+  const client = useApiClient();
   const sc = severityColors[violation.severity];
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [resolving, setResolving] = useState(false);
   const [resolved, setResolved] = useState(violation.status === 'Resolved');
+  const [error, setError] = useState<string | null>(null);
 
+  // Resolving sets the walk item back to OK (PUT /dock-walks/:walkId/items/:itemId).
   const handleResolve = async () => {
-    if (resolving) return;
+    if (resolving || !violation.walkId) return;
     setResolving(true);
+    setError(null);
     try {
-      await fetch(`/api/dock-walks/violations/${violation.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'RESOLVED', resolutionNotes }),
+      await client.put(`/dock-walks/${violation.walkId}/items/${violation.id}`, {
+        status: 'OK',
+        notes: [violation.description, resolutionNotes && `Resolved: ${resolutionNotes}`].filter(Boolean).join('\n'),
       });
       setResolved(true);
       onResolved?.(violation.id);
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setResolving(false);
     }
@@ -273,24 +292,17 @@ function ViolationDetail({ violation, onClose, onResolved }: {
         <div style={st.detailLabel}>Type</div>
         <div style={st.detailValue}>{violation.type}</div>
         <div style={st.detailLabel}>Walk Date</div>
-        <div style={st.detailValue}>{violation.walkDate}</div>
+        <div style={st.detailValue}>{formatDate(violation.walkDate)}</div>
         <div style={st.detailLabel}>Reported By</div>
         <div style={st.detailValue}>{violation.reportedBy}</div>
       </div>
       <div style={st.detailSection}>
         <div style={st.detailLabel}>Description</div>
-        <div style={{ ...st.detailValue, lineHeight: 1.6 }}>{violation.description}</div>
-      </div>
-      <div style={st.detailSection}>
-        <div style={st.detailLabel}>Photos</div>
-        <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
-          <div style={{ width: '80px', height: '80px', borderRadius: '8px', background: '#F1F5F9', border: '2px dashed #CBD5E1', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <Camera size={20} style={{ color: '#94A3B8' }} />
-          </div>
-        </div>
+        <div style={{ ...st.detailValue, lineHeight: 1.6 }}>{violation.description || '—'}</div>
       </div>
       {!resolved && (
         <div style={{ padding: '20px 24px' }}>
+          {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
           <div style={st.field}>
             <label style={st.label}>Resolution Notes</label>
             <textarea
@@ -325,14 +337,11 @@ export default function DockWalks() {
   const [showStartWalk, setShowStartWalk] = useState(false);
   const [selectedViolation, setSelectedViolation] = useState<Violation | null>(null);
 
-  const { data: apiWalks, loading: walksLoading } = useApi<DockWalk[]>('get', '/api/dock-walks', { immediate: true });
-  const { data: apiViolations, loading: violationsLoading } = useApi<Violation[]>('get', '/api/dock-walks/violations', { immediate: true });
-
-  const [localWalks, setLocalWalks] = useState<DockWalk[]>([]);
-  const [localViolations, setLocalViolations] = useState<Violation[] | null>(null);
-
-  const walks = localWalks.length > 0 ? localWalks : (apiWalks || WALKS);
-  const violations = localViolations ?? (apiViolations || VIOLATIONS);
+  const walksList = useList<DockWalk, DockWalkDTO>('/dock-walks?take=100', { map: toWalk });
+  const issuesList = useList<Violation, IssueDTO>('/dock-walks/issues?take=100', { map: toViolation });
+  const pumpOutsList = useList<PumpOut, PumpOutDTO>(tab === 'pumpouts' ? '/dock-walks/pump-outs?take=100' : null, { map: toPumpOut });
+  const walks = walksList.items;
+  const violations = issuesList.items;
 
   const openViolations = violations.filter((v) => v.status === 'Open').length;
   const avgItems = walks.length > 0 ? Math.round(walks.reduce((s, w) => s + w.slipsChecked, 0) / walks.length) : 0;
@@ -349,19 +358,18 @@ export default function DockWalks() {
       <h1 style={st.title} className="helm-page-title">Dock Walks</h1>
       <hr style={st.divider} />
 
-      {(walksLoading || violationsLoading) && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading dock walks...</div>}
 
       {/* Stats */}
       <div style={st.statsRow} className="helm-stats-grid">
         <div style={st.statCard}>
           <div style={st.statLabel}>Total Walks</div>
-          <div style={st.statValue}>{walks.length}</div>
-          <div style={st.statSub}>This month</div>
+          <div style={st.statValue}>{walksList.loading ? '—' : walksList.pagination?.total ?? walks.length}</div>
+          <div style={st.statSub}>All time</div>
         </div>
         <div style={{ ...st.statCard, borderTop: openViolations > 0 ? '3px solid #F59E0B' : '3px solid #00D4FF' }}>
-          <div style={st.statLabel}>Open Violations</div>
-          <div style={{ ...st.statValue, color: openViolations > 0 ? '#C2410C' : '#03543F' }}>{openViolations}</div>
-          <div style={st.statSub}>{violations.filter((v) => v.severity === 'High' || v.severity === 'Critical').filter((v) => v.status === 'Open').length} high/critical</div>
+          <div style={st.statLabel}>Open Issues</div>
+          <div style={{ ...st.statValue, color: openViolations > 0 ? '#C2410C' : '#03543F' }}>{issuesList.loading ? '—' : issuesList.pagination?.total ?? openViolations}</div>
+          <div style={st.statSub}>{violations.filter((v) => v.severity === 'Violation').length} violations</div>
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Avg Slips / Walk</div>
@@ -370,8 +378,8 @@ export default function DockWalks() {
         </div>
         <div style={st.statCard}>
           <div style={st.statLabel}>Last Walk</div>
-          <div style={st.statValue}>{lastWalk.date}</div>
-          <div style={st.statSub}>{lastWalk.inspector} — {lastWalk.status}</div>
+          <div style={st.statValue}>{lastWalk ? formatDate(lastWalk.date) : '—'}</div>
+          <div style={st.statSub}>{lastWalk ? lastWalk.status : 'No walks yet'}</div>
         </div>
       </div>
 
@@ -396,16 +404,17 @@ export default function DockWalks() {
               <ClipboardCheck size={16} /> Start New Walk
             </button>
           </div>
+          {walksList.loading ? <LoadingState label="Loading dock walks…" /> : walksList.error ? <ErrorState title="Could not load dock walks" message={walksList.error} onRetry={walksList.refetch} /> : (
           <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
-                  <th style={st.th}>Walk #</th>
+                  <th style={st.th}>Walk</th>
                   <th style={st.th}>Date</th>
-                  <th style={st.th}>Inspector</th>
-                  <th style={st.th}>Dock(s)</th>
-                  <th style={st.th}>Slips Checked</th>
-                  <th style={st.th}>Violations</th>
+                  <th style={st.th}>Inspector ID</th>
+                  <th style={st.th}>Dock</th>
+                  <th style={st.th}>Items Checked</th>
+                  <th style={st.th}>Issues</th>
                   <th style={st.th}>Status</th>
                   <th style={st.th}>Duration</th>
                 </tr>
@@ -416,9 +425,9 @@ export default function DockWalks() {
                   return (
                     <tr key={w.id}>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{w.number}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{w.date}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{w.inspector}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{(w.docks ?? []).map((d) => `Dock ${d}`).join(', ')}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{formatDateTime(w.date)}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg, fontSize: 12 }}>{w.inspector}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{(w.docks ?? []).length ? w.docks.map((d) => `Dock ${d}`).join(', ') : 'All'}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center', ...st.mono }}>{w.slipsChecked}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, textAlign: 'center' }}>
                         <span style={{ ...st.mono, color: w.violations > 0 ? '#C2410C' : '#03543F', fontWeight: 600 }}>{w.violations}</span>
@@ -433,9 +442,13 @@ export default function DockWalks() {
                     </tr>
                   );
                 })}
+                {walks.length === 0 && (
+                  <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No dock walks recorded yet.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
@@ -448,28 +461,22 @@ export default function DockWalks() {
               <input style={st.searchInput} placeholder="Search violations..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <select style={st.select} value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}>
-              <option value="All">All Severities</option>
-              <option>Low</option>
-              <option>Medium</option>
-              <option>High</option>
-              <option>Critical</option>
-            </select>
-            <select style={st.select} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="All">All Statuses</option>
-              <option>Open</option>
-              <option>Resolved</option>
+              <option value="All">All Findings</option>
+              <option>Violation</option>
+              <option>Needs Attention</option>
             </select>
           </div>
+          {issuesList.loading ? <LoadingState label="Loading issues…" /> : issuesList.error ? <ErrorState title="Could not load open issues" message={issuesList.error} onRetry={issuesList.refetch} /> : (
           <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
-                  <th style={st.th}>Violation #</th>
+                  <th style={st.th}>Item</th>
                   <th style={st.th}>Walk Date</th>
                   <th style={st.th}>Slip</th>
                   <th style={st.th}>Type</th>
-                  <th style={st.th}>Severity</th>
-                  <th style={st.th}>Description</th>
+                  <th style={st.th}>Finding</th>
+                  <th style={st.th}>Notes</th>
                   <th style={st.th}>Status</th>
                   <th style={st.th}>Actions</th>
                 </tr>
@@ -477,7 +484,6 @@ export default function DockWalks() {
               <tbody>
                 {violations.filter((v) => {
                   if (severityFilter !== 'All' && v.severity !== severityFilter) return false;
-                  if (statusFilter !== 'All' && v.status !== statusFilter) return false;
                   if (!search) return true;
                   const q = search.toLowerCase();
                   return v.number.toLowerCase().includes(q) || v.slip.toLowerCase().includes(q) || v.type.toLowerCase().includes(q);
@@ -487,12 +493,12 @@ export default function DockWalks() {
                   return (
                     <tr key={v.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedViolation(v)}>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{v.number}</td>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{v.walkDate}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{formatDate(v.walkDate)}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{v.slip}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{v.type}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>
                         <span style={{ ...st.badge, backgroundColor: sc.bg, color: sc.color }}>
-                          {(v.severity === 'Critical' || v.severity === 'High') && <AlertTriangle size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />}
+                          {v.severity === 'Violation' && <AlertTriangle size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />}
                           {v.severity}
                         </span>
                       </td>
@@ -508,9 +514,13 @@ export default function DockWalks() {
                     </tr>
                   );
                 })}
+                {violations.length === 0 && (
+                  <tr><td colSpan={8} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No open issues.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
@@ -519,26 +529,27 @@ export default function DockWalks() {
         <>
           <div style={st.filterBar} className="helm-filter-bar">
             <div style={{ flex: 1 }} />
-            <button style={st.addBtn}><Droplets size={16} /> Log Pump-Out</button>
+            <ComingSoonButton style={st.addBtn} reason="Coming soon: logging pump-outs from this screen is not wired up yet."><Droplets size={16} /> Log Pump-Out</ComingSoonButton>
           </div>
+          {pumpOutsList.loading ? <LoadingState label="Loading pump-outs…" /> : pumpOutsList.error ? <ErrorState title="Could not load pump-outs" message={pumpOutsList.error} onRetry={pumpOutsList.refetch} /> : (
           <div style={st.tableWrap} className="helm-table-wrap">
             <table style={st.table}>
               <thead>
                 <tr>
                   <th style={st.th}>Date / Time</th>
                   <th style={st.th}>Slip</th>
-                  <th style={st.th}>Boat Name</th>
-                  <th style={st.th}>Performed By</th>
+                  <th style={st.th}>Volume</th>
+                  <th style={st.th}>Staff ID</th>
                   <th style={st.th}>Duration</th>
                   <th style={st.th}>Notes</th>
                 </tr>
               </thead>
               <tbody>
-                {PUMP_OUTS.map((p, idx) => {
+                {pumpOutsList.items.map((p, idx) => {
                   const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4';
                   return (
                     <tr key={p.id}>
-                      <td style={{ ...st.td, backgroundColor: rowBg }}>{p.date}</td>
+                      <td style={{ ...st.td, backgroundColor: rowBg }}>{formatDateTime(p.date)}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{p.slip}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{p.boatName}</td>
                       <td style={{ ...st.td, backgroundColor: rowBg }}>{p.performedBy}</td>
@@ -547,29 +558,27 @@ export default function DockWalks() {
                     </tr>
                   );
                 })}
+                {pumpOutsList.items.length === 0 && (
+                  <tr><td colSpan={6} style={{ ...st.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No pump-outs recorded.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
       {showStartWalk && (
         <StartWalkModal
           onClose={() => setShowStartWalk(false)}
-          onSave={(newWalk) => {
-            setLocalWalks((prev) => [newWalk, ...(prev.length > 0 ? prev : apiWalks || WALKS)]);
-            setShowStartWalk(false);
-          }}
+          onStarted={() => walksList.refetch()}
         />
       )}
       {selectedViolation && (
         <ViolationDetail
           violation={selectedViolation}
           onClose={() => setSelectedViolation(null)}
-          onResolved={(id) => {
-            const base = localViolations ?? (apiViolations || VIOLATIONS);
-            setLocalViolations(base.map((v) => v.id === id ? { ...v, status: 'Resolved' } : v));
-          }}
+          onResolved={() => { issuesList.refetch(); walksList.refetch(); }}
         />
       )}
     </div>

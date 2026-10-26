@@ -44,13 +44,15 @@ export function createApiClient(hostElement: HTMLElement) {
     try {
       const res = await fetch(url, { ...options, headers });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const message =
-          (body as Record<string, string>).message ??
-          `Request failed (${res.status})`;
+        const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        // The Helm API reports errors as { error, code }; some routes use { message }.
+        const raw = body.error ?? body.message;
+        const message = typeof raw === "string" && raw ? raw : `Request failed (${res.status})`;
         return { data: null, error: message };
       }
-      const data = (await res.json()) as T;
+      // A 2xx with an empty body (e.g. 204) is still a success.
+      const text = await res.text();
+      const data = (text ? JSON.parse(text) : null) as T;
       return { data, error: null };
     } catch (err) {
       return {

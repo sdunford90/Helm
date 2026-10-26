@@ -317,7 +317,7 @@ export default function SlipDetailPanel({ slip, onClose, onEdit, onAssign, onMai
             </table>
           </div>
         ) : (
-          <div style={{ fontSize: '13px', color: '#64748B', fontStyle: 'italic' }}>No meter readings recorded.</div>
+          <div style={{ fontSize: '13px', color: '#64748B', fontStyle: 'italic' }}>Meter readings are not available in this view yet.</div>
         )}
 
         {/* QR Code */}
@@ -330,7 +330,7 @@ export default function SlipDetailPanel({ slip, onClose, onEdit, onAssign, onMai
             <div style={{ fontSize: '13px', color: '#2E4A6B', marginBottom: '8px' }}>
               Scan to view slip details or submit meter readings.
             </div>
-            <button style={styles.printBtn}>
+            <button style={{ ...styles.printBtn, opacity: 0.5, cursor: 'not-allowed' }} disabled title="Coming soon: QR code generation is not connected yet.">
               <Printer size={14} />
               Print QR
             </button>

@@ -194,10 +194,10 @@ function Toggle({
 export default function CommunicationPrefs({ customerId, onSave }: CommunicationPrefsProps) {
   const { data: prefs, loading, error, execute: fetchPrefs } = useApi<CommunicationPref[]>(
     'get',
-    `/api/communication-prefs/${customerId}`,
+    `/communication-prefs/${customerId}`,
     { immediate: true },
   );
-  const updatePrefs = useApi<CommunicationPref[]>('put', `/api/communication-prefs/${customerId}`);
+  const updatePrefs = useApi<CommunicationPref[]>('put', `/communication-prefs/${customerId}`);
 
   const [localPrefs, setLocalPrefs] = useState<CommunicationPref[]>([]);
   const [saving, setSaving] = useState(false);

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { X, Upload } from 'lucide-react';
+import { errorMessage } from '../lib/api';
 
-interface CustomerFormData {
+export interface CustomerFormData {
   firstName: string;
   lastName: string;
   company: string;
@@ -23,8 +24,41 @@ interface CustomerFormData {
 
 interface CustomerFormProps {
   onClose: () => void;
-  onSave: (data: CustomerFormData) => void;
+  /** Should throw on failure; the form stays open and shows the error. */
+  onSave: (data: CustomerFormData) => Promise<void> | void;
   initial?: Partial<CustomerFormData>;
+}
+
+const STATUS_TO_ENUM: Record<string, string> = {
+  Active: 'ACTIVE', Inactive: 'INACTIVE', Waitlist: 'WAITLIST', 'Collections Hold': 'COLLECTIONS_HOLD', Seasonal: 'SEASONAL',
+};
+export const STATUS_FROM_ENUM: Record<string, string> = Object.fromEntries(
+  Object.entries(STATUS_TO_ENUM).map(([k, v]) => [v, k]),
+);
+
+/** Map the form to the API's CreateCustomer/UpdateCustomer schema. */
+export function customerFormToPayload(f: CustomerFormData) {
+  const opt = (v: string) => (v.trim() ? v.trim() : null);
+  const emergency = {
+    name: f.emergencyName.trim(), relationship: f.emergencyRelationship.trim(),
+    phone: f.emergencyPhone.trim(), email: f.emergencyEmail.trim(),
+  };
+  return {
+    firstName: f.firstName.trim(),
+    lastName: f.lastName.trim(),
+    company: opt(f.company),
+    email: opt(f.email),
+    phone: opt(f.phone),
+    addressJson: f.address.trim() ? { line: f.address.trim() } : null,
+    dob: opt(f.dob),
+    dlNumber: opt(f.dlNumber),
+    dlState: opt(f.dlState),
+    dlExpiry: opt(f.dlExpiry),
+    emergencyContactJson: Object.values(emergency).some(Boolean) ? emergency : null,
+    status: STATUS_TO_ENUM[f.status] ?? 'ACTIVE',
+    taxExempt: f.taxExempt,
+    exemptionExpiry: f.taxExempt ? opt(f.taxCertExpiry) : null,
+  };
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -211,6 +245,8 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
   });
 
   const [errors, setErrors] = useState<Partial<Record<keyof CustomerFormData, string>>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const set = (key: keyof CustomerFormData, value: string | boolean) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -226,8 +262,17 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
     return Object.keys(e).length === 0;
   };
 
-  const handleSave = () => {
-    if (validate()) onSave(form);
+  const handleSave = async () => {
+    if (!validate() || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(form);
+    } catch (err) {
+      setSaveError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const inputStyle = (key: keyof CustomerFormData): React.CSSProperties => ({
@@ -236,7 +281,7 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
   });
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
+    <div style={styles.overlay} onClick={() => { if (!saving) onClose(); }}>
       <div style={styles.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
           <h2 style={styles.title}>{initial ? 'Edit Customer' : 'Add Customer'}</h2>
@@ -335,9 +380,9 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
               </label>
               {form.taxExempt && (
                 <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <button style={styles.uploadBtn}>
+                  <button style={{ ...styles.uploadBtn, opacity: 0.5, cursor: 'not-allowed' }} disabled title="Coming soon: certificate upload is not connected yet.">
                     <Upload size={14} />
-                    Upload Tax Certificate
+                    Upload Tax Certificate (coming soon)
                   </button>
                   <div style={styles.field}>
                     <label style={styles.label}>Certificate Expiry</label>
@@ -360,8 +405,9 @@ export default function CustomerForm({ onClose, onSave, initial }: CustomerFormP
         </div>
 
         <div style={styles.footer}>
-          <button style={styles.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={styles.saveBtn} onClick={handleSave}>Save Customer</button>
+          {saveError && <span role="alert" style={{ color: '#B71C1C', fontSize: 13, flex: 1, alignSelf: 'center' }}>{saveError}</span>}
+          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...styles.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Customer'}</button>
         </div>
       </div>
     </div>

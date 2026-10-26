@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { useApi } from '../hooks/useApi';
+import { useList } from '../hooks/useApi';
+import { formatDate, humanizeEnum, todayKey } from '../lib/format';
+import { downloadCsv } from '../lib/csv';
+import { ComingSoonButton, EmptyState, ErrorState, LoadingState } from '../components/StateViews';
 import {
   FileSpreadsheet, Search, Download, DollarSign,
   Anchor, Users, ShieldCheck, Clock, ChevronDown,
@@ -31,25 +34,58 @@ interface RentRollEntry {
   lastPaymentAmount: number;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const MOCK_RENT_ROLL: RentRollEntry[] = [
-  { id: '1', slipNumber: 'A-01', dock: 'A', tenantName: 'James Harborview', boatName: 'Sea Spirit', boatLength: 38, contractStart: '2024-03-15', contractEnd: '2025-03-14', billingCycle: 'Monthly', monthlyRate: 2450, annualRate: 29400, electricityMode: 'Metered', electricityCharge: 148, depositHeld: 2450, balance: 0, status: 'Active', autoRenew: true, daysLeft: 354, lastPaymentDate: '2026-03-01', lastPaymentAmount: 2598 },
-  { id: '2', slipNumber: 'A-02', dock: 'A', tenantName: 'Maria Seabreeze', boatName: 'Coastal Dream', boatLength: 32, contractStart: '2024-06-01', contractEnd: '2025-05-31', billingCycle: 'Monthly', monthlyRate: 1950, annualRate: 23400, electricityMode: 'Flat Rate', electricityCharge: 75, depositHeld: 1950, balance: 0, status: 'Active', autoRenew: true, daysLeft: 432, lastPaymentDate: '2026-03-01', lastPaymentAmount: 2025 },
-  { id: '3', slipNumber: 'A-03', dock: 'A', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '4', slipNumber: 'A-04', dock: 'A', tenantName: 'Robert Dockside', boatName: 'Harbor Light', boatLength: 28, contractStart: '2025-11-01', contractEnd: '2026-04-30', billingCycle: 'Monthly', monthlyRate: 1650, annualRate: 19800, electricityMode: 'Metered', electricityCharge: 92, depositHeld: 1650, balance: 1742, status: 'Expiring', autoRenew: false, daysLeft: 36, lastPaymentDate: '2026-02-01', lastPaymentAmount: 1742 },
-  { id: '5', slipNumber: 'A-05', dock: 'A', tenantName: 'Tom Seaside', boatName: 'Mariner II', boatLength: 35, contractStart: '2025-01-01', contractEnd: '2026-12-31', billingCycle: 'Quarterly', monthlyRate: 2200, annualRate: 26400, electricityMode: 'Metered', electricityCharge: 125, depositHeld: 2200, balance: 0, status: 'Active', autoRenew: true, daysLeft: 646, lastPaymentDate: '2026-01-01', lastPaymentAmount: 6975 },
-  { id: '6', slipNumber: 'B-01', dock: 'B', tenantName: 'David Tidewater', boatName: 'Tidewater Express', boatLength: 48, contractStart: '2024-01-05', contractEnd: '2027-01-04', billingCycle: 'Annual', monthlyRate: 4200, annualRate: 50400, electricityMode: 'Metered', electricityCharge: 252, depositHeld: 4200, balance: 0, status: 'Active', autoRenew: true, daysLeft: 650, lastPaymentDate: '2026-01-05', lastPaymentAmount: 50400 },
-  { id: '7', slipNumber: 'B-02', dock: 'B', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '8', slipNumber: 'B-03', dock: 'B', tenantName: 'Coastal Charters LLC', boatName: 'Charter One', boatLength: 45, contractStart: '2025-06-01', contractEnd: '2026-05-31', billingCycle: 'Monthly', monthlyRate: 3800, annualRate: 45600, electricityMode: 'Flat Rate', electricityCharge: 150, depositHeld: 3800, balance: 3950, status: 'Active', autoRenew: true, daysLeft: 432, lastPaymentDate: '2026-02-01', lastPaymentAmount: 3950 },
-  { id: '9', slipNumber: 'B-04', dock: 'B', tenantName: 'Blue Water Excursions', boatName: 'Blue Wave', boatLength: 52, contractStart: '2025-03-01', contractEnd: '2026-02-28', billingCycle: 'Monthly', monthlyRate: 4500, annualRate: 54000, electricityMode: 'Metered', electricityCharge: 310, depositHeld: 4500, balance: 0, status: 'Expired', autoRenew: false, daysLeft: -25, lastPaymentDate: '2026-02-01', lastPaymentAmount: 4810 },
-  { id: '10', slipNumber: 'C-01', dock: 'C', tenantName: 'Elena Windward', boatName: 'Windward', boatLength: 28, contractStart: '2025-04-01', contractEnd: '2025-10-31', billingCycle: 'Monthly', monthlyRate: 1200, annualRate: 14400, electricityMode: 'Flat Rate', electricityCharge: 50, depositHeld: 1200, balance: 0, status: 'Active', autoRenew: false, daysLeft: 220, lastPaymentDate: '2026-03-01', lastPaymentAmount: 1250 },
-  { id: '11', slipNumber: 'C-02', dock: 'C', tenantName: 'Mike Anchorage', boatName: 'Bayrunner', boatLength: 26, contractStart: '2025-07-01', contractEnd: '2026-06-30', billingCycle: 'Monthly', monthlyRate: 1100, annualRate: 13200, electricityMode: 'Metered', electricityCharge: 68, depositHeld: 1100, balance: 0, status: 'Active', autoRenew: true, daysLeft: 462, lastPaymentDate: '2026-03-01', lastPaymentAmount: 1168 },
-  { id: '12', slipNumber: 'C-03', dock: 'C', tenantName: '', boatName: '', boatLength: 0, contractStart: '', contractEnd: '', billingCycle: '', monthlyRate: 0, annualRate: 0, electricityMode: '', electricityCharge: 0, depositHeld: 0, balance: 0, status: 'Vacant', autoRenew: false, daysLeft: 0, lastPaymentDate: '', lastPaymentAmount: 0 },
-  { id: '13', slipNumber: 'C-04', dock: 'C', tenantName: 'Lisa Bayfront', boatName: 'Sunset Chaser', boatLength: 30, contractStart: '2025-01-01', contractEnd: '2026-06-30', billingCycle: 'Quarterly', monthlyRate: 1350, annualRate: 16200, electricityMode: 'Metered', electricityCharge: 85, depositHeld: 1350, balance: 0, status: 'Active', autoRenew: true, daysLeft: 462, lastPaymentDate: '2026-01-01', lastPaymentAmount: 4305 },
-  { id: '14', slipNumber: 'C-05', dock: 'C', tenantName: 'Amy Portview', boatName: 'Portside', boatLength: 24, contractStart: '2026-01-01', contractEnd: '2026-12-31', billingCycle: 'Monthly', monthlyRate: 950, annualRate: 11400, electricityMode: 'Flat Rate', electricityCharge: 40, depositHeld: 950, balance: 990, status: 'Active', autoRenew: false, daysLeft: 646, lastPaymentDate: '2026-02-01', lastPaymentAmount: 990 },
-  { id: '15', slipNumber: 'C-06', dock: 'C', tenantName: 'Sarah Coastline', boatName: 'Tideline', boatLength: 22, contractStart: '2025-09-01', contractEnd: '2026-08-31', billingCycle: 'Monthly', monthlyRate: 850, annualRate: 10200, electricityMode: 'Metered', electricityCharge: 55, depositHeld: 850, balance: 0, status: 'Active', autoRenew: true, daysLeft: 524, lastPaymentDate: '2026-03-01', lastPaymentAmount: 905 },
-];
+// GET /reports/rent-roll -> { asOfDate, summary, rows: [...] } (all money in cents)
+interface RentRollRow {
+  slipId: string;
+  slipNumber: string;
+  dock: string | null;
+  tenant: string | null;
+  boatName: string | null;
+  boatLength: number | null;
+  contractStart: string | null;
+  contractEnd: string | null;
+  billingCycle: string | null;
+  monthlyRateCents: number;
+  annualRateCents: number;
+  electricityMode: string | null;
+  electricityChargeCents: number;
+  securityDepositCents: number;
+  contractStatus: string;
+  autoRenew: boolean;
+  daysUntilExpiration: number | null;
+  lastPaymentDate: string | null;
+  lastPaymentAmountCents: number;
+  outstandingBalanceCents: number;
+}
+
+function toEntry(r: RentRollRow): RentRollEntry {
+  const status: RentRollEntry['status'] =
+    r.contractStatus === 'VACANT' ? 'Vacant' : r.contractStatus === 'EXPIRING' ? 'Expiring' : r.contractStatus === 'EXPIRED' ? 'Expired' : 'Active';
+  return {
+    id: r.slipId,
+    slipNumber: r.slipNumber,
+    dock: r.dock ?? '—',
+    tenantName: r.tenant ?? '',
+    boatName: r.boatName ?? '',
+    boatLength: r.boatLength ?? 0,
+    contractStart: r.contractStart ?? '',
+    contractEnd: r.contractEnd ?? '',
+    billingCycle: r.billingCycle ? humanizeEnum(r.billingCycle) : '',
+    monthlyRate: r.monthlyRateCents / 100,
+    annualRate: r.annualRateCents / 100,
+    electricityMode: r.electricityMode ?? '—',
+    electricityCharge: r.electricityChargeCents / 100,
+    depositHeld: r.securityDepositCents / 100,
+    balance: r.outstandingBalanceCents / 100,
+    status,
+    autoRenew: r.autoRenew,
+    daysLeft: r.daysUntilExpiration ?? 0,
+    lastPaymentDate: r.lastPaymentDate ?? '',
+    lastPaymentAmount: r.lastPaymentAmountCents / 100,
+  };
+}
 
 /* ── Styles ─────────────────────────────────────────────── */
 
@@ -92,10 +128,9 @@ export default function RentRoll() {
   const [dockFilter, setDockFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [exportMsg, setExportMsg] = useState<string | null>(null);
-
-  const { data: apiData } = useApi<RentRollEntry[]>('get', '/api/reports/rent-roll', { immediate: true });
-  const entries = apiData || MOCK_RENT_ROLL;
+  const list = useList<RentRollEntry, RentRollRow>('/reports/rent-roll', { key: 'rows', map: toEntry });
+  const entries = list.items;
+  const docks = Array.from(new Set(entries.map((e) => e.dock))).sort();
 
   const filtered = entries.filter((e) => {
     if (dockFilter !== 'All' && e.dock !== dockFilter) return false;
@@ -115,7 +150,24 @@ export default function RentRoll() {
   const expiring30 = entries.filter((e) => e.status === 'Expiring' || (e.daysLeft > 0 && e.daysLeft <= 30)).length;
   const vacantCount = entries.filter((e) => e.status === 'Vacant').length;
 
-  const fmt = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0 });
+  const fmt = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const exportCsv = () =>
+    downloadCsv(
+      `rent-roll-${todayKey()}.csv`,
+      ['Slip', 'Dock', 'Tenant', 'Boat', 'Length', 'Start', 'End', 'Cycle', 'Monthly', 'Annual', 'Electric', 'Deposit', 'Balance', 'Status', 'Auto Renew', 'Days Left'],
+      filtered.map((e) => [e.slipNumber, e.dock, e.tenantName, e.boatName, e.boatLength || '', e.contractStart.slice(0, 10), e.contractEnd.slice(0, 10), e.billingCycle, e.monthlyRate.toFixed(2), e.annualRate.toFixed(2), e.electricityCharge.toFixed(2), e.depositHeld.toFixed(2), e.balance.toFixed(2), e.status, e.autoRenew ? 'Yes' : 'No', e.status === 'Vacant' ? '' : e.daysLeft]),
+    );
+
+  if (list.loading || list.error || entries.length === 0) {
+    return (
+      <div style={st.page}>
+        <h1 style={st.title} className="helm-page-title">Rent Roll</h1>
+        <hr style={st.divider} />
+        {list.loading ? <LoadingState label="Loading rent roll…" /> : list.error ? <ErrorState title="Could not load the rent roll" message={list.status === 403 ? 'The rent roll is limited to owner, manager and accounting roles.' : list.error} onRetry={list.refetch} /> : <EmptyState title="No slips set up yet" />}
+      </div>
+    );
+  }
 
   return (
     <div style={st.page}>
@@ -158,9 +210,7 @@ export default function RentRoll() {
         </div>
         <select style={st.select} value={dockFilter} onChange={(e) => setDockFilter(e.target.value)}>
           <option value="All">All Docks</option>
-          <option value="A">Dock A</option>
-          <option value="B">Dock B</option>
-          <option value="C">Dock C</option>
+          {docks.map((d) => <option key={d} value={d}>Dock {d}</option>)}
         </select>
         <select style={st.select} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="All">All Statuses</option>
@@ -169,9 +219,9 @@ export default function RentRoll() {
           <option value="Expired">Expired</option>
           <option value="Vacant">Vacant</option>
         </select>
-        <button style={st.exportBtn} onClick={() => { setExportMsg('PDF'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'PDF' ? 'Downloaded!' : 'PDF'}</button>
-        <button style={st.exportBtn} onClick={() => { setExportMsg('CSV'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'CSV' ? 'Downloaded!' : 'CSV'}</button>
-        <button style={st.exportBtn} onClick={() => { setExportMsg('Excel'); setTimeout(() => setExportMsg(null), 2000); }}><Download size={14} /> {exportMsg === 'Excel' ? 'Downloaded!' : 'Excel'}</button>
+        <ComingSoonButton style={st.exportBtn} reason="PDF export is not available yet."><Download size={14} /> PDF</ComingSoonButton>
+        <button style={st.exportBtn} onClick={exportCsv}><Download size={14} /> CSV</button>
+        <ComingSoonButton style={st.exportBtn} reason="Excel export is not available yet; use CSV."><Download size={14} /> Excel</ComingSoonButton>
       </div>
 
       <div style={st.tableWrap} className="helm-table-wrap">
@@ -214,7 +264,7 @@ export default function RentRoll() {
                     <td style={st.td}>{e.dock}</td>
                     <td style={{ ...st.td, fontWeight: 600, color: e.status === 'Vacant' ? '#94A3B8' : '#0A2342' }}>{e.tenantName || '— Vacant —'}</td>
                     <td style={{ ...st.td, color: e.status === 'Vacant' ? '#94A3B8' : '#0A2342' }}>{e.boatName ? `${e.boatName} (${e.boatLength}')` : '—'}</td>
-                    <td style={{ ...st.td, fontSize: '12px' }}>{e.contractStart && e.contractEnd ? `${e.contractStart} → ${e.contractEnd}` : '—'}</td>
+                    <td style={{ ...st.td, fontSize: '12px' }}>{e.contractStart ? `${formatDate(e.contractStart)} → ${e.contractEnd ? formatDate(e.contractEnd) : 'open'}` : '—'}</td>
                     <td style={st.td}>{e.billingCycle || '—'}</td>
                     <td style={{ ...st.td, ...st.mono, fontWeight: 600 }}>{e.monthlyRate > 0 ? fmt(e.monthlyRate) : '—'}</td>
                     <td style={{ ...st.td, ...st.mono }}>{e.annualRate > 0 ? fmt(e.annualRate) : '—'}</td>
@@ -229,7 +279,7 @@ export default function RentRoll() {
                     <tr style={{ backgroundColor: '#F8FAFC' }}>
                       <td colSpan={15} style={{ padding: '16px 24px 16px 48px', borderBottom: '2px solid #E2E8F0' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', fontSize: '13px' }}>
-                          <div><span style={{ color: '#64748B', fontWeight: 600 }}>Last Payment:</span> {e.lastPaymentDate} — {fmt(e.lastPaymentAmount)}</div>
+                          <div><span style={{ color: '#64748B', fontWeight: 600 }}>Last Payment:</span> {e.lastPaymentDate ? `${formatDate(e.lastPaymentDate)} — ${fmt(e.lastPaymentAmount)}` : 'None recorded'}</div>
                           <div><span style={{ color: '#64748B', fontWeight: 600 }}>Electricity Mode:</span> {e.electricityMode}</div>
                           <div><span style={{ color: '#64748B', fontWeight: 600 }}>Security Deposit:</span> {fmt(e.depositHeld)}</div>
                         </div>

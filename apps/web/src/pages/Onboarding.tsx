@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { apiUrl } from '../lib/api';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+// Same-origin by default; VITE_API_URL overrides (handled in lib/api).
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +41,29 @@ const TIMEZONES = [
 // Inline styles
 // ---------------------------------------------------------------------------
 
+const stepCircle = (active: boolean, done: boolean): React.CSSProperties => ({
+    width: 36,
+    height: 36,
+    borderRadius: '50%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 700,
+    fontSize: 14,
+    color: active || done ? WHITE : NAVY,
+    background: active ? CYAN : done ? NAVY : WHITE,
+    border: `2px solid ${active ? CYAN : NAVY}`,
+    flexShrink: 0,
+    transition: 'all 0.2s',
+  });
+
+const stepLine = (done: boolean): React.CSSProperties => ({
+    height: 3,
+    width: 60,
+    background: done ? NAVY : BORDER,
+    transition: 'background 0.2s',
+  });
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
@@ -68,27 +92,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 0,
     marginBottom: 40,
   },
-  stepCircle: (active: boolean, done: boolean): React.CSSProperties => ({
-    width: 36,
-    height: 36,
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 700,
-    fontSize: 14,
-    color: active || done ? WHITE : NAVY,
-    background: active ? CYAN : done ? NAVY : WHITE,
-    border: `2px solid ${active ? CYAN : NAVY}`,
-    flexShrink: 0,
-    transition: 'all 0.2s',
-  }),
-  stepLine: (done: boolean): React.CSSProperties => ({
-    height: 3,
-    width: 60,
-    background: done ? NAVY : BORDER,
-    transition: 'background 0.2s',
-  }),
 
   // Card
   card: {
@@ -313,6 +316,11 @@ export default function Onboarding() {
 
   // Step 3 — Stripe
   const [stripeConnected, setStripeConnected] = useState(false);
+  // 'opened' = the provider window was opened; only the server can confirm a connection.
+  const [stripeAuthOpened, setStripeAuthOpened] = useState(false);
+  const [qboAuthOpened, setQboAuthOpened] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [statusNote, setStatusNote] = useState('');
 
   // Step 4 — QBO
   const [qboConnected, setQboConnected] = useState(false);
@@ -328,7 +336,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/start`, {
+      const res = await fetch(apiUrl(`/onboarding/start`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -360,7 +368,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/branding`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/branding`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -391,7 +399,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/stripe`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/stripe`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -402,7 +410,8 @@ export default function Onboarding() {
       const data = await res.json();
       // Open Stripe OAuth in a new window
       window.open(data.url, '_blank', 'noopener,noreferrer');
-      setStripeConnected(true);
+      // Opening the window is not a connection. Wait for the server to confirm.
+      setStripeAuthOpened(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -415,7 +424,7 @@ export default function Onboarding() {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/qbo`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/qbo`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -425,11 +434,38 @@ export default function Onboarding() {
       }
       const data = await res.json();
       window.open(data.url, '_blank', 'noopener,noreferrer');
-      setQboConnected(true);
+      // Opening the Intuit window is not a connection. Wait for the server to confirm.
+      setQboAuthOpened(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** Ask the server whether Stripe / QuickBooks are actually connected. */
+  async function handleCheckStatus() {
+    if (!tenantId) return;
+    setCheckingStatus(true);
+    setStatusNote('');
+    try {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/status`));
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed (${res.status})`);
+      }
+      const data = (await res.json()) as { checklist?: { stripe?: { status?: string }; qbo?: { status?: string } } };
+      const stripeOk = data.checklist?.stripe?.status === 'connected';
+      const qboOk = data.checklist?.qbo?.status === 'connected';
+      setStripeConnected(stripeOk);
+      setQboConnected(qboOk);
+      setStatusNote(
+        `Server reports: Stripe ${stripeOk ? 'connected' : 'not connected'}, QuickBooks ${qboOk ? 'connected' : 'not connected'}.`,
+      );
+    } catch (err: unknown) {
+      setStatusNote(`Could not verify the connection: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setCheckingStatus(false);
     }
   }
 
@@ -439,7 +475,7 @@ export default function Onboarding() {
     setLoading(true);
     try {
       // Seed chart of accounts
-      const res = await fetch(`${API_BASE}/api/onboarding/${tenantId}/chart-of-accounts`, {
+      const res = await fetch(apiUrl(`/onboarding/${tenantId}/chart-of-accounts`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -468,9 +504,9 @@ export default function Onboarding() {
           const done = num < step;
           return (
             <div key={label} style={{ display: 'flex', alignItems: 'center' }}>
-              {i > 0 && <div style={styles.stepLine(done)} />}
+              {i > 0 && <div style={stepLine(done)} />}
               <div
-                style={styles.stepCircle(active, done)}
+                style={stepCircle(active, done)}
                 title={label}
               >
                 {done ? '\u2713' : num}
@@ -687,9 +723,20 @@ export default function Onboarding() {
             disabled={loading}
             onClick={handleConnectStripe}
           >
-            {loading ? 'Connecting...' : 'Connect Stripe Account'}
+            {loading ? 'Connecting...' : stripeAuthOpened ? 'Reopen Stripe Authorization' : 'Connect Stripe Account'}
           </button>
         )}
+        {!stripeConnected && stripeAuthOpened && (
+          <div style={{ marginTop: 12, fontSize: 13, color: SLATE, lineHeight: 1.5 }}>
+            Finish connecting in the Stripe window, then check the status. Stripe is not marked connected until the server confirms it.
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.secondaryBtn} disabled={checkingStatus} onClick={handleCheckStatus}>
+                {checkingStatus ? 'Checking…' : 'Check connection status'}
+              </button>
+            </div>
+          </div>
+        )}
+        {statusNote && <p style={{ marginTop: 8, fontSize: 13, color: SLATE }}>{statusNote}</p>}
 
         {error && <p style={styles.errorText}>{error}</p>}
 
@@ -724,9 +771,20 @@ export default function Onboarding() {
             disabled={loading}
             onClick={handleConnectQBO}
           >
-            {loading ? 'Connecting...' : 'Connect QuickBooks'}
+            {loading ? 'Connecting...' : qboAuthOpened ? 'Reopen QuickBooks Authorization' : 'Connect QuickBooks'}
           </button>
         )}
+        {!qboConnected && qboAuthOpened && (
+          <div style={{ marginTop: 12, fontSize: 13, color: SLATE, lineHeight: 1.5 }}>
+            Finish authorizing in the Intuit window, then check the status. QuickBooks is not marked connected until the server confirms it.
+            <div style={{ marginTop: 8 }}>
+              <button style={styles.secondaryBtn} disabled={checkingStatus} onClick={handleCheckStatus}>
+                {checkingStatus ? 'Checking…' : 'Check connection status'}
+              </button>
+            </div>
+          </div>
+        )}
+        {statusNote && <p style={{ marginTop: 8, fontSize: 13, color: SLATE }}>{statusNote}</p>}
 
         {error && <p style={styles.errorText}>{error}</p>}
 
@@ -776,8 +834,8 @@ export default function Onboarding() {
       { label: 'Timezone', value: timezone.replace(/_/g, ' ') },
       { label: 'Fiscal Year End', value: fiscalYearEnd },
       { label: 'Branding', value: brandingSaved ? 'Configured' : 'Not configured' },
-      { label: 'Stripe', value: stripeConnected ? 'Connected' : 'Not connected' },
-      { label: 'QuickBooks', value: qboConnected ? 'Connected' : 'Not connected' },
+      { label: 'Stripe', value: stripeConnected ? 'Connected' : stripeAuthOpened ? 'Not confirmed by server' : 'Not connected' },
+      { label: 'QuickBooks', value: qboConnected ? 'Connected' : qboAuthOpened ? 'Not confirmed by server' : 'Not connected' },
     ];
 
     return (

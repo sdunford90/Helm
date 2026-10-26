@@ -1,6 +1,9 @@
-import { useState, useMemo } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { useApi } from '../hooks/useApi';
+import { useState } from 'react';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useList, useResource } from '../hooks/useApi';
+import { customerName, type InvoiceDTO } from '../lib/dto';
+import { DataState, EmptyState, Pager } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 import {
   DollarSign,
   Search,
@@ -11,7 +14,7 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import InvoiceForm from '../components/InvoiceForm';
-import { formatCents, formatDate } from '../lib/format';
+import { formatCents, formatDate, toDateKey } from '../lib/format';
 
 /* ─── Types ─── */
 type InvoiceStatus = 'Draft' | 'Issued' | 'Paid' | 'Past Due' | 'Void' | 'Collections';
@@ -29,19 +32,29 @@ interface Invoice {
   balance: number;
 }
 
-/* ─── Mock data ─── */
-const mockInvoices: Invoice[] = [
-  { id: '1', number: 'INV-2026-0001', customer: 'Harbor Point Yacht Club', issued: '2026-03-01', due: '2026-03-31', status: 'Issued', subtotal: 285000, tax: 19950, total: 304950, balance: 304950 },
-  { id: '2', number: 'INV-2026-0002', customer: 'James T. Morrison', issued: '2026-03-03', due: '2026-04-02', status: 'Draft', subtotal: 125000, tax: 8750, total: 133750, balance: 133750 },
-  { id: '3', number: 'INV-2026-0003', customer: 'Coastal Marine LLC', issued: '2026-02-15', due: '2026-03-15', status: 'Paid', subtotal: 450000, tax: 31500, total: 481500, balance: 0 },
-  { id: '4', number: 'INV-2026-0004', customer: 'Maria Gonzalez', issued: '2026-01-10', due: '2026-02-09', status: 'Past Due', subtotal: 175000, tax: 12250, total: 187250, balance: 187250 },
-  { id: '5', number: 'INV-2026-0005', customer: 'Sunset Bay Holdings', issued: '2025-11-01', due: '2025-12-01', status: 'Collections', subtotal: 620000, tax: 43400, total: 663400, balance: 663400 },
-  { id: '6', number: 'INV-2026-0006', customer: 'Robert Chen', issued: '2026-03-10', due: '2026-04-09', status: 'Issued', subtotal: 95000, tax: 6650, total: 101650, balance: 101650 },
-  { id: '7', number: 'INV-2026-0007', customer: 'Windward Sailing Co.', issued: '2026-02-01', due: '2026-03-03', status: 'Void', subtotal: 310000, tax: 21700, total: 331700, balance: 0 },
-  { id: '8', number: 'INV-2026-0008', customer: 'Patricia Williams', issued: '2026-03-15', due: '2026-04-14', status: 'Paid', subtotal: 88000, tax: 6160, total: 94160, balance: 0 },
-  { id: '9', number: 'INV-2026-0009', customer: 'Blue Horizon Charters', issued: '2026-03-18', due: '2026-04-17', status: 'Issued', subtotal: 540000, tax: 37800, total: 577800, balance: 577800 },
-  { id: '10', number: 'INV-2026-0010', customer: 'Thomas Drake', issued: '2026-01-20', due: '2026-02-19', status: 'Past Due', subtotal: 210000, tax: 14700, total: 224700, balance: 112350 },
-];
+const STATUS_LABEL: Record<InvoiceDTO['status'], InvoiceStatus> = {
+  DRAFT: 'Draft', ISSUED: 'Issued', PAID: 'Paid', PAST_DUE: 'Past Due', VOID: 'Void', COLLECTIONS: 'Collections',
+};
+const STATUS_ENUM: Record<string, InvoiceDTO['status']> = {
+  Draft: 'DRAFT', Issued: 'ISSUED', Paid: 'PAID', 'Past Due': 'PAST_DUE', Void: 'VOID', Collections: 'COLLECTIONS',
+};
+
+function toInvoice(dto: InvoiceDTO): Invoice {
+  return {
+    id: dto.id,
+    number: dto.invoiceNumber,
+    customer: customerName(dto.customer),
+    issued: dto.issuedDate,
+    due: dto.dueDate,
+    status: STATUS_LABEL[dto.status] ?? 'Draft',
+    subtotal: dto.subtotalCents,
+    tax: dto.taxCents,
+    total: dto.totalCents,
+    balance: dto.balanceCents,
+  };
+}
+
+const PAGE_SIZE = 25;
 
 const STATUS_ALL = ['All', 'Draft', 'Issued', 'Paid', 'Past Due', 'Void', 'Collections'] as const;
 
@@ -98,39 +111,53 @@ export default function Billing() {
   const [search, setSearch] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [showForm, setShowForm] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showForm, setShowForm] = useState(searchParams.get('new') === '1');
+  const [skip, setSkip] = useState(0);
+  const toast = useToast();
 
-  // API calls with fallback to mock data
-  const { data: apiInvoices, loading } = useApi<Invoice[]>('get', '/api/invoices', { immediate: true });
-  const createInvoiceApi = useApi<Invoice>('post', '/api/invoices');
-  const invoices = useMemo(() => apiInvoices ?? mockInvoices, [apiInvoices]);
+  // Server-side filters (status, issued date range) and paging.
+  const params = new URLSearchParams({ skip: String(skip), take: String(PAGE_SIZE), sortBy: 'issuedDate', sortOrder: 'desc' });
+  if (statusFilter !== 'All') params.set('status', STATUS_ENUM[statusFilter]);
+  if (dateFrom) params.set('dateFrom', dateFrom);
+  if (dateTo) params.set('dateTo', `${dateTo}T23:59:59`);
+  const list = useList<Invoice, InvoiceDTO>(`/invoices?${params.toString()}`, { map: toInvoice });
+  const invoices = list.items;
 
+  // The API has no invoice text search; this filters the loaded page only.
   const filtered = invoices.filter((inv) => {
-    if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
     if (search && !inv.customer.toLowerCase().includes(search.toLowerCase()) && !inv.number.toLowerCase().includes(search.toLowerCase())) return false;
-    if (dateFrom && inv.issued < dateFrom) return false;
-    if (dateTo && inv.issued > dateTo) return false;
     return true;
   });
 
-  const totalOutstanding = invoices.reduce((s, i) => s + i.balance, 0);
-  const paidThisMonth = invoices.filter((i) => i.status === 'Paid' && i.issued >= '2026-03-01').reduce((s, i) => s + i.total, 0);
-  const pastDue = invoices.filter((i) => i.status === 'Past Due' || i.status === 'Collections').reduce((s, i) => s + i.balance, 0);
-  const credits = 4500; // mock credits
+  // Summary figures come from report endpoints, not from the 25 loaded rows.
+  const now = new Date();
+  const monthStart = toDateKey(new Date(now.getFullYear(), now.getMonth(), 1));
+  const aging = useResource<{ totalOutstanding: number; buckets: Record<string, number> }>('/reports/ar-aging');
+  const revenue = useResource<{ revenue: { totalCents: number } }>(`/reports/revenue?startDate=${monthStart}`);
+  const pastDue = aging.data
+    ? (aging.data.buckets.days30 ?? 0) + (aging.data.buckets.days60 ?? 0) + (aging.data.buckets.days90 ?? 0) + (aging.data.buckets.days120plus ?? 0)
+    : null;
 
   const summaryCards = [
-    { label: 'Total Outstanding', value: totalOutstanding, icon: DollarSign, color: totalOutstanding > 0 ? '#B71C1C' : '#0A2342' },
-    { label: 'Paid This Month', value: paidThisMonth, icon: CheckCircle, color: '#1B5E20' },
-    { label: 'Past Due (30+ days)', value: pastDue, icon: AlertTriangle, color: pastDue > 0 ? '#B71C1C' : '#0A2342' },
-    { label: 'Credits Available', value: credits, icon: CreditCard, color: '#0A2342' },
+    { label: 'Total Outstanding', value: aging.data?.totalOutstanding ?? null, error: aging.error, icon: DollarSign, color: (aging.data?.totalOutstanding ?? 0) > 0 ? '#B71C1C' : '#0A2342' },
+    { label: 'Collected This Month', value: revenue.data?.revenue.totalCents ?? null, error: revenue.error, icon: CheckCircle, color: '#1B5E20' },
+    { label: 'Past Due', value: pastDue, error: aging.error, icon: AlertTriangle, color: (pastDue ?? 0) > 0 ? '#B71C1C' : '#0A2342' },
+    { label: 'Credits Available', value: null, error: 'Customer credits are not reported by the API yet.', icon: CreditCard, color: '#0A2342' },
   ];
+
+  const closeForm = () => {
+    setShowForm(false);
+    if (searchParams.get('new')) {
+      searchParams.delete('new');
+      setSearchParams(searchParams, { replace: true });
+    }
+  };
 
   return (
     <div style={styles.page}>
       <h1 style={styles.title} className="helm-page-title">Billing</h1>
       <hr style={styles.divider} />
-
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading invoices...</div>}
 
       {/* Summary Cards */}
       <div style={styles.summaryRow} className="helm-stats-grid">
@@ -140,7 +167,10 @@ export default function Billing() {
               <span style={styles.summaryLabel}>{c.label}</span>
               <c.icon size={20} style={{ color: '#2E4A6B' }} />
             </div>
-            <div style={{ ...styles.summaryValue, color: c.color }}>{formatCents(c.value)}</div>
+            <div style={{ ...styles.summaryValue, color: c.value === null ? '#94A3B8' : c.color }} title={c.error ?? undefined}>
+              {c.value === null ? '—' : formatCents(c.value)}
+            </div>
+            {c.value === null && c.error && <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>{c.error}</div>}
           </div>
         ))}
       </div>
@@ -152,7 +182,7 @@ export default function Billing() {
           <select
             style={{ ...styles.select, paddingLeft: '30px' }}
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => { setStatusFilter(e.target.value); setSkip(0); }}
           >
             {STATUS_ALL.map((s) => <option key={s} value={s}>{s === 'All' ? 'All Statuses' : s}</option>)}
           </select>
@@ -161,19 +191,27 @@ export default function Billing() {
           <Search size={16} style={styles.searchIcon as React.CSSProperties} />
           <input
             style={styles.searchInput}
-            placeholder="Search customers or invoices..."
+            placeholder="Filter this page by customer or invoice #..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <input type="date" style={styles.dateInput} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="From date" />
-        <input type="date" style={styles.dateInput} value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="To date" />
+        <input type="date" style={styles.dateInput} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setSkip(0); }} title="Issued from" />
+        <input type="date" style={styles.dateInput} value={dateTo} onChange={(e) => { setDateTo(e.target.value); setSkip(0); }} title="Issued to" />
         <button style={styles.createBtn} onClick={() => setShowForm(true)}>
           <Plus size={16} /> Create Invoice
         </button>
       </div>
 
       {/* Invoice Table */}
+      <DataState
+        loading={list.loading}
+        error={list.error}
+        onRetry={list.refetch}
+        errorTitle="Could not load invoices"
+        isEmpty={invoices.length === 0}
+        empty={<EmptyState title="No invoices found" message={statusFilter !== 'All' || dateFrom || dateTo ? 'No invoices match these filters.' : 'Create your first invoice to get started.'} />}
+      >
       <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #CCCCCC', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
         <table style={styles.table}>
           <thead>
@@ -224,21 +262,26 @@ export default function Billing() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={10} style={{ ...styles.td, textAlign: 'center', color: '#94A3B8', padding: '48px 16px' }}>
-                  No invoices match the current filters.
+                <td colSpan={10} style={{ ...styles.td, textAlign: 'center', color: '#64748B', padding: '48px 16px' }}>
+                  No invoices on this page match “{search}”.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      <Pager skip={skip} take={PAGE_SIZE} total={list.pagination?.total ?? invoices.length} onChange={setSkip} />
+      </DataState>
 
       {/* Invoice Form Modal */}
       {showForm && (
         <InvoiceForm
-          onClose={() => setShowForm(false)}
-          onSaveDraft={(data) => createInvoiceApi.execute({ ...data, status: 'Draft' })}
-          onFinalize={(data) => createInvoiceApi.execute({ ...data, status: 'Issued' })}
+          onClose={closeForm}
+          onCreated={(inv, finalized) => {
+            toast.success(`Invoice ${inv.invoiceNumber} ${finalized ? "created and finalized" : "saved as draft"}`);
+            list.refetch();
+            aging.refetch();
+          }}
         />
       )}
     </div>

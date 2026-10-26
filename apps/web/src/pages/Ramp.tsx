@@ -1,5 +1,10 @@
 import { useState } from 'react';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList, useResource } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { customerName, type CustomerRef } from '../lib/dto';
+import { dateKey, formatDate, todayKey } from '../lib/format';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 import {
   Search,
   Plus,
@@ -49,47 +54,51 @@ interface SeasonalPass {
   status: PassStatus;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const TICKET_RATES: Record<TicketType, number> = {
-  'Single Launch': 25,
-  'Daily Pass': 45,
-  'Seasonal Pass': 0,
+interface RampTicketDTO {
+  id: string;
+  customerId?: string | null;
+  guestName?: string | null;
+  licensePlate?: string | null;
+  boatRegistration?: string | null;
+  ticketType: 'SINGLE_LAUNCH' | 'DAILY_PASS' | 'SEASONAL_PASS';
+  amountCents: number;
+  paymentMethod?: string | null;
+  createdAt: string;
+  customer?: CustomerRef | null;
+}
+
+const TYPE_LABEL: Record<RampTicketDTO['ticketType'], TicketType> = {
+  SINGLE_LAUNCH: 'Single Launch', DAILY_PASS: 'Daily Pass', SEASONAL_PASS: 'Seasonal Pass',
+};
+const TYPE_ENUM: Record<TicketType, RampTicketDTO['ticketType']> = {
+  'Single Launch': 'SINGLE_LAUNCH', 'Daily Pass': 'DAILY_PASS', 'Seasonal Pass': 'SEASONAL_PASS',
 };
 
-const MOCK_TICKETS: RampTicket[] = [
-  { id: '1', ticketNumber: 'RM-4001', time: '06:15 AM', date: '2026-03-25', customerName: 'Frank Delaney', isGuest: false, boatReg: 'FL-3821-AB', licensePlate: 'ABC 1234', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Credit Card' },
-  { id: '2', ticketNumber: 'RM-4002', time: '06:42 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'GA-1155-CD', licensePlate: 'XYZ 5678', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Cash' },
-  { id: '3', ticketNumber: 'RM-4003', time: '07:10 AM', date: '2026-03-25', customerName: 'Walter Hughes', isGuest: false, boatReg: 'FL-9082-EF', licensePlate: 'WAL 9012', ticketType: 'Seasonal Pass', amount: 0, status: 'Completed', payment: 'Season Pass #SP-201' },
-  { id: '4', ticketNumber: 'RM-4004', time: '07:35 AM', date: '2026-03-25', customerName: 'Sarah Nguyen', isGuest: false, boatReg: 'FL-4410-GH', licensePlate: 'SRN 3456', ticketType: 'Daily Pass', amount: 45, status: 'Active', payment: 'Credit Card' },
-  { id: '5', ticketNumber: 'RM-4005', time: '08:00 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'SC-7722-IJ', licensePlate: 'OUT 7890', ticketType: 'Single Launch', amount: 25, status: 'Active', payment: 'Cash' },
-  { id: '6', ticketNumber: 'RM-4006', time: '08:25 AM', date: '2026-03-25', customerName: 'Marcus Bell', isGuest: false, boatReg: 'FL-5567-KL', licensePlate: 'MBL 1122', ticketType: 'Seasonal Pass', amount: 0, status: 'Active', payment: 'Season Pass #SP-204' },
-  { id: '7', ticketNumber: 'RM-4007', time: '08:50 AM', date: '2026-03-25', customerName: 'Patricia Coleman', isGuest: false, boatReg: 'FL-2298-MN', licensePlate: 'PCL 3344', ticketType: 'Single Launch', amount: 25, status: 'Active', payment: 'Credit Card' },
-  { id: '8', ticketNumber: 'RM-4008', time: '09:15 AM', date: '2026-03-25', customerName: 'Guest', isGuest: true, boatReg: 'AL-8833-OP', licensePlate: 'VIS 5566', ticketType: 'Daily Pass', amount: 45, status: 'Active', payment: 'Credit Card' },
-  { id: '9', ticketNumber: 'RM-3990', time: '03:30 PM', date: '2026-03-24', customerName: 'James O\'Brien', isGuest: false, boatReg: 'FL-6640-QR', licensePlate: 'JOB 7788', ticketType: 'Single Launch', amount: 25, status: 'Completed', payment: 'Cash' },
-  { id: '10', ticketNumber: 'RM-3991', time: '04:10 PM', date: '2026-03-24', customerName: 'Diane Kowalski', isGuest: false, boatReg: 'FL-1199-ST', licensePlate: 'DKW 9900', ticketType: 'Seasonal Pass', amount: 0, status: 'Completed', payment: 'Season Pass #SP-203' },
-  { id: '11', ticketNumber: 'RM-3985', time: '10:00 AM', date: '2026-03-23', customerName: 'Guest', isGuest: true, boatReg: 'NC-5544-UV', licensePlate: 'TMP 1111', ticketType: 'Single Launch', amount: 25, status: 'Void', payment: 'Refunded' },
-  { id: '12', ticketNumber: 'RM-3986', time: '11:20 AM', date: '2026-03-23', customerName: 'Carlos Rivera', isGuest: false, boatReg: 'FL-7788-WX', licensePlate: 'CRV 2233', ticketType: 'Daily Pass', amount: 45, status: 'Completed', payment: 'Credit Card' },
-];
-
-const MOCK_PASSES: SeasonalPass[] = [
-  { id: '1', passNumber: 'SP-201', customer: 'Walter Hughes', phone: '(555) 201-0001', email: 'whughes@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 34, status: 'Active' },
-  { id: '2', passNumber: 'SP-202', customer: 'Linda Prescott', phone: '(555) 202-0002', email: 'lprescott@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 22, status: 'Active' },
-  { id: '3', passNumber: 'SP-203', customer: 'Diane Kowalski', phone: '(555) 203-0003', email: 'dkowalski@email.com', startDate: '2026-01-01', endDate: '2026-12-31', launchesUsed: 41, status: 'Active' },
-  { id: '4', passNumber: 'SP-204', customer: 'Marcus Bell', phone: '(555) 204-0004', email: 'mbell@email.com', startDate: '2026-03-01', endDate: '2026-10-31', launchesUsed: 8, status: 'Active' },
-  { id: '5', passNumber: 'SP-185', customer: 'Raymond Foster', phone: '(555) 205-0005', email: 'rfoster@email.com', startDate: '2025-01-01', endDate: '2025-12-31', launchesUsed: 52, status: 'Expired' },
-];
+function toTicket(t: RampTicketDTO): RampTicket {
+  const created = new Date(t.createdAt);
+  return {
+    id: t.id,
+    ticketNumber: t.id.slice(0, 8).toUpperCase(),
+    time: created.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    date: dateKey(t.createdAt),
+    customerName: t.customer ? customerName(t.customer) : t.guestName ?? 'Guest',
+    isGuest: !t.customerId,
+    boatReg: t.boatRegistration ?? '—',
+    licensePlate: t.licensePlate ?? '—',
+    ticketType: TYPE_LABEL[t.ticketType] ?? 'Single Launch',
+    amount: t.amountCents / 100,
+    // The API has no ticket status; a recorded ticket is shown as completed.
+    status: 'Completed',
+    payment: t.paymentMethod ?? '—',
+  };
+}
 
 const TICKET_STATUS_COLORS: Record<TicketStatus, { bg: string; text: string }> = {
   Active: { bg: '#E8F5E9', text: '#1B5E20' },
   Completed: { bg: '#D6E8F4', text: '#0A2342' },
   Void: { bg: '#FDECEA', text: '#B71C1C' },
-};
-
-const PASS_STATUS_COLORS: Record<PassStatus, { bg: string; text: string }> = {
-  Active: { bg: '#E8F5E9', text: '#1B5E20' },
-  Expired: { bg: '#F5F5F5', text: '#616161' },
-  Suspended: { bg: '#FFF3CD', text: '#856404' },
 };
 
 /* ── Helpers ───────────────────────────────────────────── */
@@ -154,16 +163,50 @@ export default function Ramp() {
   const [showModal, setShowModal] = useState(false);
   const [ticketTypeField, setTicketTypeField] = useState<TicketType>('Single Launch');
 
-  // API calls with fallback to mock
-  const { data: apiTickets, loading: ticketsLoading } = useApi<RampTicket[]>('get', '/api/ramp', { immediate: true });
-  const { execute: createTicket, loading: creatingTicket } = useApi<RampTicket>('post', '/api/ramp');
-  const tickets = apiTickets ?? MOCK_TICKETS;
+  const client = useApiClient();
+  const toast = useToast();
+  const list = useList<RampTicket, RampTicketDTO>('/ramp/tickets?take=200', { map: toTicket });
+  const passes = useList<RampTicket, RampTicketDTO>(tab === 'passes' ? '/ramp/tickets?take=200&ticketType=SEASONAL_PASS' : null, { map: toTicket });
+  const stats = useResource<{ launchesToday: number; launchesThisWeek: number; weekRevenueCents: number }, { data: { launchesToday: number; launchesThisWeek: number; weekRevenueCents: number } }>('/ramp/stats', { map: (r) => r.data });
+  const tickets = list.items;
 
-  const todayTickets = tickets.filter((t) => t.date === '2026-03-25');
-  const launchesToday = todayTickets.length;
+  const today = todayKey();
+  const todayTickets = tickets.filter((t) => t.date === today);
   const revenueToday = todayTickets.reduce((sum, t) => sum + t.amount, 0);
-  const activePasses = MOCK_PASSES.filter((p) => p.status === 'Active').length;
-  const peakHour = '7:00 - 8:00 AM';
+
+  // New ticket form
+  const [ntName, setNtName] = useState('');
+  const [ntPlate, setNtPlate] = useState('');
+  const [ntReg, setNtReg] = useState('');
+  const [ntAmount, setNtAmount] = useState('');
+  const [ntMethod, setNtMethod] = useState<'CARD' | 'CASH' | 'CHARGE_TO_SLIP'>('CARD');
+  const [ntSaving, setNtSaving] = useState(false);
+  const [ntError, setNtError] = useState<string | null>(null);
+  const recordTicket = async () => {
+    const cents = Math.round(Number(ntAmount) * 100);
+    if (!(cents >= 0) || ntAmount.trim() === '') { setNtError('Enter the amount charged.'); return; }
+    setNtSaving(true);
+    setNtError(null);
+    try {
+      await client.post('/ramp/tickets', {
+        guestName: ntName.trim() || null,
+        licensePlate: ntPlate.trim() || null,
+        boatRegistration: ntReg.trim() || null,
+        ticketType: TYPE_ENUM[ticketTypeField],
+        amountCents: cents,
+        paymentMethod: ntMethod,
+      });
+      toast.success('Launch recorded');
+      setShowModal(false);
+      setNtName(''); setNtPlate(''); setNtReg(''); setNtAmount('');
+      list.refetch();
+      stats.refetch();
+    } catch (err) {
+      setNtError(errorMessage(err));
+    } finally {
+      setNtSaving(false);
+    }
+  };
 
   const filteredAll = tickets.filter((t) => {
     if (typeFilter !== 'All' && t.ticketType !== typeFilter) return false;
@@ -186,19 +229,19 @@ export default function Ramp() {
       <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Launches Today</div>
-          <div style={s.statValue}>{launchesToday}</div>
+          <div style={s.statValue}>{stats.data ? stats.data.launchesToday : list.loading ? '—' : todayTickets.length}</div>
         </div>
         <div style={s.statCard}>
           <div style={s.statLabel}>Revenue Today</div>
-          <div style={s.statValue}>${revenueToday.toFixed(2)}</div>
+          <div style={s.statValue}>{list.loading ? '—' : `$${revenueToday.toFixed(2)}`}</div>
         </div>
         <div style={s.statCard}>
-          <div style={s.statLabel}>Active Passes</div>
-          <div style={s.statValue}>{activePasses}</div>
+          <div style={s.statLabel}>Launches This Week</div>
+          <div style={s.statValue}>{stats.data ? stats.data.launchesThisWeek : '—'}</div>
         </div>
         <div style={s.statCard}>
-          <div style={s.statLabel}>Peak Hour</div>
-          <div style={{ ...s.statValue, fontSize: '18px' }}>{peakHour}</div>
+          <div style={s.statLabel}>Revenue This Week</div>
+          <div style={s.statValue}>{stats.data ? `$${(stats.data.weekRevenueCents / 100).toFixed(2)}` : '—'}</div>
         </div>
       </div>
 
@@ -214,13 +257,14 @@ export default function Ramp() {
         <>
           <div style={s.filterBar} className="helm-filter-bar">
             <Activity size={16} style={{ color: '#00D4FF' }} />
-            <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Live Activity Log — March 25, 2026</span>
+            <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Activity Log — {formatDate(today)}</span>
             <div style={s.spacer} />
             <button style={s.primaryBtn} onClick={() => setShowModal(true)}>
               <Plus size={16} /> New Ticket
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          {list.loading ? <LoadingState label="Loading ramp tickets…" /> : list.error ? <ErrorState title="Could not load ramp tickets" message={list.error} onRetry={list.refetch} /> : (
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -261,9 +305,13 @@ export default function Ramp() {
                     </td>
                   </tr>
                 ))}
+                {todayTickets.length === 0 && (
+                  <tr><td colSpan={7} style={{ ...s.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No launches recorded today.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
@@ -289,7 +337,7 @@ export default function Ramp() {
               <Plus size={16} /> New Ticket
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -344,63 +392,61 @@ export default function Ramp() {
             <span style={{ fontSize: '14px', fontWeight: 600, color: '#0A2342' }}>Seasonal Pass Holders</span>
             <div style={s.spacer} />
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          {passes.loading ? <LoadingState label="Loading passes…" /> : passes.error ? <ErrorState title="Could not load seasonal passes" message={passes.error} onRetry={passes.refetch} /> : (
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={s.th}>Pass #</th>
+                  <th style={s.th}>Pass</th>
                   <th style={s.th}>Customer</th>
-                  <th style={s.th}>Phone</th>
-                  <th style={s.th}>Start Date</th>
-                  <th style={s.th}>End Date</th>
-                  <th style={s.th}>Launches Used</th>
-                  <th style={s.th}>Status</th>
+                  <th style={s.th}>Boat Reg</th>
+                  <th style={s.th}>Sold</th>
+                  <th style={s.th}>Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {MOCK_PASSES.map((p, idx) => (
+                {passes.items.map((p, idx) => (
                   <tr key={p.id} style={idx % 2 === 0 ? s.rowOdd : s.rowEven}>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.passNumber}</td>
-                    <td style={{ ...s.td, fontWeight: 600 }}>{p.customer}</td>
-                    <td style={s.td}>{p.phone}</td>
-                    <td style={s.td}>{p.startDate}</td>
-                    <td style={s.td}>{p.endDate}</td>
-                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', textAlign: 'center' }}>{p.launchesUsed}</td>
-                    <td style={s.td}>
-                      <span style={{ ...s.badge, backgroundColor: PASS_STATUS_COLORS[p.status].bg, color: PASS_STATUS_COLORS[p.status].text }}>
-                        {p.status}
-                      </span>
-                    </td>
+                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{p.ticketNumber}</td>
+                    <td style={{ ...s.td, fontWeight: 600 }}>{p.customerName}</td>
+                    <td style={s.td}>{p.boatReg}</td>
+                    <td style={s.td}>{formatDate(p.date)}</td>
+                    <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(p.amount)}</td>
                   </tr>
                 ))}
+                {passes.items.length === 0 && (
+                  <tr><td colSpan={5} style={{ ...s.td, textAlign: 'center', color: '#64748B', padding: 24 }}>No seasonal passes sold. Pass expiry and launch counts are not tracked by the API yet.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
       {/* ── New Ticket Modal ── */}
       {showModal && (
-        <div style={s.overlay} onClick={() => setShowModal(false)}>
+        <div style={s.overlay} onClick={() => { if (!ntSaving) setShowModal(false); }}>
           <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
             <div style={s.modalHeader}>
               <h2 style={s.modalTitle}>New Ramp Ticket</h2>
               <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>
             </div>
             <div style={s.modalBody}>
+              {ntError && <div style={{ marginBottom: 12 }}><InlineError message={ntError} /></div>}
               <div style={s.fieldGrid}>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Customer / Guest Name</span>
-                  <input style={s.input} placeholder="Name or 'Guest'" />
-                </div>
-                <div style={s.field}>
+                <label style={s.field}>
+                  <span style={s.fieldLabel}>Guest Name</span>
+                  <input style={s.input} placeholder="Name" value={ntName} onChange={(e) => setNtName(e.target.value)} />
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>License Plate</span>
-                  <input style={s.input} placeholder="ABC 1234" />
-                </div>
-                <div style={s.field}>
+                  <input style={s.input} placeholder="ABC 1234" value={ntPlate} onChange={(e) => setNtPlate(e.target.value)} />
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Boat Registration</span>
-                  <input style={s.input} placeholder="FL-0000-XX" />
-                </div>
+                  <input style={s.input} placeholder="FL-0000-XX" value={ntReg} onChange={(e) => setNtReg(e.target.value)} />
+                </label>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Ticket Type</span>
                   <select
@@ -419,27 +465,25 @@ export default function Ramp() {
                     style={s.input}
                     type="number"
                     step="0.01"
-                    value={TICKET_RATES[ticketTypeField]}
-                    readOnly={ticketTypeField === 'Seasonal Pass'}
+                    placeholder="0.00"
+                    value={ntAmount}
+                    onChange={(e) => setNtAmount(e.target.value)}
                   />
                 </div>
                 <div style={s.field}>
                   <span style={s.fieldLabel}>Payment Method</span>
-                  <select style={{ ...s.input, ...s.select }}>
-                    <option value="credit">Credit Card</option>
-                    <option value="cash">Cash</option>
-                    <option value="season">Season Pass</option>
+                  <select style={{ ...s.input, ...s.select }} value={ntMethod} onChange={(e) => setNtMethod(e.target.value as typeof ntMethod)}>
+                    <option value="CARD">Card</option>
+                    <option value="CASH">Cash</option>
+                    <option value="CHARGE_TO_SLIP">Charge to Slip</option>
                   </select>
                 </div>
               </div>
             </div>
             <div style={s.modalFooter}>
-              <button style={s.cancelBtn} onClick={() => setShowModal(false)}>Cancel</button>
-              <button style={s.primaryBtn} disabled={creatingTicket} onClick={async () => {
-                await createTicket({ ticketType: ticketTypeField, amount: TICKET_RATES[ticketTypeField] });
-                setShowModal(false);
-              }}>
-                <Waves size={16} /> {creatingTicket ? 'Recording...' : 'Record Launch'}
+              <button style={s.cancelBtn} disabled={ntSaving} onClick={() => setShowModal(false)}>Cancel</button>
+              <button style={{ ...s.primaryBtn, opacity: ntSaving ? 0.7 : 1 }} disabled={ntSaving} onClick={recordTicket}>
+                <Waves size={16} /> {ntSaving ? 'Recording...' : 'Record Launch'}
               </button>
             </div>
           </div>

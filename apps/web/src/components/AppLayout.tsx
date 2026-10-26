@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Outlet, useLocation, Link } from 'react-router-dom';
-import { useUser } from '@clerk/clerk-react';
+import { useUser, useClerk } from '@clerk/clerk-react';
+import PageErrorBoundary from './PageErrorBoundary';
 import HelpCenter from './HelpCenter';
 import { useModules } from '../context/ModulesContext';
 import {
@@ -28,13 +29,9 @@ import {
   ChevronDown,
   Package,
   FileSpreadsheet,
+  LogOut,
 } from 'lucide-react';
 
-const LOCATIONS = [
-  { id: 'main', name: 'Bayshore Marina - Main Dock' },
-  { id: 'fuel', name: 'Bayshore Marina - Fuel Dock' },
-  { id: 'rental', name: 'Bayshore Marina - Rental Center' },
-];
 
 const NAV_SECTIONS = [
   {
@@ -207,21 +204,31 @@ function getPageTitle(pathname: string): string {
     '/reports': 'Reports',
     '/announcements': 'Announcements',
     '/settings': 'Settings',
+    '/transient': 'Transient',
+    '/ramp': 'Launch Ramp',
+    '/concierge': 'Concierge',
+    '/fuel': 'Fuel',
+    '/inventory': 'Inventory',
+    '/audit-log': 'Audit Log',
+    '/rent-roll': 'Rent Roll',
+    '/billing/ar-aging': 'A/R Aging',
+    '/billing/chart-of-accounts': 'Chart of Accounts',
   };
-  return map[pathname] || 'Helm';
+  if (map[pathname]) return map[pathname];
+  if (pathname.startsWith('/billing/invoices/')) return 'Billing › Invoice';
+  if (pathname.startsWith('/customers/')) return 'Customers › Customer';
+  return 'Helm';
 }
 
 export default function AppLayout() {
   const location = useLocation();
   const { user } = useUser();
+  const { signOut } = useClerk();
   const { modules } = useModules();
   const initials = user
     ? `${user.firstName?.[0] || ''}${user.lastName?.[0] || ''}`
     : 'H';
-  const [currentLocation, setCurrentLocation] = useState(LOCATIONS[0].id);
-  const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const selectedLocation = LOCATIONS.find((l) => l.id === currentLocation) || LOCATIONS[0];
 
   // Close sidebar on route change (mobile)
   const closeSidebar = () => setSidebarOpen(false);
@@ -236,18 +243,7 @@ export default function AppLayout() {
           className="helm-sidebar-overlay"
         />
       )}
-      <style>{`
-        @media (max-width: 768px) {
-          .helm-sidebar-overlay { display: block !important; }
-          .helm-sidebar { transform: translateX(${sidebarOpen ? '0' : '-100%'}) !important; transition: transform 0.25s ease; }
-          .helm-main { margin-left: 0 !important; width: 100% !important; }
-          .helm-hamburger { display: flex !important; }
-          .helm-topbar { padding-left: 16px !important; padding-right: 16px !important; }
-          .helm-content { padding: 16px !important; }
-          .helm-location-picker { display: none !important; }
-        }
-      `}</style>
-      <nav style={styles.sidebar} className="helm-sidebar">
+      <nav style={styles.sidebar} className={`helm-sidebar${sidebarOpen ? " open" : ""}`}>
         <div style={styles.logo}>HELM</div>
         {NAV_SECTIONS.map((section) => {
           const visibleItems = section.items.filter((item) => {
@@ -259,7 +255,9 @@ export default function AppLayout() {
             <div key={section.label}>
               <div style={styles.sectionLabel}>{section.label}</div>
               {visibleItems.map((item) => {
-                const isActive = location.pathname === item.path;
+                const isActive =
+                  location.pathname === item.path ||
+                  (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
                 return (
                   <Link
                     key={item.path}
@@ -295,83 +293,23 @@ export default function AppLayout() {
             </div>
           </div>
           <div style={styles.topRight}>
-            <div style={{ position: 'relative' }} className="helm-location-picker">
-              <button
-                onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '6px 14px',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  color: '#0A2342',
-                  backgroundColor: '#F1F5F9',
-                  border: '1px solid #E2E8F0',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap' as const,
-                }}
-              >
-                <MapPin size={14} style={{ color: '#00D4FF' }} />
-                {selectedLocation.name}
-                <ChevronDown size={14} style={{ color: '#64748B' }} />
-              </button>
-              {locationDropdownOpen && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '100%',
-                    right: 0,
-                    marginTop: '4px',
-                    background: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                    zIndex: 999,
-                    minWidth: '260px',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div style={{ padding: '8px 12px', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: '#64748B', borderBottom: '1px solid #E2E8F0' }}>
-                    Switch Location
-                  </div>
-                  {LOCATIONS.map((loc) => (
-                    <button
-                      key={loc.id}
-                      onClick={() => { setCurrentLocation(loc.id); setLocationDropdownOpen(false); }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        width: '100%',
-                        padding: '10px 12px',
-                        fontSize: '14px',
-                        color: '#0A2342',
-                        background: loc.id === currentLocation ? '#F0FAFF' : '#FFFFFF',
-                        border: 'none',
-                        borderBottom: '1px solid #F2F4F6',
-                        cursor: 'pointer',
-                        textAlign: 'left' as const,
-                        fontWeight: loc.id === currentLocation ? 600 : 400,
-                      }}
-                    >
-                      <MapPin size={14} style={{ color: loc.id === currentLocation ? '#00D4FF' : '#94A3B8' }} />
-                      {loc.name}
-                      {loc.id === currentLocation && <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#00D4FF', fontWeight: 600 }}>Current</span>}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button style={styles.helpBtn} title="Help">
-              <HelpCircle size={16} />
+            {/* TODO: location switcher, backed by tenant locations, once the API exposes them to staff. */}
+            <div style={styles.avatar} title={user?.primaryEmailAddress?.emailAddress ?? undefined}>{initials}</div>
+            <button
+              style={{ ...styles.helpBtn, width: 'auto', borderRadius: 6, padding: '0 10px', gap: 6, fontSize: 13 }}
+              title="Sign out"
+              aria-label="Sign out"
+              onClick={() => signOut({ redirectUrl: '/' })}
+            >
+              <LogOut size={14} />
+              <span>Sign out</span>
             </button>
-            <div style={styles.avatar}>{initials}</div>
           </div>
         </header>
         <main style={styles.content} className="helm-content">
-          <Outlet />
+          <PageErrorBoundary key={location.pathname}>
+            <Outlet />
+          </PageErrorBoundary>
         </main>
       </div>
       <HelpCenter />

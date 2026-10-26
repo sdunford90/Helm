@@ -5,19 +5,20 @@ import {
   X,
   Calendar,
   Ship,
-  Users,
-  DollarSign,
-  Moon,
+  LogIn,
   LogOut,
   AlertTriangle,
-  CreditCard,
+  Ban,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { dateKey, formatCents, formatDate, nightsBetween, todayKey } from '../lib/format';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
 
 type BookingStatus = 'Booked' | 'Checked In' | 'Checked Out' | 'Overstay' | 'Cancelled';
-type PaymentStatus = 'Paid' | 'Pending' | 'Partial' | 'Refunded';
 type TabKey = 'current' | 'all' | 'calendar';
 
 interface Booking {
@@ -27,29 +28,70 @@ interface Booking {
   email: string;
   phone: string;
   boatName: string;
-  boatLength: number;
+  boatLength: number | null;
   slip: string;
-  checkIn: string;
-  checkOut: string;
-  nightlyRate: number;
+  checkIn: string; // YYYY-MM-DD (local calendar date)
+  checkOut: string; // YYYY-MM-DD or ''
+  nightlyRate: number; // cents
+  total: number; // cents, from the server
   status: BookingStatus;
-  payment: PaymentStatus;
+  paidViaStripe: boolean;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const MOCK_BOOKINGS: Booking[] = [
-  { id: '1', bookingNumber: 'TB-1001', guestName: 'Robert Clarkson', email: 'rclarkson@email.com', phone: '(555) 101-2001', boatName: 'Sea Breeze', boatLength: 32, slip: 'T-01', checkIn: '2026-03-22', checkOut: '2026-03-25', nightlyRate: 85, status: 'Checked In', payment: 'Paid' },
-  { id: '2', bookingNumber: 'TB-1002', guestName: 'Maria Fontaine', email: 'mfontaine@email.com', phone: '(555) 102-2002', boatName: 'Windward Spirit', boatLength: 28, slip: 'T-02', checkIn: '2026-03-23', checkOut: '2026-03-26', nightlyRate: 75, status: 'Checked In', payment: 'Paid' },
-  { id: '3', bookingNumber: 'TB-1003', guestName: 'Thomas Benavides', email: 'tbenavides@email.com', phone: '(555) 103-2003', boatName: 'Reel Deal', boatLength: 36, slip: 'T-03', checkIn: '2026-03-20', checkOut: '2026-03-24', nightlyRate: 95, status: 'Overstay', payment: 'Partial' },
-  { id: '4', bookingNumber: 'TB-1004', guestName: 'Jennifer Albright', email: 'jalbright@email.com', phone: '(555) 104-2004', boatName: 'Lady Luck', boatLength: 24, slip: 'T-04', checkIn: '2026-03-25', checkOut: '2026-03-27', nightlyRate: 65, status: 'Booked', payment: 'Pending' },
-  { id: '5', bookingNumber: 'TB-1005', guestName: 'Daniel Marsh', email: 'dmarsh@email.com', phone: '(555) 105-2005', boatName: 'Poseidon\'s Trident', boatLength: 42, slip: 'T-05', checkIn: '2026-03-25', checkOut: '2026-03-30', nightlyRate: 110, status: 'Booked', payment: 'Paid' },
-  { id: '6', bookingNumber: 'TB-1006', guestName: 'Susan Whitaker', email: 'swhitaker@email.com', phone: '(555) 106-2006', boatName: 'Calm Waters', boatLength: 30, slip: 'T-06', checkIn: '2026-03-18', checkOut: '2026-03-22', nightlyRate: 80, status: 'Checked Out', payment: 'Paid' },
-  { id: '7', bookingNumber: 'TB-1007', guestName: 'Kevin Okafor', email: 'kokafor@email.com', phone: '(555) 107-2007', boatName: 'African Queen', boatLength: 38, slip: 'T-07', checkIn: '2026-03-19', checkOut: '2026-03-23', nightlyRate: 95, status: 'Overstay', payment: 'Pending' },
-  { id: '8', bookingNumber: 'TB-1008', guestName: 'Patricia Langley', email: 'plangley@email.com', phone: '(555) 108-2008', boatName: 'Blue Horizon', boatLength: 26, slip: 'T-08', checkIn: '2026-03-24', checkOut: '2026-03-26', nightlyRate: 70, status: 'Checked In', payment: 'Paid' },
-  { id: '9', bookingNumber: 'TB-1009', guestName: 'Andrew Gilmore', email: 'agilmore@email.com', phone: '(555) 109-2009', boatName: 'Wave Dancer', boatLength: 34, slip: 'T-09', checkIn: '2026-03-15', checkOut: '2026-03-18', nightlyRate: 85, status: 'Checked Out', payment: 'Paid' },
-  { id: '10', bookingNumber: 'TB-1010', guestName: 'Emily Stafford', email: 'estafford@email.com', phone: '(555) 110-2010', boatName: 'Starboard Dream', boatLength: 22, slip: 'T-10', checkIn: '2026-03-26', checkOut: '2026-03-28', nightlyRate: 60, status: 'Booked', payment: 'Pending' },
-];
+interface TransientDTO {
+  id: string;
+  slipId: string;
+  guestName: string;
+  guestEmail?: string | null;
+  guestPhone?: string | null;
+  boatName?: string | null;
+  boatLength?: number | null;
+  checkIn: string;
+  checkOut?: string | null;
+  rateCents: number;
+  totalCents: number;
+  stripePaymentId?: string | null;
+  status: 'BOOKED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'CANCELLED' | 'OVERSTAY';
+  slip?: { slipNumber?: string | null } | null;
+}
+
+interface AvailableSlip {
+  id: string;
+  slipNumber: string;
+  lengthFt?: number | null;
+}
+
+const STATUS_LABEL: Record<TransientDTO['status'], BookingStatus> = {
+  BOOKED: 'Booked', CHECKED_IN: 'Checked In', CHECKED_OUT: 'Checked Out', CANCELLED: 'Cancelled', OVERSTAY: 'Overstay',
+};
+
+function toBooking(b: TransientDTO): Booking {
+  return {
+    id: b.id,
+    // No human booking number in the API yet; show a short form of the id.
+    bookingNumber: b.id.slice(0, 8).toUpperCase(),
+    guestName: b.guestName,
+    email: b.guestEmail ?? '',
+    phone: b.guestPhone ?? '',
+    boatName: b.boatName ?? '—',
+    boatLength: b.boatLength ?? null,
+    slip: b.slip?.slipNumber ?? '—',
+    checkIn: dateKey(b.checkIn),
+    checkOut: dateKey(b.checkOut),
+    nightlyRate: b.rateCents,
+    total: b.totalCents,
+    status: STATUS_LABEL[b.status] ?? 'Booked',
+    paidViaStripe: !!b.stripePaymentId,
+  };
+}
+
+/** Local calendar date -> ISO datetime at local midnight (what the API's z.datetime() accepts). */
+function localDateToIso(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d).toISOString();
+}
 
 const STATUS_COLORS: Record<BookingStatus, { bg: string; text: string }> = {
   Booked: { bg: '#D6E8F4', text: '#0A2342' },
@@ -59,23 +101,15 @@ const STATUS_COLORS: Record<BookingStatus, { bg: string; text: string }> = {
   Cancelled: { bg: '#FFF3CD', text: '#856404' },
 };
 
-const PAYMENT_COLORS: Record<PaymentStatus, { bg: string; text: string }> = {
-  Paid: { bg: '#E8F5E9', text: '#1B5E20' },
-  Pending: { bg: '#FFF3CD', text: '#856404' },
-  Partial: { bg: '#E0F7FA', text: '#006064' },
-  Refunded: { bg: '#F5F5F5', text: '#616161' },
+const STATUS_ENUM: Record<string, TransientDTO['status']> = {
+  Booked: 'BOOKED', 'Checked In': 'CHECKED_IN', 'Checked Out': 'CHECKED_OUT', Overstay: 'OVERSTAY', Cancelled: 'CANCELLED',
 };
 
 /* ── Helpers ───────────────────────────────────────────── */
 
 function nights(checkIn: string, checkOut: string): number {
-  const d1 = new Date(checkIn);
-  const d2 = new Date(checkOut);
-  return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86400000));
-}
-
-function fmt$(n: number): string {
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (!checkIn || !checkOut) return 0;
+  return Math.max(0, nightsBetween(checkIn, checkOut));
 }
 
 /* ── Styles ────────────────────────────────────────────── */
@@ -126,17 +160,20 @@ const s: Record<string, React.CSSProperties> = {
 
 /* ── Component ─────────────────────────────────────────── */
 
-const SLIP_OPTIONS = ['T-01','T-02','T-03','T-04','T-05','T-06','T-07','T-08','T-09','T-10'];
-
 export default function Transient() {
-  const { data: apiBookings, loading } = useApi<Booking[]>('get', '/api/transient', { immediate: true });
-
-  const [localBookings, setLocalBookings] = useState<Booking[]>([]);
+  const client = useApiClient();
+  const toast = useToast();
   const [tab, setTab] = useState<TabKey>('current');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [dateFilter, setDateFilter] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const listPath = `/transient?take=200${statusFilter !== 'All' ? `&status=${STATUS_ENUM[statusFilter]}` : ''}`;
+  const list = useList<Booking, TransientDTO>(listPath, { map: toBooking });
+  const allBookings = list.items;
 
   /* New booking form state */
   const [nbName, setNbName] = useState('');
@@ -148,62 +185,94 @@ export default function Transient() {
   const [nbCheckIn, setNbCheckIn] = useState('');
   const [nbCheckOut, setNbCheckOut] = useState('');
   const [nbRate, setNbRate] = useState('');
-  const [nbPayment, setNbPayment] = useState('');
   const [nbSaving, setNbSaving] = useState(false);
+  const [nbError, setNbError] = useState('');
+
+  // Slips come from the availability endpoint for the chosen dates.
+  const availPath =
+    nbCheckIn && nbCheckOut && nbCheckOut > nbCheckIn
+      ? `/transient/availability?dateFrom=${encodeURIComponent(localDateToIso(nbCheckIn))}&dateTo=${encodeURIComponent(localDateToIso(nbCheckOut))}`
+      : null;
+  const availability = useList<AvailableSlip>(showModal ? availPath : null);
 
   const resetBookingForm = () => {
     setNbName(''); setNbEmail(''); setNbPhone(''); setNbBoat('');
     setNbLength(''); setNbSlip(''); setNbCheckIn(''); setNbCheckOut('');
-    setNbRate(''); setNbPayment('');
+    setNbRate(''); setNbError('');
   };
 
-  const handleCreateBooking = () => {
-    if (!nbName || !nbSlip || !nbCheckIn) return;
+  const nbNights = nights(nbCheckIn, nbCheckOut);
+  const nbRateCents = Math.round(Number(nbRate) * 100);
+  const formProblem =
+    !nbName.trim() ? 'Guest name is required.'
+      : !nbCheckIn || !nbCheckOut ? 'Check-in and check-out dates are required.'
+        : nbNights < 1 ? 'Check-out must be at least one night after check-in.'
+          : !nbSlip ? 'Choose an available slip.'
+            : !(nbRateCents > 0) ? 'Enter the nightly rate.'
+              : null;
+
+  const handleCreateBooking = async () => {
+    if (formProblem || nbSaving) return;
     setNbSaving(true);
-    const nights = nbCheckIn && nbCheckOut
-      ? Math.max(1, Math.round((new Date(nbCheckOut).getTime() - new Date(nbCheckIn).getTime()) / 86400000))
-      : 1;
-    const rate = parseFloat(nbRate) || 85;
-    const newBooking: Booking = {
-      id: `trans-${Date.now()}`,
-      bookingNumber: `TG-${2100 + (allBookings.length + 1)}`,
-      guestName: nbName,
-      boatName: nbBoat || '—',
-      boatLength: parseFloat(nbLength) || 0,
-      slip: nbSlip,
-      checkIn: nbCheckIn,
-      checkOut: nbCheckOut || '',
-      nights,
-      rate,
-      total: nights * rate,
-      status: 'Booked',
-      phone: nbPhone,
-      email: nbEmail,
-      paymentMethod: nbPayment || 'Credit Card',
-    };
-    setLocalBookings((prev) => [newBooking, ...(prev.length > 0 ? prev : apiBookings || MOCK_BOOKINGS)]);
-    resetBookingForm();
-    setNbSaving(false);
-    setShowModal(false);
+    setNbError('');
+    try {
+      await client.post('/transient', {
+        slipId: nbSlip,
+        guestName: nbName.trim(),
+        guestEmail: nbEmail.trim() || null,
+        guestPhone: nbPhone.trim() || null,
+        boatName: nbBoat.trim() || null,
+        boatLength: Number(nbLength) > 0 ? Number(nbLength) : null,
+        checkIn: localDateToIso(nbCheckIn),
+        checkOut: localDateToIso(nbCheckOut),
+        rateCents: nbRateCents,
+        totalCents: nbRateCents * nbNights,
+      });
+      toast.success(`Booking created for ${nbName.trim()}`);
+      resetBookingForm();
+      setShowModal(false);
+      list.refetch();
+    } catch (err) {
+      setNbError(errorMessage(err));
+    } finally {
+      setNbSaving(false);
+    }
   };
 
-  const allBookings = localBookings.length > 0 ? localBookings : (apiBookings || MOCK_BOOKINGS);
+  const runAction = async (b: Booking, action: 'check-in' | 'check-out' | 'cancel') => {
+    if (busyId) return;
+    if (action === 'check-out' && !window.confirm(`Check out ${b.guestName} from slip ${b.slip}?`)) return;
+    if (action === 'cancel' && !window.confirm(`Cancel the booking for ${b.guestName}?`)) return;
+    setBusyId(b.id);
+    setActionError(null);
+    try {
+      if (action === 'cancel') await client.delete(`/transient/${b.id}`);
+      else await client.put(`/transient/${b.id}/${action}`);
+      toast.success(action === 'check-in' ? `${b.guestName} checked in` : action === 'check-out' ? `${b.guestName} checked out` : 'Booking cancelled');
+      list.refetch();
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
 
-  /* Derived */
+  /* Derived (from loaded bookings) */
+  const today = todayKey();
+  const monthPrefix = today.slice(0, 7);
   const activeGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay').length;
-  const checkInsToday = allBookings.filter((b) => b.checkIn === '2026-03-25' && (b.status === 'Booked' || b.status === 'Checked In')).length;
+  const checkInsToday = allBookings.filter((b) => b.checkIn === today && (b.status === 'Booked' || b.status === 'Checked In')).length;
   const avgStay = (() => {
-    const stays = allBookings.map((b) => nights(b.checkIn, b.checkOut));
+    const stays = allBookings.filter((b) => b.checkOut).map((b) => nights(b.checkIn, b.checkOut));
     return stays.length > 0 ? (stays.reduce((a, c) => a + c, 0) / stays.length).toFixed(1) : '0';
   })();
-  const revenueMonth = allBookings
-    .filter((b) => b.checkIn.startsWith('2026-03') && b.payment !== 'Refunded')
-    .reduce((sum, b) => sum + b.nightlyRate * nights(b.checkIn, b.checkOut), 0);
+  const bookedThisMonth = allBookings
+    .filter((b) => b.checkIn.startsWith(monthPrefix) && b.status !== 'Cancelled')
+    .reduce((sum, b) => sum + b.total, 0);
 
   const currentGuests = allBookings.filter((b) => b.status === 'Checked In' || b.status === 'Overstay' || b.status === 'Booked');
 
   const filteredAll = allBookings.filter((b) => {
-    if (statusFilter !== 'All' && b.status !== statusFilter) return false;
     if (dateFilter && b.checkIn !== dateFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -213,35 +282,56 @@ export default function Transient() {
     return true;
   });
 
-  const handleCheckOut = (id: string, ev: React.MouseEvent) => {
-    ev.stopPropagation();
-    setBookings(bookings.map((b) => (b.id === id ? { ...b, status: 'Checked Out' as BookingStatus } : b)));
-  };
+  const rowActions = (b: Booking) => (
+    <>
+      {b.status === 'Booked' && (
+        <>
+          <button style={{ ...s.actionBtn, color: '#1B5E20', borderColor: '#1B5E20' }} disabled={!!busyId} onClick={() => runAction(b, 'check-in')}>
+            <LogIn size={12} /> {busyId === b.id ? '…' : 'Check In'}
+          </button>
+          <button style={{ ...s.actionBtn, color: '#B71C1C', borderColor: '#F5C2C0' }} disabled={!!busyId} onClick={() => runAction(b, 'cancel')}>
+            <Ban size={12} /> Cancel
+          </button>
+        </>
+      )}
+      {(b.status === 'Checked In' || b.status === 'Overstay') && (
+        <button style={{ ...s.actionBtn, color: '#0A2342', borderColor: '#0A2342' }} disabled={!!busyId} onClick={() => runAction(b, 'check-out')}>
+          <LogOut size={12} /> {busyId === b.id ? '…' : 'Check Out'}
+        </button>
+      )}
+    </>
+  );
+
+  const body = list.loading ? (
+    <LoadingState label="Loading bookings…" />
+  ) : list.error ? (
+    <ErrorState title="Could not load transient bookings" message={list.error} onRetry={list.refetch} />
+  ) : null;
 
   return (
     <div style={s.page}>
       <h1 style={s.title} className="helm-page-title">Transient Bookings</h1>
       <hr style={s.divider} />
 
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading bookings...</div>}
+      {actionError && <div style={{ marginBottom: 16 }}><InlineError message={actionError} /></div>}
 
       {/* Stats */}
       <div style={s.statsRow} className="helm-stats-grid">
         <div style={s.statCard}>
           <div style={s.statLabel}>Active Guests</div>
-          <div style={s.statValue}>{activeGuests}</div>
+          <div style={s.statValue}>{list.loading ? '—' : activeGuests}</div>
         </div>
         <div style={s.statCard}>
           <div style={s.statLabel}>Check-ins Today</div>
-          <div style={s.statValue}>{checkInsToday}</div>
+          <div style={s.statValue}>{list.loading ? '—' : checkInsToday}</div>
         </div>
         <div style={s.statCard}>
           <div style={s.statLabel}>Avg Stay (nights)</div>
-          <div style={s.statValue}>{avgStay}</div>
+          <div style={s.statValue}>{list.loading ? '—' : avgStay}</div>
         </div>
         <div style={s.statCard}>
-          <div style={s.statLabel}>Revenue This Month</div>
-          <div style={s.statValue}>{fmt$(revenueMonth)}</div>
+          <div style={s.statLabel}>Booked This Month</div>
+          <div style={s.statValue}>{list.loading ? '—' : formatCents(bookedThisMonth)}</div>
         </div>
       </div>
 
@@ -261,7 +351,8 @@ export default function Transient() {
               <Plus size={16} /> New Booking
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          {body ?? (
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
@@ -278,52 +369,38 @@ export default function Transient() {
               </thead>
               <tbody>
                 {currentGuests.map((b, idx) => {
-                  const n = nights(b.checkIn, b.checkOut);
                   const isOverstay = b.status === 'Overstay';
                   return (
-                    <tr
-                      key={b.id}
-                      style={isOverstay ? s.overstayRow : idx % 2 === 0 ? s.rowOdd : s.rowEven}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.backgroundColor = '#EBF2FA'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLTableRowElement).style.backgroundColor = isOverstay ? '#FFF0F0' : idx % 2 === 0 ? '#FFFFFF' : '#D6E8F4'; }}
-                    >
+                    <tr key={b.id} style={isOverstay ? s.overstayRow : idx % 2 === 0 ? s.rowOdd : s.rowEven}>
                       <td style={{ ...s.td, fontWeight: 600 }}>{b.guestName}</td>
                       <td style={s.td}>
                         <Ship size={12} style={{ verticalAlign: 'middle', marginRight: '4px', color: '#2E4A6B' }} />
-                        {b.boatName} ({b.boatLength} ft)
+                        {b.boatName}{b.boatLength ? ` (${b.boatLength} ft)` : ''}
                       </td>
                       <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{b.slip}</td>
-                      <td style={s.td}>{b.checkIn}</td>
+                      <td style={s.td}>{formatDate(b.checkIn)}</td>
                       <td style={s.td}>
-                        {b.checkOut}
+                        {b.checkOut ? formatDate(b.checkOut) : 'Open'}
                         {isOverstay && <AlertTriangle size={14} style={{ marginLeft: '6px', color: '#B71C1C', verticalAlign: 'middle' }} />}
                       </td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(b.nightlyRate)}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
+                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{formatCents(b.nightlyRate)}</td>
+                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{formatCents(b.total)}</td>
                       <td style={s.td}>
                         <span style={{ ...s.badge, backgroundColor: STATUS_COLORS[b.status].bg, color: STATUS_COLORS[b.status].text }}>
                           {b.status}
                         </span>
                       </td>
-                      <td style={s.td}>
-                        {(b.status === 'Checked In' || b.status === 'Overstay') && (
-                          <button
-                            style={{ ...s.actionBtn, color: '#0A2342', borderColor: '#0A2342' }}
-                            onClick={(ev) => handleCheckOut(b.id, ev)}
-                          >
-                            <LogOut size={12} /> Check Out
-                          </button>
-                        )}
-                      </td>
+                      <td style={s.td}>{rowActions(b)}</td>
                     </tr>
                   );
                 })}
                 {currentGuests.length === 0 && (
-                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={9}>No current guests.</td></tr>
+                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={9}>No current or upcoming guests.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
@@ -335,7 +412,7 @@ export default function Transient() {
               <Search size={16} style={s.searchIcon} />
               <input style={s.searchInput} placeholder="Search bookings..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <input type="date" style={s.dateInput} value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} />
+            <input type="date" style={s.dateInput} value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} aria-label="Check-in date" />
             <select style={s.select} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="All">All Statuses</option>
               <option value="Booked">Booked</option>
@@ -349,11 +426,12 @@ export default function Transient() {
               <Plus size={16} /> New Booking
             </button>
           </div>
-          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+          {body ?? (
+          <div style={{ borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} className="helm-table-wrap">
             <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={s.th}>Booking #</th>
+                  <th style={s.th}>Booking</th>
                   <th style={s.th}>Guest</th>
                   <th style={s.th}>Boat</th>
                   <th style={s.th}>Slip</th>
@@ -364,6 +442,7 @@ export default function Transient() {
                   <th style={s.th}>Total</th>
                   <th style={s.th}>Status</th>
                   <th style={s.th}>Payment</th>
+                  <th style={s.th}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -374,32 +453,30 @@ export default function Transient() {
                     <tr key={b.id} style={isOverstay ? s.overstayRow : idx % 2 === 0 ? s.rowOdd : s.rowEven}>
                       <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{b.bookingNumber}</td>
                       <td style={{ ...s.td, fontWeight: 600 }}>{b.guestName}</td>
-                      <td style={s.td}>{b.boatName} ({b.boatLength} ft)</td>
+                      <td style={s.td}>{b.boatName}{b.boatLength ? ` (${b.boatLength} ft)` : ''}</td>
                       <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{b.slip}</td>
-                      <td style={s.td}>{b.checkIn}</td>
-                      <td style={s.td}>{b.checkOut}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', textAlign: 'center' }}>{n}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{fmt$(b.nightlyRate)}</td>
-                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{fmt$(b.nightlyRate * n)}</td>
+                      <td style={s.td}>{formatDate(b.checkIn)}</td>
+                      <td style={s.td}>{b.checkOut ? formatDate(b.checkOut) : 'Open'}</td>
+                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', textAlign: 'center' }}>{b.checkOut ? n : '—'}</td>
+                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace' }}>{formatCents(b.nightlyRate)}</td>
+                      <td style={{ ...s.td, fontFamily: '"JetBrains Mono", monospace', fontWeight: 600 }}>{formatCents(b.total)}</td>
                       <td style={s.td}>
                         <span style={{ ...s.badge, backgroundColor: STATUS_COLORS[b.status].bg, color: STATUS_COLORS[b.status].text }}>
                           {b.status}
                         </span>
                       </td>
-                      <td style={s.td}>
-                        <span style={{ ...s.badge, backgroundColor: PAYMENT_COLORS[b.payment].bg, color: PAYMENT_COLORS[b.payment].text }}>
-                          {b.payment}
-                        </span>
-                      </td>
+                      <td style={{ ...s.td, color: '#64748B', fontSize: 12 }}>{b.paidViaStripe ? 'Stripe payment on file' : 'Not recorded'}</td>
+                      <td style={s.td}>{rowActions(b)}</td>
                     </tr>
                   );
                 })}
                 {filteredAll.length === 0 && (
-                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={11}>No bookings match the current filters.</td></tr>
+                  <tr><td style={{ ...s.td, textAlign: 'center', padding: '32px', color: '#64748B' }} colSpan={12}>{allBookings.length === 0 ? 'No transient bookings yet.' : 'No bookings match the current filters.'}</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 
@@ -408,85 +485,86 @@ export default function Transient() {
         <div style={s.calendarPlaceholder}>
           <div style={{ textAlign: 'center' }}>
             <Calendar size={48} style={{ color: '#CCC', marginBottom: '12px' }} />
-            <div>Calendar view — slip availability grid coming soon.</div>
+            <div>Calendar view is not available yet.</div>
           </div>
         </div>
       )}
 
       {/* ── New Booking Modal ── */}
       {showModal && (
-        <div style={s.overlay} onClick={() => setShowModal(false)}>
-          <div style={s.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
+        <div style={s.overlay}>
+          <div style={s.modal} className="helm-modal" role="dialog" aria-modal="true" aria-labelledby="nb-title">
             <div style={s.modalHeader}>
-              <h2 style={s.modalTitle}>New Transient Booking</h2>
-              <button style={s.closeBtn} onClick={() => setShowModal(false)}><X size={20} /></button>
+              <h2 id="nb-title" style={s.modalTitle}>New Transient Booking</h2>
+              <button style={s.closeBtn} onClick={() => setShowModal(false)} disabled={nbSaving} aria-label="Close"><X size={20} /></button>
             </div>
             <div style={s.modalBody}>
+              {nbError && <div style={{ marginBottom: 12 }}><InlineError message={nbError} /></div>}
               <div style={s.fieldGrid}>
-                <div style={s.field}>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Guest Name *</span>
                   <input style={s.input} placeholder="Full name" value={nbName} onChange={(e) => setNbName(e.target.value)} />
-                </div>
-                <div style={s.field}>
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Email</span>
                   <input style={s.input} placeholder="email@example.com" type="email" value={nbEmail} onChange={(e) => setNbEmail(e.target.value)} />
-                </div>
-                <div style={s.field}>
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Phone</span>
                   <input style={s.input} placeholder="(555) 000-0000" value={nbPhone} onChange={(e) => setNbPhone(e.target.value)} />
-                </div>
-                <div style={s.field}>
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Boat Name</span>
                   <input style={s.input} placeholder="Vessel name" value={nbBoat} onChange={(e) => setNbBoat(e.target.value)} />
-                </div>
-                <div style={s.field}>
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Boat Length (ft)</span>
                   <input style={s.input} placeholder="e.g. 32" type="number" value={nbLength} onChange={(e) => setNbLength(e.target.value)} />
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Slip *</span>
-                  <select style={{ ...s.input, ...s.select }} value={nbSlip} onChange={(e) => setNbSlip(e.target.value)}>
-                    <option value="">Select slip...</option>
-                    {SLIP_OPTIONS.map((sl) => (
-                      <option key={sl} value={sl}>{sl}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={s.field}>
+                </label>
+                <label style={s.field}>
+                  <span style={s.fieldLabel}>Nightly Rate ($) *</span>
+                  <input style={s.input} placeholder="0.00" type="number" step="0.01" value={nbRate} onChange={(e) => setNbRate(e.target.value)} />
+                </label>
+                <label style={s.field}>
                   <span style={s.fieldLabel}>Check-In Date *</span>
-                  <input style={s.input} type="date" value={nbCheckIn} onChange={(e) => setNbCheckIn(e.target.value)} />
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Check-Out Date</span>
-                  <input style={s.input} type="date" value={nbCheckOut} onChange={(e) => setNbCheckOut(e.target.value)} />
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Nightly Rate ($)</span>
-                  <input style={s.input} placeholder="85.00" type="number" step="0.01" value={nbRate} onChange={(e) => setNbRate(e.target.value)} />
-                </div>
-                <div style={s.field}>
-                  <span style={s.fieldLabel}>Payment Method</span>
-                  <select style={{ ...s.input, ...s.select }} value={nbPayment} onChange={(e) => setNbPayment(e.target.value)}>
-                    <option value="">Select...</option>
-                    <option value="Credit Card">Credit Card</option>
-                    <option value="Cash">Cash</option>
-                    <option value="Check">Check</option>
-                    <option value="ACH Transfer">ACH Transfer</option>
+                  <input style={s.input} type="date" min={todayKey()} value={nbCheckIn} onChange={(e) => { setNbCheckIn(e.target.value); setNbSlip(''); }} />
+                </label>
+                <label style={s.field}>
+                  <span style={s.fieldLabel}>Check-Out Date *</span>
+                  <input style={s.input} type="date" min={nbCheckIn || todayKey()} value={nbCheckOut} onChange={(e) => { setNbCheckOut(e.target.value); setNbSlip(''); }} />
+                </label>
+                <label style={s.fieldFull}>
+                  <span style={s.fieldLabel}>Slip * (transient-capable, available for these dates)</span>
+                  <select style={{ ...s.input, ...s.select }} value={nbSlip} onChange={(e) => setNbSlip(e.target.value)} disabled={!availPath || availability.loading || !!availability.error}>
+                    <option value="">
+                      {!availPath ? 'Choose dates first' : availability.loading ? 'Checking availability…' : availability.error ? 'Could not load availability' : availability.items.length === 0 ? 'No transient slips available' : 'Select slip...'}
+                    </option>
+                    {availability.items
+                      .filter((sl) => !(Number(nbLength) > 0) || !sl.lengthFt || sl.lengthFt >= Number(nbLength))
+                      .map((sl) => (
+                        <option key={sl.id} value={sl.id}>{sl.slipNumber}{sl.lengthFt ? ` (${sl.lengthFt}')` : ''}</option>
+                      ))}
                   </select>
-                </div>
+                  {availability.error && <span style={{ fontSize: 12, color: '#B71C1C' }}>{availability.error}</span>}
+                </label>
               </div>
-              {(!nbName || !nbSlip || !nbCheckIn) && (
-                <div style={{ fontSize: 12, color: '#EF4444', marginTop: 8 }}>* Guest name, slip, and check-in date are required</div>
+              {nbNights > 0 && nbRateCents > 0 && (
+                <div style={{ fontSize: 13, color: '#2E4A6B', marginTop: 12 }}>
+                  {nbNights} night{nbNights === 1 ? '' : 's'} × {formatCents(nbRateCents)} = <strong>{formatCents(nbNights * nbRateCents)}</strong>. Payment is taken separately.
+                </div>
+              )}
+              {formProblem && (nbName || nbCheckIn || nbCheckOut || nbRate) && (
+                <div style={{ fontSize: 12, color: '#B71C1C', marginTop: 8 }}>{formProblem}</div>
               )}
             </div>
             <div style={s.modalFooter}>
-              <button style={s.cancelBtn} onClick={() => { setShowModal(false); resetBookingForm(); }}>Cancel</button>
+              <button style={s.cancelBtn} disabled={nbSaving} onClick={() => { setShowModal(false); resetBookingForm(); }}>Cancel</button>
               <button
-                style={{ ...s.primaryBtn, opacity: (!nbName || !nbSlip || !nbCheckIn) ? 0.5 : 1 }}
+                style={{ ...s.primaryBtn, opacity: formProblem || nbSaving ? 0.5 : 1 }}
                 onClick={handleCreateBooking}
-                disabled={nbSaving || !nbName || !nbSlip || !nbCheckIn}
+                disabled={nbSaving || !!formProblem}
               >
-                <CreditCard size={16} /> {nbSaving ? 'Creating…' : 'Create Booking'}
+                <Plus size={16} /> {nbSaving ? 'Creating…' : 'Create Booking'}
               </button>
             </div>
           </div>

@@ -8,6 +8,7 @@ import Billing from './pages/Billing';
 import Analytics from './pages/Analytics';
 import Support from './pages/Support';
 import PlatformSettings from './pages/PlatformSettings';
+import { NotAvailable } from './components/StateViews';
 
 const App: React.FC = () => {
   return (
@@ -20,6 +21,12 @@ const App: React.FC = () => {
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/support" element={<Support />} />
         <Route path="/settings" element={<PlatformSettings />} />
+        <Route
+          path="*"
+          element={
+            <NotAvailable title="Page not found" message="There is no admin page at this address. Use the sidebar to get back to a known page." />
+          }
+        />
       </Route>
     </Routes>
   );

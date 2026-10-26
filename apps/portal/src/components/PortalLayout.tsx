@@ -1,4 +1,5 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink } from 'react-router-dom';
+import { useClerk, useUser } from '@clerk/clerk-react';
 import {
   LayoutDashboard,
   FileText,
@@ -10,7 +11,6 @@ import {
   Megaphone,
   LogOut,
   Anchor,
-  User,
   Menu,
   X,
 } from 'lucide-react';
@@ -33,8 +33,12 @@ const navItems = [
 ];
 
 export default function PortalLayout() {
-  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { user } = useUser();
+  const { signOut } = useClerk();
+  const email = user?.primaryEmailAddress?.emailAddress ?? '';
+  const displayName = user?.fullName || email || 'Signed in';
+  const initials = ((user?.firstName?.[0] ?? '') + (user?.lastName?.[0] ?? '')) || (email[0] ?? '?').toUpperCase();
 
   const headerStyle: CSSProperties = {
     display: 'flex',
@@ -107,7 +111,6 @@ export default function PortalLayout() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Anchor size={24} color={CYAN} />
             <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em' }}>Helm</span>
-            <span style={{ fontSize: 14, color: '#A0AEC0', marginLeft: 4 }}>| Bayview Marina</span>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -126,12 +129,14 @@ export default function PortalLayout() {
                 fontSize: 14,
               }}
             >
-              JD
+              {initials}
             </div>
-            <span style={{ fontSize: 14, fontWeight: 500 }}>James Donnelly</span>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>{displayName}</span>
           </div>
           <button
-            onClick={() => navigate('/')}
+            onClick={() => signOut({ redirectUrl: '/' })}
+            title="Sign out"
+            aria-label="Sign out"
             style={{
               background: 'none',
               border: 'none',
@@ -145,6 +150,7 @@ export default function PortalLayout() {
             }}
           >
             <LogOut size={16} />
+            Sign out
           </button>
         </div>
       </header>

@@ -73,24 +73,39 @@ const MOCK_SLIPS: MockSlip[] = [
 
 const STEPS = ["Dates", "Boat Info", "Select Slip", "Guest & Payment"];
 
+/** Parse 'YYYY-MM-DD' as a LOCAL calendar date. new Date('YYYY-MM-DD') is UTC
+ *  midnight, i.e. the previous day in US time zones, which shifted every
+ *  weekday (and the weekend surcharge) by one. */
+function parseDateOnly(value: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
 function nightsBetween(a: string, b: string): number {
-  if (!a || !b) return 0;
-  const ms = new Date(b).getTime() - new Date(a).getTime();
+  const from = a ? parseDateOnly(a) : null;
+  const to = b ? parseDateOnly(b) : null;
+  if (!from || !to) return 0;
+  // Compare as UTC calendar days so DST changes don't produce 23/25h days.
+  const ms =
+    Date.UTC(to.getFullYear(), to.getMonth(), to.getDate()) -
+    Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
   return Math.max(0, Math.round(ms / 86_400_000));
 }
 
-function isWeekend(d: Date): boolean {
+/** Weekend-premium nights, per the original rule: nights starting Fri, Sat or Sun. */
+function isWeekendNight(d: Date): boolean {
   const day = d.getDay();
-  return day === 0 || day === 5 || day === 6; // Fri, Sat, Sun
+  return day === 0 || day === 5 || day === 6;
 }
 
 function countWeekendNights(checkIn: string, nights: number): number {
+  const start = parseDateOnly(checkIn);
+  if (!start) return 0;
   let count = 0;
-  const start = new Date(checkIn);
   for (let i = 0; i < nights; i++) {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    if (isWeekend(d)) count++;
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    if (isWeekendNight(d)) count++;
   }
   return count;
 }

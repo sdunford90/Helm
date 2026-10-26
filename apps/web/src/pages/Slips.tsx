@@ -5,7 +5,10 @@ import {
 } from 'lucide-react';
 import SlipDetailPanel from '../components/SlipDetailPanel';
 import DockMapSVG from '../components/DockMapSVG';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { customerName, type CustomerRef } from '../lib/dto';
+import { ErrorState, InlineError, LoadingState } from '../components/StateViews';
 import { useToast } from '../components/Toast';
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -35,22 +38,78 @@ interface Slip {
   meterReadings: Array<{ date: string; kWh: number; amount: number }>;
 }
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── API mapping ───────────────────────────────────────── */
 
-const MOCK_SLIPS: Slip[] = [
-  { id: '1', number: 'A-01', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A/50A', electricityMode: 'Metered', status: 'Occupied', occupant: 'James Harborview', compliance: 95, occupantDetail: { name: 'James Harborview', boat: 'Sea Spirit (38\' Sailboat)', contractStart: '2024-03-15', contractEnd: '2025-03-14' }, meterReadings: [{ date: '2025-03-01', kWh: 1240, amount: 148.80 }, { date: '2025-02-01', kWh: 1080, amount: 129.60 }, { date: '2025-01-01', kWh: 920, amount: 110.40 }] },
-  { id: '2', number: 'A-02', dock: 'A', length: 40, beam: 14, draft: 8, height: 20, type: 'Covered', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Maria Seabreeze', compliance: 88, occupantDetail: { name: 'Maria Seabreeze', boat: 'Coastal Dream (32\' Powerboat)', contractStart: '2024-06-01', contractEnd: '2025-05-31' }, meterReadings: [{ date: '2025-03-01', kWh: 800, amount: 75.00 }] },
-  { id: '3', number: 'A-03', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '4', number: 'A-04', dock: 'A', length: 35, beam: 12, draft: 7, height: 18, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Reserved', occupant: 'Robert Dockside (pending)', compliance: 0, meterReadings: [] },
-  { id: '5', number: 'B-01', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A/100A', electricityMode: 'Metered', status: 'Occupied', occupant: 'David Tidewater', compliance: 62, occupantDetail: { name: 'David Tidewater', boat: 'Tidewater Express (48\' Yacht)', contractStart: '2024-01-05', contractEnd: '2025-01-04' }, meterReadings: [{ date: '2025-03-01', kWh: 2100, amount: 252.00 }, { date: '2025-02-01', kWh: 1950, amount: 234.00 }] },
-  { id: '6', number: 'B-02', dock: 'B', length: 50, beam: 16, draft: 10, height: 25, type: 'Covered', power: '50A', electricityMode: 'Flat Rate', status: 'Maintenance', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '7', number: 'B-03', dock: 'B', length: 45, beam: 14, draft: 9, height: 22, type: 'Open', power: '30A/50A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '8', number: 'C-01', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Flat Rate', status: 'Occupied', occupant: 'Elena Windward', compliance: 91, occupantDetail: { name: 'Elena Windward', boat: 'Windward (28\' Sailboat)', contractStart: '2025-04-01', contractEnd: '2025-10-31' }, meterReadings: [] },
-  { id: '9', number: 'C-02', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-  { id: '10', number: 'C-03', dock: 'C', length: 30, beam: 10, draft: 6, height: 15, type: 'Open', power: '30A', electricityMode: 'Metered', status: 'Vacant', occupant: '', compliance: 0, meterReadings: [] },
-];
+interface SlipDTO {
+  id: string;
+  slipNumber: string;
+  dockId?: string | null;
+  lengthFt: number;
+  beamFt?: number | null;
+  depthFt?: number | null;
+  slipType?: string | null;
+  shorePower?: string | null;
+  status: 'VACANT' | 'OCCUPIED' | 'MAINTENANCE' | 'RESERVED';
+  electricityMode: 'FLAT_FEE' | 'METERED';
+  transientCapable?: boolean;
+  currentOccupant?: {
+    startDate: string;
+    endDate?: string | null;
+    customer?: CustomerRef | null;
+    boat?: { name?: string | null; lengthFt?: number | null } | null;
+  } | null;
+}
 
-/* ── Styles ─────────────────────────────────────────────── */
+const STATUS_LABEL: Record<SlipDTO['status'], SlipStatus> = {
+  VACANT: 'Vacant', OCCUPIED: 'Occupied', MAINTENANCE: 'Maintenance', RESERVED: 'Reserved',
+};
+const STATUS_ENUM: Record<SlipStatus, SlipDTO['status']> = {
+  Vacant: 'VACANT', Occupied: 'OCCUPIED', Maintenance: 'MAINTENANCE', Reserved: 'RESERVED',
+};
+
+function toSlip(d: SlipDTO): Slip {
+  const occ = d.currentOccupant;
+  return {
+    id: d.id,
+    number: d.slipNumber,
+    dock: d.dockId ?? '',
+    length: d.lengthFt,
+    beam: d.beamFt ?? 0,
+    draft: d.depthFt ?? 0,
+    height: 0,
+    type: d.slipType ?? '',
+    power: d.shorePower ?? '',
+    electricityMode: d.electricityMode === 'METERED' ? 'Metered' : 'Flat Fee',
+    status: STATUS_LABEL[d.status] ?? 'Vacant',
+    occupant: occ?.customer ? customerName(occ.customer) : '',
+    compliance: 0,
+    occupantDetail: occ
+      ? {
+          name: customerName(occ.customer),
+          boat: occ.boat?.name ? `${occ.boat.name}${occ.boat.lengthFt ? ` (${occ.boat.lengthFt}')` : ''}` : '—',
+          contractStart: occ.startDate?.slice(0, 10) ?? '',
+          contractEnd: occ.endDate?.slice(0, 10) ?? '',
+        }
+      : undefined,
+    // Meter readings are not part of the slip list response.
+    meterReadings: [],
+  };
+}
+
+/** Form values -> Create/UpdateSlip schema. */
+function slipPayload(v: { number: string; dock: string; length: string; beam: string; draft: string; type: string; power: string; electricityMode: string }) {
+  const num = (x: string) => (Number(x) > 0 ? Number(x) : null);
+  return {
+    slipNumber: v.number.trim(),
+    dockId: v.dock.trim() || null,
+    lengthFt: Number(v.length),
+    beamFt: num(v.beam),
+    depthFt: num(v.draft),
+    slipType: v.type || null,
+    shorePower: v.power || null,
+    electricityMode: v.electricityMode === 'Metered' ? 'METERED' : 'FLAT_FEE',
+  };
+}
 
 const statusColors: Record<SlipStatus, { bg: string; color: string; border?: string }> = {
   Vacant: { bg: '#FFFFFF', color: '#64748B', border: '#CCC' },
@@ -369,81 +428,107 @@ const st: Record<string, React.CSSProperties> = {
 
 /* ── Add Slip Modal ─────────────────────────────────────── */
 
-function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data: Record<string, unknown>) => void }) {
-  const [saved, setSaved] = useState(false);
-  const handleSave = () => {
-    if (onSave) onSave({});
-    setSaved(true);
-    setTimeout(() => { setSaved(false); onClose(); }, 1500);
+function SlipFormFields({ v, set, showStatus }: {
+  v: Record<string, string>;
+  set: (k: string, val: string) => void;
+  showStatus?: boolean;
+}) {
+  return (
+    <div style={st.twoCol} className="helm-form-grid">
+      <div style={st.field}>
+        <label style={st.label}>Slip Number *</label>
+        <input style={st.input} placeholder="e.g. A-05" value={v.number} onChange={(e) => set('number', e.target.value)} />
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Dock</label>
+        <input style={st.input} placeholder="e.g. A" value={v.dock} onChange={(e) => set('dock', e.target.value)} />
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Length (ft) *</label>
+        <input style={st.input} type="number" placeholder="40" value={v.length} onChange={(e) => set('length', e.target.value)} />
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Beam (ft)</label>
+        <input style={st.input} type="number" placeholder="14" value={v.beam} onChange={(e) => set('beam', e.target.value)} />
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Depth (ft)</label>
+        <input style={st.input} type="number" placeholder="8" value={v.draft} onChange={(e) => set('draft', e.target.value)} />
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Type</label>
+        <select style={st.select} value={v.type} onChange={(e) => set('type', e.target.value)}>
+          <option value="">—</option>
+          <option value="Open">Open</option>
+          <option value="Covered">Covered</option>
+        </select>
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Power</label>
+        <select style={st.select} value={v.power} onChange={(e) => set('power', e.target.value)}>
+          <option value="">—</option>
+          <option value="30A">30A</option>
+          <option value="50A">50A</option>
+          <option value="30A/50A">30A/50A</option>
+          <option value="50A/100A">50A/100A</option>
+        </select>
+      </div>
+      <div style={st.field}>
+        <label style={st.label}>Electricity Mode</label>
+        <select style={st.select} value={v.electricityMode} onChange={(e) => set('electricityMode', e.target.value)}>
+          <option value="Metered">Metered</option>
+          <option value="Flat Fee">Flat Fee</option>
+        </select>
+      </div>
+      {showStatus && (
+        <div style={st.field}>
+          <label style={st.label}>Status</label>
+          <select style={st.select} value={v.status} onChange={(e) => set('status', e.target.value)}>
+            <option value="Vacant">Vacant</option>
+            <option value="Reserved">Reserved</option>
+            <option value="Maintenance">Maintenance</option>
+            {v.status === 'Occupied' && <option value="Occupied">Occupied (set by contract)</option>}
+          </select>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddSlipModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const client = useApiClient();
+  const [v, setV] = useState<Record<string, string>>({ number: '', dock: '', length: '', beam: '', draft: '', type: '', power: '', electricityMode: 'Metered' });
+  const set = (k: string, val: string) => setV((p) => ({ ...p, [k]: val }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleSave = async () => {
+    if (!v.number.trim() || !(Number(v.length) > 0)) { setError('Slip number and a length greater than 0 are required.'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await client.post('/slips', slipPayload(v as Parameters<typeof slipPayload>[0]));
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
   };
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={() => { if (!saving) onClose(); }}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Add Slip</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
-        {saved && <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>Slip saved successfully!</div>}
         <div style={st.modalBody}>
-          <div style={st.twoCol} className="helm-form-grid">
-            <div style={st.field}>
-              <label style={st.label}>Slip Number *</label>
-              <input style={st.input} placeholder="e.g. A-05" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Dock *</label>
-              <select style={st.select}>
-                <option value="">Select dock...</option>
-                <option value="A">Dock A</option>
-                <option value="B">Dock B</option>
-                <option value="C">Dock C</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Length (ft)</label>
-              <input style={st.input} type="number" placeholder="40" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Beam (ft)</label>
-              <input style={st.input} type="number" placeholder="14" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Draft (ft)</label>
-              <input style={st.input} type="number" placeholder="8" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Height (ft)</label>
-              <input style={st.input} type="number" placeholder="20" />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Type</label>
-              <select style={st.select}>
-                <option value="Open">Open</option>
-                <option value="Covered">Covered</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Power</label>
-              <select style={st.select}>
-                <option value="30A">30A</option>
-                <option value="50A">50A</option>
-                <option value="30A/50A">30A/50A</option>
-                <option value="50A/100A">50A/100A</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Electricity Mode</label>
-              <select style={st.select}>
-                <option value="Metered">Metered</option>
-                <option value="Flat Rate">Flat Rate</option>
-                <option value="Included">Included</option>
-              </select>
-            </div>
-          </div>
+          {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
+          <SlipFormFields v={v} set={set} />
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={handleSave}>Save Slip</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Slip'}</button>
         </div>
       </div>
     </div>
@@ -452,284 +537,58 @@ function AddSlipModal({ onClose, onSave }: { onClose: () => void; onSave?: (data
 
 /* ── Edit Slip Modal ────────────────────────────────────── */
 
-function EditSlipModal({ slip, onClose, onSave }: {
+function EditSlipModal({ slip, onClose, onSaved }: {
   slip: Slip;
   onClose: () => void;
-  onSave: (updates: Partial<Slip>) => void;
+  onSaved: () => void;
 }) {
-  const [number, setNumber] = useState(slip.number);
-  const [dock, setDock] = useState(slip.dock);
-  const [length, setLength] = useState(String(slip.length));
-  const [beam, setBeam] = useState(String(slip.beam));
-  const [draft, setDraft] = useState(String(slip.draft));
-  const [height, setHeight] = useState(String(slip.height));
-  const [type, setType] = useState(slip.type);
-  const [power, setPower] = useState(slip.power);
-  const [electricityMode, setElectricityMode] = useState(slip.electricityMode);
-  const [status, setStatus] = useState<SlipStatus>(slip.status);
-  const [saved, setSaved] = useState(false);
+  const client = useApiClient();
+  const [v, setV] = useState<Record<string, string>>({
+    number: slip.number, dock: slip.dock, length: String(slip.length), beam: slip.beam ? String(slip.beam) : '',
+    draft: slip.draft ? String(slip.draft) : '', type: slip.type, power: slip.power, electricityMode: slip.electricityMode,
+    status: slip.status,
+  });
+  const set = (k: string, val: string) => setV((p) => ({ ...p, [k]: val }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSave = () => {
-    const updates: Partial<Slip> = {
-      number, dock, type, power, electricityMode, status,
-      length: parseFloat(length) || slip.length,
-      beam: parseFloat(beam) || slip.beam,
-      draft: parseFloat(draft) || slip.draft,
-      height: parseFloat(height) || slip.height,
-    };
-    onSave(updates);
-    setSaved(true);
-    setTimeout(() => { setSaved(false); onClose(); }, 1200);
+  const handleSave = async () => {
+    if (!v.number.trim() || !(Number(v.length) > 0)) { setError('Slip number and a length greater than 0 are required.'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await client.put(`/slips/${slip.id}`, {
+        ...slipPayload(v as Parameters<typeof slipPayload>[0]),
+        ...(v.status !== slip.status ? { status: STATUS_ENUM[v.status as SlipStatus] } : {}),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div style={st.overlay} onClick={onClose}>
+    <div style={st.overlay} onClick={() => { if (!saving) onClose(); }}>
       <div style={st.modal} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={st.modalHeader}>
           <h2 style={st.modalTitle}>Edit Slip {slip.number}</h2>
-          <button style={st.closeBtn} onClick={onClose}><X size={20} /></button>
+          <button style={st.closeBtn} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
-        {saved && (
-          <div style={{ padding: '12px 32px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', textAlign: 'center' }}>
-            Changes saved!
-          </div>
-        )}
         <div style={st.modalBody}>
-          <div style={st.twoCol} className="helm-form-grid">
-            <div style={st.field}>
-              <label style={st.label}>Slip Number *</label>
-              <input style={st.input} value={number} onChange={(e) => setNumber(e.target.value)} />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Dock *</label>
-              <select style={st.select} value={dock} onChange={(e) => setDock(e.target.value)}>
-                <option value="A">Dock A</option>
-                <option value="B">Dock B</option>
-                <option value="C">Dock C</option>
-                <option value="D">Dock D</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Length (ft)</label>
-              <input style={st.input} type="number" value={length} onChange={(e) => setLength(e.target.value)} />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Beam (ft)</label>
-              <input style={st.input} type="number" value={beam} onChange={(e) => setBeam(e.target.value)} />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Draft (ft)</label>
-              <input style={st.input} type="number" value={draft} onChange={(e) => setDraft(e.target.value)} />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Height (ft)</label>
-              <input style={st.input} type="number" value={height} onChange={(e) => setHeight(e.target.value)} />
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Type</label>
-              <select style={st.select} value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="Open">Open</option>
-                <option value="Covered">Covered</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Power</label>
-              <select style={st.select} value={power} onChange={(e) => setPower(e.target.value)}>
-                <option value="30A">30A</option>
-                <option value="50A">50A</option>
-                <option value="30A/50A">30A/50A</option>
-                <option value="50A/100A">50A/100A</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Electricity Mode</label>
-              <select style={st.select} value={electricityMode} onChange={(e) => setElectricityMode(e.target.value)}>
-                <option value="Metered">Metered</option>
-                <option value="Flat Rate">Flat Rate</option>
-                <option value="Included">Included</option>
-              </select>
-            </div>
-            <div style={st.field}>
-              <label style={st.label}>Status</label>
-              <select style={st.select} value={status} onChange={(e) => setStatus(e.target.value as SlipStatus)}>
-                <option value="Vacant">Vacant</option>
-                <option value="Occupied">Occupied</option>
-                <option value="Reserved">Reserved</option>
-                <option value="Maintenance">Maintenance</option>
-              </select>
-            </div>
-          </div>
+          {error && <div style={{ marginBottom: 12 }}><InlineError message={error} /></div>}
+          <SlipFormFields v={v} set={set} showStatus />
         </div>
         <div style={st.modalFooter}>
-          <button style={st.cancelBtn} onClick={onClose}>Cancel</button>
-          <button style={st.saveBtn} onClick={handleSave}>Save Changes</button>
+          <button style={st.cancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={{ ...st.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
         </div>
       </div>
     </div>
   );
 }
-
-/* ── Assign Slip Modal ──────────────────────────────────── */
-
-interface Customer { id: string; firstName: string; lastName: string; company: string | null; email: string; }
-
-function AssignSlipModal({ slip, onClose, onAssigned }: {
-  slip: Slip;
-  onClose: () => void;
-  onAssigned: (slipId: string, occupantName: string) => void;
-}) {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState<Customer | null>(null);
-  const [contractType, setContractType] = useState<'Annual' | 'Monthly' | 'Transient'>('Annual');
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
-  const [rate, setRate] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    setLoading(true);
-    fetch('/api/customers?limit=200')
-      .then((r) => r.ok ? r.json() : { data: [] })
-      .then((res) => { setCustomers(res.data || res || []); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
-  const filtered = customers.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      c.firstName?.toLowerCase().includes(q) ||
-      c.lastName?.toLowerCase().includes(q) ||
-      c.company?.toLowerCase().includes(q) ||
-      c.email?.toLowerCase().includes(q)
-    );
-  });
-
-  const displayName = (c: Customer) =>
-    c.company ? `${c.company} (${c.firstName} ${c.lastName})` : `${c.firstName} ${c.lastName}`;
-
-  const inp: React.CSSProperties = {
-    width: '100%', padding: '8px 12px', border: '1px solid #E2E8F0', borderRadius: 6,
-    fontSize: 13, color: '#0A2342', background: '#F8FAFC', boxSizing: 'border-box',
-  };
-  const lbl: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: '#64748B', marginBottom: 4, display: 'block' };
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}
-      onClick={onClose}>
-      <div style={{ background: '#FFF', borderRadius: 12, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}
-        onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#0A2342' }}>Assign Slip {slip.number}</h3>
-            <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>{slip.dock} · {slip.length}' L × {slip.beam}' Bm × {slip.draft}' Dr × {slip.height}' Ht</div>
-          </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Customer Search */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={lbl}>Select Customer *</label>
-          {selected ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(0,212,255,0.08)', border: '1px solid #00D4FF', borderRadius: 8 }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 14, color: '#0A2342' }}>{displayName(selected)}</div>
-                <div style={{ fontSize: 12, color: '#64748B' }}>{selected.email}</div>
-              </div>
-              <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
-                <X size={16} />
-              </button>
-            </div>
-          ) : (
-            <>
-              <input style={inp} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, company, or email…" autoFocus />
-              {loading && <div style={{ fontSize: 12, color: '#94A3B8', marginTop: 6 }}>Loading customers…</div>}
-              {!loading && search && (
-                <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: 'auto', background: '#FFF', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
-                  {filtered.length === 0 ? (
-                    <div style={{ padding: '12px 14px', fontSize: 13, color: '#94A3B8' }}>No customers found</div>
-                  ) : filtered.slice(0, 8).map((c) => (
-                    <div key={c.id} onClick={() => { setSelected(c); setSearch(''); }} style={{
-                      padding: '10px 14px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #F1F5F9',
-                      color: '#0A2342',
-                    }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#F1F5F9'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#FFF'; }}>
-                      <div style={{ fontWeight: 600 }}>{displayName(c)}</div>
-                      <div style={{ fontSize: 11, color: '#94A3B8' }}>{c.email}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button onClick={() => navigate('/customers')} style={{ marginTop: 8, background: 'none', border: 'none', color: '#00D4FF', fontSize: 12, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
-                + Add a new customer first
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Contract Type */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-          <div>
-            <label style={lbl}>Contract Type</label>
-            <select style={{ ...inp, cursor: 'pointer' }} value={contractType} onChange={(e) => setContractType(e.target.value as typeof contractType)}>
-              <option value="Annual">Annual</option>
-              <option value="Monthly">Monthly</option>
-              <option value="Transient">Transient / Daily</option>
-            </select>
-          </div>
-          <div>
-            <label style={lbl}>Start Date</label>
-            <input type="date" style={inp} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 20 }}>
-          <label style={lbl}>{contractType === 'Transient' ? 'Daily Rate ($)' : 'Monthly Rate ($)'}</label>
-          <input style={inp} type="number" min="0" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="e.g. 450.00" />
-        </div>
-
-        <div style={{ padding: '12px 14px', background: '#FFF8EE', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, marginBottom: 20, fontSize: 13, color: '#78350F', lineHeight: 1.5 }}>
-          This will mark the slip as <strong>Occupied</strong> and create a draft contract in Contracts. You can complete all contract terms there.
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', border: '1px solid #E2E8F0', borderRadius: 6, background: 'none', color: '#64748B', cursor: 'pointer', fontSize: 13 }}>
-            Cancel
-          </button>
-          <button
-            disabled={!selected || saving}
-            onClick={async () => {
-              if (!selected) return;
-              setSaving(true);
-              try {
-                await fetch(`/api/slips/${slip.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ status: 'OCCUPIED' }),
-                });
-              } catch { /* best-effort */ }
-              const name = displayName(selected);
-              onAssigned(slip.id, name);
-              onClose();
-            }}
-            style={{
-              padding: '9px 20px', background: '#0A2342', border: 'none', borderRadius: 6,
-              color: '#FFF', fontWeight: 600, cursor: selected && !saving ? 'pointer' : 'not-allowed',
-              fontSize: 13, opacity: selected ? 1 : 0.5,
-            }}
-          >{saving ? 'Saving…' : 'Assign Slip'}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Main Component ─────────────────────────────────────── */
 
 export default function Slips() {
   const toast = useToast();
@@ -737,20 +596,13 @@ export default function Slips() {
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [selectedSlip, setSelectedSlip] = useState<Slip | null>(null);
-  const [actionMsg, setActionMsg] = useState<string | null>(null);
-  const showAction = (msg: string) => { setActionMsg(msg); setTimeout(() => setActionMsg(null), 2000); };
-  const [showAssignModal, setShowAssignModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const client = useApiClient();
+  const navigate = useNavigate();
 
-  const { data: apiSlips, loading, error } = useApi<Slip[]>('get', '/api/slips', { immediate: true });
-  const createSlip = useApi<Slip>('post', '/api/slips');
-  const [localOverrides, setLocalOverrides] = useState<Record<string, Partial<Slip>>>({});
-
-  const slips = (apiSlips || MOCK_SLIPS).map((s) => ({ ...s, ...localOverrides[s.id] }));
-
-  const updateSlipLocally = (id: string, patch: Partial<Slip>) => {
-    setLocalOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-  };
+  const list = useList<Slip, SlipDTO>('/slips?take=200', { map: toSlip });
+  const slips = list.items;
 
   const filtered = slips.filter((sl) => {
     if (!search) return true;
@@ -767,9 +619,9 @@ export default function Slips() {
       <h1 style={st.title} className="helm-page-title">Slips</h1>
       <hr style={st.divider} />
 
-      {actionMsg && <div style={{ padding: '12px 24px', marginBottom: '16px', backgroundColor: '#DEF7EC', color: '#03543F', fontWeight: 600, fontSize: '14px', borderRadius: '8px', textAlign: 'center' }}>{actionMsg}</div>}
-
-      {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#64748B' }}>Loading slips...</div>}
+      {actionError && <div style={{ marginBottom: 16 }}><InlineError message={actionError} /></div>}
+      {list.loading && <LoadingState label="Loading slips…" />}
+      {list.error && <ErrorState title="Could not load slips" message={list.error} onRetry={list.refetch} />}
 
       {/* Filter Bar */}
       <div style={st.filterBar} className="helm-filter-bar">
@@ -812,7 +664,7 @@ export default function Slips() {
       </div>
 
       {/* List View */}
-      {view === 'list' && (
+      {!list.loading && !list.error && view === 'list' && (
         <div style={st.tableWrap} className="helm-table-wrap">
           <table style={st.table}>
             <thead>
@@ -821,8 +673,7 @@ export default function Slips() {
                 <th style={st.th}>Dock</th>
                 <th style={st.th}>Length</th>
                 <th style={st.th}>Beam</th>
-                <th style={st.th}>Draft</th>
-                <th style={st.th}>Height</th>
+                <th style={st.th}>Depth</th>
                 <th style={st.th}>Type</th>
                 <th style={st.th}>Power</th>
                 <th style={st.th}>Electricity</th>
@@ -844,13 +695,12 @@ export default function Slips() {
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
                   >
                     <td style={{ ...st.td, backgroundColor: rowBg, fontWeight: 600 }}>{sl.number}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.dock}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.dock || '—'}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.length}'</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.beam}'</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.draft}'</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.height}'</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.type}</td>
-                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.power}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.beam ? `${sl.beam}'` : '—'}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg, ...st.mono }}>{sl.draft ? `${sl.draft}'` : '—'}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.type || '—'}</td>
+                    <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.power || '—'}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>{sl.electricityMode}</td>
                     <td style={{ ...st.td, backgroundColor: rowBg }}>
                       <span style={{
@@ -876,11 +726,14 @@ export default function Slips() {
               })}
             </tbody>
           </table>
+          {filtered.length === 0 && (
+            <div style={{ padding: 32, textAlign: 'center', color: '#64748B', fontSize: 14 }}>{slips.length === 0 ? 'No slips set up yet. Add your first slip.' : 'No slips match your search.'}</div>
+          )}
         </div>
       )}
 
       {/* Dock Map View */}
-      {view === 'map' && (
+      {!list.loading && !list.error && view === 'map' && (
         <DockMapSVG
           slips={filtered.map((sl) => ({
             id: sl.id,
@@ -901,7 +754,7 @@ export default function Slips() {
       )}
 
       {/* Add Slip Modal */}
-      {showAdd && <AddSlipModal onClose={() => setShowAdd(false)} onSave={(data) => createSlip.execute(data)} />}
+      {showAdd && <AddSlipModal onClose={() => setShowAdd(false)} onSaved={() => { toast.success('Slip added'); list.refetch(); }} />}
 
       {/* Slip Detail Panel */}
       {selectedSlip && (
@@ -924,16 +777,23 @@ export default function Slips() {
           onClose={() => setSelectedSlip(null)}
           onEdit={() => setShowEditModal(true)}
           onAssign={() => {
-            if (selectedSlip.status !== 'Vacant' && selectedSlip.status !== 'Reserved') {
-              toast.warning('Cannot Assign', `Slip ${selectedSlip.number} is currently ${selectedSlip.status}. Set it to Vacant first to re-assign.`);
-            } else {
-              setShowAssignModal(true);
-            }
+            // Slips are occupied through a contract; assigning here used to set
+            // OCCUPIED without creating one.
+            toast.info('Assign with a contract', `Create a contract for slip ${selectedSlip.number} on the Contracts page.`);
+            navigate('/contracts');
           }}
           onMaintenance={() => {
-            toast.confirm('Maintenance Mode', `Mark slip ${selectedSlip.number} as under maintenance?`, () => {
-              updateSlipLocally(selectedSlip.id, { status: 'Maintenance' });
-              setSelectedSlip(null);
+            const slip = selectedSlip;
+            toast.confirm('Maintenance Mode', `Mark slip ${slip.number} as under maintenance?`, async () => {
+              setActionError(null);
+              try {
+                await client.put(`/slips/${slip.id}`, { status: 'MAINTENANCE' });
+                toast.success(`Slip ${slip.number} marked as under maintenance`);
+                setSelectedSlip(null);
+                list.refetch();
+              } catch (err) {
+                setActionError(errorMessage(err));
+              }
             });
           }}
         />
@@ -943,22 +803,10 @@ export default function Slips() {
         <EditSlipModal
           slip={selectedSlip}
           onClose={() => setShowEditModal(false)}
-          onSave={(updates) => {
-            updateSlipLocally(selectedSlip.id, updates);
-            setSelectedSlip((prev) => prev ? { ...prev, ...updates } : prev);
-            showAction(`Slip ${selectedSlip.number} updated successfully.`);
-          }}
-        />
-      )}
-
-      {showAssignModal && selectedSlip && (
-        <AssignSlipModal
-          slip={selectedSlip}
-          onClose={() => setShowAssignModal(false)}
-          onAssigned={(slipId, occupantName) => {
-            updateSlipLocally(slipId, { status: 'Occupied', occupant: occupantName });
-            setShowAssignModal(false);
+          onSaved={() => {
+            toast.success(`Slip ${selectedSlip.number} updated`);
             setSelectedSlip(null);
+            list.refetch();
           }}
         />
       )}

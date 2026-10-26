@@ -1,54 +1,30 @@
 import React, { useState } from 'react';
+import { formatCents, useAdminResource } from '../lib/api';
+import { ErrorState, LoadingState, NotAvailable } from '../components/StateViews';
 
-const STATS = [
-  { label: 'Total MRR', value: '$14,850', change: '+12%', color: '#4CAF50' },
-  { label: 'Invoices This Month', value: '15', change: '2 pending', color: '#2196F3' },
-  { label: 'Collections Rate', value: '94.2%', change: '1 failed', color: '#FF9800' },
-  { label: 'Avg Revenue / Tenant', value: '$825', change: '+8%', color: '#9C27B0' },
-];
+interface BillingOverview {
+  totalMrrCents: number;
+  totalArrCents: number;
+  totalTenants: number;
+  activeTenants: number;
+  gracePeriodTenants: number;
+  lockedTenants: number;
+  churnRate: number;
+  arpuCents: number;
+}
 
-const INVOICES = [
-  { tenant: 'Pacific Coast Marina', amount: 999, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Coral Reef Marina', amount: 999, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-02' },
-  { tenant: 'Fisherman\'s Wharf Marina', amount: 999, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Sunset Cove Marina', amount: 499, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Blue Horizon Marina', amount: 499, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-03' },
-  { tenant: 'Windward Yacht Harbor', amount: 499, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Seabreeze Marina', amount: 499, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-02' },
-  { tenant: 'Old Port Marina', amount: 499, status: 'failed', dueDate: '2026-03-01', paidDate: '—' },
-  { tenant: 'Lakeside Harbor', amount: 299, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Anchor Point Marina', amount: 299, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-04' },
-  { tenant: 'North Shore Docks', amount: 299, status: 'paid', dueDate: '2026-03-01', paidDate: '2026-03-01' },
-  { tenant: 'Harbor Bay Marina', amount: 0, status: 'trial', dueDate: '—', paidDate: '—' },
-  { tenant: 'Crystal Waters Yacht Club', amount: 0, status: 'trial', dueDate: '—', paidDate: '—' },
-  { tenant: 'Tidewater Landing', amount: 0, status: 'trial', dueDate: '—', paidDate: '—' },
-  { tenant: 'Bayview Docks', amount: 0, status: 'locked', dueDate: '—', paidDate: '—' },
-];
+interface Tier {
+  id: string;
+  name: string;
+  monthlyFeeCents: number;
+  perLocationFeeCents: number;
+  achFeeRate: number;
+  cardFeeRate: number;
+  storageLimitGb: number;
+  tenantCount: number;
+}
 
-const TIERS = [
-  {
-    name: 'Starter', price: '$299/mo', tenants: 4,
-    features: ['Up to 100 slips', '1 GB storage', 'Basic reporting', 'Email support', 'Standard branding'],
-    color: '#2196F3',
-  },
-  {
-    name: 'Professional', price: '$499/mo', tenants: 5,
-    features: ['Up to 250 slips', '10 GB storage', 'Advanced reporting', 'Priority support', 'Custom domain', 'API access'],
-    color: '#FF9800',
-  },
-  {
-    name: 'Enterprise', price: '$999/mo', tenants: 3,
-    features: ['Unlimited slips', '50 GB storage', 'Custom reporting', 'Dedicated support', 'White label', 'Full API access', 'SSO'],
-    color: '#9C27B0',
-  },
-];
-
-const STATUS_STYLE: Record<string, { bg: string; color: string }> = {
-  paid: { bg: 'rgba(76,175,80,0.15)', color: '#4CAF50' },
-  failed: { bg: 'rgba(244,67,54,0.15)', color: '#F44336' },
-  trial: { bg: 'rgba(33,150,243,0.15)', color: '#2196F3' },
-  locked: { bg: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.3)' },
-};
+const TIER_COLORS = ['#2196F3', '#FF9800', '#9C27B0', '#4CAF50', '#00D4FF'];
 
 const card: React.CSSProperties = {
   background: '#0D1B2A',
@@ -68,93 +44,106 @@ const tabBtn = (active: boolean): React.CSSProperties => ({
   cursor: 'pointer',
 });
 
+/** Fee rates come back as fractions (0.029) or percentages (2.9) depending on seed data; show both sanely. */
+function formatRate(rate: number): string {
+  const pct = rate < 1 ? rate * 100 : rate;
+  return `${pct.toFixed(2).replace(/\.?0+$/, '')}%`;
+}
+
 const Billing: React.FC = () => {
   const [tab, setTab] = useState<'invoices' | 'tiers'>('invoices');
+  const overview = useAdminResource<BillingOverview>('/billing/overview');
+  const tiers = useAdminResource<Tier[]>(tab === 'tiers' ? '/billing/tiers' : null);
+
+  const o = overview.data;
+  const STATS = o
+    ? [
+        { label: 'Total MRR', value: formatCents(o.totalMrrCents), change: `${formatCents(o.totalArrCents)} ARR`, color: '#4CAF50' },
+        { label: 'Active Tenants', value: String(o.activeTenants), change: `${o.totalTenants} total`, color: '#2196F3' },
+        { label: 'Locked / Grace', value: `${o.lockedTenants} / ${o.gracePeriodTenants}`, change: `${(o.churnRate * 100).toFixed(1)}% locked`, color: '#FF9800' },
+        { label: 'Avg Revenue / Tenant', value: formatCents(o.arpuCents), change: 'Active tenants only', color: '#9C27B0' },
+      ]
+    : [];
 
   return (
     <div>
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
-        {STATS.map((s) => (
-          <div key={s.label} style={card}>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>{s.label}</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{s.change}</div>
-          </div>
-        ))}
-      </div>
+      {overview.loading && <LoadingState label="Loading billing overview…" />}
+      {overview.error && <ErrorState title="Could not load billing overview" message={overview.error} onRetry={overview.refetch} />}
+      {o && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+          {STATS.map((s) => (
+            <div key={s.label} style={card}>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>{s.label}</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: s.color }}>{s.value}</div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{s.change}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Tabs */}
-      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 20, display: 'flex' }}>
+      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 20, marginTop: o ? 0 : 24, display: 'flex' }}>
         <button onClick={() => setTab('invoices')} style={tabBtn(tab === 'invoices')}>Invoices</button>
         <button onClick={() => setTab('tiers')} style={tabBtn(tab === 'tiers')}>Tiers</button>
       </div>
 
       {/* Invoices Tab */}
       {tab === 'invoices' && (
-        <div style={card}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1 }}>March 2026 SaaS Invoices</div>
-            <button style={{ background: '#0A2342', color: '#00D4FF', border: '1px solid #00D4FF', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-              Generate Monthly Invoices
-            </button>
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                {['Tenant', 'Amount', 'Status', 'Due Date', 'Paid Date'].map((h) => (
-                  <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {INVOICES.map((inv, i) => {
-                const ss = STATUS_STYLE[inv.status];
-                return (
-                  <tr key={i}>
-                    <td style={{ padding: '10px 12px', fontSize: 13, color: '#FFF', fontWeight: 500, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{inv.tenant}</td>
-                    <td style={{ padding: '10px 12px', fontSize: 13, fontWeight: 600, color: inv.amount > 0 ? '#FFF' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{inv.amount > 0 ? `$${inv.amount}` : '—'}</td>
-                    <td style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <span style={{ background: ss.bg, color: ss.color, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{inv.status}</span>
-                    </td>
-                    <td style={{ padding: '10px 12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{inv.dueDate}</td>
-                    <td style={{ padding: '10px 12px', fontSize: 12, color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>{inv.paidDate}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <NotAvailable
+          title="SaaS invoicing is not available yet"
+          message="The API keeps platform invoices in server memory only (there is no SaaS invoice table), so they would disappear on restart. Invoice history and monthly generation will appear here once invoices are stored."
+        />
       )}
 
       {/* Tiers Tab */}
       {tab === 'tiers' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }}>
-          {TIERS.map((tier) => (
-            <div key={tier.name} style={{ ...card, borderTop: `3px solid ${tier.color}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: '#FFF' }}>{tier.name}</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: tier.color, marginTop: 4 }}>{tier.price}</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: '#FFF' }}>{tier.tenants}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>tenants</div>
-                </div>
-              </div>
-              <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
-                {tier.features.map((f) => (
-                  <div key={f} style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ color: tier.color }}>+</span> {f}
+        <>
+          {tiers.loading && <LoadingState label="Loading tiers…" />}
+          {tiers.error && <ErrorState title="Could not load tiers" message={tiers.error} onRetry={tiers.refetch} />}
+          {tiers.data && tiers.data.length === 0 && <NotAvailable title="No tiers configured" message="No SaaS pricing tiers exist yet." />}
+          {tiers.data && tiers.data.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }}>
+              {tiers.data.map((tier, i) => {
+                const color = TIER_COLORS[i % TIER_COLORS.length];
+                const rows = [
+                  `${formatCents(tier.perLocationFeeCents)} per extra location`,
+                  `ACH fee ${formatRate(tier.achFeeRate)}`,
+                  `Card fee ${formatRate(tier.cardFeeRate)}`,
+                  `${tier.storageLimitGb} GB storage`,
+                ];
+                return (
+                  <div key={tier.id} style={{ ...card, borderTop: `3px solid ${color}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                      <div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: '#FFF' }}>{tier.name}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color, marginTop: 4 }}>{formatCents(tier.monthlyFeeCents)}/mo</div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: 28, fontWeight: 700, color: '#FFF' }}>{tier.tenantCount}</div>
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>tenants</div>
+                      </div>
+                    </div>
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16 }}>
+                      {rows.map((f) => (
+                        <div key={f} style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ color }}>+</span> {f}
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      disabled
+                      title="Coming soon: tier editing from this screen is not built yet."
+                      style={{ width: '100%', marginTop: 16, background: 'transparent', border: `1px solid ${color}`, color, borderRadius: 6, padding: '8px', fontSize: 12, fontWeight: 600, cursor: 'not-allowed', opacity: 0.5 }}
+                    >
+                      Edit Tier (coming soon)
+                    </button>
                   </div>
-                ))}
-              </div>
-              <button style={{ width: '100%', marginTop: 16, background: 'transparent', border: `1px solid ${tier.color}`, color: tier.color, borderRadius: 6, padding: '8px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                Edit Tier
-              </button>
+                );
+              })}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -17,7 +17,6 @@ import {
   poweredBy,
   fonts,
   spacing,
-  radii,
 } from "../shared/styles";
 
 /* ------------------------------------------------------------------ */

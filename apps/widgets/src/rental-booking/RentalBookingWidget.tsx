@@ -5,7 +5,6 @@ import {
   fonts,
   spacing,
   radii,
-  shadows,
   baseContainer,
   card,
   label as labelStyle,

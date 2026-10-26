@@ -5,12 +5,17 @@ import {
   Calendar, CreditCard, Shield, Ship, FileText, DollarSign,
   Activity, Clock, User, AlertCircle, Plus, X, ToggleLeft, ToggleRight,
 } from 'lucide-react';
-import CustomerForm from '../components/CustomerForm';
-import CustomerMerge from '../components/CustomerMerge';
+import CustomerForm, { customerFormToPayload, STATUS_FROM_ENUM } from '../components/CustomerForm';
 import CommunicationPrefs from '../components/CommunicationPrefs';
-import { useApi } from '../hooks/useApi';
+import { useApiClient, useList, useResource } from '../hooks/useApi';
+import { errorMessage } from '../lib/api';
+import { formatCents, formatDate, formatPhone, humanizeEnum } from '../lib/format';
+import type { InvoiceDTO } from '../lib/dto';
+import SlipSelect from '../components/SlipSelect';
+import { ComingSoonButton, EmptyState, ErrorState, LoadingState } from '../components/StateViews';
+import { useToast } from '../components/Toast';
 
-/* ── Mock Data ─────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────── */
 
 interface CustomerDetail {
   id: string;
@@ -32,121 +37,218 @@ interface CustomerDetail {
   taxExempt: boolean;
   achBlocked: boolean;
   created: string;
-  openInvoices: number;
-  credits: number;
-  deposits: number;
+  openInvoices: number; // cents
+  credits: number; // cents
+  deposits: number; // cents
   totalBoats: number;
   activeContracts: number;
-  lifetimeValue: number;
+  lifetimeBilled: number; // cents
+  complianceScore: string;
 }
-
-const CUSTOMER: CustomerDetail = {
-  id: '1',
-  firstName: 'James',
-  lastName: 'Harborview',
-  email: 'james@harbor.com',
-  phone: '(555) 123-4567',
-  company: 'Harbor Industries LLC',
-  address: '123 Marina Drive\nCoastal City, FL 33101',
-  status: 'Active',
-  dob: '1978-06-15',
-  dlNumber: 'H123-456-78-901',
-  dlState: 'FL',
-  dlExpiry: '2027-06-15',
-  emergencyName: 'Linda Harborview',
-  emergencyRelationship: 'Spouse',
-  emergencyPhone: '(555) 111-2222',
-  emergencyEmail: 'linda@harbor.com',
-  taxExempt: false,
-  achBlocked: false,
-  created: '2024-03-15',
-  openInvoices: 1250.0,
-  credits: 200.0,
-  deposits: 3000.0,
-  totalBoats: 2,
-  activeContracts: 1,
-  lifetimeValue: 28500.0,
-};
-
-const BOATS: Boat[] = [
-  { id: '1', name: 'Sea Spirit', type: 'Sailboat', length: 38, registration: 'FL-1234-AB', compliance: 92, make: 'Hunter', model: '380', year: '2018', beam: '12.5', draft: '5.5', height: '57', color: 'White', hin: 'HUN38001A818', mmsi: '338102847', engineType: 'Inboard Diesel', engineHp: '42', fuelType: 'Diesel' },
-  { id: '2', name: 'Wave Runner III', type: 'Powerboat', length: 28, registration: 'FL-5678-CD', compliance: 78, make: 'Sea Ray', model: '280 Sundancer', year: '2020', beam: '9.5', draft: '2.8', height: '8.5', color: 'Blue/White', hin: 'SRAY2801B020', mmsi: '', engineType: 'Inboard Gas', engineHp: '260', fuelType: 'Gasoline' },
-];
-
-const INVOICES = [
-  { id: 'INV-001', description: 'Monthly Slip Rental - March', amount: 850.0, status: 'Paid', date: '2025-03-01' },
-  { id: 'INV-002', description: 'Electric Meter - February', amount: 142.5, status: 'Paid', date: '2025-02-15' },
-  { id: 'INV-003', description: 'Monthly Slip Rental - April', amount: 850.0, status: 'Open', date: '2025-04-01' },
-  { id: 'INV-004', description: 'Pump-Out Service', amount: 45.0, status: 'Open', date: '2025-03-20' },
-  { id: 'INV-005', description: 'Late Fee', amount: 25.0, status: 'Overdue', date: '2025-01-15' },
-];
 
 interface Boat {
   id: string;
   name: string;
-  type: string;
   length: number;
   registration: string;
-  compliance: number;
   make?: string;
   model?: string;
   year?: string;
   beam?: string;
   draft?: string;
-  height?: string;
-  color?: string;
   hin?: string;
-  mmsi?: string;
-  engineType?: string;
   engineHp?: string;
   fuelType?: string;
+  insurance: InsuranceRecord[];
 }
 
 interface Invoice {
   id: string;
-  description: string;
-  amount: number;
+  number: string;
+  amount: number; // cents
+  balance: number; // cents
   status: string;
   date: string;
+  due: string;
 }
 
 interface InsuranceRecord {
   id: string;
-  boatId: string;
-  boatName: string;
   provider: string;
   policyNumber: string;
-  type: string;
-  coverage: number;
-  expiry: string;
-  status: 'Current' | 'Expiring Soon' | 'Expired';
+  expiry: string | null;
+  reviewStatus: string;
+  status: 'Current' | 'Expiring Soon' | 'Expired' | 'No Expiry';
 }
-
-const INSURANCE: InsuranceRecord[] = [
-  { id: 'INS-001', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48291', type: 'Hull & Liability', coverage: 250000, expiry: '2026-06-15', status: 'Current' },
-  { id: 'INS-002', boatId: '1', boatName: 'Sea Spirit', provider: 'Marine Shield Insurance', policyNumber: 'MSI-2025-48292', type: 'Environmental Liability', coverage: 100000, expiry: '2026-06-15', status: 'Current' },
-  { id: 'INS-003', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77410', type: 'Hull & Liability', coverage: 120000, expiry: '2026-04-20', status: 'Expiring Soon' },
-  { id: 'INS-004', boatId: '2', boatName: 'Wave Runner III', provider: 'Coastal Underwriters', policyNumber: 'CU-2025-77411', type: 'Pollution Liability', coverage: 50000, expiry: '2025-12-01', status: 'Expired' },
-];
 
 const insuranceStatusColors: Record<string, { bg: string; color: string }> = {
   Current: { bg: '#E8F5E9', color: '#1B5E20' },
   'Expiring Soon': { bg: '#FFF3CD', color: '#856404' },
   Expired: { bg: '#FDECEA', color: '#B71C1C' },
+  'No Expiry': { bg: '#F2F4F6', color: '#64748B' },
 };
 
-const ACTIVITY = [
-  { date: '2025-03-20', action: 'Pump-out service completed', type: 'service' },
-  { date: '2025-03-15', action: 'Invoice INV-003 generated', type: 'billing' },
-  { date: '2025-03-01', action: 'Payment received - $850.00', type: 'payment' },
-  { date: '2025-02-20', action: 'Meter reading submitted: 1,240 kWh', type: 'meter' },
-  { date: '2025-02-15', action: 'Invoice INV-002 generated', type: 'billing' },
-  { date: '2025-02-01', action: 'Contract auto-renewed for 12 months', type: 'contract' },
-  { date: '2025-01-15', action: 'Insurance document uploaded', type: 'document' },
-  { date: '2024-12-20', action: 'Dock walk inspection - passed', type: 'inspection' },
-];
+/* ── API mapping ───────────────────────────────────────── */
 
-/* ── Styles ────────────────────────────────────────────── */
+interface BoatDTO {
+  id: string;
+  name?: string | null;
+  registrationNumber?: string | null;
+  make?: string | null;
+  model?: string | null;
+  year?: number | null;
+  lengthFt: number;
+  beamFt?: number | null;
+  draftFt?: number | null;
+  hin?: string | null;
+  fuelType?: string | null;
+  engineHp?: number | null;
+  insuranceRecords?: { id: string; insurer?: string | null; policyNumber?: string | null; expiryDate?: string | null; status: string }[];
+}
+
+interface CustomerDetailDTO {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email?: string | null;
+  phone?: string | null;
+  company?: string | null;
+  addressJson?: Record<string, unknown> | null;
+  status: string;
+  dob?: string | null;
+  dlNumber?: string | null;
+  dlState?: string | null;
+  dlExpiry?: string | null;
+  emergencyContactJson?: { name?: string; relationship?: string; phone?: string; email?: string } | null;
+  taxExempt: boolean;
+  achBlocked: boolean;
+  createdAt: string;
+  boats: BoatDTO[];
+  slipContracts: { id: string; status: string }[];
+  invoiceSummary: { status: string; _sum: { totalCents: number | null } }[];
+  complianceScore: string;
+  balanceSummary: { openInvoicesTotalCents: number; creditsCents: number; securityDepositsHeldCents: number };
+}
+
+function dateOnly(v?: string | null): string {
+  return v ? v.slice(0, 10) : '';
+}
+
+function addressText(a?: Record<string, unknown> | null): string {
+  if (!a) return '';
+  if (typeof a.line === 'string') return a.line;
+  return Object.values(a).filter((v) => typeof v === 'string' && v).join('\n');
+}
+
+function insuranceStatus(expiry?: string | null): InsuranceRecord['status'] {
+  if (!expiry) return 'No Expiry';
+  const days = (new Date(expiry).getTime() - Date.now()) / 86400000;
+  return days < 0 ? 'Expired' : days <= 30 ? 'Expiring Soon' : 'Current';
+}
+
+function toBoat(b: BoatDTO): Boat {
+  return {
+    id: b.id,
+    name: b.name ?? 'Unnamed vessel',
+    length: b.lengthFt,
+    registration: b.registrationNumber ?? '',
+    make: b.make ?? '',
+    model: b.model ?? '',
+    year: b.year ? String(b.year) : '',
+    beam: b.beamFt ? String(b.beamFt) : '',
+    draft: b.draftFt ? String(b.draftFt) : '',
+    hin: b.hin ?? '',
+    engineHp: b.engineHp ? String(b.engineHp) : '',
+    fuelType: b.fuelType ?? '',
+    insurance: (b.insuranceRecords ?? []).map((r) => ({
+      id: r.id,
+      provider: r.insurer ?? '—',
+      policyNumber: r.policyNumber ?? '—',
+      expiry: r.expiryDate ?? null,
+      reviewStatus: humanizeEnum(r.status),
+      status: insuranceStatus(r.expiryDate),
+    })),
+  };
+}
+
+function toCustomerDetail(c: CustomerDetailDTO): CustomerDetail & { boatsList: Boat[] } {
+  const ec = c.emergencyContactJson ?? {};
+  return {
+    id: c.id,
+    firstName: c.firstName,
+    lastName: c.lastName,
+    email: c.email ?? '',
+    phone: c.phone ?? '',
+    company: c.company ?? '',
+    address: addressText(c.addressJson),
+    status: (STATUS_FROM_ENUM[c.status] ?? 'Active') as CustomerDetail['status'],
+    dob: dateOnly(c.dob),
+    dlNumber: c.dlNumber ?? '',
+    dlState: c.dlState ?? '',
+    dlExpiry: dateOnly(c.dlExpiry),
+    emergencyName: ec.name ?? '',
+    emergencyRelationship: ec.relationship ?? '',
+    emergencyPhone: ec.phone ?? '',
+    emergencyEmail: ec.email ?? '',
+    taxExempt: c.taxExempt,
+    achBlocked: c.achBlocked,
+    created: c.createdAt,
+    openInvoices: c.balanceSummary?.openInvoicesTotalCents ?? 0,
+    credits: c.balanceSummary?.creditsCents ?? 0,
+    deposits: c.balanceSummary?.securityDepositsHeldCents ?? 0,
+    totalBoats: c.boats?.length ?? 0,
+    activeContracts: (c.slipContracts ?? []).filter((k) => k.status === 'ACTIVE' || k.status === 'EXPIRING').length,
+    lifetimeBilled: (c.invoiceSummary ?? []).filter((g) => g.status !== 'VOID' && g.status !== 'DRAFT').reduce((sum, g) => sum + (g._sum.totalCents ?? 0), 0),
+    complianceScore: c.complianceScore,
+    boatsList: (c.boats ?? []).map(toBoat),
+  };
+}
+
+function toInvoiceRow(i: InvoiceDTO): Invoice {
+  return { id: i.id, number: i.invoiceNumber, amount: i.totalCents, balance: i.balanceCents, status: humanizeEnum(i.status), date: i.issuedDate, due: i.dueDate };
+}
+
+interface TimelineEntry {
+  type: string;
+  id: string;
+  timestamp: string;
+  data: Record<string, unknown>;
+}
+
+function timelineText(e: TimelineEntry): string {
+  const d = e.data ?? {};
+  switch (e.type) {
+    case 'INVOICE': return `Invoice ${d.invoiceNumber ?? ''} ${humanizeEnum(String(d.status ?? '')).toLowerCase()} · ${formatCents(Number(d.totalCents ?? 0))}`;
+    case 'PAYMENT': return `Payment ${formatCents(Number(d.amountCents ?? 0))} via ${humanizeEnum(String(d.method ?? ''))} (${humanizeEnum(String(d.status ?? '')).toLowerCase()})`;
+    case 'DOCK_WALK': return `Dock walk${d.slipNumber ? ` at slip ${d.slipNumber}` : ''}: ${humanizeEnum(String(d.status ?? ''))}${d.violationType ? ` (${d.violationType})` : ''}`;
+    case 'ANNOUNCEMENT': return `Announcement “${d.subject ?? ''}” ${humanizeEnum(String(d.deliveryStatus ?? '')).toLowerCase()}`;
+    case 'NOTE': return `${humanizeEnum(String(d.action ?? 'Updated'))}${d.userName ? ` by ${d.userName}` : ''}`;
+    default: return humanizeEnum(e.type);
+  }
+}
+
+function timelineIcon(type: string): string {
+  return type === 'PAYMENT' ? 'payment' : type === 'INVOICE' ? 'billing' : type === 'DOCK_WALK' ? 'inspection' : type === 'ANNOUNCEMENT' ? 'document' : 'contract';
+}
+
+/** Build the boats API payload from the form (only fields the API stores). */
+function boatPayload(v: Record<string, string>) {
+  const num = (x: string) => (x.trim() && Number.isFinite(Number(x)) ? Number(x) : null);
+  const int = (x: string) => (x.trim() && Number.isInteger(Number(x)) ? Number(x) : null);
+  return {
+    name: v.name.trim() || null,
+    registrationNumber: v.registration.trim() || null,
+    make: v.make.trim() || null,
+    model: v.model.trim() || null,
+    year: int(v.year),
+    lengthFt: num(v.length) ?? 0,
+    beamFt: num(v.beam),
+    draftFt: num(v.draft),
+    hin: v.hin.trim() || null,
+    fuelType: v.fuelType && v.fuelType !== 'N/A' ? v.fuelType : null,
+    engineHp: int(v.engineHp),
+  };
+}
 
 const statusBadgeColors: Record<string, { bg: string; color: string }> = {
   Active: { bg: '#E8F5E9', color: '#1B5E20' },
@@ -162,9 +264,9 @@ const invoiceStatusColors: Record<string, { bg: string; color: string }> = {
   Overdue: { bg: '#FDECEA', color: '#B71C1C' },
 };
 
-const complianceBadge = (score: number): { bg: string; color: string } => {
-  if (score >= 90) return { bg: '#E8F5E9', color: '#1B5E20' };
-  if (score >= 70) return { bg: '#FFF3CD', color: '#856404' };
+const complianceBadge = (score: string): { bg: string; color: string } => {
+  if (score === 'ALL_GOOD') return { bg: '#E8F5E9', color: '#1B5E20' };
+  if (score === 'ATTENTION_REQUIRED') return { bg: '#FFF3CD', color: '#856404' };
   return { bg: '#FDECEA', color: '#B71C1C' };
 };
 
@@ -417,8 +519,6 @@ const mCancelBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px',
 const mSaveBtn: React.CSSProperties = { padding: '8px 22px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' };
 const mTwoCol: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' };
 
-const BOAT_TYPES = ['Sailboat', 'Powerboat', 'Trawler', 'Yacht', 'Runabout', 'Cabin Cruiser', 'Catamaran', 'Center Console', 'Pontoon', 'Jet Ski / PWC', 'Other'];
-const ENGINE_TYPES = ['Inboard Gas', 'Inboard Diesel', 'Outboard Gas', 'Outboard Electric', 'Sterndrive', 'Jet Drive', 'Sail / No Engine', 'Other'];
 const FUEL_TYPES = ['Gasoline', 'Diesel', 'Electric', 'Hybrid', 'N/A'];
 
 function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, val: string) => void }) {
@@ -432,13 +532,7 @@ function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, va
           <input style={mInput} value={v.name} onChange={(e) => set('name', e.target.value)} placeholder="Vessel name" />
         </div>
         <div style={mField}>
-          <label style={mLabel}>Type</label>
-          <select style={mSelect} value={v.type} onChange={(e) => set('type', e.target.value)}>
-            {BOAT_TYPES.map((t) => <option key={t}>{t}</option>)}
-          </select>
-        </div>
-        <div style={mField}>
-          <label style={mLabel}>Length (ft)</label>
+          <label style={mLabel}>Length (ft) *</label>
           <input style={mInput} type="number" step="0.1" value={v.length} onChange={(e) => set('length', e.target.value)} placeholder="e.g. 38" />
         </div>
         <div style={mField}>
@@ -448,26 +542,18 @@ function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, va
         <div style={mField}><label style={mLabel}>Year</label><input style={mInput} type="number" value={v.year} onChange={(e) => set('year', e.target.value)} placeholder="e.g. 2022" /></div>
         <div style={mField}><label style={mLabel}>Make</label><input style={mInput} value={v.make} onChange={(e) => set('make', e.target.value)} placeholder="e.g. Hunter" /></div>
         <div style={mField}><label style={mLabel}>Model</label><input style={mInput} value={v.model} onChange={(e) => set('model', e.target.value)} placeholder="e.g. 380" /></div>
-        <div style={mField}><label style={mLabel}>Color</label><input style={mInput} value={v.color} onChange={(e) => set('color', e.target.value)} placeholder="e.g. White" /></div>
       </div>
       <p style={secTitle}>Dimensions</p>
       <div style={mTwoCol}>
         <div style={mField}><label style={mLabel}>Beam (ft)</label><input style={mInput} type="number" step="0.1" value={v.beam} onChange={(e) => set('beam', e.target.value)} placeholder="e.g. 12.5" /></div>
         <div style={mField}><label style={mLabel}>Draft (ft)</label><input style={mInput} type="number" step="0.1" value={v.draft} onChange={(e) => set('draft', e.target.value)} placeholder="e.g. 5.5" /></div>
-        <div style={mField}><label style={mLabel}>Height (ft)</label><input style={mInput} type="number" step="0.1" value={v.height} onChange={(e) => set('height', e.target.value)} placeholder="e.g. 57" /></div>
       </div>
       <p style={secTitle}>Identification</p>
       <div style={mTwoCol}>
         <div style={mField}><label style={mLabel}>HIN</label><input style={mInput} value={v.hin} onChange={(e) => set('hin', e.target.value)} placeholder="Hull ID Number" /></div>
-        <div style={mField}><label style={mLabel}>MMSI</label><input style={mInput} value={v.mmsi} onChange={(e) => set('mmsi', e.target.value)} placeholder="Maritime Mobile Service Identity" /></div>
       </div>
       <p style={secTitle}>Engine & Fuel</p>
       <div style={mTwoCol}>
-        <div style={mField}><label style={mLabel}>Engine Type</label>
-          <select style={mSelect} value={v.engineType} onChange={(e) => set('engineType', e.target.value)}>
-            {ENGINE_TYPES.map((t) => <option key={t}>{t}</option>)}
-          </select>
-        </div>
         <div style={mField}><label style={mLabel}>Engine HP</label><input style={mInput} type="number" value={v.engineHp} onChange={(e) => set('engineHp', e.target.value)} placeholder="e.g. 260" /></div>
         <div style={mField}><label style={mLabel}>Fuel Type</label>
           <select style={mSelect} value={v.fuelType} onChange={(e) => set('fuelType', e.target.value)}>
@@ -475,39 +561,53 @@ function BoatFields({ v, set }: { v: Record<string, string>; set: (k: string, va
           </select>
         </div>
       </div>
+      <p style={{ fontSize: 12, color: '#64748B', marginTop: 8 }}>Vessel type, color, air draft, MMSI and engine type are not stored by the server yet, so they are not shown here.</p>
     </>
   );
 }
 
-function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => void; onSave: (b: Boat) => void }) {
+function EditBoatModal({ boat, onClose, onSaved }: { boat: Boat; onClose: () => void; onSaved: () => void }) {
+  const client = useApiClient();
   const [vals, setVals] = useState<Record<string, string>>({
-    name: boat.name, type: boat.type, length: String(boat.length), registration: boat.registration,
-    make: boat.make ?? '', model: boat.model ?? '', year: boat.year ?? '', color: boat.color ?? '',
-    beam: boat.beam ?? '', draft: boat.draft ?? '', height: boat.height ?? '',
-    hin: boat.hin ?? '', mmsi: boat.mmsi ?? '', engineType: boat.engineType ?? ENGINE_TYPES[0], engineHp: boat.engineHp ?? '', fuelType: boat.fuelType ?? FUEL_TYPES[0],
+    name: boat.name, length: String(boat.length), registration: boat.registration,
+    make: boat.make ?? '', model: boat.model ?? '', year: boat.year ?? '',
+    beam: boat.beam ?? '', draft: boat.draft ?? '',
+    hin: boat.hin ?? '', engineHp: boat.engineHp ?? '', fuelType: boat.fuelType || FUEL_TYPES[0],
   });
   const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
 
-  const handleSave = () => {
-    if (!vals.name) return;
+  const handleSave = async () => {
+    if (!vals.name.trim()) { setErr('Vessel name is required.'); return; }
+    if (!(Number(vals.length) > 0)) { setErr('Length must be greater than 0.'); return; }
     setSaving(true);
-    onSave({ ...boat, ...vals, length: parseFloat(vals.length) || boat.length });
-    setSaving(false);
-    onClose();
+    setErr('');
+    try {
+      await client.put(`/boats/${boat.id}`, boatPayload(vals));
+      onSaved();
+      onClose();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
   return (
-    <div style={modalOverlay} onClick={onClose}>
-      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
+    <div style={modalOverlay} onClick={() => { if (!saving) onClose(); }}>
+      <div style={boxStyle} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={mHead}>
           <h2 style={mTitle}>Edit Boat</h2>
-          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
-        <div style={mBody}><BoatFields v={vals} set={set} /></div>
+        <div style={mBody}>
+          {err && <div role="alert" style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
+          <BoatFields v={vals} set={set} />
+        </div>
         <div style={mFoot}>
-          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={mCancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
           <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</button>
         </div>
       </div>
@@ -515,39 +615,48 @@ function EditBoatModal({ boat, onClose, onSave }: { boat: Boat; onClose: () => v
   );
 }
 
-function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Partial<Boat>) => void }) {
+function AddBoatModal({ customerId, onClose, onSaved }: { customerId: string; onClose: () => void; onSaved: () => void }) {
+  const client = useApiClient();
   const [vals, setVals] = useState<Record<string, string>>({
-    name: '', type: BOAT_TYPES[0], length: '', registration: '',
-    make: '', model: '', year: '', color: '',
-    beam: '', draft: '', height: '',
-    hin: '', mmsi: '', engineType: ENGINE_TYPES[0], engineHp: '', fuelType: FUEL_TYPES[0],
+    name: '', length: '', registration: '',
+    make: '', model: '', year: '',
+    beam: '', draft: '',
+    hin: '', engineHp: '', fuelType: FUEL_TYPES[0],
   });
   const set = (k: string, v: string) => setVals((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const handleSave = () => {
-    if (!vals.name) { setErr('Vessel name is required.'); return; }
+  const handleSave = async () => {
+    if (!vals.name.trim()) { setErr('Vessel name is required.'); return; }
+    if (!(Number(vals.length) > 0)) { setErr('Length must be greater than 0.'); return; }
     setSaving(true);
-    onSave({ ...vals, length: parseFloat(vals.length) || 0 });
-    setSaving(false);
-    onClose();
+    setErr('');
+    try {
+      await client.post('/boats', { ...boatPayload(vals), customerId });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const boxStyle: React.CSSProperties = { ...modalBox, width: '640px', maxHeight: '88vh', overflowY: 'auto' };
   return (
-    <div style={modalOverlay} onClick={onClose}>
-      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
+    <div style={modalOverlay} onClick={() => { if (!saving) onClose(); }}>
+      <div style={boxStyle} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={mHead}>
           <h2 style={mTitle}>Add Boat</h2>
-          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose}><X size={20} /></button>
+          <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2E4A6B' }} onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
         <div style={mBody}>
-          {err && <div style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
+          {err && <div role="alert" style={{ color: '#DC2626', fontSize: 13, marginBottom: 12, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6 }}>{err}</div>}
           <BoatFields v={vals} set={set} />
         </div>
         <div style={mFoot}>
-          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={mCancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
           <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Adding…' : 'Add Boat'}</button>
         </div>
       </div>
@@ -555,9 +664,10 @@ function AddBoatModal({ onClose, onSave }: { onClose: () => void; onSave: (b: Pa
   );
 }
 
-function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () => void }) {
+function NewContractFromBoatModal({ boat, customerId, onClose, onCreated }: { boat: Boat; customerId: string; onClose: () => void; onCreated: () => void }) {
+  const client = useApiClient();
   const [slip, setSlip] = useState('');
-  const [billingCycle, setBillingCycle] = useState('Monthly');
+  const [billingCycle, setBillingCycle] = useState('MONTHLY');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [rate, setRate] = useState('');
@@ -565,24 +675,42 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
   const [autoRenew, setAutoRenew] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  const createContract = useApi('post', '/api/contracts');
 
   const handleSave = async () => {
     if (!slip || !startDate || !endDate || !rate) { setErr('Please fill in all required fields.'); return; }
+    if (endDate <= startDate) { setErr('End date must be after the start date.'); return; }
+    const rateCents = Math.round(Number(rate) * 100);
+    if (!(rateCents > 0)) { setErr('Rate must be greater than $0.00.'); return; }
     setErr('');
     setSaving(true);
-    await createContract.execute({ body: { slipNumber: slip, boatId: boat.id, billingCycle, startDate, endDate, rateCents: Math.round(parseFloat(rate) * 100), depositCents: deposit ? Math.round(parseFloat(deposit) * 100) : 0, autoRenew } }).catch(() => {});
-    setSaving(false);
-    onClose();
+    try {
+      await client.post('/contracts', {
+        slipId: slip,
+        customerId,
+        boatId: boat.id,
+        billingCycle,
+        startDate,
+        endDate,
+        rateCents,
+        securityDepositCents: deposit ? Math.round(Number(deposit) * 100) : null,
+        autoRenew,
+      });
+      onCreated();
+      onClose();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div style={modalOverlay} onClick={onClose}>
-      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+    <div style={modalOverlay} onClick={() => { if (!saving) onClose(); }}>
+      <div style={modalBox} className="helm-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ ...mHead, backgroundColor: '#0A2342' }}>
           <div>
             <h2 style={{ ...mTitle, color: '#FFFFFF' }}>New Contract</h2>
-            <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '2px' }}>Vessel: {boat.name} ({boat.type} &middot; {boat.length}')</div>
+            <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '2px' }}>Vessel: {boat.name} ({boat.length}')</div>
           </div>
           <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#FFFFFF' }} onClick={onClose}><X size={20} /></button>
         </div>
@@ -591,28 +719,15 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
           <div style={mTwoCol}>
             <div style={mField}>
               <label style={mLabel}>Slip *</label>
-              <select style={mSelect} value={slip} onChange={(e) => setSlip(e.target.value)}>
-                <option value="">Select slip...</option>
-                <option value="A-01">A-01</option>
-                <option value="A-02">A-02</option>
-                <option value="A-03">A-03 (Vacant)</option>
-                <option value="A-04">A-04 (Reserved)</option>
-                <option value="B-01">B-01</option>
-                <option value="B-02">B-02 (Maintenance)</option>
-                <option value="B-03">B-03 (Vacant)</option>
-                <option value="C-01">C-01</option>
-                <option value="C-02">C-02 (Vacant)</option>
-                <option value="C-03">C-03 (Vacant)</option>
-              </select>
+              <SlipSelect style={mSelect} value={slip} onChange={(id) => setSlip(id)} minLengthFt={boat.length} />
             </div>
             <div style={mField}>
               <label style={mLabel}>Billing Cycle</label>
               <select style={mSelect} value={billingCycle} onChange={(e) => setBillingCycle(e.target.value)}>
-                <option value="Monthly">Monthly</option>
-                <option value="Quarterly">Quarterly</option>
-                <option value="Semi-Annual">Semi-Annual</option>
-                <option value="Annual">Annual</option>
-                <option value="Seasonal">Seasonal</option>
+                <option value="MONTHLY">Monthly</option>
+                <option value="QUARTERLY">Quarterly</option>
+                <option value="SEMI_ANNUAL">Semi-Annual</option>
+                <option value="ANNUAL">Annual</option>
               </select>
             </div>
             <div style={mField}>
@@ -638,7 +753,7 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
           </div>
         </div>
         <div style={mFoot}>
-          <button style={mCancelBtn} onClick={onClose}>Cancel</button>
+          <button style={mCancelBtn} onClick={onClose} disabled={saving}>Cancel</button>
           <button style={{ ...mSaveBtn, opacity: saving ? 0.7 : 1 }} onClick={handleSave} disabled={saving}>{saving ? 'Creating…' : 'Create Contract'}</button>
         </div>
       </div>
@@ -651,39 +766,40 @@ function NewContractFromBoatModal({ boat, onClose }: { boat: Boat; onClose: () =
 type Tab = 'overview' | 'boats' | 'billing' | 'documents' | 'activity';
 
 export default function CustomerDetailPage() {
+  const client = useApiClient();
   const { id } = useParams();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('overview');
   const [showEdit, setShowEdit] = useState(false);
-  const [showMerge, setShowMerge] = useState(false);
   const [editingBoat, setEditingBoat] = useState<Boat | null>(null);
   const [showAddBoat, setShowAddBoat] = useState(false);
   const [newContractBoat, setNewContractBoat] = useState<Boat | null>(null);
-  const [localBoats, setLocalBoats] = useState<Boat[]>([]);
+  const toast = useToast();
 
-  // API calls
-  const { data: apiCustomer, loading, error, execute: refetchCustomer } = useApi<CustomerDetail>('get', `/api/customers/${id}`, { immediate: true });
-  const { data: apiBoats, loading: loadingBoats } = useApi<Boat[]>('get', `/api/boats?customerId=${id}`, { immediate: true });
-  const { data: apiInvoices, loading: loadingInvoices } = useApi<Invoice[]>('get', `/api/invoices?customerId=${id}`, { immediate: true });
-  const updateCustomerApi = useApi<CustomerDetail>('put', `/api/customers/${id}`);
-  const updateBoatApi = useApi('put', '/api/boats/update');
-  const addBoatApi = useApi('post', '/api/boats');
+  const detail = useResource<CustomerDetail & { boatsList: Boat[] }, CustomerDetailDTO>(id ? `/customers/${id}` : null, { map: toCustomerDetail });
+  const invoiceList = useList<Invoice, InvoiceDTO>(id ? `/invoices?customerId=${id}&take=100&sortBy=issuedDate&sortOrder=desc` : null, { map: toInvoiceRow });
+  const timeline = useList<TimelineEntry>(id && tab === 'activity' ? `/customers/${id}/timeline?take=50` : null);
+  const refetchCustomer = detail.refetch;
 
-  const c = apiCustomer || CUSTOMER; // Fallback to mock data
-  const rawBoats = apiBoats || BOATS;
-  const boats = localBoats.length > 0 ? localBoats : rawBoats;
-  const invoices = apiInvoices || INVOICES;
+  if (detail.loading) {
+    return <div style={s.page}><LoadingState label="Loading customer…" /></div>;
+  }
+  if (!detail.data) {
+    return (
+      <div style={s.page}>
+        <button style={s.backRow} onClick={() => navigate('/customers')}>
+          <ArrowLeft size={16} /> Back to Customers
+        </button>
+        {detail.notFound
+          ? <ErrorState title="Customer not found" message={`There is no customer with id ${id}.`} />
+          : <ErrorState title="Could not load this customer" message={detail.error} onRetry={detail.refetch} />}
+      </div>
+    );
+  }
 
-  const handleSaveBoat = (updated: Boat) => {
-    setLocalBoats(boats.map((b) => b.id === updated.id ? updated : b));
-    updateBoatApi.execute({ body: updated }).catch(() => {});
-  };
-
-  const handleAddBoat = (data: Partial<Boat>) => {
-    const newBoat: Boat = { id: String(Date.now()), name: data.name || '', type: data.type || 'Other', length: data.length || 0, registration: data.registration || '', compliance: 100 };
-    setLocalBoats([...boats, newBoat]);
-    addBoatApi.execute({ body: { ...data, customerId: id } }).catch(() => {});
-  };
+  const c = detail.data;
+  const boats = c.boatsList;
+  const invoices = invoiceList.items;
   const badgeStyle = statusBadgeColors[c.status];
 
   const tabs: { key: Tab; label: string }[] = [
@@ -694,7 +810,7 @@ export default function CustomerDetailPage() {
     { key: 'activity', label: 'Activity' },
   ];
 
-  const fmt = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const fmt = (cents: number) => formatCents(cents);
 
   /* ── Overview Tab ─── */
   const renderOverview = () => (
@@ -710,8 +826,8 @@ export default function CustomerDetailPage() {
           <div style={s.statLabel}>Active Contracts</div>
         </div>
         <div style={s.statCard}>
-          <div style={s.statValue}>{fmt(c.lifetimeValue)}</div>
-          <div style={s.statLabel}>Lifetime Value</div>
+          <div style={s.statValue}>{fmt(c.lifetimeBilled)}</div>
+          <div style={s.statLabel}>Lifetime Billed</div>
         </div>
         <div style={{ ...s.statCard, borderTop: '3px solid #00D4FF' }}>
           <div style={{ ...s.statValue, color: c.openInvoices > 0 ? '#B71C1C' : '#1B5E20' }}>
@@ -725,8 +841,8 @@ export default function CustomerDetailPage() {
         {/* Contact Card */}
         <div style={s.card}>
           <div style={s.cardTitle}><User size={16} /> Contact Information</div>
-          <div style={s.infoRow}><Mail size={14} color="#64748B" /><span>{c.email}</span></div>
-          <div style={s.infoRow}><Phone size={14} color="#64748B" /><span>{c.phone}</span></div>
+          <div style={s.infoRow}><Mail size={14} color="#64748B" /><span>{c.email || '—'}</span></div>
+          <div style={s.infoRow}><Phone size={14} color="#64748B" /><span>{c.phone ? formatPhone(c.phone) : '—'}</span></div>
           <div style={s.infoRow}><Building size={14} color="#64748B" /><span>{c.company || '—'}</span></div>
           <div style={{ ...s.infoRow, borderBottom: 'none' }}><MapPin size={14} color="#64748B" /><span style={{ whiteSpace: 'pre-line' }}>{c.address || '—'}</span></div>
         </div>
@@ -736,7 +852,7 @@ export default function CustomerDetailPage() {
           <div style={s.cardTitle}><Shield size={16} /> Identity</div>
           <div style={s.infoRow}>
             <span style={s.infoLabel}>DOB</span>
-            <span>{c.dob || '—'}</span>
+            <span>{c.dob ? formatDate(c.dob) : '—'}</span>
           </div>
           <div style={s.infoRow}>
             <span style={s.infoLabel}>DL #</span>
@@ -748,12 +864,18 @@ export default function CustomerDetailPage() {
           </div>
           <div style={s.infoRow}>
             <span style={s.infoLabel}>DL Expiry</span>
-            <span>{c.dlExpiry || '—'}</span>
+            <span>{c.dlExpiry ? formatDate(c.dlExpiry) : '—'}</span>
           </div>
           <div style={{ ...s.infoRow, borderBottom: 'none', flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
             <span style={{ ...s.infoLabel, minWidth: 'auto' }}>Emergency Contact</span>
-            <span>{c.emergencyName} ({c.emergencyRelationship})</span>
-            <span style={{ fontSize: '13px', color: '#64748B' }}>{c.emergencyPhone} | {c.emergencyEmail}</span>
+            {c.emergencyName || c.emergencyPhone || c.emergencyEmail ? (
+              <>
+                <span>{c.emergencyName || '—'}{c.emergencyRelationship ? ` (${c.emergencyRelationship})` : ''}</span>
+                <span style={{ fontSize: '13px', color: '#64748B' }}>{[c.emergencyPhone, c.emergencyEmail].filter(Boolean).join(' | ') || '—'}</span>
+              </>
+            ) : (
+              <span>—</span>
+            )}
           </div>
         </div>
 
@@ -796,9 +918,9 @@ export default function CustomerDetailPage() {
           <Plus size={15} /> Add Boat
         </button>
       </div>
+      {boats.length === 0 && <EmptyState title="No boats on file" message="Add this customer's vessel to create contracts and track insurance." />}
       {boats.map((b) => {
-        const cb = complianceBadge(b.compliance);
-        const boatInsurance = INSURANCE.filter((ins) => ins.boatId === b.id);
+        const boatInsurance = b.insurance;
         return (
           <div key={b.id} style={{ ...s.card, padding: 0, overflow: 'hidden' }}>
             {/* Boat Header */}
@@ -807,7 +929,7 @@ export default function CustomerDetailPage() {
                 <Ship size={20} color="#0A2342" />
                 <div>
                   <div style={{ fontSize: '18px', fontWeight: 700, color: '#0A2342' }}>{b.name}</div>
-                  <div style={{ fontSize: '13px', color: '#64748B' }}>{b.type} &middot; {b.length}' &middot; {b.registration}</div>
+                  <div style={{ fontSize: '13px', color: '#64748B' }}>{b.length}'{b.registration ? <> &middot; {b.registration}</> : null}{b.make || b.model ? <> &middot; {[b.year, b.make, b.model].filter(Boolean).join(' ')}</> : null}</div>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -823,9 +945,6 @@ export default function CustomerDetailPage() {
                 >
                   <Plus size={13} /> New Contract
                 </button>
-                <span style={{ ...s.badge, backgroundColor: cb.bg, color: cb.color }}>
-                  Compliance: {b.compliance}%
-                </span>
               </div>
             </div>
             {/* Insurance Section */}
@@ -837,8 +956,7 @@ export default function CustomerDetailPage() {
                     <tr>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Policy #</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Provider</th>
-                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Type</th>
-                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Coverage</th>
+                      <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Review</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Expiry</th>
                       <th style={{ ...s.th, fontSize: '11px', padding: '8px 12px' }}>Status</th>
                     </tr>
@@ -851,9 +969,8 @@ export default function CustomerDetailPage() {
                         <tr key={ins.id}>
                           <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono, fontSize: '13px' }}>{ins.policyNumber}</td>
                           <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.provider}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.type}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(ins.coverage)}</td>
-                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{ins.expiry}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg }}>{ins.reviewStatus}</td>
+                          <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{formatDate(ins.expiry)}</td>
                           <td style={{ ...s.td, backgroundColor: rowBg }}>
                             <span style={{ ...s.badge, backgroundColor: isc.bg, color: isc.color }}>{ins.status}</span>
                           </td>
@@ -876,16 +993,17 @@ export default function CustomerDetailPage() {
   );
 
   /* ── Billing Tab ─── */
-  const renderBilling = () => (
+  const renderBilling = () => invoiceList.loading ? <LoadingState /> : invoiceList.error ? <ErrorState message={invoiceList.error} onRetry={invoiceList.refetch} /> : invoices.length === 0 ? <EmptyState title="No invoices for this customer" /> : (
     <div style={s.tableWrap} className="helm-table-wrap">
       <table style={s.table}>
         <thead>
           <tr>
             <th style={s.th}>Invoice</th>
-            <th style={s.th}>Description</th>
-            <th style={s.th}>Amount</th>
+            <th style={s.th}>Total</th>
+            <th style={s.th}>Balance</th>
             <th style={s.th}>Status</th>
-            <th style={s.th}>Date</th>
+            <th style={s.th}>Issued</th>
+            <th style={s.th}>Due</th>
           </tr>
         </thead>
         <tbody>
@@ -900,13 +1018,14 @@ export default function CustomerDetailPage() {
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0F0FF'; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = rowBg; }}
               >
-                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#00D4FF' }}>{inv.id}</td>
-                <td style={{ ...s.td, backgroundColor: rowBg }}>{inv.description}</td>
+                <td style={{ ...s.td, backgroundColor: rowBg, fontWeight: 600, ...s.mono, color: '#0077A3' }}>{inv.number}</td>
                 <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.amount)}</td>
+                <td style={{ ...s.td, backgroundColor: rowBg, ...s.mono }}>{fmt(inv.balance)}</td>
                 <td style={{ ...s.td, backgroundColor: rowBg }}>
                   <span style={{ ...s.badge, backgroundColor: ib.bg, color: ib.color }}>{inv.status}</span>
                 </td>
-                <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{inv.date}</td>
+                <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{formatDate(inv.date)}</td>
+                <td style={{ ...s.td, backgroundColor: rowBg, color: '#64748B' }}>{formatDate(inv.due)}</td>
               </tr>
             );
           })}
@@ -920,28 +1039,28 @@ export default function CustomerDetailPage() {
     <div style={{ ...s.card, textAlign: 'center', padding: '48px 32px' }}>
       <FileText size={32} style={{ color: '#2E4A6B', marginBottom: '16px' }} />
       <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#0A2342', margin: '0 0 8px' }}>
-        No documents uploaded
+        Documents are not available yet
       </h3>
       <p style={{ fontSize: '15px', color: '#64748B', margin: '0 0 24px' }}>
-        Upload insurance certificates, registration papers, or other documents.
+        Document storage for customers is not connected yet. Insurance records on file are listed on the Boats tab.
       </p>
-      <button style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+      <ComingSoonButton reason="Coming soon: document upload is not connected yet." style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, color: '#FFFFFF', backgroundColor: '#0A2342', border: 'none', borderRadius: '6px' }}>
         Upload Document
-      </button>
+      </ComingSoonButton>
     </div>
   );
 
   /* ── Activity Tab ─── */
-  const renderActivity = () => (
+  const renderActivity = () => timeline.loading ? <LoadingState /> : timeline.error ? <ErrorState message={timeline.error} onRetry={timeline.refetch} /> : timeline.items.length === 0 ? <EmptyState title="No activity yet" /> : (
     <div style={s.timeline}>
       <div style={s.timelineLine} />
-      {ACTIVITY.map((a, i) => {
-        const Icon = activityIcons[a.type] || Activity;
+      {timeline.items.map((a) => {
+        const Icon = activityIcons[timelineIcon(a.type)] || Activity;
         return (
-          <div key={i} style={s.timelineItem}>
+          <div key={`${a.type}-${a.id}`} style={s.timelineItem}>
             <div style={s.timelineDot} />
-            <div style={s.timelineDate}>{a.date}</div>
-            <div style={s.timelineAction}>{a.action}</div>
+            <div style={s.timelineDate}><Icon size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />{formatDate(a.timestamp)}</div>
+            <div style={s.timelineAction}>{timelineText(a)}</div>
           </div>
         );
       })}
@@ -954,22 +1073,23 @@ export default function CustomerDetailPage() {
         <ArrowLeft size={16} /> Back to Customers
       </button>
 
-      {loading && <div style={{ textAlign: 'center', padding: '40px', color: '#64748B' }}>Loading...</div>}
-
       <div style={s.headerRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <h1 style={s.name}>{c.firstName} {c.lastName}</h1>
           <span style={{ ...s.badge, backgroundColor: badgeStyle.bg, color: badgeStyle.color, fontSize: '13px', padding: '4px 14px' }}>
             {c.status}
           </span>
+          <span style={{ ...s.badge, ...complianceBadge(c.complianceScore), backgroundColor: complianceBadge(c.complianceScore).bg, fontSize: '12px' }} title="Insurance and registration compliance across this customer's boats">
+            {humanizeEnum(c.complianceScore)}
+          </span>
         </div>
         <div style={s.btnGroup}>
           <button style={s.secondaryBtn} onClick={() => setShowEdit(true)}>
             <Edit size={14} /> Edit
           </button>
-          <button style={s.secondaryBtn} onClick={() => setShowMerge(true)}>
+          <ComingSoonButton style={s.secondaryBtn} reason="Coming soon: merge needs a real duplicate-customer search before it can be enabled.">
             <GitMerge size={14} /> Merge
-          </button>
+          </ComingSoonButton>
         </div>
       </div>
       <hr style={s.divider} />
@@ -1015,37 +1135,10 @@ export default function CustomerDetailPage() {
           }}
           onClose={() => setShowEdit(false)}
           onSave={async (data) => {
-            await updateCustomerApi.execute(data);
+            await client.put(`/customers/${c.id}`, customerFormToPayload(data));
+            toast.success('Customer updated');
             refetchCustomer();
             setShowEdit(false);
-          }}
-        />
-      )}
-
-      {showMerge && (
-        <CustomerMerge
-          source={{
-            id: c.id,
-            name: `${c.firstName} ${c.lastName}`,
-            email: c.email,
-            phone: c.phone,
-            company: c.company,
-            address: c.address,
-            status: c.status,
-            boats: c.totalBoats,
-            invoices: 5,
-            payments: 12,
-          }}
-          onClose={() => setShowMerge(false)}
-          onMerge={async (targetId, selections) => {
-            try {
-              await fetch(`/api/customers/${targetId}/merge`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sourceCustomerId: id, selections }),
-              });
-            } catch { /* API unavailable — merge will execute when connected */ }
-            setShowMerge(false);
           }}
         />
       )}
@@ -1054,21 +1147,24 @@ export default function CustomerDetailPage() {
         <EditBoatModal
           boat={editingBoat}
           onClose={() => setEditingBoat(null)}
-          onSave={handleSaveBoat}
+          onSaved={() => { toast.success('Boat updated'); refetchCustomer(); }}
         />
       )}
 
       {showAddBoat && (
         <AddBoatModal
+          customerId={c.id}
           onClose={() => setShowAddBoat(false)}
-          onSave={handleAddBoat}
+          onSaved={() => { toast.success('Boat added'); refetchCustomer(); }}
         />
       )}
 
       {newContractBoat && (
         <NewContractFromBoatModal
           boat={newContractBoat}
+          customerId={c.id}
           onClose={() => setNewContractBoat(null)}
+          onCreated={() => { toast.success('Draft contract created'); refetchCustomer(); }}
         />
       )}
     </div>

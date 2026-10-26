@@ -38,7 +38,7 @@ const complianceColor = (score?: number): string => {
 
 /* ── Layout geometry ───────────────────────────────────── */
 
-const SVG_WIDTH = 900;
+const MIN_SVG_WIDTH = 900;
 const SVG_HEIGHT = 620;
 const WATER_HEIGHT = 60;
 const DOCK_FINGER_WIDTH = 20;
@@ -51,7 +51,6 @@ const SLIP_HEIGHT = 36;
 const SLIP_GAP = 8;
 const SLIP_OFFSET_FROM_FINGER = 4;
 
-const DOCKS = ['A', 'B', 'C'] as const;
 
 function getDockX(dockIndex: number): number {
   return DOCK_X_START + dockIndex * DOCK_SPACING;
@@ -212,9 +211,12 @@ export default function DockMapSVG({ slips, onSlipClick, selectedSlipId }: DockM
   const hideTooltip = () => setTooltip(null);
 
   /* ── Distribute slips to docks ─── */
+  // Docks come from the slips themselves (dockId), not a hardcoded A/B/C list.
+  const DOCKS = Array.from(new Set(slips.map((sl) => sl.dock || 'Unassigned'))).sort();
+  const SVG_WIDTH = Math.max(MIN_SVG_WIDTH, DOCK_X_START + DOCKS.length * DOCK_SPACING);
   const slipsByDock: Record<string, SlipData[]> = {};
   DOCKS.forEach((d) => {
-    slipsByDock[d] = slips.filter((sl) => sl.dock === d);
+    slipsByDock[d] = slips.filter((sl) => (sl.dock || 'Unassigned') === d);
   });
 
   return (
