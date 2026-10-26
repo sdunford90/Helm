@@ -2,11 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "outDir": "dist",
-    "rootDir": "src",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
     "paths": {
-      "@helm/ui-kit": ["../../../packages/ui-kit/src"],
-      "@helm/shared-types": ["../../../packages/shared-types/src"]
+      "@helm/ui-kit": ["../../packages/ui-kit/src"],
+      "@helm/shared-types": ["../../packages/shared-types/src"]
     }
   },
   "include": ["src"]
