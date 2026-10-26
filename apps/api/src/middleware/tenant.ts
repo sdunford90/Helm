@@ -31,6 +31,7 @@ declare global {
 const BYPASS_PREFIXES = [
   "/api/health", // liveness, no data
   "/api/admin", // platform admin (requirePlatformAdmin), cross-tenant by design
+  "/api/bi", // API-key auth; the key's own tenant is the query scope (bi-api.ts)
 ];
 const BYPASS_EXACT = [
   "/api/auth/webhook", // Clerk (svix signature)
