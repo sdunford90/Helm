@@ -78,7 +78,7 @@ router.get("/:id", ...clerkAuth(), async (req, res, next) => {
 // --------------------------------------------------------------------------
 // PUT /api/tenants/:id — update branding / settings
 // --------------------------------------------------------------------------
-router.put("/:id", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
+router.put("/:id", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
     const data = updateTenantSchema.parse(req.body);
 
@@ -96,7 +96,7 @@ router.put("/:id", ...clerkAuth(), requireRole("admin"), async (req, res, next) 
 // --------------------------------------------------------------------------
 // POST /api/tenants/:id/stripe/connect — initiate Stripe Connect OAuth
 // --------------------------------------------------------------------------
-router.post("/:id/stripe/connect", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
+router.post("/:id/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
     const accountLink = await stripe.accountLinks.create({
       account: req.params.id, // Will be the connected account id stored on tenant
@@ -114,7 +114,7 @@ router.post("/:id/stripe/connect", ...clerkAuth(), requireRole("admin"), async (
 // --------------------------------------------------------------------------
 // POST /api/tenants/:id/qbo/connect — initiate QuickBooks Online OAuth
 // --------------------------------------------------------------------------
-router.post("/:id/qbo/connect", ...clerkAuth(), requireRole("admin"), async (req, res, next) => {
+router.post("/:id/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
   try {
     const clientId = process.env.QBO_CLIENT_ID;
     const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;

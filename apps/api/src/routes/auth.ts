@@ -232,9 +232,9 @@ router.post(
           // Since there's no unique constraint on this combo, use findFirst + create/update
           id: await findUserIdByClerk(clerkUserId, tenantId),
         },
-        update: {
-          active: true,
-        },
+        // Never re-activate a deactivated user here (clerkAuth already
+        // rejected inactive users; this is defence in depth).
+        update: {},
         create: {
           clerkUserId,
           email: req.body.email ?? "",

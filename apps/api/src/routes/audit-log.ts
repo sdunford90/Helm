@@ -35,7 +35,7 @@ const PaginationQuerySchema = z.object({
 // ─── Auth: admin or manager ─────────────────────────────────────────────────
 
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager"));
+router.use(requireRole("MARINA_OWNER", "MARINA_MANAGER"));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

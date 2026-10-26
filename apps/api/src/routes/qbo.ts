@@ -17,7 +17,7 @@ const router = Router();
 
 // All QBO routes require admin or manager role
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager"));
+router.use(requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"));
 
 // --------------------------------------------------------------------------
 // GET /authorize — Start QBO OAuth flow
