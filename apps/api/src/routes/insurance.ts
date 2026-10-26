@@ -165,7 +165,7 @@ router.get(
 
 router.get(
   "/compliance",
-  requireRole("admin", "manager"),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -265,7 +265,7 @@ router.get(
 
 router.get(
   "/review-queue",
-  requireRole("admin", "manager"),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -406,7 +406,7 @@ router.get(
 
 router.put(
   "/:id/review",
-  requireRole("admin", "manager"),
+  requireRole("MARINA_OWNER", "MARINA_MANAGER"),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, MANAGER_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues } from "../lib/queue.js";
 
@@ -516,6 +516,7 @@ router.put(
 
 router.delete(
   "/:id",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -560,6 +561,7 @@ router.delete(
 
 router.post(
   "/:id/send",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

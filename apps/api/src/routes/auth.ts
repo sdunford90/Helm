@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { Webhook } from "svix";
 import { clerkAuth } from "../middleware/auth.js";
-import { prisma } from "../lib/prisma.js";
+import { prisma, tenantStore } from "../lib/prisma.js";
 import { getAuth } from "@clerk/express";
 
 const router = Router();
@@ -52,8 +52,15 @@ router.post(
     const wh = new Webhook(WEBHOOK_SECRET);
     let evt: WebhookEvent;
 
+    // svix signs the exact raw bytes; index.ts mounts express.raw() for this
+    // path. Re-serialising parsed JSON breaks verification.
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: "Raw body required" });
+      return;
+    }
+
     try {
-      evt = wh.verify(JSON.stringify(req.body), {
+      evt = wh.verify(req.body.toString("utf8"), {
         "svix-id": svixId,
         "svix-timestamp": svixTimestamp,
         "svix-signature": svixSignature,
@@ -232,9 +239,9 @@ router.post(
           // Since there's no unique constraint on this combo, use findFirst + create/update
           id: await findUserIdByClerk(clerkUserId, tenantId),
         },
-        update: {
-          active: true,
-        },
+        // Never re-activate a deactivated user here (clerkAuth already
+        // rejected inactive users; this is defence in depth).
+        update: {},
         create: {
           clerkUserId,
           email: req.body.email ?? "",
@@ -333,14 +340,19 @@ router.post(
         return;
       }
 
-      // Verify user has an active membership in the target tenant
-      const membership = await prisma.user.findFirst({
-        where: {
-          clerkUserId,
-          tenantId: targetTenantId,
-          active: true,
-        },
-      });
+      // Verify user has an active membership in the target tenant. This is a
+      // deliberate cross-tenant lookup, so it runs outside the request's
+      // tenant scope (the Prisma extension would otherwise reject it).
+      const membership = await tenantStore.exit(() =>
+        prisma.user.findFirst({
+          where: {
+            clerkUserId,
+            tenantId: targetTenantId,
+            active: true,
+            role: { not: "PORTAL_USER" },
+          },
+        }),
+      );
 
       if (!membership) {
         res.status(403).json({

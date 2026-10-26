@@ -5,7 +5,7 @@ import { prisma } from "../lib/prisma.js";
 const router = Router();
 
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager", "accounting"));
+router.use(requireRole("MARINA_OWNER", "MARINA_MANAGER", "ACCOUNTING"));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

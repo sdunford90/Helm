@@ -59,11 +59,13 @@ export const mockPrisma = {
 
 vi.mock('../src/lib/prisma.js', () => ({
   prisma: mockPrisma,
-  tenantStore: { run: (_ctx: any, fn: any) => fn() },
+  tenantStore: { run: (_ctx: any, fn: any) => fn(), exit: (fn: any) => fn(), getStore: () => undefined },
 }));
 
 // Mock Clerk auth
-vi.mock('../src/middleware/auth.js', () => ({
+vi.mock('../src/middleware/auth.js', async (importOriginal) => ({
+  // Keep real non-middleware exports (role groups, canGrantRole, ...).
+  ...(await importOriginal<Record<string, unknown>>()),
   clerkAuth: () => [
     (_req: any, _res: any, next: any) => {
       _req.auth = { userId: 'test-clerk-user' };
@@ -71,14 +73,14 @@ vi.mock('../src/middleware/auth.js', () => ({
     },
     (_req: any, _res: any, next: any) => {
       _req.userId = 'test-user-id';
-      _req.userRole = 'admin';
-      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'admin', email: 'admin@test.com' };
+      _req.userRole = 'MARINA_OWNER';
+      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'MARINA_OWNER', email: 'admin@test.com' };
       next();
     },
   ],
   requireRole: (..._roles: string[]) => (_req: any, _res: any, next: any) => {
     _req.userId = 'test-user-id';
-    _req.userRole = 'admin';
+    _req.userRole = 'MARINA_OWNER';
     next();
   },
   requirePlatformAdmin: () => [
@@ -96,11 +98,13 @@ vi.mock('../src/middleware/tenant.js', () => ({
 }));
 
 // Mock Stripe
+const stripeMock = vi.hoisted(() => ({
+  paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
+  refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
+}));
 vi.mock('../src/lib/stripe.js', () => ({
-  stripe: {
-    paymentIntents: { create: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test', status: 'succeeded' }) },
-    refunds: { create: vi.fn().mockResolvedValue({ id: 're_test' }) },
-  },
+  stripe: stripeMock,
+  requireStripe: () => stripeMock,
   createPaymentIntent: vi.fn().mockResolvedValue({ id: 'pi_test', client_secret: 'cs_test' }),
   createCustomer: vi.fn().mockResolvedValue({ id: 'cus_test' }),
   processWebhook: vi.fn().mockResolvedValue(null),

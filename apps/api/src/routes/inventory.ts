@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, MANAGER_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
 const router = Router();
@@ -297,7 +297,7 @@ router.put("/products/:id", async (req: Request, res: Response, next: NextFuncti
 });
 
 // DELETE /products/:id (soft delete)
-router.delete("/products/:id", async (req: Request, res: Response, next: NextFunction) => {
+router.delete("/products/:id", requireRole(...MANAGER_ROLES), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = getTenantId(req);
     const product = products.find((p) => p.id === req.params.id && p.tenantId === tenantId);
@@ -314,7 +314,7 @@ router.delete("/products/:id", async (req: Request, res: Response, next: NextFun
 // ─── Adjustments ──────────────────────────────────────────────────────────────
 
 // POST /adjustments
-router.post("/adjustments", async (req: Request, res: Response, next: NextFunction) => {
+router.post("/adjustments", requireRole(...MANAGER_ROLES), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = getTenantId(req);
     const body = CreateAdjustmentSchema.parse(req.body);

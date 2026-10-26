@@ -655,6 +655,8 @@ model Payment {
   customerId      String
   invoiceId       String?
   amountCents     Int
+  /// Cumulative amount refunded so far; refunds are capped at amountCents - refundedCents.
+  refundedCents   Int           @default(0)
   method          PaymentMethod
   stripePaymentId String?
   postedDate      DateTime
@@ -1331,4 +1333,21 @@ model ApiKey {
 
   @@index([tenantId])
   @@map("api_keys")
+}
+
+// Server-side OAuth `state` for the Stripe Connect / QuickBooks connect flows.
+// One row per started flow: a random nonce (stored hashed) bound to the tenant
+// and user that started it, short-lived and deleted on first use.
+model OAuthState {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  provider  String
+  stateHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("oauth_states")
 }

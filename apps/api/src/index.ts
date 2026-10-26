@@ -3,7 +3,9 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 
+import { buildCorsOptions, isDevAuthBypassEnabled, loadEnv, parseList } from "./lib/env.js";
 import { tenantMiddleware } from "./middleware/tenant.js";
 import { errorHandler } from "./middleware/error.js";
 
@@ -43,19 +45,70 @@ import communicationPrefsRouter from "./routes/communication-prefs.js";
 // App initialisation
 // --------------------------------------------------------------------------
 
+// Fail fast on missing/unsafe configuration (exits the process on error).
+const env = loadEnv();
+
+function limiter(windowMs: number, limit: number) {
+  // In-memory store: per-instance limits. Move to a Redis store when the API
+  // runs more than one replica.
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many requests", code: "RATE_LIMITED" },
+  });
+}
+
+const authLimiter = limiter(15 * 60 * 1000, 100);
+const publicFormLimiter = limiter(15 * 60 * 1000, 30);
+const webhookLimiter = limiter(60 * 1000, 300);
+const apiKeyLimiter = limiter(60 * 1000, 120);
+
 const app = express();
-const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
+const PORT = env.API_PORT;
 
 // --------------------------------------------------------------------------
 // Global middleware
 // --------------------------------------------------------------------------
 
-app.use(cors());
+// Behind one reverse proxy (nginx): trust its X-Forwarded-For so req.ip and
+// the rate limiters see the real client address.
+app.set("trust proxy", 1);
+
 app.use(helmet());
-app.use(express.json());
+
+// CORS: only configured origins (CORS_ORIGINS, comma-separated). All origins
+// are reflected only in local dev with the explicit HELM_DEV_AUTH_BYPASS flag.
+// Requests without an Origin header (server-to-server, webhooks, curl) are
+// not affected by CORS.
+app.use(cors(buildCorsOptions(parseList(env.CORS_ORIGINS), isDevAuthBypassEnabled())));
+
+// Signature-verified webhooks need the exact raw bytes: parse them as Buffer
+// BEFORE the JSON parser runs (express.json skips bodies already parsed).
+app.use("/api/auth/webhook", webhookLimiter, express.raw({ type: "*/*", limit: "1mb" }));
+app.use("/api/qbo/webhook", webhookLimiter, express.raw({ type: "*/*", limit: "1mb" }));
+// ── STRIPE WEBHOOK MOUNT POINT ──────────────────────────────────────────────
+// Reserved for POST /api/webhooks/stripe (handler not implemented yet; owned
+// separately). Raw body + rate limit are already in place and the path
+// bypasses tenant resolution; mount the router below with
+//   app.use("/api/webhooks/stripe", stripeWebhookRouter);
+// and verify with stripe.webhooks.constructEvent(req.body, sig, secret).
+app.use("/api/webhooks/stripe", webhookLimiter, express.raw({ type: "*/*", limit: "1mb" }));
+
+app.use(express.json({ limit: "1mb" }));
+
+// Rate limits on public / unauthenticated-reachable endpoints.
+app.use("/api/auth", authLimiter);
+app.use("/api/onboarding/start", authLimiter);
+app.use("/api/onboarding/stripe/callback", authLimiter);
+app.use("/api/qbo/callback", authLimiter);
+app.use("/api/lead-forms/:embedKey/submit", publicFormLimiter);
+app.use("/api/widgets", publicFormLimiter); // future public widget endpoints
+app.use("/api/bi", apiKeyLimiter);
 
 // Tenant resolution — attaches tenantId / tenant to every request
-// (bypasses /api/health and /api/admin automatically)
+// (see shouldBypassTenant() in middleware/tenant.ts for the exceptions)
 app.use(tenantMiddleware);
 
 // --------------------------------------------------------------------------
@@ -104,8 +157,11 @@ app.use(errorHandler);
 // Start server
 // --------------------------------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(`[helm-api] listening on port ${PORT}`);
-});
+// Tests import the app (supertest) — don't bind a port there (EADDRINUSE).
+if (!process.env.VITEST) {
+  app.listen(PORT, () => {
+    console.log(`[helm-api] listening on port ${PORT}`);
+  });
+}
 
 export default app;

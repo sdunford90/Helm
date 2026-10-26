@@ -125,7 +125,7 @@ const ListLogsQuerySchema = z.object({
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 
 router.use(...clerkAuth());
-router.use(requireRole("admin", "manager", "PLATFORM_ADMIN", "MARINA_OWNER", "MARINA_MANAGER"));
+router.use(requireRole("PLATFORM_ADMIN", "MARINA_OWNER", "MARINA_MANAGER"));
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TRIGGERS
