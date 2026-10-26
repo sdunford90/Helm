@@ -2,7 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The API is an application, not a library: no .d.ts output. With
+    // declarations on (inherited composite/declaration from the base), every
+    // exported Express router fails with TS2742 ("inferred type cannot be
+    // named") once the semantic errors are gone.
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["src"],
   // Dead code excluded from compilation (and from dist/) until it is rebuilt.
