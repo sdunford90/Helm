@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { clerkAuth, requireRole } from "../middleware/auth.js";
+import { clerkAuth, requireRole, canGrantRole } from "../middleware/auth.js";
 import { stripe } from "../lib/stripe.js";
 
 const router = Router();
@@ -573,6 +573,15 @@ router.post("/team/invite", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
   try {
     const data = inviteTeamMemberSchema.parse(req.body);
 
+    // No privilege escalation: a manager cannot invite an owner (or accounting).
+    if (!canGrantRole(req.userRole, data.role)) {
+      res.status(403).json({
+        error: `Your role cannot grant ${data.role}`,
+        code: "ROLE_ESCALATION",
+      });
+      return;
+    }
+
     // Check if user already exists in this tenant
     const existing = await prisma.user.findFirst({
       where: { tenantId: req.tenantId!, email: data.email },
@@ -623,6 +632,15 @@ router.put("/team/:userId/role", ...clerkAuth(), requireRole("MARINA_OWNER"), as
 
     if (!user) {
       res.status(404).json({ error: "User not found", code: "NOT_FOUND" });
+      return;
+    }
+
+    // No privilege escalation, and platform admins are not managed by tenants.
+    if (!canGrantRole(req.userRole, data.role) || user.role === "PLATFORM_ADMIN") {
+      res.status(403).json({
+        error: `Your role cannot grant ${data.role}`,
+        code: "ROLE_ESCALATION",
+      });
       return;
     }
 

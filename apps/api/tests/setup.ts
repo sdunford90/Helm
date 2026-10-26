@@ -63,7 +63,9 @@ vi.mock('../src/lib/prisma.js', () => ({
 }));
 
 // Mock Clerk auth
-vi.mock('../src/middleware/auth.js', () => ({
+vi.mock('../src/middleware/auth.js', async (importOriginal) => ({
+  // Keep real non-middleware exports (role groups, canGrantRole, ...).
+  ...(await importOriginal<Record<string, unknown>>()),
   clerkAuth: () => [
     (_req: any, _res: any, next: any) => {
       _req.auth = { userId: 'test-clerk-user' };
@@ -71,14 +73,14 @@ vi.mock('../src/middleware/auth.js', () => ({
     },
     (_req: any, _res: any, next: any) => {
       _req.userId = 'test-user-id';
-      _req.userRole = 'admin';
-      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'admin', email: 'admin@test.com' };
+      _req.userRole = 'MARINA_OWNER';
+      _req.userRecord = { id: 'test-user-id', clerk_id: 'test-clerk-user', tenant_id: 'test-tenant-id', role: 'MARINA_OWNER', email: 'admin@test.com' };
       next();
     },
   ],
   requireRole: (..._roles: string[]) => (_req: any, _res: any, next: any) => {
     _req.userId = 'test-user-id';
-    _req.userRole = 'admin';
+    _req.userRole = 'MARINA_OWNER';
     next();
   },
   requirePlatformAdmin: () => [

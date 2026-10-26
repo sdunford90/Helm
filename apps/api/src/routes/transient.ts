@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, MANAGER_ROLES, FINANCE_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { createPaymentIntent } from "../lib/stripe.js";
 
@@ -312,6 +312,7 @@ router.put(
 // DELETE /api/transient/:id — Cancel booking
 router.delete(
   "/:id",
+  requireRole(...MANAGER_ROLES),
   ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

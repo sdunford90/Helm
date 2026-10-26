@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, MANAGER_ROLES, FINANCE_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { convertLeadToCustomer } from "../services/lead-conversion.js";
 
@@ -501,6 +501,7 @@ router.post(
 
 router.delete(
   "/:id",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;

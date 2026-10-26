@@ -46,6 +46,21 @@ export const FINANCE_ROLES = [
 ] as const satisfies readonly UserRole[];
 
 /**
+ * Which roles a user may grant (invite as / promote to). Nobody can grant a
+ * role above their own: a manager cannot create owners or accounting users,
+ * and PLATFORM_ADMIN is never grantable from a tenant.
+ */
+const GRANTABLE_ROLES: Partial<Record<UserRole, readonly UserRole[]>> = {
+  MARINA_OWNER: ["MARINA_OWNER", "MARINA_MANAGER", "DOCK_STAFF", "POS_CASHIER", "ACCOUNTING"],
+  MARINA_MANAGER: ["MARINA_MANAGER", "DOCK_STAFF", "POS_CASHIER"],
+};
+
+export function canGrantRole(granter: UserRole | undefined, role: UserRole): boolean {
+  if (!granter) return false;
+  return GRANTABLE_ROLES[granter]?.includes(role) ?? false;
+}
+
+/**
  * Clerk authentication middleware for the staff API (fail-closed).
  *
  * 1. Verifies the Clerk session (401 JSON when missing/invalid — never a

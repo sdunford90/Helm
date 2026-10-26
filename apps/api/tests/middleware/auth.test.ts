@@ -171,6 +171,26 @@ describe('requireRole', () => {
   }, 60_000);
 });
 
+describe('canGrantRole (no privilege escalation)', () => {
+  it('a manager cannot grant MARINA_OWNER, ACCOUNTING or PLATFORM_ADMIN', () => {
+    expect(auth.canGrantRole('MARINA_MANAGER', 'MARINA_OWNER')).toBe(false);
+    expect(auth.canGrantRole('MARINA_MANAGER', 'ACCOUNTING')).toBe(false);
+    expect(auth.canGrantRole('MARINA_MANAGER', 'PLATFORM_ADMIN')).toBe(false);
+    expect(auth.canGrantRole('MARINA_MANAGER', 'DOCK_STAFF')).toBe(true);
+  });
+
+  it('an owner can grant tenant roles but never PLATFORM_ADMIN', () => {
+    expect(auth.canGrantRole('MARINA_OWNER', 'MARINA_OWNER')).toBe(true);
+    expect(auth.canGrantRole('MARINA_OWNER', 'ACCOUNTING')).toBe(true);
+    expect(auth.canGrantRole('MARINA_OWNER', 'PLATFORM_ADMIN')).toBe(false);
+  });
+
+  it('other roles cannot grant anything', () => {
+    expect(auth.canGrantRole('DOCK_STAFF', 'DOCK_STAFF')).toBe(false);
+    expect(auth.canGrantRole(undefined, 'DOCK_STAFF')).toBe(false);
+  });
+});
+
 describe('requirePlatformAdmin', () => {
   function adminApp() {
     const app = express();

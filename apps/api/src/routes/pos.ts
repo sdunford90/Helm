@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, MANAGER_ROLES, FINANCE_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 
 const router = Router();
@@ -205,6 +205,7 @@ router.get(
 
 router.post(
   "/products",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -256,6 +257,7 @@ router.post(
 
 router.put(
   "/products/:id",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -306,6 +308,7 @@ router.put(
 
 router.delete(
   "/products/:id",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -532,6 +535,7 @@ router.get(
 
 router.post(
   "/transactions/:id/refund",
+  requireRole(...FINANCE_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
@@ -720,6 +724,7 @@ router.get(
 
 router.put(
   "/inventory/:productId",
+  requireRole(...MANAGER_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
