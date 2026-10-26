@@ -42,10 +42,15 @@ const BYPASS_EXACT = [
   "/api/webhooks/stripe", // Stripe (signature) — mount point reserved in index.ts
 ];
 
+// Public lead-form submissions come from widgets embedded on marina websites,
+// so the Host is not a tenant; the form's embed key identifies the tenant.
+const BYPASS_PATTERNS = [/^\/api\/lead-forms\/[^/]+\/submit$/];
+
 export function shouldBypassTenant(path: string): boolean {
   const p = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
   return (
     BYPASS_EXACT.includes(p) ||
+    BYPASS_PATTERNS.some((re) => re.test(p)) ||
     BYPASS_PREFIXES.some((prefix) => p === prefix || p.startsWith(`${prefix}/`))
   );
 }

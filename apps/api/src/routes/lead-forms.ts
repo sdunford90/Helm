@@ -219,9 +219,6 @@ authedRouter.delete(
   },
 );
 
-// Mount authed routes
-router.use("/", authedRouter);
-
 // ─── PUBLIC route: form submission ──────────────────────────────────────────
 // POST /:embedKey/submit — no auth required; identified by embed key
 
@@ -292,7 +289,7 @@ router.post(
       if (body.referralCode) {
         try {
           await prisma.referralPartner.updateMany({
-            where: { code: body.referralCode },
+            where: { code: body.referralCode, tenantId: form.tenantId },
             data: { leadsCount: { increment: 1 } },
           });
         } catch {
@@ -310,5 +307,9 @@ router.post(
     }
   },
 );
+
+// Mount authed routes after the public route, so their auth guard doesn't
+// intercept public submissions.
+router.use("/", authedRouter);
 
 export default router;
