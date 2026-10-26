@@ -62,7 +62,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // GET /api/transient/availability — Available transient-capable slips for date range
 router.get(
   "/availability",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = AvailabilityQuerySchema.parse(req.query);
@@ -103,7 +103,7 @@ router.get(
 // GET /api/transient — List bookings with filters
 router.get(
   "/",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = ListBookingsQuerySchema.parse(req.query);
@@ -138,7 +138,7 @@ router.get(
 // GET /api/transient/:id — Booking detail
 router.get(
   "/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const booking = await prisma.transientBooking.findUnique({
@@ -157,7 +157,7 @@ router.get(
 // POST /api/transient — Create booking
 router.post(
   "/",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = CreateBookingSchema.parse(req.body);
@@ -211,7 +211,7 @@ router.post(
 // PUT /api/transient/:id/check-in — Check in guest
 router.put(
   "/:id/check-in",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const booking = await prisma.transientBooking.findUnique({
@@ -247,7 +247,7 @@ router.put(
 // PUT /api/transient/:id/check-out — Check out guest
 router.put(
   "/:id/check-out",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const booking = await prisma.transientBooking.findUnique({
@@ -283,7 +283,7 @@ router.put(
 // PUT /api/transient/:id/overstay — Mark as overstay
 router.put(
   "/:id/overstay",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const booking = await prisma.transientBooking.findUnique({
@@ -312,7 +312,7 @@ router.put(
 // DELETE /api/transient/:id — Cancel booking
 router.delete(
   "/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const booking = await prisma.transientBooking.findUnique({
