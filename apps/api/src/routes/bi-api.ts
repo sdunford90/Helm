@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { prisma } from "../lib/prisma.js";
+import { prisma, tenantStore } from "../lib/prisma.js";
 
 const router = Router();
 
@@ -63,21 +63,36 @@ async function authenticateApiKey(
       return;
     }
 
-    // Set tenant context from the API key
+    // The API key's tenant is THE tenant for this request. /api/bi bypasses
+    // Host-based tenant resolution (middleware/tenant.ts), so an attacker's
+    // `Host: victim.gethelm.com` cannot change the scope. Defence in depth:
+    // if a Host tenant was resolved anyway and differs, refuse.
+    if (req.tenantId && req.tenantId !== apiKey.tenantId) {
+      res.status(403).json({
+        error: "API key does not belong to this tenant",
+        code: "TENANT_MISMATCH",
+      });
+      return;
+    }
+
     req.tenantId = apiKey.tenantId;
     req.apiKeyScope = apiKey.scope as "TENANT" | "PORTFOLIO";
 
-    // Update last_used_at (fire-and-forget)
-    prisma.apiKey
-      .update({
-        where: { id: apiKey.id },
-        data: { lastUsedAt: new Date() },
-      })
-      .catch(() => {
-        // Swallow errors — non-critical
-      });
+    // Run the rest of the request inside the key's tenant context so the
+    // Prisma extension scopes every query to apiKey.tenantId.
+    tenantStore.run({ tenantId: apiKey.tenantId }, () => {
+      // Update last_used_at (fire-and-forget)
+      prisma.apiKey
+        .update({
+          where: { id: apiKey.id },
+          data: { lastUsedAt: new Date() },
+        })
+        .catch(() => {
+          // Swallow errors — non-critical
+        });
 
-    next();
+      next();
+    });
   } catch (err) {
     next(err);
   }
@@ -120,6 +135,16 @@ router.get(
       const [data, total] = await Promise.all([
         prisma.customer.findMany({
           where,
+          // Never export identity documents or payment ids over the BI API.
+          omit: {
+            dob: true,
+            dlNumber: true,
+            dlState: true,
+            dlExpiry: true,
+            dlPhotoUrl: true,
+            emergencyContactJson: true,
+            stripeCustomerId: true,
+          },
           orderBy: { createdAt: "desc" },
           skip: offset,
           take: limit,
@@ -312,7 +337,7 @@ router.get(
               select: { id: true, firstName: true, lastName: true },
             },
             rentalProduct: {
-              select: { id: true, name: true, category: true },
+              select: { id: true, name: true, durationType: true },
             },
           },
         }),

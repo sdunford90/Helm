@@ -443,6 +443,7 @@ CREATE TABLE "payments" (
     "customerId" TEXT NOT NULL,
     "invoiceId" TEXT,
     "amountCents" INTEGER NOT NULL,
+    "refundedCents" INTEGER NOT NULL DEFAULT 0,
     "method" "PaymentMethod" NOT NULL,
     "stripePaymentId" TEXT,
     "postedDate" TIMESTAMP(3) NOT NULL,
@@ -1035,6 +1036,19 @@ CREATE TABLE "api_keys" (
     CONSTRAINT "api_keys_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "oauth_states" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "stateHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "oauth_states_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "tenants_subdomain_key" ON "tenants"("subdomain");
 
@@ -1190,6 +1204,15 @@ CREATE UNIQUE INDEX "communication_preferences_customer_id_channel_category_key"
 
 -- CreateIndex
 CREATE INDEX "api_keys_tenantId_idx" ON "api_keys"("tenantId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "oauth_states_stateHash_key" ON "oauth_states"("stateHash");
+
+-- CreateIndex
+CREATE INDEX "oauth_states_tenantId_idx" ON "oauth_states"("tenantId");
+
+-- CreateIndex
+CREATE INDEX "oauth_states_expiresAt_idx" ON "oauth_states"("expiresAt");
 
 -- AddForeignKey
 ALTER TABLE "tenants" ADD CONSTRAINT "tenants_saasTierId_fkey" FOREIGN KEY ("saasTierId") REFERENCES "saas_tiers"("id") ON DELETE SET NULL ON UPDATE CASCADE;

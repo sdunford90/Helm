@@ -1,8 +1,10 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { clerkAuth } from "../middleware/auth.js";
+import { clerkAuth, requireRole, FINANCE_ROLES } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { stripe } from "../lib/stripe.js";
+import { requireStripe } from "../lib/stripe.js";
+import type { InvoiceStatus } from "@prisma/client";
+import type Stripe from "stripe";
 import { postPayment, postRefund } from "../services/gl-posting.js";
 import { v4 as uuid } from "uuid";
 
@@ -229,7 +231,7 @@ router.post(
       let invoice: {
         id: string;
         balanceCents: number;
-        status: string;
+        status: InvoiceStatus;
         customerId: string;
       } | null = null;
 
@@ -332,8 +334,8 @@ router.post(
           };
         }
 
-        const paymentIntent = await stripe.paymentIntents.create(
-          paymentIntentParams as Parameters<typeof stripe.paymentIntents.create>[0],
+        const paymentIntent = await requireStripe().paymentIntents.create(
+          paymentIntentParams as unknown as Stripe.PaymentIntentCreateParams,
           { stripeAccount: tenant.stripeAccountId },
         );
 
@@ -442,21 +444,38 @@ router.post(
 );
 
 // ─── POST /:id/refund — Refund payment ──────────────────────────────────────
+//
+// Refund safety:
+//   * Cumulative cap: refundedCents tracks what has already been refunded;
+//     a refund may never exceed amountCents - refundedCents (repeated partial
+//     refunds used to be able to exceed the original payment).
+//   * Atomic: the cap check and the increment are ONE conditional UPDATE
+//     (`refundedCents <= amountCents - refund`) inside an interactive
+//     transaction. The row stays locked until commit, so concurrent refunds
+//     serialize; the loser sees count = 0 and gets 400.
+//   * The Stripe refund runs inside that transaction, after the reservation:
+//     if Stripe fails, the transaction rolls back and nothing is recorded.
+//     A deterministic idempotency key (payment + cumulative position) makes a
+//     retried request re-use the same Stripe refund instead of issuing a
+//     second one.
+
+const RefundSchema = z.object({
+  amountCents: z.number().int().positive().optional(),
+  reason: z.string().max(500).optional(),
+});
+
+/** Remaining refundable amount for a payment. */
+export function refundableCents(payment: { amountCents: number; refundedCents: number }): number {
+  return Math.max(0, payment.amountCents - payment.refundedCents);
+}
 
 router.post(
   "/:id/refund",
+  requireRole(...FINANCE_ROLES),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const tenantId = req.tenantId!;
-
-      const RefundSchema = z.object({
-        amountCents: z.number().int().positive().optional(),
-        reason: z.string().optional(),
-      });
-
-      const { amountCents: requestedAmount, reason } = RefundSchema.parse(
-        req.body,
-      );
+      const { amountCents: requestedAmount, reason } = RefundSchema.parse(req.body);
 
       const payment = await prisma.payment.findFirst({
         where: { id: req.params.id, tenantId },
@@ -479,72 +498,107 @@ router.post(
         throw appError("Cannot refund a failed payment", 400, "PAYMENT_FAILED");
       }
 
-      const refundAmount = requestedAmount ?? payment.amountCents;
+      const remaining = refundableCents(payment);
+      const refundAmount = requestedAmount ?? remaining;
 
-      if (refundAmount > payment.amountCents) {
+      if (refundAmount <= 0 || refundAmount > remaining) {
         throw appError(
-          "Refund amount exceeds payment amount",
+          `Refund amount exceeds the refundable balance (${remaining} cents)`,
           400,
           "EXCESS_REFUND",
         );
       }
 
-      // Process Stripe refund if applicable
+      // Resolve the Stripe account up front (outside the transaction).
+      let stripeAccount: string | null = null;
       if (payment.stripePaymentId) {
         const tenant = await prisma.tenant.findUnique({
           where: { id: tenantId },
           select: { stripeAccountId: true },
         });
-
-        if (tenant?.stripeAccountId) {
-          await stripe.refunds.create(
-            {
-              payment_intent: payment.stripePaymentId,
-              amount: refundAmount,
-              reason: "requested_by_customer",
-            },
-            { stripeAccount: tenant.stripeAccountId },
+        if (!tenant?.stripeAccountId) {
+          throw appError(
+            "Stripe is not connected for this marina; cannot refund a card/ACH payment",
+            400,
+            "STRIPE_NOT_CONFIGURED",
           );
         }
+        stripeAccount = tenant.stripeAccountId;
       }
 
-      const isFullRefund = refundAmount === payment.amountCents;
-
-      const updated = await prisma.$transaction(async (tx) => {
-        // Reverse GL entries
-        await postRefund(
-          {
-            id: payment.id,
-            tenantId,
-            amountCents: payment.amountCents,
-            method: payment.method,
-          },
-          refundAmount,
-          tx,
-        );
-
-        // Update payment status
-        const pay = await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: isFullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED",
-          },
-        });
-
-        // Reinstate invoice balance if applicable
-        if (payment.invoice) {
-          const newBalance = payment.invoice.balanceCents + refundAmount;
-          await tx.invoice.update({
-            where: { id: payment.invoice.id },
-            data: {
-              balanceCents: newBalance,
-              status: newBalance > 0 ? "ISSUED" : payment.invoice.status,
+      const updated = await prisma.$transaction(
+        async (tx) => {
+          // 1. Atomically reserve the refund against the cumulative cap.
+          const reserved = await tx.payment.updateMany({
+            where: {
+              id: payment.id,
+              tenantId,
+              status: { notIn: ["REFUNDED", "FAILED"] },
+              refundedCents: { lte: payment.amountCents - refundAmount },
             },
+            data: { refundedCents: { increment: refundAmount } },
           });
-        }
+          if (reserved.count !== 1) {
+            throw appError(
+              "Refund amount exceeds the refundable balance",
+              400,
+              "EXCESS_REFUND",
+            );
+          }
 
-        return pay;
-      });
+          const after = await tx.payment.findFirstOrThrow({
+            where: { id: payment.id, tenantId },
+            select: { refundedCents: true, amountCents: true },
+          });
+          const isFullRefund = after.refundedCents >= after.amountCents;
+
+          // 2. Money movement (rolls the reservation back if it fails).
+          if (payment.stripePaymentId && stripeAccount) {
+            await requireStripe().refunds.create(
+              {
+                payment_intent: payment.stripePaymentId,
+                amount: refundAmount,
+                reason: "requested_by_customer",
+              },
+              {
+                stripeAccount,
+                idempotencyKey: `refund:${payment.id}:${after.refundedCents}:${refundAmount}`,
+              },
+            );
+          }
+
+          // 3. Ledger + status + invoice balance, same transaction.
+          await postRefund(
+            {
+              id: payment.id,
+              tenantId,
+              amountCents: payment.amountCents,
+              method: payment.method,
+            },
+            refundAmount,
+            tx,
+          );
+
+          const pay = await tx.payment.update({
+            where: { id: payment.id },
+            data: { status: isFullRefund ? "REFUNDED" : "PARTIALLY_REFUNDED" },
+          });
+
+          if (payment.invoice) {
+            const newBalance = payment.invoice.balanceCents + refundAmount;
+            await tx.invoice.update({
+              where: { id: payment.invoice.id },
+              data: {
+                balanceCents: newBalance,
+                status: newBalance > 0 ? "ISSUED" : payment.invoice.status,
+              },
+            });
+          }
+
+          return pay;
+        },
+        { timeout: 20_000 },
+      );
 
       // Audit log
       await prisma.auditLog.create({
@@ -557,7 +611,8 @@ router.post(
           action: "REFUNDED",
           changedFieldsJson: {
             refundAmount,
-            isFullRefund,
+            refundedCentsTotal: updated.refundedCents,
+            isFullRefund: updated.status === "REFUNDED",
             reason,
             previousStatus: payment.status,
             newStatus: updated.status,

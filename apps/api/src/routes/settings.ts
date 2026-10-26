@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { clerkAuth, requireRole } from "../middleware/auth.js";
-import { stripe } from "../lib/stripe.js";
+import { clerkAuth, requireRole, canGrantRole } from "../middleware/auth.js";
+import { requireStripe } from "../lib/stripe.js";
 
 const router = Router();
 
@@ -45,6 +45,16 @@ const billingSchema = z.object({
   taxRate: z.number().min(0).max(100).optional(),
   electricityRatePerKwh: z.number().min(0).optional(),
   securityDepositDefault: z.number().int().min(0).optional(),
+  // Server-side price sources for transient bookings and ramp tickets
+  // (routes never accept client-supplied prices).
+  transientRatePerFtCents: z.number().int().positive().optional(),
+  rampPricesCents: z
+    .object({
+      SINGLE_LAUNCH: z.number().int().min(0).optional(),
+      DAILY_PASS: z.number().int().min(0).optional(),
+      SEASONAL_PASS: z.number().int().min(0).optional(),
+    })
+    .optional(),
 });
 
 const notificationsSchema = z.object({
@@ -284,6 +294,8 @@ router.get("/billing", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAG
       taxRate: invoiceTemplate.taxRate ?? 0,
       electricityRatePerKwh: invoiceTemplate.electricityRatePerKwh ?? 0.12,
       securityDepositDefault: invoiceTemplate.securityDepositDefault ?? 50000,
+      transientRatePerFtCents: invoiceTemplate.transientRatePerFtCents ?? null,
+      rampPricesCents: invoiceTemplate.rampPricesCents ?? {},
     });
   } catch (err) {
     next(err);
@@ -373,7 +385,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
     // Create a Stripe Connect account if one doesn't exist
     let accountId = tenant.stripeAccountId;
     if (!accountId) {
-      const account = await stripe.accounts.create({ type: "standard" });
+      const account = await requireStripe().accounts.create({ type: "standard" });
       accountId = account.id;
       await prisma.tenant.update({
         where: { id: req.tenantId! },
@@ -381,7 +393,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
       });
     }
 
-    const accountLink = await stripe.accountLinks.create({
+    const accountLink = await requireStripe().accountLinks.create({
       account: accountId,
       refresh_url: `${process.env.APP_URL}/settings?section=stripe&refresh=true`,
       return_url: `${process.env.APP_URL}/settings?section=stripe&success=true`,
@@ -448,35 +460,9 @@ router.get("/qbo", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER",
   }
 });
 
-// --------------------------------------------------------------------------
-// POST /api/settings/qbo/connect
-// --------------------------------------------------------------------------
-router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
-  try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.tenantId! },
-    });
-
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
-      return;
-    }
-
-    const clientId = process.env.QBO_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;
-    const scope = "com.intuit.quickbooks.accounting";
-    const state = req.tenantId!;
-
-    const authUrl =
-      `https://appcenter.intuit.com/connect/oauth2?` +
-      `client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}&response_type=code&state=${state}`;
-
-    res.json({ url: authUrl });
-  } catch (err) {
-    next(err);
-  }
-});
+// POST /api/settings/qbo/connect was removed (state = tenantId, no callback
+// existed). The single QBO connect flow is GET /api/qbo/authorize, whose
+// callback verifies a single-use server-side state.
 
 // --------------------------------------------------------------------------
 // POST /api/settings/qbo/disconnect
@@ -573,6 +559,15 @@ router.post("/team/invite", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_
   try {
     const data = inviteTeamMemberSchema.parse(req.body);
 
+    // No privilege escalation: a manager cannot invite an owner (or accounting).
+    if (!canGrantRole(req.userRole, data.role)) {
+      res.status(403).json({
+        error: `Your role cannot grant ${data.role}`,
+        code: "ROLE_ESCALATION",
+      });
+      return;
+    }
+
     // Check if user already exists in this tenant
     const existing = await prisma.user.findFirst({
       where: { tenantId: req.tenantId!, email: data.email },
@@ -623,6 +618,15 @@ router.put("/team/:userId/role", ...clerkAuth(), requireRole("MARINA_OWNER"), as
 
     if (!user) {
       res.status(404).json({ error: "User not found", code: "NOT_FOUND" });
+      return;
+    }
+
+    // No privilege escalation, and platform admins are not managed by tenants.
+    if (!canGrantRole(req.userRole, data.role) || user.role === "PLATFORM_ADMIN") {
+      res.status(403).json({
+        error: `Your role cannot grant ${data.role}`,
+        code: "ROLE_ESCALATION",
+      });
       return;
     }
 

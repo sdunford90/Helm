@@ -84,7 +84,7 @@ function appError(message: string, statusCode: number, code: string): Error {
 // GET /api/concierge/requests — List requests with filters
 router.get(
   "/requests",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const query = ListRequestsQuerySchema.parse(req.query);
@@ -115,7 +115,7 @@ router.get(
 // GET /api/concierge/requests/:id — Request detail
 router.get(
   "/requests/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const request = await prisma.conciergeRequest.findUnique({
@@ -134,7 +134,7 @@ router.get(
 // POST /api/concierge/requests — Create request
 router.post(
   "/requests",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = CreateRequestSchema.parse(req.body);
@@ -169,7 +169,7 @@ router.post(
 // PUT /api/concierge/requests/:id — Update request
 router.put(
   "/requests/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = UpdateRequestSchema.parse(req.body);
@@ -204,7 +204,7 @@ router.put(
 // PUT /api/concierge/requests/:id/quote — Submit quote
 router.put(
   "/requests/:id/quote",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = SubmitQuoteSchema.parse(req.body);
@@ -235,7 +235,7 @@ router.put(
 // PUT /api/concierge/requests/:id/approve — Customer approves quote
 router.put(
   "/requests/:id/approve",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const existing = await prisma.conciergeRequest.findUnique({
@@ -265,7 +265,7 @@ router.put(
 // PUT /api/concierge/requests/:id/complete — Mark completed, create billable charge
 router.put(
   "/requests/:id/complete",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const existing = await prisma.conciergeRequest.findUnique({
@@ -300,7 +300,7 @@ router.put(
 // GET /api/concierge/vendors — List vendors
 router.get(
   "/vendors",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const vendors = await prisma.conciergeVendor.findMany({
@@ -316,7 +316,7 @@ router.get(
 // POST /api/concierge/vendors — Create vendor
 router.post(
   "/vendors",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = CreateVendorSchema.parse(req.body);
@@ -343,7 +343,7 @@ router.post(
 // PUT /api/concierge/vendors/:id — Update vendor
 router.put(
   "/vendors/:id",
-  clerkAuth,
+  ...clerkAuth(),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = UpdateVendorSchema.parse(req.body);

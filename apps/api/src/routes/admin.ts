@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { requirePlatformAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { queues, type QueueName } from "../lib/queue.js";
@@ -295,52 +295,15 @@ router.put("/tenants/:id", async (req, res, next) => {
 // --------------------------------------------------------------------------
 // POST /api/admin/tenants/:id/impersonate — generate impersonation token
 // --------------------------------------------------------------------------
-router.post("/tenants/:id/impersonate", async (req, res, next) => {
-  try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.params.id },
-      include: { users: { where: { role: "MARINA_OWNER", active: true }, take: 1 } },
-    });
-
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    const targetUser = tenant.users[0];
-    if (!targetUser) {
-      res.status(400).json({ error: "No active owner user found for this tenant" });
-      return;
-    }
-
-    // Generate a short-lived impersonation token.
-    // In production this would create a signed JWT via your auth provider (e.g. Clerk).
-    // For now we return a verifiable HMAC-based token that downstream middleware can validate.
-    const secret = process.env.IMPERSONATION_SECRET ?? "helm-impersonation-dev-key";
-    const payload = {
-      sub: targetUser.id,
-      tenantId: tenant.id,
-      email: targetUser.email,
-      role: targetUser.role,
-      impersonatedBy: (req as unknown as Record<string, unknown>).userId ?? "platform_admin",
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
-    };
-    const tokenId = randomUUID();
-    const signature = createHmac("sha256", secret)
-      .update(JSON.stringify({ ...payload, jti: tokenId }))
-      .digest("hex");
-
-    res.json({
-      token: `imp_${tokenId}.${signature}`,
-      expiresIn: 3600,
-      tenantId: tenant.id,
-      tenantName: tenant.name,
-      asUser: { id: targetUser.id, email: targetUser.email, role: targetUser.role },
-    });
-  } catch (err) {
-    next(err);
-  }
+// Disabled (Phase 0): the previous implementation signed tokens with a
+// hard-coded fallback secret, had no verifier, no expiry enforcement and no
+// audit trail. Impersonation returns in Phase 1 as audited, short-lived Clerk
+// actor sessions (docs/audit/11 §3.9).
+router.post("/tenants/:id/impersonate", (_req, res) => {
+  res.status(501).json({
+    error: "Impersonation is disabled until the audited design ships",
+    code: "IMPERSONATION_DISABLED",
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -922,7 +885,7 @@ router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
   try {
     const { name, address, city, state, zip, phone, timezone, active } = req.body;
     const location = await prisma.location.update({
-      where: { id: req.params.locationId },
+      where: { id: req.params.locationId, tenantId: req.params.id },
       data: {
         ...(name !== undefined && { name }),
         ...(address !== undefined && { address }),
@@ -941,7 +904,7 @@ router.put("/tenants/:id/locations/:locationId", async (req, res, next) => {
 // DELETE /api/admin/tenants/:id/locations/:locationId
 router.delete("/tenants/:id/locations/:locationId", async (req, res, next) => {
   try {
-    await prisma.location.delete({ where: { id: req.params.locationId } });
+    await prisma.location.delete({ where: { id: req.params.locationId, tenantId: req.params.id } });
     res.status(204).send();
   } catch (err) { next(err); }
 });
