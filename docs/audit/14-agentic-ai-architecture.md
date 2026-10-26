@@ -1,6 +1,15 @@
 # 14 — Agentic AI Architecture: "Helm Copilot" (an in-product agent that acts, not just reports)
 
-*Prepared 2026-10-26. This is a design document; no source files were changed. Code-level findings are cited as `path:line`. External product claims are from vendor docs or press where possible, and secondhand sources are marked. It builds on `03-quickbooks-integration.md`, `04-rentals-dynamic-pricing.md`, `09-competitive-research.md` and the RBAC design in progress (`11-rbac-and-enterprise-security.md`, not yet on disk when this was written. Its permission strings are referenced here by the `resource.action` convention it uses).*
+*Prepared 2026-10-26. This is a design document; no source files were changed. Code-level findings are cited as `path:line`. External product claims are from vendor docs or press where possible, and secondhand sources are marked. It builds on `03-quickbooks-integration.md`, `04-rentals-dynamic-pricing.md`, `09-competitive-research.md` and the RBAC design `11-rbac-and-enterprise-security.md`.*
+
+> **Division of responsibility with doc 11 (authoritative for authorization).** Doc 11 owns:
+> - the permission catalog keys and risk levels (§3.4, LOW/MEDIUM/HIGH/CRITICAL)
+> - `Principal`/`Delegation`, `authorize()` and `executeCommand` (§3.2, §3.7)
+> - approvals and dual control (`ApprovalRequest`, §3.6)
+> - the AI authorization contract: `ai.*` permissions, `TenantAiPolicy`, confirmation tokens, `ServiceIdentity`/`AgentRun` (§3.11)
+> - Postgres RLS (§3.12)
+>
+> This document owns the agent runtime, the tool registry, dry-run/proposal cards, the semantic metrics layer, prompt-injection handling, comms compliance inside send commands, UX, evals and AI data tables. Where the two overlap, this document cross-references doc 11 instead of restating it. If they disagree, doc 11 wins on authorization semantics.
 
 ---
 
@@ -16,9 +25,11 @@ All of it under enterprise guardrails, with strict tenant separation.
 
 **This is achievable, but not on the codebase as it stands.** The agent is the most privileged automated actor Helm will ever have. Every weakness the other audits found gets worse once a model, which can be manipulated through text, can call the code. The design therefore stands on three non-negotiable principles.
 
-1. **One domain layer, many front doors.** The agent calls the same typed **domain commands** as the REST API, the public API and an MCP server. It never writes SQL, never touches Prisma directly and never calls Express routes over HTTP. Today almost all business logic lives inside Express handlers. For example, invoice creation, tax and numbering all happen inside `routes/invoices.ts:207-305`. So the prerequisite is a **command/query refactor**: each operation becomes a function with a zod input schema, a permission string, a risk tier and an audit hook. Tools, routes and MCP endpoints are then *generated* from that registry.
-2. **The model proposes; the server disposes.** The model never executes a write. An action tool validates its input, runs the command in **dry-run** mode, and stores a frozen **proposal** (`AiToolCall` + `AiApproval`). The UI shows that proposal as a confirmation card. When the user clicks Confirm, the server executes the *stored, hashed* payload with the *user's* identity. The model's later text cannot change it. A policy engine may auto-approve low-risk proposals. Financial and outbound-communication proposals always need a human, sometimes two.
-3. **Identity and tenancy are never model inputs.** `tenantId`, `userId`, location scope and permissions come from the authenticated session and travel in an `ExecutionContext`. They never appear in a tool's schema. Isolation is enforced three times:
+1. **One domain layer, many front doors.** The agent calls the same typed **domain commands** as the REST API, the public API and an MCP server. It never writes SQL, never touches Prisma directly and never calls Express routes over HTTP. Today almost all business logic lives inside Express handlers. For example, invoice creation, tax and numbering all happen inside `routes/invoices.ts:207-305`. So the prerequisite is the **command/query refactor that doc 11 §3.7 already requires** (`defineCommand` / `executeCommand`): each operation becomes a function with a zod input schema, a catalog permission key, a risk level and an audit hook. This document adds a dry-run `plan()` step. Tools, routes and MCP endpoints are then *generated* from that registry.
+2. **The model proposes; the server disposes.** The model never executes a write. An action tool validates its input, runs the command in **dry-run** mode, and stores a frozen **proposal** (`AiToolCall` + `AiApproval`). The UI shows that proposal as a confirmation card. When the user clicks Confirm, the UI obtains a single-use confirmation token bound to the payload hash (doc 11 §3.11.3), and the server executes the *stored, hashed* payload with the *user's* identity. The model's later text cannot change it.
+   - Only users holding `ai.actions.auto_approve.low_risk`, within the tenant's `maxAutoRisk`, may skip the click for LOW-risk actions.
+   - When `authorize()` returns `REQUIRE_APPROVAL`, the server creates a normal `ApprovalRequest` (doc 11 §3.6) for a second human. **The agent never confirms or approves anything.**
+3. **Identity and tenancy are never model inputs.** `tenantId`, `userId`, location scope and permissions come from the authenticated session. They travel in an `ExecutionContext` that wraps doc 11's `Principal` with `Delegation{via:"ai_assistant"}`. They never appear in a tool's schema. Isolation is enforced three times:
    - the corrected Prisma scoping
    - Postgres row-level security, through `SET LOCAL app.tenant_id` per transaction
    - tenant-partitioned conversation storage, with no cross-tenant memory or embeddings
@@ -93,8 +104,8 @@ No marina competitor ships an action-taking copilot today. Dockwa's PSG round is
                  ▼                                               ▼
  ┌─────────────────────────────────────────────────────────────────────────┐
  │ Domain layer (src/domain/**): Commands + Queries + MetricsCatalog       │
- │  defineCommand({ name, input: zod, permission, risk, dryRun, execute }) │
- │  CommandBus: authz → idempotency → tx(RLS: SET LOCAL app.tenant_id)     │
+ │  defineCommand({ key, input: zod, risk, context, plan, run })  (doc 11) │
+ │  executeCommand: authorize → idempotency → tx(RLS, doc 11 §3.12)        │
  │             → execute → audit → outbox events                           │
  └───────────────┬─────────────────────────────────────────────────────────┘
                  ▼
@@ -103,7 +114,7 @@ No marina competitor ships an action-taking copilot today. Dockwa's PSG round is
    Resend / Twilio / Stripe / QBO adapters (behind commands only)
 ```
 
-- **Where the agent runs:** inside `apps/api` as a module (`src/ai/`), not a separate service, at least through Phase 3. It needs in-process access to the command bus and the same Prisma/RLS client, and a network hop would only add a second authn surface. The MCP server is the exception. It is a separate deployable (`apps/mcp`) because its auth model (OAuth resource server), scaling profile and blast radius differ. It calls the domain layer through an internal package (`packages/domain`) or an internal RPC that carries a signed `ExecutionContext`.
+- **Where the agent runs:** inside `apps/api` as a module (`src/ai/`), not a separate service, at least through Phase 3. It needs in-process access to the command bus and the same Prisma/RLS client, and a network hop would only add a second authn surface. The MCP server is the exception. It is a separate deployable (`apps/mcp`) because its auth model (OAuth resource server), scaling profile and blast radius differ. It calls the command layer (`apps/api/src/commands`, per doc 11 §3.7), either by extracting those commands into a shared package when `apps/mcp` is split out, or through an internal RPC that carries a signed `Principal`.
 - **Why not Managed Agents for the interactive copilot:** Helm's tools must execute in Helm's VPC against Helm's database, with Helm's RLS context and approvals. The Messages API + tool runner keeps the loop and the tool execution in-house. It is the right tier per the Claude API guidance ("custom agent with your own tools"). Managed Agents *scheduled deployments* are a reasonable option for the proactive agents in Phase 4 (§5), but only if their tools are exposed back to Helm through the MCP server under a per-tenant service identity. The default recommendation is still to run them on BullMQ in-house, so all data paths stay in one place.
 - **Transport:** **SSE** over `POST` (fetch + `ReadableStream`) from the web app to `/api/ai/conversations/:id/messages`. SSE is one-directional, which suits token streaming plus event frames. User actions (confirm, cancel, edit) are ordinary `POST`s. SSE works through the existing Express stack and corporate proxies, and doesn't need sticky WebSocket sessions. Use WebSocket only if voice streaming (§4.6) later needs full duplex.
 
@@ -147,20 +158,21 @@ type CopilotEvent =
 **The command contract:**
 
 ```ts
-// packages/domain/src/command.ts
+// apps/api/src/commands/_core/command.ts  (layout per doc 11 §3.7; extends its defineCommand)
 import { z, type ZodTypeAny } from "zod";
 
-export type RiskTier = "read" | "low_write" | "financial" | "outbound_comm" | "destructive";
+import type { Principal, PermissionKey } from "@helm/authz";        // doc 11 §3.7
+
+export type Risk = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";          // doc 11 §3.4 / §3.11.2 — the ONLY risk scale
+export type ActionKind = "read" | "write" | "financial" | "outbound_comm" | "destructive";  // card styling/UX only
 
 export interface ExecutionContext {
-  readonly tenantId: string;            // from verified session — never from input
-  readonly userId: string;              // human principal (or service identity for agents)
-  readonly actorType: "user" | "service" | "api_key" | "portal_user";
-  readonly via: "ui" | "ai_assistant" | "ai_background" | "mcp" | "public_api" | "job";
-  readonly permissions: ReadonlySet<string>;     // effective, location-expanded
-  readonly locationIds: readonly string[] | "all";
+  readonly principal: Principal;        // doc 11: {kind, tenantId, id, delegation?: {via, agentRunId, confirmation?}}
+  readonly tenantId: string;            // = principal.tenantId, from verified session — never from input
+  readonly userId: string;              // membershipId or serviceIdentityId
+  readonly via: "ui" | "ai_assistant" | "background_agent" | "mcp" | "oauth_app" | "job";
   readonly portalCustomerId?: string;   // set only for boater-portal principals
-  readonly correlation: { conversationId?: string; toolCallId?: string; approvalId?: string; requestId: string };
+  readonly correlation: { conversationId?: string; agentRunId?: string; toolCallId?: string; proposalId?: string; requestId: string };
   readonly idempotencyKey?: string;
   readonly now: Date;
 }
@@ -177,14 +189,16 @@ export interface CommandPlan<P> {
 }
 
 export interface CommandDef<I extends ZodTypeAny, P, O> {
-  name: string;                    // "invoices.create"
+  key: PermissionKey;              // doc 11 catalog key, e.g. "invoices.create" — also the primary permission
   description: string;             // human + model readable
   input: I;                        // zod — NO tenantId/userId fields, ever
-  permission: string | ((input: z.infer<I>) => string[]);   // e.g. "invoices.create"
-  risk: RiskTier | ((input: z.infer<I>, ctx: ExecutionContext) => RiskTier);
+  extraPermissions?: (input: z.infer<I>) => PermissionKey[];   // e.g. pricing.override when a price is overridden
+  risk: Risk;                      // base risk; doc 11's authorize() may raise it from context (amount, bulk, closed period)
+  kind: ActionKind;
   module?: "rentals" | "pos" | "fuel" | "storage" | "service";   // tenant feature flags
   plan(ctx: ExecutionContext, input: z.infer<I>, tx: Tx): Promise<CommandPlan<P>>;
-  execute(ctx: ExecutionContext, payload: P, tx: Tx): Promise<O>;
+  context(input: z.infer<I>, tx: Tx): Promise<AuthzContext>;     // doc 11 §3.7 (location, amount, record)
+  run(ctx: ExecutionContext, payload: P, tx: Tx): Promise<O>;    // doc 11 name for execute
   present(output: O): { summary: string; citations: Citation[] };   // for UI + model
   exposure: { rest: boolean; agent: boolean; mcp: boolean; portal: boolean };
 }
@@ -195,17 +209,22 @@ export const defineCommand = <I extends ZodTypeAny, P, O>(d: CommandDef<I, P, O>
 **The command bus.** It is the only place that opens a transaction and sets RLS.
 
 ```ts
-// packages/domain/src/bus.ts
+// apps/api/src/commands/_core/execute.ts  (= doc 11 executeCommand, plus plan mode)
 export async function runCommand<I, P, O>(
   def: CommandDef<any, P, O>, ctx: ExecutionContext, rawInput: unknown,
   mode: { kind: "plan" } | { kind: "execute"; frozen?: { payload: P; payloadHash: string } },
 ): Promise<CommandPlan<P> | O> {
   const input = def.input.parse(rawInput);                    // zod at the boundary
-  assertModuleEnabled(ctx.tenantId, def.module);
-  for (const p of resolvePermissions(def, input)) assertPermission(ctx, p);   // throws 403
+  assertModuleEnabled(ctx.tenantId, def.module);              // doc 11 Entitlement
 
-  return withTenantTx(ctx, async (tx) => {                    // SET LOCAL app.tenant_id / app.user_id
-    if (mode.kind === "plan") return def.plan(ctx, input, tx);
+  return withTenantTx(ctx, async (tx) => {                    // set_config per doc 11 §3.12
+    const actx = await def.context(input, tx);                // {locationId, amountCents, record…} — doc 11 §3.7 step 2
+    for (const key of [def.key, ...(def.extraPermissions?.(input) ?? [])]) {
+      const d = await authorize(ctx.principal, key, actx);    // doc 11: ALLOW | REQUIRE_CONFIRMATION | REQUIRE_APPROVAL | DENY
+      if (d.effect === "DENY") throw new ForbiddenError(key, d.reason);
+      if (mode.kind === "execute") enforceDecision(d, ctx, mode);   // confirmation token / consumed ApprovalRequest must match payloadHash
+    }
+    if (mode.kind === "plan") return def.plan(ctx, input, tx);   // plan() never needs confirmation; it is the preview
 
     if (ctx.idempotencyKey) {
       const prior = await tx.idempotencyRecord.findUnique({ where: { tenantId_key: { tenantId: ctx.tenantId, key: ctx.idempotencyKey } } });
@@ -218,7 +237,7 @@ export async function runCommand<I, P, O>(
     if (mode.frozen && hash(fresh.payload) !== mode.frozen.payloadHash)
       throw new DomainError("STALE_PROPOSAL", "Data changed since you reviewed this. Please re-check.");
 
-    const out = await def.execute(ctx, fresh.payload, tx);
+    const out = await def.run(ctx, fresh.payload, tx);
     await writeAudit(tx, ctx, def, input, fresh, out);        // actor + via + correlation
     await writeOutbox(tx, ctx, def.name, out);                // domain events → webhooks, QBO, notifications
     if (ctx.idempotencyKey) await tx.idempotencyRecord.create({ data: { tenantId: ctx.tenantId, key: ctx.idempotencyKey, command: def.name, resultJson: out as any } });
@@ -230,7 +249,7 @@ export async function runCommand<I, P, O>(
 **Example: extracting invoice creation from `routes/invoices.ts:207-305`.**
 
 ```ts
-// packages/domain/src/invoices/create-invoice.ts
+// apps/api/src/commands/invoices/create.ts
 export const CreateInvoiceInput = z.object({
   customerId: z.string().uuid().describe("Customer id from search_customers"),
   issuedDate: z.coerce.date(),
@@ -247,7 +266,7 @@ export const CreateInvoiceInput = z.object({
 }).strict();
 
 export const createInvoice = defineCommand({
-  name: "invoices.create",
+  key: "invoices.create",
   description: "Create a DRAFT invoice for a customer. Does not send it.",
   input: CreateInvoiceInput,
   permission: "invoices.create",                        // pricing.override is checked in plan() once prices are resolved
@@ -266,7 +285,8 @@ export const createInvoice = defineCommand({
       reversible: { kind: "delete_draft", command: "invoices.deleteDraft" },
     };
   },
-  async execute(ctx, p, tx) { return insertDraftInvoice(tx, ctx, p); },   // numbering assigned atomically here
+  context: async (i, tx) => ({ locationId: (await tx.customer.findFirstOrThrow({ where: { id: i.customerId } })).locationId }),
+  async run(ctx, p, tx) { return insertDraftInvoice(tx, ctx, p); },   // numbering assigned atomically here
   present: (inv) => ({ summary: `Draft invoice #${inv.number} created`, citations: [{ type: "Invoice", id: inv.id, label: `#${inv.number}`, href: `/billing/invoices/${inv.id}` }] }),
   exposure: { rest: true, agent: true, mcp: true, portal: false },
 });
@@ -405,7 +425,7 @@ Free-form text-to-SQL against the production database is rejected:
 Most marina questions map to roughly 60 metrics.
 
 ```ts
-// packages/domain/src/metrics/catalog.ts
+// apps/api/src/queries/metrics/catalog.ts
 export const metrics = defineMetrics({
   occupancy_rate: {
     description: "Occupied slip-nights / available slip-nights",
@@ -570,7 +590,7 @@ CREATE POLICY tenant_isolation ON customers
 ```
 
 ```ts
-// packages/domain/src/db.ts — the ONLY way domain code gets a client
+// apps/api/src/commands/_core/db.ts — the ONLY way command/query code gets a client
 export async function withTenantTx<T>(ctx: ExecutionContext, fn: (tx: Tx) => Promise<T>) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.tenant_id', ${ctx.tenantId}, true),
@@ -720,7 +740,7 @@ const untrusted = (source: string, recordRef: string, text: string) =>
 
 ```ts
 export const sendSms = defineCommand({
-  name: "communications.sendSms",
+  key: "communications.send.individual",   // bulk variant: communications.send.bulk (doc 11)
   input: z.object({
     customerIds: z.array(z.string().uuid()).min(1).max(500),
     category: z.enum(["transactional", "billing", "operational", "marketing"]),
@@ -746,7 +766,7 @@ export const sendSms = defineCommand({
       reversible: { kind: i.sendAt || recipients.length > 10 ? "cancel" : "none" },
     };
   },
-  async execute(ctx, p, tx) { return enqueueSms(tx, ctx, p); },     // BullMQ, per-tenant rate limiter, MessageLog rows
+  async run(ctx, p, tx) { return enqueueSms(tx, ctx, p); },     // BullMQ, per-tenant rate limiter, MessageLog rows
   exposure: { rest: true, agent: true, mcp: true, portal: false },
 });
 ```
