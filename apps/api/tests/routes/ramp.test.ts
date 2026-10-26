@@ -39,6 +39,11 @@ describe('POST /api/ramp/tickets', () => {
       guestName: 'Bob Smith',
     });
 
+    // Price comes from the tenant's configured ramp prices, not the client.
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      invoiceTemplateJson: { rampPricesCents: { SINGLE_LAUNCH: 2500 } },
+      stripeAccountId: null,
+    });
     mockPrisma.rampTicket.create.mockResolvedValue({
       ...ticket,
       customer: null,
@@ -63,22 +68,23 @@ describe('POST /api/ramp/tickets', () => {
     const ticket = buildRampTicket({
       ticketType: 'SINGLE_LAUNCH',
       amountCents: 0,
-      customerId: 'cust-123',
+      customerId: '33333333-3333-4333-8333-333333333333',
     });
 
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333' });
     mockPrisma.slipContract.findFirst.mockResolvedValue({
       id: 'contract-1',
       status: 'ACTIVE',
     });
     mockPrisma.rampTicket.create.mockResolvedValue({
       ...ticket,
-      customer: { id: 'cust-123' },
+      customer: { id: '33333333-3333-4333-8333-333333333333' },
     });
 
     const res = await request(app)
       .post('/api/ramp/tickets')
       .send({
-        customerId: 'cust-123',
+        customerId: '33333333-3333-4333-8333-333333333333',
         ticketType: 'SINGLE_LAUNCH',
         amountCents: 2500,
       });

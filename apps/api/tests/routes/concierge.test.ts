@@ -33,7 +33,7 @@ describe('GET /api/concierge/requests', () => {
 
 describe('POST /api/concierge/requests', () => {
   it('creates a concierge request', async () => {
-    const customer = buildCustomer();
+    const customer = buildCustomer({ id: '33333333-3333-4333-8333-333333333333' }); // schema requires a UUID
     const req = buildConciergeRequest({
       customerId: customer.id,
       serviceType: 'Hull Cleaning',

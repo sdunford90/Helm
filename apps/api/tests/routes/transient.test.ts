@@ -33,7 +33,7 @@ describe('GET /api/transient', () => {
 
 describe('POST /api/transient', () => {
   it('creates a transient booking', async () => {
-    const slip = buildSlip({ transientCapable: true });
+    const slip = buildSlip({ id: '33333333-3333-4333-8333-333333333333', transientCapable: true }); // schema requires a UUID
     const booking = buildTransientBooking({
       slipId: slip.id,
       guestName: 'John Doe',
@@ -41,6 +41,11 @@ describe('POST /api/transient', () => {
     });
 
     mockPrisma.slip.findUnique.mockResolvedValue(slip);
+    // Price is computed server-side from the tenant's per-foot rate.
+    mockPrisma.tenant.findUnique.mockResolvedValue({
+      invoiceTemplateJson: { transientRatePerFtCents: 250 },
+      stripeAccountId: null,
+    });
     mockPrisma.transientBooking.create.mockResolvedValue({
       ...booking,
       slip,
@@ -52,6 +57,7 @@ describe('POST /api/transient', () => {
         slipId: slip.id,
         guestName: 'John Doe',
         checkIn: new Date().toISOString(),
+        checkOut: new Date(Date.now() + 2 * 86400000).toISOString(),
         rateCents: 7500,
         totalCents: 7500,
       });
