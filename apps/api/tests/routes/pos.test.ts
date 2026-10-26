@@ -124,3 +124,35 @@ describe('GET /api/pos/transactions', () => {
     expect(res.body).toHaveProperty('pagination');
   });
 });
+
+describe('GET /api/pos/reports/daily', () => {
+  it('counts a fully refunded $100 sale once, netting to zero', async () => {
+    // A refund re-marks the original sale REFUNDED and writes a negative row.
+    const original = buildPosTransaction({
+      subtotalCents: 9346,
+      taxCents: 654,
+      tipCents: 0,
+      totalCents: 10000,
+      status: 'REFUNDED',
+      lineItems: [],
+    });
+    const refund = buildPosTransaction({
+      subtotalCents: -9346,
+      taxCents: -654,
+      tipCents: 0,
+      totalCents: -10000,
+      status: 'REFUNDED',
+      lineItems: [],
+    });
+    mockPrisma.posTransaction.findMany.mockResolvedValue([original, refund]);
+
+    const res = await request(app).get('/api/pos/reports/daily?date=2026-10-26');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalSalesCents).toBe(10000);
+    expect(res.body.totalRefundsCents).toBe(10000);
+    expect(res.body.netSalesCents).toBe(0);
+    expect(res.body.totalTaxCents).toBe(0);
+    expect(res.body.refundCount).toBe(1);
+  });
+});

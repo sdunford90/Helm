@@ -824,9 +824,11 @@ router.get(
 
       // Enrich shifts with sales totals
       const enriched = shifts.map((shift) => {
-        const salesTotal = shift.transactions
-          .filter((t) => t.status !== "REFUNDED")
-          .reduce((sum, t) => sum + t.totalCents, 0);
+        // Net of refunds: refund rows are negative, originals stay positive.
+        const salesTotal = shift.transactions.reduce(
+          (sum, t) => sum + t.totalCents,
+          0,
+        );
         const cashSales = shift.transactions
           .filter((t) => t.status === "CASH")
           .reduce((sum, t) => sum + t.totalCents, 0);
@@ -1009,8 +1011,11 @@ router.get(
         },
       });
 
-      const sales = transactions.filter((t) => t.status !== "REFUNDED");
-      const refunds = transactions.filter((t) => t.status === "REFUNDED");
+      // A refund writes a negative row AND re-marks the original sale as
+      // REFUNDED, so classify by sign: the original stays a sale and the
+      // negative row is the refund. Filtering on status counted each refund twice.
+      const sales = transactions.filter((t) => t.totalCents >= 0);
+      const refunds = transactions.filter((t) => t.totalCents < 0);
 
       const totalSales = sales.reduce((sum, t) => sum + t.totalCents, 0);
       const totalRefunds = refunds.reduce(
@@ -1018,7 +1023,8 @@ router.get(
         0,
       );
       const netSales = totalSales - totalRefunds;
-      const totalTax = sales.reduce((sum, t) => sum + t.taxCents, 0);
+      // Refund rows carry negative tax, so summing every row gives net tax.
+      const totalTax = transactions.reduce((sum, t) => sum + t.taxCents, 0);
       const totalTips = sales.reduce((sum, t) => sum + t.tipCents, 0);
 
       // Breakdown by payment method
