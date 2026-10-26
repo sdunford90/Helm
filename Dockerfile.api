@@ -1,80 +1,106 @@
+# syntax=docker/dockerfile:1.7
 # =============================================================================
-# Dockerfile.api - Multi-stage build for the Helm API service
+# Dockerfile.api: Helm API + background worker (one image, two commands)
+#
+#   API:     docker run IMAGE                         (CMD node dist/index.js)
+#   Worker:  docker run IMAGE node dist/worker.js
+#   Migrate: docker run IMAGE node_modules/.bin/prisma migrate deploy
+#   (all relative to WORKDIR /app/apps/api)
+#
+# Build from the repo root:  docker build -f Dockerfile.api -t helm-api .
+# See docs/DEPLOYMENT.md for the reasoning behind each choice below.
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Stage 1: Install dependencies
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS deps
+# Debian slim rather than Alpine: Prisma's engines and (if ever needed)
+# Chromium are first-class on glibc. Override NODE_IMAGE to use a mirror.
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG PNPM_VERSION=9.15.9
 
-WORKDIR /app
+# -----------------------------------------------------------------------------
+# base: node + pnpm + openssl (Prisma needs libssl at generate and run time)
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS base
+ARG PNPM_VERSION
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true \
+    # Chrome isn't installed. lib/pdf.ts (puppeteer) has no callers today.
+    # See docs/DEPLOYMENT.md, "PDF generation".
+    PUPPETEER_SKIP_DOWNLOAD=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+# Use npm, not corepack: corepack's signature checks have broken pnpm
+# installs before, and it no longer ships with newer Node releases.
+RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
+WORKDIR /repo
 
-# Copy workspace root package files
-COPY package.json package-lock.json turbo.json ./
+# -----------------------------------------------------------------------------
+# fetch: download every package in the lockfile into the pnpm store.
+# This layer only changes when pnpm-lock.yaml changes.
+# -----------------------------------------------------------------------------
+FROM base AS fetch
+COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm fetch
 
-# Copy all workspace package.json files to preserve workspace structure
-COPY apps/api/package.json ./apps/api/
-COPY packages/shared-types/package.json ./packages/shared-types/
-COPY packages/database/package.json ./packages/database/
-COPY packages/ui-kit/package.json ./packages/ui-kit/
-COPY tools/package.json ./tools/
+# -----------------------------------------------------------------------------
+# build: offline install, prisma generate, compile only the API + its deps
+# -----------------------------------------------------------------------------
+FROM fetch AS build
+COPY . .
+RUN pnpm install --offline --frozen-lockfile --filter "@helm/api..."
+RUN pnpm --filter @helm/api run generate
+RUN pnpm --filter "@helm/api..." run build
 
-RUN npm ci --production=false
+# -----------------------------------------------------------------------------
+# prod-deps: production-only node_modules for the API, installed from the
+# lockfile (reproducible). We don't use `pnpm deploy`: in pnpm 9 it
+# re-resolves versions without the lockfile and can't run offline.
+# -----------------------------------------------------------------------------
+FROM fetch AS prod-deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/
+COPY apps/api/prisma apps/api/prisma
+# `pnpm fetch` also fills node_modules/.pnpm with every workspace package.
+# Remove it so only the API's production dependency closure is linked.
+RUN rm -rf node_modules \
+ && pnpm install --offline --frozen-lockfile --prod --filter @helm/api
+# The generated client lives inside node_modules, so generate it here.
+RUN pnpm --filter @helm/api exec prisma generate
 
-# ---------------------------------------------------------------------------
-# Stage 2: Build the API
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS build
+# -----------------------------------------------------------------------------
+# runtime
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 helm \
+ && useradd --system --uid 10001 --gid helm --home-dir /app --shell /usr/sbin/nologin helm
 
-WORKDIR /app
+ENV NODE_ENV=production \
+    API_PORT=3001 \
+    PUPPETEER_SKIP_DOWNLOAD=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=deps /app/packages/shared-types/node_modules ./packages/shared-types/node_modules 2>/dev/null || true
-COPY --from=deps /app/packages/database/node_modules ./packages/database/node_modules 2>/dev/null || true
+WORKDIR /app/apps/api
+# Files stay root-owned, so the app user cannot modify its own code.
+# The pnpm layout is kept: /app/node_modules/.pnpm is the virtual store, and
+# /app/apps/api/node_modules holds relative symlinks into it.
+COPY --from=prod-deps /repo/node_modules /app/node_modules
+COPY --from=prod-deps /repo/apps/api /app/apps/api
+COPY --from=build /repo/apps/api/dist /app/apps/api/dist
 
-# Copy all source files
-COPY package.json package-lock.json turbo.json tsconfig.json ./
-COPY apps/api/ ./apps/api/
-COPY packages/ ./packages/
-COPY tools/ ./tools/
-
-# Generate Prisma client
-RUN npx prisma generate --schema=apps/api/prisma/schema.prisma
-
-# Build using Turborepo (builds dependencies first via dependsOn)
-RUN npx turbo build --filter=@helm/api
-
-# ---------------------------------------------------------------------------
-# Stage 3: Production runtime
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS runtime
-
-WORKDIR /app
-
-# Install security updates
-RUN apk --no-cache upgrade
-
-# Create non-root user
-RUN addgroup --system helm && adduser --system --ingroup helm helm
-
-# Copy built artifacts
-COPY --from=build /app/apps/api/dist ./dist
-COPY --from=build /app/apps/api/prisma ./prisma
-COPY --from=build /app/apps/api/package.json ./
-
-# Copy node_modules (includes generated Prisma client)
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/api/node_modules ./apps_node_modules
-# Merge workspace-level and app-level dependencies
-RUN cp -rn ./apps_node_modules/* ./node_modules/ 2>/dev/null || true && rm -rf ./apps_node_modules
-
-# Switch to non-root user
 USER helm
-
 EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1
+# Liveness only. The worker and migrate commands disable this (see
+# docker-compose.yml) because they don't serve HTTP.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.API_PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
+# tini reaps zombies and forwards SIGTERM so the API and BullMQ workers
+# can shut down gracefully.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]
