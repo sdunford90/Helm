@@ -3,20 +3,21 @@
   "private": true,
   "version": "1.0.0",
   "description": "Helm Marina Management Platform",
-  "workspaces": [
-    "apps/*",
-    "packages/*",
-    "tools"
-  ],
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "db:generate": "cd apps/api && npx prisma generate",
-    "db:migrate": "cd apps/api && npx prisma migrate deploy",
-    "db:migrate:all": "ts-node tools/migrate-all.ts",
-    "db:studio": "cd apps/api && npx prisma studio"
+    "worker": "pnpm --filter @helm/api run worker",
+    "worker:dev": "pnpm --filter @helm/api run worker:dev",
+    "db:generate": "pnpm --filter @helm/api run generate",
+    "db:migrate:dev": "pnpm --filter @helm/api run db:migrate:dev",
+    "db:migrate:deploy": "pnpm --filter @helm/api run db:migrate:deploy",
+    "db:migrate:status": "pnpm --filter @helm/api run db:migrate:status",
+    "db:seed": "pnpm --filter @helm/api run db:seed",
+    "db:studio": "pnpm --filter @helm/api exec prisma studio"
   },
   "devDependencies": {
     "@types/node": "^22.19.15",
@@ -25,6 +26,7 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0 <10"
   }
 }
