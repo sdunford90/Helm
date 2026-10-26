@@ -56,6 +56,9 @@ const PORT = env.API_PORT;
 
 app.use(cors());
 app.use(helmet());
+// Signature-verified webhooks need the exact raw bytes: parse them as Buffer
+// before the JSON parser runs.
+app.use("/api/qbo/webhook", express.raw({ type: "*/*", limit: "1mb" }));
 app.use(express.json());
 
 // Tenant resolution — attaches tenantId / tenant to every request

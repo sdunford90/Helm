@@ -59,7 +59,7 @@ export const mockPrisma = {
 
 vi.mock('../src/lib/prisma.js', () => ({
   prisma: mockPrisma,
-  tenantStore: { run: (_ctx: any, fn: any) => fn() },
+  tenantStore: { run: (_ctx: any, fn: any) => fn(), exit: (fn: any) => fn(), getStore: () => undefined },
 }));
 
 // Mock Clerk auth

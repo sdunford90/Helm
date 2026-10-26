@@ -22,11 +22,30 @@ declare global {
   }
 }
 
-/** Routes that should bypass tenant resolution. */
-const BYPASS_PREFIXES = ["/api/health", "/api/admin", "/api/onboarding", "/api/auth/webhook"];
+/**
+ * Routes that bypass Host-based tenant resolution. Keep this list minimal:
+ * each entry must establish its own trust (platform-admin auth, a verified
+ * webhook signature, a verified single-use OAuth state, or an API key whose
+ * own tenant becomes the query scope).
+ */
+const BYPASS_PREFIXES = [
+  "/api/health", // liveness, no data
+  "/api/admin", // platform admin (requirePlatformAdmin), cross-tenant by design
+];
+const BYPASS_EXACT = [
+  "/api/auth/webhook", // Clerk (svix signature)
+  "/api/onboarding/start", // creates a brand-new tenant (Clerk session required)
+  "/api/onboarding/stripe/callback", // Stripe redirect (verified OAuth state)
+  "/api/qbo/callback", // Intuit redirect (verified OAuth state)
+  "/api/qbo/webhook", // Intuit (verified signature)
+];
 
-function shouldBypass(path: string): boolean {
-  return BYPASS_PREFIXES.some((prefix) => path.startsWith(prefix));
+export function shouldBypassTenant(path: string): boolean {
+  const p = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+  return (
+    BYPASS_EXACT.includes(p) ||
+    BYPASS_PREFIXES.some((prefix) => p === prefix || p.startsWith(`${prefix}/`))
+  );
 }
 
 /**
@@ -42,7 +61,7 @@ export async function tenantMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  if (shouldBypass(req.path)) {
+  if (shouldBypassTenant(req.path)) {
     next();
     return;
   }

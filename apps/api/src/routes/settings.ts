@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { clerkAuth, requireRole, canGrantRole } from "../middleware/auth.js";
-import { stripe } from "../lib/stripe.js";
+import { requireStripe } from "../lib/stripe.js";
 
 const router = Router();
 
@@ -373,7 +373,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
     // Create a Stripe Connect account if one doesn't exist
     let accountId = tenant.stripeAccountId;
     if (!accountId) {
-      const account = await stripe.accounts.create({ type: "standard" });
+      const account = await requireStripe().accounts.create({ type: "standard" });
       accountId = account.id;
       await prisma.tenant.update({
         where: { id: req.tenantId! },
@@ -381,7 +381,7 @@ router.post("/stripe/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), asyn
       });
     }
 
-    const accountLink = await stripe.accountLinks.create({
+    const accountLink = await requireStripe().accountLinks.create({
       account: accountId,
       refresh_url: `${process.env.APP_URL}/settings?section=stripe&refresh=true`,
       return_url: `${process.env.APP_URL}/settings?section=stripe&success=true`,
@@ -448,35 +448,9 @@ router.get("/qbo", ...clerkAuth(), requireRole("MARINA_OWNER", "MARINA_MANAGER",
   }
 });
 
-// --------------------------------------------------------------------------
-// POST /api/settings/qbo/connect
-// --------------------------------------------------------------------------
-router.post("/qbo/connect", ...clerkAuth(), requireRole("MARINA_OWNER"), async (req, res, next) => {
-  try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: req.tenantId! },
-    });
-
-    if (!tenant) {
-      res.status(404).json({ error: "Tenant not found", code: "NOT_FOUND" });
-      return;
-    }
-
-    const clientId = process.env.QBO_CLIENT_ID;
-    const redirectUri = `${process.env.APP_URL}/api/callbacks/qbo`;
-    const scope = "com.intuit.quickbooks.accounting";
-    const state = req.tenantId!;
-
-    const authUrl =
-      `https://appcenter.intuit.com/connect/oauth2?` +
-      `client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}&response_type=code&state=${state}`;
-
-    res.json({ url: authUrl });
-  } catch (err) {
-    next(err);
-  }
-});
+// POST /api/settings/qbo/connect was removed (state = tenantId, no callback
+// existed). The single QBO connect flow is GET /api/qbo/authorize, whose
+// callback verifies a single-use server-side state.
 
 // --------------------------------------------------------------------------
 // POST /api/settings/qbo/disconnect
